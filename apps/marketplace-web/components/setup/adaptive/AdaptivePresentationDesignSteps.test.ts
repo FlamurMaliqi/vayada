@@ -732,7 +732,7 @@ describe("adaptive presentation and design steps", () => {
     expect(props.reportRevisionConflict).toHaveBeenCalledWith(
       expect.stringMatching(/older hotel content/i),
     );
-    expect(renderer!.root.findByProps({ "aria-label": "Vayada indigo" }).props.checked).toBe(true);
+    expect(renderer!.root.findByProps({ "aria-label": "vayada indigo" }).props.checked).toBe(true);
     expect(mocks.saveDesign).not.toHaveBeenCalled();
     renderer?.unmount();
   });

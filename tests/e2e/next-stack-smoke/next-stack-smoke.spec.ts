@@ -13,6 +13,7 @@ import {
   JsonApi,
   NEXT_STACK_ORIGINS,
   arrayField,
+  authenticateSyntheticPmsUser,
   createSyntheticPlatformAdmin,
   createSyntheticUser,
   fillSecret,
@@ -294,6 +295,114 @@ test("ambiguous primary manual booking exposes replay failure", async () => {
   expect((failure as AggregateError).errors).toEqual([originalError, replayError]);
 });
 
+test("cleanup refreshes hotel authentication before PMS fallback", async () => {
+  const environment: SmokeEnvironment = {
+    emailDomain: "example.test",
+    password: "synthetic-password",
+    runId: "20260903123456-deadbeef",
+    workosApiKey: "sk_test_synthetic",
+  };
+  const owner: SyntheticUser = {
+    id: "hotel-owner",
+    email: "hotel-owner@example.test",
+    firstName: "Hotel",
+    lastName: "Owner",
+    role: "hotel",
+  };
+  const decoy: SyntheticUser = {
+    ...owner,
+    id: "other-hotel-owner",
+    email: "other-hotel-owner@example.test",
+  };
+  const booking: BookingResource = {
+    bookingId: "booking-1",
+    email: "guest@example.test",
+    mode: "instant",
+    resolved: false,
+    slug: "synthetic-hotel",
+  };
+  const calls: string[] = [];
+  const targetCalls: string[] = [];
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async (input, init) => {
+    const url = new URL(
+      typeof input === "string" ? input : input instanceof URL ? input.href : input.url,
+    );
+    const method = init?.method ?? "GET";
+    if (url.origin === NEXT_STACK_ORIGINS.api) {
+      expect(init?.headers).toMatchObject({ authorization: "Bearer fresh-access-token" });
+      calls.push("target");
+      targetCalls.push(`${method} ${url.pathname}`);
+      return jsonResponse({});
+    }
+    if (url.pathname === "/user_management/users" && method === "GET") {
+      return jsonResponse({ data: [] });
+    }
+    if (url.pathname === "/user_management/organization_memberships" && method === "GET") {
+      return jsonResponse({ data: [] });
+    }
+    if (url.pathname.startsWith("/user_management/users/") && method === "DELETE") {
+      return new Response(null, { status: 204 });
+    }
+    throw new Error(`Unexpected test request: ${method} ${url}`);
+  }) as typeof globalThis.fetch;
+  const request = {
+    async post(url: string, options: unknown) {
+      calls.push("login");
+      expect(url).toBe(`${NEXT_STACK_ORIGINS.pms}/auth/password/login`);
+      expect(options).toEqual({
+        headers: { origin: NEXT_STACK_ORIGINS.pms },
+        data: { email: owner.email, password: environment.password, surface: "pms-web" },
+      });
+      return {
+        ok: () => true,
+        text: async () => JSON.stringify({ accessToken: "fresh-access-token" }),
+      };
+    },
+    async fetch(url: string, options: { data?: unknown; method?: string }) {
+      calls.push("public");
+      expect({ url, ...options }).toMatchObject({
+        url: `${NEXT_STACK_ORIGINS.api}/api/booking-web/hotels/${booking.slug}/bookings/${booking.bookingId}/cancel`,
+        method: "POST",
+        data: { guestEmail: booking.email },
+      });
+      return {
+        ok: () => false,
+        status: () => 409,
+        text: async () => JSON.stringify({ message: "Cancellation policy conflict." }),
+      };
+    },
+  } as unknown as APIRequestContext;
+
+  try {
+    const errors = await cleanupSmokeResources(
+      request,
+      environment,
+      [decoy, owner],
+      [booking],
+      {
+        api: {
+          async json() {
+            throw new Error("Expired hotel API must not be reused.");
+          },
+        } as unknown as JsonApi,
+        ownerWorkosUserId: owner.id,
+        propertyId: "property-1",
+      },
+    );
+    expect(errors).toEqual([]);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+
+  expect(booking.resolved).toBe(true);
+  expect(calls.slice(0, 4)).toEqual(["login", "public", "target", "target"]);
+  expect(targetCalls).toEqual([
+    "POST /api/pms/properties/property-1/reservations/booking-1/cancel",
+    "PATCH /api/finance/properties/property-1/payment-settings",
+  ]);
+});
+
 test("ordinary cleanup reconciles an untracked synthetic booking before retirement", async () => {
   const runId = "20260831123456-deadbeef";
   const propertyId = "11111111-1111-4111-8111-111111111111";
@@ -499,7 +608,7 @@ async function runHotelFlow(
     await login(page, user, environment.password);
     await acceptNecessaryCookies(page);
     await expect(
-      page.getByRole("heading", { name: "Welcome to Vayada — what brings you here?" }),
+      page.getByRole("heading", { name: "Welcome to vayada — what brings you here?" }),
     ).toBeVisible();
     await page.getByRole("radio", { name: /i manage a hotel/i }).click();
     await page.getByRole("button", { name: "Continue", exact: true }).click();
@@ -509,13 +618,13 @@ async function runHotelFlow(
     await page.getByRole("button", { name: "Continue to hotel setup" }).click();
     await expect(page.getByRole("heading", { name: "Your profile is ready" })).toBeVisible();
     await page.getByRole("button", { name: "Set up my first hotel" }).click();
-    await expect(page.getByRole("heading", { name: "Choose how you’ll use Vayada" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Choose how you’ll use vayada" })).toBeVisible();
     const result = await readAuthSession(page);
     expect(result.organizationKind).toBe("hotel_group");
     return result;
   });
 
-  const api = targetApi(request, session.accessToken);
+  let api = targetApi(request, session.accessToken);
   const hotelName = `QA Next Hotel ${environment.runId}`;
   const setup =
     await test.step("provision tracks, hotel profile, commission, payment and room", async () => {
@@ -555,7 +664,12 @@ async function runHotelFlow(
         { "Idempotency-Key": `next-smoke:${environment.runId}:property` },
       );
       const propertyId = stringField(property, "propertyId");
-      registerHotel({ api, propertyId });
+      registerHotel({
+        api,
+        ownerWorkosUserId: user.id,
+        propertyId,
+        workosOrganizationId: session.workosOrganizationId,
+      });
 
       await api.json("PUT", `/api/hotel-setup/properties/${propertyId}/launch-settings`, {
         defaultCurrency: "EUR",
@@ -706,9 +820,11 @@ async function runHotelFlow(
       };
       registerHotel({
         api,
+        ownerWorkosUserId: user.id,
         propertyId: setup.propertyId,
         slug: published.slug,
         stay,
+        workosOrganizationId: session.workosOrganizationId,
       });
       return published;
     });
@@ -738,7 +854,9 @@ async function runHotelFlow(
     await publicPage.close();
 
     await page.goto(`${NEXT_STACK_ORIGINS.marketplace}/marketplace`);
-    await expect(page.getByRole("heading", { name: "Marketplace", exact: true })).toBeVisible();
+    await expect(
+      page.getByRole("heading", { name: "vayada Marketplace", exact: true }),
+    ).toBeVisible();
     await assertMarketplaceHandoff(page, "Property Manager", NEXT_STACK_ORIGINS.pms, hotelName);
     await page.goto(`${NEXT_STACK_ORIGINS.marketplace}/marketplace`);
     await assertMarketplaceHandoff(
@@ -785,6 +903,16 @@ async function runHotelFlow(
     page,
     propertyId: setup.propertyId,
     request,
+    refreshAuthentication: async () => {
+      const accessToken = await authenticateSyntheticPmsUser(
+        page.context().request,
+        user,
+        environment.password,
+      );
+      api = targetApi(request, accessToken);
+      resource.api = api;
+      return { accessToken, api };
+    },
     slug: publication.slug,
     testInfo,
     addonItemIds: resource.addonItemIds,
@@ -855,7 +983,7 @@ async function runForeignHotelFlow(
   await page.getByRole("button", { name: "Continue to hotel setup" }).click();
   await expect(page.getByRole("heading", { name: "Your profile is ready" })).toBeVisible();
   await page.getByRole("button", { name: "Set up my first hotel" }).click();
-  await expect(page.getByRole("heading", { name: "Choose how you’ll use Vayada" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Choose how you’ll use vayada" })).toBeVisible();
   const session = await readAuthSession(page);
   expect(session.organizationKind).toBe("hotel_group");
   const api = targetApi(request, session.accessToken);
@@ -940,7 +1068,9 @@ async function runCreatorFlow(
     await expect(page.getByRole("heading", { name: "Your profile is complete" })).toBeVisible();
     await page.getByRole("button", { name: "Open marketplace" }).click();
     await expect(page).toHaveURL(/\/marketplace$/);
-    await expect(page.getByRole("heading", { name: "Marketplace", exact: true })).toBeVisible();
+    await expect(
+      page.getByRole("heading", { name: "vayada Marketplace", exact: true }),
+    ).toBeVisible();
   });
 }
 

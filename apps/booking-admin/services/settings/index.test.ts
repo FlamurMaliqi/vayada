@@ -24,6 +24,10 @@ describe("settingsService next-stack bootstrap data", () => {
     let designSettings = {
       headerLogo: "https://cdn.vayada.test/hotels/alpenrose/logo.webp",
       headerLogoMediaObjectId: "a1000000-0000-4000-8000-000000001217" as string | null,
+      showContactButton: true,
+      showReferAGuestButton: false,
+      showLanguageSelector: true,
+      showCurrencySelector: true,
       heroImage: "https://cdn.vayada.test/hotels/alpenrose/hero.jpg",
       heroHeading: "Stay above the clouds",
       heroSubtext: "An independent alpine escape.",
@@ -348,6 +352,10 @@ describe("settingsService next-stack bootstrap data", () => {
     await expect(settingsService.getDesignSettings(" booking_hotel_alpenrose ")).resolves.toEqual({
       header_logo: "https://cdn.vayada.test/hotels/alpenrose/logo.webp",
       header_logo_media_object_id: "a1000000-0000-4000-8000-000000001217",
+      show_contact_button: true,
+      show_refer_a_guest_button: false,
+      show_language_selector: true,
+      show_currency_selector: true,
       hero_image: "https://cdn.vayada.test/hotels/alpenrose/hero.jpg",
       hero_heading: "Stay above the clouds",
       hero_subtext: "An independent alpine escape.",
@@ -359,6 +367,10 @@ describe("settingsService next-stack bootstrap data", () => {
       settingsService.updateDesignSettings(
         {
           header_logo_media_object_id: "a1000000-0000-4000-8000-000000001218",
+          show_contact_button: false,
+          show_refer_a_guest_button: true,
+          show_language_selector: false,
+          show_currency_selector: false,
           hero_image: "https://cdn.vayada.test/hotels/alpenrose/summer.jpg",
           hero_heading: "Book the mountain directly",
           hero_subtext: "A quieter stay starts here.",
@@ -370,6 +382,10 @@ describe("settingsService next-stack bootstrap data", () => {
     ).resolves.toEqual({
       header_logo: "https://cdn.vayada.test/hotels/alpenrose/new-logo.webp",
       header_logo_media_object_id: "a1000000-0000-4000-8000-000000001218",
+      show_contact_button: false,
+      show_refer_a_guest_button: true,
+      show_language_selector: false,
+      show_currency_selector: false,
       hero_image: "https://cdn.vayada.test/hotels/alpenrose/summer.jpg",
       hero_heading: "Book the mountain directly",
       hero_subtext: "A quieter stay starts here.",
@@ -397,6 +413,10 @@ describe("settingsService next-stack bootstrap data", () => {
         method: "PATCH",
         body: JSON.stringify({
           headerLogoMediaObjectId: "a1000000-0000-4000-8000-000000001218",
+          showContactButton: false,
+          showReferAGuestButton: true,
+          showLanguageSelector: false,
+          showCurrencySelector: false,
           heroImage: "https://cdn.vayada.test/hotels/alpenrose/summer.jpg",
           heroHeading: "Book the mountain directly",
           heroSubtext: "A quieter stay starts here.",

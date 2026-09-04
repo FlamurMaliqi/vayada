@@ -5,6 +5,7 @@ import type {
 } from "@vayada/domain-distribution";
 import type { BookingAcceptanceSettingsPort } from "../domains/bookingAcceptanceSettings.js";
 import type { SameDayBookingSettingsPort } from "../domains/sameDayBookingSettings.js";
+import type { BookingPublicationRefreshPort } from "../domains/bookingPublicationProductionRuntime.js";
 
 import {
   registerBookingAddonItemRoutes,
@@ -53,6 +54,7 @@ export type BookingRoutesOptions = {
   sameDayBookingSettings?: SameDayBookingSettingsPort;
   ownsSameDayBookingSettings?: boolean;
   publicBookabilityPublisher?: PublicBookabilityPublicationCommandPort;
+  bookingPublicationRefresh?: BookingPublicationRefreshPort;
   inventoryPublicOfferProjector?: PmsInventoryPublicOfferProjectionPort;
   customDomainRepository?: BookingCustomDomainRepository;
   changeRequestRepository?: BookingHotelChangeRequestRepository;
@@ -76,6 +78,7 @@ export async function registerBookingRoutes(
       options.settingsRepository,
       options.settingsWriteRepository,
       options.publicBookabilityPublisher,
+      options.bookingPublicationRefresh,
       options.inventoryPublicOfferProjector,
       options.bookingAcceptanceSettings,
       options.sameDayBookingSettings,

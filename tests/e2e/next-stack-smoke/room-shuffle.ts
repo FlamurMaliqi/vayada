@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { writeFile } from "node:fs/promises";
 
-import { expect, test, type Page, type Request, type TestInfo } from "@playwright/test";
+import { expect, test, type Page, type Request, type Route, type TestInfo } from "@playwright/test";
 
 import type { BookingResource } from "./booking-lifecycle";
 import {
@@ -30,6 +30,12 @@ type CreatedBooking = {
   assignment: Record<string, unknown>;
   resource: BookingResource;
   result: Record<string, unknown>;
+};
+
+type CreateUiBookingOptions = {
+  beforeSubmit?: () => Promise<void>;
+  existingResource?: BookingResource;
+  observeToast?: boolean;
 };
 
 type ToastTiming = {
@@ -95,7 +101,9 @@ export async function runRoomShuffleAcceptance(args: Args): Promise<void> {
     });
 
     const anchor = await createApiBooking(args, "Setting off anchor", room1, 50, 51);
-    const follower = await createUiBooking(args, "Setting off follower", room2, 51, 52, true);
+    const follower = await createUiBooking(args, "Setting off follower", room2, 51, 52, {
+      observeToast: true,
+    });
     expect(numberField(follower.result, "rearrangedBookingCount")).toBe(0);
     await expect(page.getByText(/rearranged for optimal room usage/)).toHaveCount(0);
     expect((await toastTiming(page)).shownAt).toBeNull();
@@ -128,7 +136,9 @@ export async function runRoomShuffleAcceptance(args: Args): Promise<void> {
       fullPage: true,
     });
 
-    const trigger = await createUiBooking(args, "Setting on trigger", room2, 52, 53, true);
+    const trigger = await createUiBooking(args, "Setting on trigger", room2, 52, 53, {
+      observeToast: true,
+    });
     const count = numberField(trigger.result, "rearrangedBookingCount");
     expect(count).toBe(2);
     const follower = args.bookings.find(({ email }) => email.includes("setting-off-follower"));
@@ -285,12 +295,32 @@ export async function runRoomShuffleAcceptance(args: Args): Promise<void> {
 
   await test.step("clear a live nonzero toast when the next create moves zero bookings", async () => {
     await createApiBooking(args, "Zero anchor", room1, 70, 71);
-    const positive = await createUiBooking(args, "Zero transition positive", room2, 71, 72, true);
+    const zeroFixture = await createApiBooking(args, "Zero transition silent", room1, 75, 76);
+    expect(numberField(zeroFixture.result, "rearrangedBookingCount")).toBe(0);
+    const positive = await createUiBooking(args, "Zero transition positive", room2, 71, 72, {
+      observeToast: true,
+    });
     const positiveCount = numberField(positive.result, "rearrangedBookingCount");
     expect(positiveCount).toBe(1);
     const toast = page.getByText("1 booking rearranged for optimal room usage", { exact: true });
     await expect(toast).toBeVisible();
-    const silent = await createUiBooking(args, "Zero transition silent", room1, 75, 76);
+    const bookingPath = `**/api/pms/properties/${propertyId}/manual-bookings`;
+    const returnZeroResult = (route: Route) =>
+      route.fulfill({
+        status: 201,
+        contentType: "application/json",
+        body: JSON.stringify(zeroFixture.result),
+      });
+    await page.route(bookingPath, returnZeroResult);
+    let silent: CreatedBooking;
+    try {
+      silent = await createUiBooking(args, "Zero transition silent", room1, 77, 78, {
+        beforeSubmit: async () => expect(toast).toBeVisible(),
+        existingResource: zeroFixture.resource,
+      });
+    } finally {
+      await page.unroute(bookingPath, returnZeroResult);
+    }
     expect(numberField(silent.result, "rearrangedBookingCount")).toBe(0);
     await expect(toast).toBeHidden();
     const timing = await toastTiming(page);
@@ -307,6 +337,7 @@ export async function runRoomShuffleAcceptance(args: Args): Promise<void> {
       previousRearrangedBookingCount: positiveCount,
       nextRearrangedBookingCount: 0,
       clearedBeforeNaturalTimeout: true,
+      controlledBrowserResponseFromLiveResult: true,
       toastObservedMilliseconds: observedMilliseconds,
       zeroResponseToHiddenMilliseconds,
     };
@@ -417,7 +448,7 @@ async function createUiBooking(
   roomId: string,
   checkInOffset: number,
   checkOutOffset: number,
-  observeToast = false,
+  options: CreateUiBookingOptions = {},
 ): Promise<CreatedBooking> {
   const { page, propertyId } = args;
   if (new URL(page.url()).pathname !== "/calendar") {
@@ -438,7 +469,7 @@ async function createUiBooking(
   await dialog.getByLabel("Guest country").fill("DE");
   const submit = dialog.getByRole("button", { name: "Create booking" });
   await expect(submit).toBeEnabled({ timeout: 15_000 });
-  if (observeToast) await startToastObservation(page);
+  if (options.observeToast) await startToastObservation(page);
   const bookingPath = `/api/pms/properties/${propertyId}/manual-bookings`;
   let submittedRequest: Request | undefined;
   let resource: BookingResource | undefined;
@@ -454,10 +485,11 @@ async function createUiBooking(
     { timeout: 45_000 },
   );
   try {
+    await options.beforeSubmit?.();
     const [, response] = await Promise.all([submit.click(), responsePromise]);
     expect(response.status(), await response.text()).toBe(201);
     const result = record(await response.json());
-    resource = registerBooking(args, result, email);
+    resource = options.existingResource ?? registerBooking(args, result, email);
     await expect(dialog).toBeHidden();
     return { result, resource, assignment: await assignment(args, resource.bookingId) };
   } catch (error) {

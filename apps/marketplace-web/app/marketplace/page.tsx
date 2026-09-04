@@ -300,7 +300,7 @@ export default function MarketplacePage() {
                 Creator hotel network
               </p>
               <h1 className="mt-1 text-2xl font-bold tracking-normal text-gray-950 md:text-3xl">
-                Marketplace
+                vayada Marketplace
               </h1>
               <p className="mt-1 text-sm text-gray-500">
                 Find the right collaboration match, compare fit signals, and start the next

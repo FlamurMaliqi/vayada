@@ -11,6 +11,7 @@ flowchart TD
   M --> D["Requested deliverables"]
   M --> C["Compensation options and limits"]
   M --> R["Creator requirements"]
+  M --> MC["Matching criteria\nexplicit required/preferred brief"]
   M --> A["Collaboration\npending = creator proposal"]
   A --> AD["Agreed deliverables snapshot"]
   A --> AC["Agreed compensation snapshot"]
@@ -22,13 +23,17 @@ flowchart TD
 - `identity.organizations` owns the hotel account and membership.
 - `hotel_catalog.properties` owns each hotel. Its public profile owns hotel
   identity, classification, location, contacts, descriptions, and media.
-- `marketplace.marketplace_offers` owns only the public collaboration brief:
-  title, summary, lifecycle state, and Marketplace metadata.
+- `marketplace.marketplace_offers` owns the collaboration brief: title,
+  summary, lifecycle state, and Marketplace metadata.
 - `marketplace.offer_deliverables` owns the content requested by the hotel,
   including platform, type, quantity, and timing guidance.
 - `marketplace.offer_compensation_options` owns the compensation modes and
   limits the hotel is willing to consider. These are not creator proposals.
 - `marketplace.offer_creator_requirements` owns eligibility criteria.
+- `marketplace.offer_matching_criteria` owns the optional versioned campaign
+  goal, timing, content, usage, effort/value, revision, and application-capacity
+  document. Absence and nullable requirement levels mean unknown; they do not
+  silently become hard filters.
 - `marketplace.collaborations` represents the creator proposal while pending
   or negotiating and the agreement after acceptance. Accepted terms and
   deliverables are snapshots so later offer edits do not mutate an agreement.

@@ -61,6 +61,8 @@ describe("production Booking target reader", () => {
     expect(client.sql.join("\n")).toContain("WHERE guest_booking_id = ANY");
     expect(client.sql.join("\n")).toContain("jsonb_to_recordset");
     expect(client.sql.join("\n")).toContain("metadata ->> 'migrationRunId' = $1");
+    expect(client.sql.join("\n")).toContain("target.property_id = source.property_id");
+    expect(client.sql.join("\n")).toContain("source.purpose = 'redirect'");
     expect(client.sql.join("\n")).toContain("owner.resource_type = CASE");
     expect(client.sql.join("\n")).toContain("WHEN ownership.link_count > 1 THEN 'ambiguous'");
     expect(client.sql.join("\n")).toContain("booking.header_logo");

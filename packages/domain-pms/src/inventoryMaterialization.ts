@@ -239,18 +239,23 @@ export function evaluatePmsInventoryLaunchReadiness(
     blockers.add("calendar_revision_mismatch");
   }
   const requiredDayCount = inclusiveIsoDateCount(requiredCoverage);
+  const materializedDayCount = inclusiveIsoDateCountUnbounded({
+    from: snapshot.coverage.coverageFrom,
+    through: snapshot.coverage.coverageThrough,
+  });
   const uniqueRoomTypeCount = new Set(snapshot.roomSet.map(({ roomTypeId }) => roomTypeId)).size;
-  const expectedDayCount =
-    requiredDayCount === null || uniqueRoomTypeCount === 0
+  const expectedMaterializedDayCount =
+    materializedDayCount === null || uniqueRoomTypeCount === 0
       ? null
-      : requiredDayCount * uniqueRoomTypeCount;
+      : materializedDayCount * uniqueRoomTypeCount;
   if (
-    expectedDayCount === null ||
-    snapshot.coverage.coverageFrom !== requiredCoverage.from ||
-    snapshot.coverage.coverageThrough !== requiredCoverage.through ||
+    requiredDayCount === null ||
+    expectedMaterializedDayCount === null ||
+    snapshot.coverage.coverageFrom > requiredCoverage.from ||
+    snapshot.coverage.coverageThrough < requiredCoverage.through ||
     snapshot.coverage.gaps.length > 0 ||
-    snapshot.coverage.expectedDayCount !== expectedDayCount ||
-    snapshot.coverage.materializedDayCount !== expectedDayCount
+    snapshot.coverage.expectedDayCount !== expectedMaterializedDayCount ||
+    snapshot.coverage.materializedDayCount !== expectedMaterializedDayCount
   ) {
     blockers.add("coverage_gap");
   }
@@ -299,6 +304,14 @@ export function evaluatePmsInventoryLaunchReadiness(
 }
 
 function inclusiveIsoDateCount({ from, through }: PmsInventoryRequiredCoverage): number | null {
+  const count = inclusiveIsoDateCountUnbounded({ from, through });
+  return count !== null && count <= PMS_INVENTORY_HORIZON_MAX_DAYS ? count : null;
+}
+
+function inclusiveIsoDateCountUnbounded({
+  from,
+  through,
+}: PmsInventoryRequiredCoverage): number | null {
   const parse = (value: string): number | null => {
     if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return null;
     const [year, month, day] = value.split("-").map(Number);
@@ -309,7 +322,5 @@ function inclusiveIsoDateCount({ from, through }: PmsInventoryRequiredCoverage):
   const throughTimestamp = parse(through);
   if (fromTimestamp === null || throughTimestamp === null) return null;
   const count = (throughTimestamp - fromTimestamp) / 86_400_000 + 1;
-  return Number.isInteger(count) && count >= 1 && count <= PMS_INVENTORY_HORIZON_MAX_DAYS
-    ? count
-    : null;
+  return Number.isSafeInteger(count) && count >= 1 ? count : null;
 }

@@ -34,6 +34,7 @@ type Args = {
   page: Page;
   propertyId: string;
   request: APIRequestContext;
+  refreshAuthentication: () => Promise<{ accessToken: string; api: JsonApi }>;
   slug: string;
   testInfo: TestInfo;
 };
@@ -392,6 +393,7 @@ export async function runManualBookingAcceptance(args: Args): Promise<void> {
   });
 
   await test.step("verify every expected payment method for paid and unpaid bookings", async () => {
+    const { accessToken, api: refreshedApi } = await args.refreshAuthentication();
     const firstStay = record(arrayField(created.body, "stays")[0]);
     for (const [methodIndex, expectedMethod] of METHODS.entries()) {
       for (const [settledIndex, status] of (["unpaid", "paid"] as const).entries()) {
@@ -422,7 +424,7 @@ export async function runManualBookingAcceptance(args: Args): Promise<void> {
             },
           ],
         });
-        const response = await post(request, args.accessToken, propertyId, body);
+        const response = await post(request, accessToken, propertyId, body);
         expect(response.status()).toBe(201);
         const result = record(await response.json());
         bookings.push(manualResource(result, email, slug));
@@ -430,7 +432,10 @@ export async function runManualBookingAcceptance(args: Args): Promise<void> {
 
         const bookingId = stringField(result, "guestBookingId");
         const detail = recordField(
-            await api.json("GET", `/api/pms/properties/${propertyId}/reservations/${bookingId}`),
+            await refreshedApi.json(
+              "GET",
+              `/api/pms/properties/${propertyId}/reservations/${bookingId}`,
+            ),
             "item",
           ),
           payment = recordField(detail, "payment");
@@ -446,7 +451,8 @@ export async function runManualBookingAcceptance(args: Args): Promise<void> {
             .getByText("Expected method", { exact: true })
             .locator("..")
             .getByText(paymentMethodLabel(expectedMethod), { exact: true }),
-        ).toBeVisible();
+          `Expected ${expectedMethod} to render as ${paymentMethodLabel(expectedMethod)}.`,
+        ).toBeVisible({ timeout: 30_000 });
         await expect(
           paymentGrid
             .getByText("Status", { exact: true })
@@ -455,7 +461,7 @@ export async function runManualBookingAcceptance(args: Args): Promise<void> {
         ).toBeVisible();
       }
     }
-    const payments = await api.json<Record<string, unknown>>(
+    const payments = await refreshedApi.json<Record<string, unknown>>(
       "GET",
       `/api/finance/properties/${propertyId}/reconciliation/payments?limit=100`,
     );

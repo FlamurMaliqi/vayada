@@ -1,6 +1,12 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import {
+  type BookingPublicationOperation,
+  type ReadyBookingPublicationEvidence,
+} from "@vayada/domain-booking";
+import { createProductReadinessResult } from "@vayada/domain-hotels";
 
 import {
+  createBookingPublicationRefresh,
   startBookingPublicationWorker,
   type BookingPublicationWorker,
 } from "./bookingPublicationProductionRuntime.js";
@@ -72,5 +78,91 @@ describe("Booking publication production worker", () => {
       { err: expect.any(Error) },
       "Booking publication worker failed",
     );
+  });
+});
+
+describe("Booking publication refresh", () => {
+  it("accepts a pending operation when the background worker leased it first", async () => {
+    const propertyId = "22222222-2222-4222-8222-222222222222";
+    const readiness = (await createProductReadinessResult({
+      contractVersion: "onboarding-product-readiness.v1",
+      propertyId,
+      product: "booking",
+      status: "ready",
+      sourceManifest: {
+        contractVersion: "onboarding-source-manifest.v1",
+        propertyId,
+        sources: [
+          {
+            ownerDomain: "booking",
+            entityType: "booking_settings",
+            entityId: propertyId,
+            revision: "booking-settings:4",
+          },
+        ],
+      },
+      groups: [
+        {
+          groupId: "booking.guest_experience",
+          status: "ready",
+          steps: [
+            {
+              owningStepId: "guest_experience",
+              status: "ready",
+              entities: [
+                {
+                  source: {
+                    ownerDomain: "booking",
+                    entityType: "booking_settings",
+                    entityId: propertyId,
+                    revision: "booking-settings:4",
+                  },
+                  status: "ready",
+                  blockers: [],
+                },
+              ],
+            },
+          ],
+        },
+      ],
+      evaluatedAt: "2026-09-03T00:00:00.000Z",
+    })) as ReadyBookingPublicationEvidence;
+    const pending: BookingPublicationOperation = {
+      operationId: "33333333-3333-4333-8333-333333333333",
+      propertyId,
+      status: "pending",
+      expectedActiveContentRevisionId: null,
+      resultContentRevisionId: null,
+      failureCode: null,
+      requestedAt: "2026-09-03T00:00:00.000Z",
+      updatedAt: "2026-09-03T00:00:00.000Z",
+      completedAt: null,
+    };
+    const projectPending = vi.fn().mockResolvedValue({
+      processed: 0,
+      succeeded: 0,
+      failed: 0,
+      exhausted: 0,
+    });
+    const refresh = createBookingPublicationRefresh({
+      readinessProvider: { getBookingReadiness: vi.fn().mockResolvedValue(readiness) },
+      projection: { getActive: vi.fn().mockResolvedValue(null) },
+      repository: {
+        requestPublication: vi.fn().mockResolvedValue({ ok: true, operation: pending }),
+        getPublicationStatus: vi.fn().mockResolvedValue(pending),
+      },
+      projector: { projectPending },
+    });
+
+    await expect(
+      refresh({
+        organizationId: "11111111-1111-4111-8111-111111111111",
+        propertyId,
+        actorUserId: "44444444-4444-4444-8444-444444444444",
+        idempotencyKey: "refresh-1",
+        audit: { requestId: "request-1", source: "booking-admin" },
+      }),
+    ).resolves.toEqual(pending);
+    expect(projectPending).toHaveBeenCalledWith({ propertyId });
   });
 });

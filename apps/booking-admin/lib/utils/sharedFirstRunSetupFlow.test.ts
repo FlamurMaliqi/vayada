@@ -23,7 +23,7 @@ describe("adaptive shared first-run setup", () => {
       resolveSharedFirstRunSetupView(status({ selectedTracks: [], properties: [] })),
     ).toMatchObject({
       screen: "track_selection",
-      title: "Choose how you’ll use Vayada",
+      title: "Choose how you’ll use vayada",
     });
   });
 

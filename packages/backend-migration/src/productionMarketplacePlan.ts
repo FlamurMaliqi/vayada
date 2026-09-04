@@ -38,7 +38,10 @@ function enforceSourceCoverage(
   context: MarketplaceBuildContext,
   records: MarketplaceTargetRecord[],
 ): void {
-  const covered = new Set(records.map((record) => `${record.sourceTable}:${record.sourceId}`));
+  const covered = new Set([
+    ...records.map((record) => `${record.sourceTable}:${record.sourceId}`),
+    ...context.quarantines.map((quarantine) => `${quarantine.sourceTable}:${quarantine.sourceId}`),
+  ]);
   for (const source of context.rows) {
     let sourceId: string;
     try {
@@ -99,6 +102,8 @@ export function reconcileProductionMarketplaceRecords(
     unchanged: 0,
     preservedNewerTarget: 0,
     preservedTargetDeletions: 0,
+    quarantinedValues: 0,
+    quarantinedSourceRows: 0,
   };
 
   for (const candidate of candidates) {
@@ -121,6 +126,15 @@ export function reconcileProductionMarketplaceRecords(
     else counts.preservedTargetDeletions += 1;
   }
   counts.plannedRecords = accepted.length;
+  const quarantines = [...context.quarantines].sort((left, right) =>
+    `${left.sourceTable}:${left.sourceId}:${left.sourceField}:${left.reasonCode}`.localeCompare(
+      `${right.sourceTable}:${right.sourceId}:${right.sourceField}:${right.reasonCode}`,
+    ),
+  );
+  counts.quarantinedValues = quarantines.length;
+  counts.quarantinedSourceRows = new Set(
+    quarantines.map((quarantine) => `${quarantine.sourceTable}:${quarantine.sourceId}`),
+  ).size;
   const parity = summarizeParity(context, accepted);
   const blockers = context.blockers.sort((left, right) =>
     `${left.code}:${left.source}:${left.sourceId}`.localeCompare(
@@ -137,10 +151,12 @@ export function reconcileProductionMarketplaceRecords(
       })),
       blockers,
       parity,
+      quarantines,
     }),
     records: accepted,
     writes,
     provenance: links,
+    quarantines,
     blockers,
     parity,
     counts,

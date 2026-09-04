@@ -268,33 +268,40 @@ export function createTargetBookingReservationsReadRepository(config: {
              WHERE primary_assignment.id IS NULL OR assignment.id <> primary_assignment.id
            ) assigned_rooms ON TRUE
            LEFT JOIN LATERAL (
+             WITH expanded AS (
+               SELECT item.*
+               FROM booking.booking_addon_selection_items item
+               WHERE item.guest_booking_id = booking.id
+                 AND item.property_id = booking.property_id
+             )
              SELECT
                jsonb_agg(grouped.addon_key ORDER BY grouped.first_created, grouped.addon_key)
                  AS addon_ids,
                jsonb_agg(grouped.addon_name ORDER BY grouped.first_created, grouped.addon_key)
                  AS addon_names,
-               SUM(grouped.total_amount) AS addon_total,
+               (
+                 SELECT SUM(selection.total_amount)
+                 FROM booking.booking_addon_selections selection
+                 WHERE selection.guest_booking_id = booking.id
+                   AND selection.property_id = booking.property_id
+               ) AS addon_total,
                jsonb_object_agg(grouped.addon_key, grouped.quantity) AS addon_quantities,
                jsonb_object_agg(grouped.addon_key, grouped.service_dates) AS addon_dates
              FROM (
                SELECT
-                 COALESCE(addon.source_addon_id, addon.id::text, selection.id::text) AS addon_key,
-                 MIN(COALESCE(selection.addon_snapshot ->> 'name', addon.name, '')) AS addon_name,
-                 SUM(selection.quantity) AS quantity,
-                 SUM(selection.total_amount) AS total_amount,
-                 COALESCE(
-                   jsonb_agg(selection.service_date::text ORDER BY selection.service_date)
-                     FILTER (WHERE selection.service_date IS NOT NULL),
-                   '[]'::jsonb
+                 source.addon_key,
+                 MIN(source.addon_name) AS addon_name,
+                 SUM(source.quantity) AS quantity,
+                 (
+                   SELECT COALESCE(jsonb_agg(service_date.value ORDER BY service_date.value), '[]')
+                   FROM expanded dated
+                   CROSS JOIN LATERAL jsonb_array_elements_text(dated.service_dates)
+                     AS service_date(value)
+                   WHERE dated.addon_key = source.addon_key
                  ) AS service_dates,
-                 MIN(selection.created_at) AS first_created
-               FROM booking.booking_addon_selections selection
-               LEFT JOIN booking.addon_definitions addon
-                 ON addon.id = selection.addon_definition_id
-                AND addon.property_id = selection.property_id
-               WHERE selection.guest_booking_id = booking.id
-                 AND selection.property_id = booking.property_id
-               GROUP BY COALESCE(addon.source_addon_id, addon.id::text, selection.id::text)
+                 MIN(source.created_at) AS first_created
+               FROM expanded source
+               GROUP BY source.addon_key
              ) grouped
            ) addons ON TRUE
            LEFT JOIN LATERAL (

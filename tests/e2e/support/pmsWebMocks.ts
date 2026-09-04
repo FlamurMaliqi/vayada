@@ -364,6 +364,10 @@ export async function mockPmsWebTargetRoutes(page: Page): Promise<void> {
       },
     }),
   );
+  await page.route(
+    `**/api/pms/properties/${PMS_WEB_PROPERTY_ID}/linked-inventory-groups`,
+    (route) => route.fulfill({ json: { propertyId: PMS_WEB_PROPERTY_ID, items: [] } }),
+  );
   await page.route(`**/api/pms/properties/${PMS_WEB_PROPERTY_ID}/rooms*`, (route) =>
     route.fulfill({ json: targetList([room]) }),
   );
@@ -496,6 +500,58 @@ export async function mockPmsWebTargetRoutes(page: Page): Promise<void> {
         },
       }),
   );
+  let autoOpenSetting = {
+    contractVersion: "pms-calendar-auto-open.v1" as const,
+    propertyId: PMS_WEB_PROPERTY_ID,
+    revision: 3,
+    enabled: false,
+    mode: "rolling" as "rolling" | "fixed",
+    rollingMonths: 18 as number | null,
+    fixedEndMonth: null as string | null,
+    updatedAt: "2026-09-03T08:00:00.000Z",
+  };
+  await page.route(`**/api/pms/properties/${PMS_WEB_PROPERTY_ID}/calendar-auto-open`, (route) => {
+    const isUpdate = route.request().method() === "PATCH";
+    if (isUpdate) {
+      const body = readJson(route);
+      autoOpenSetting = {
+        ...autoOpenSetting,
+        revision: autoOpenSetting.revision + 1,
+        enabled: Boolean(body["enabled"]),
+        mode: body["mode"] === "fixed" ? "fixed" : "rolling",
+        rollingMonths: typeof body["rollingMonths"] === "number" ? body["rollingMonths"] : null,
+        fixedEndMonth: typeof body["fixedEndMonth"] === "string" ? body["fixedEndMonth"] : null,
+        updatedAt: "2026-09-03T08:05:00.000Z",
+      };
+    }
+    const targetOpenThrough = autoOpenSetting.enabled
+      ? autoOpenSetting.mode === "rolling" && autoOpenSetting.rollingMonths === 24
+        ? "2028-09-30"
+        : "2028-03-31"
+      : null;
+    return route.fulfill({
+      json: {
+        contractVersion: "pms-calendar-auto-open.v1",
+        setting: autoOpenSetting,
+        horizon: {
+          propertyTimeZone: "Europe/Berlin",
+          propertyLocalDate: "2026-09-03",
+          targetOpenThrough,
+        },
+        warnings: autoOpenSetting.enabled
+          ? [
+              {
+                code: "missing_rate",
+                roomTypeId: PMS_WEB_ROOM_TYPE_ID,
+                from: "2028-09-01",
+                through: "2028-09-30",
+              },
+            ]
+          : [],
+        ...(isUpdate ? { outcome: "updated", enqueueIntentId: "calendar-auto-open-intent-1" } : {}),
+      },
+    });
+  });
   await page.route(`**/api/pms/properties/${PMS_WEB_PROPERTY_ID}/channex`, (route) =>
     route.fulfill({ json: pmsWebChannexSnapshot }),
   );

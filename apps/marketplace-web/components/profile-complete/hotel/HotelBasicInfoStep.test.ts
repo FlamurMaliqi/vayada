@@ -69,7 +69,7 @@ describe("HotelBasicInfoStep cover recovery", () => {
       }),
     );
 
-    expect(html).toContain("Show city and country on public Vayada surfaces");
+    expect(html).toContain("Show city and country on public vayada surfaces");
     expect(html).toContain("Creator Marketplace and direct-booking experiences");
     expect(html).toContain("exact street address and coordinates stay private");
     expect(html).toContain('type="checkbox"');
@@ -88,6 +88,6 @@ describe("HotelBasicInfoStep cover recovery", () => {
     );
 
     expect(html).not.toContain('type="checkbox"');
-    expect(html).not.toContain("public Vayada surfaces");
+    expect(html).not.toContain("public vayada surfaces");
   });
 });

@@ -11,8 +11,9 @@ surface:
 - `GET /api/marketplace/creators/me`
 - `PUT /api/marketplace/creators/me`
 
-The backing target tables are `marketplace.creator_profiles` and
-`marketplace.creator_platforms`. The selected creator workspace and ownership
+The backing target tables are `marketplace.creator_profiles`,
+`marketplace.creator_platforms`, and `marketplace.creator_matching_preferences`.
+The selected creator workspace and ownership
 link are resolved through `identity.organizations`,
 `identity.organization_memberships`, and `identity.organization_resource_links`
 per [`workos-identity-architecture.md`](workos-identity-architecture.md). The
@@ -51,10 +52,12 @@ the matching route, client, and smoke coverage are accepted.
 
 All three routes are protected. The route boundary must use
 `enforceRoutePolicy`; direct `requireAuthContext` is not enough for this
-surface. Because these are `/me` routes, the adapter first resolves the selected
-creator workspace's active marketplace `creator_profile` resource link. It then
-calls `enforceRoutePolicy` with that concrete `resourceId`; it must not invent a
-policy check that omits the resource id.
+surface. Because these are `/me` routes, the adapter resolves the selected
+creator workspace's active marketplace `creator_profile` resource link. A
+workspace that does not have a profile yet uses the existing identity lifecycle
+command to create and link exactly one profile. The adapter then calls
+`enforceRoutePolicy` with that concrete `resourceId`; it must not invent a policy
+check that omits the resource id.
 
 Required context:
 
@@ -69,10 +72,11 @@ Required context:
 - the linked `creator_profiles.organization_id` matches the selected
   organization.
 
-If the selected organization has no active creator-profile link, the route uses
-the standard route-policy denial (`403 missing_resource_access`). If the active
-link points at a target profile row that no longer exists, the route returns
-`404 creator_profile_not_found`.
+If no creator-profile link exists, successful lifecycle provisioning continues
+through the same resource-specific policy check. Provisioning failure or an
+inactive link is denied. More than one active creator-profile link is a
+conflict. If the active link points at a target profile row that no longer
+exists, the route returns `404 creator_profile_not_found`.
 
 `creator_profiles.owner_user_id` is a migration compatibility field only. It
 must not authorize access and must not be returned by this contract. The old
@@ -117,6 +121,7 @@ type UpdateCreatorProfileRequest = {
   profilePictureUrl?: string | null;
   profilePictureMediaObjectId?: string | null;
   platforms?: CreatorProfilePlatformInput[];
+  matchingPreferences?: MarketplaceCreatorMatchingPreferencesWrite | null;
 };
 
 type CreatorProfilePlatformInput = {
@@ -129,6 +134,27 @@ type CreatorProfilePlatformInput = {
   audienceAgeGroups?: { ageRange: string; percentage: number }[];
   audienceGenderSplit?: { male: number; female: number; other?: number } | null;
 };
+
+type MarketplaceCreatorMatchingPreferencesWrite = {
+  contentCategories: CodePreference | null;
+  deliverableTypes: CodePreference | null;
+  compensationTypes: CodePreference<"free_stay" | "paid" | "discount" | "affiliate"> | null;
+  collaborationGoals: CodePreference<
+    "audience_distribution" | "ugc_creation" | "affiliate_work" | "other"
+  > | null;
+  travel:
+    | { mode: "no_preference" }
+    | {
+        mode: "planned_trips";
+        flexibilityDaysBefore: number;
+        flexibilityDaysAfter: number;
+      }
+    | null;
+};
+
+type CodePreference<T extends string = string> =
+  | { mode: "no_preference" }
+  | { mode: "selected"; values: T[] };
 ```
 
 Validation:
@@ -144,6 +170,25 @@ Validation:
 - platform `handle` must contain non-whitespace text.
 - platform names use the lowercase target enum; legacy capitalized names are
   client compatibility only and are not accepted by this contract.
+- selected matching codes are unique lowercase `snake_case`, with 1–20 values;
+- travel flexibility is an integer from 0–365 days on each side;
+- unknown matching fields, unsupported compensation/goals, and extra fields
+  such as provider metrics are rejected.
+
+Matching state has three distinct meanings:
+
+- absent `matchingPreferences` on an existing profile response is `null` and
+  means unknown/not collected;
+- a saved field with value `null` means the creator intentionally left that
+  dimension unset;
+- `{ mode: "no_preference" }` explicitly accepts any value in that dimension.
+
+Omitting `matchingPreferences` from a write leaves it unchanged. Sending the
+top-level field as `null` deletes the saved document and returns it to unknown.
+`travel.mode = "planned_trips"` evaluates locations and dates from the existing
+`marketplace.trips` records, expanding each date range by the declared
+flexibility. It does not copy travel locations or dates into preferences. No
+usable trip means travel evidence is unknown.
 
 ## Response
 
@@ -202,6 +247,7 @@ type CreatorProfileDocument = {
   platforms: CreatorProfilePlatform[];
   audienceSize: number;
   rating: CreatorProfileRatingSummary;
+  matchingPreferences: MarketplaceCreatorMatchingPreferences | null;
   createdAt: string;
   updatedAt: string;
 };
@@ -223,6 +269,13 @@ type CreatorProfileRatingSummary = {
   averageRating: number;
   totalReviews: number;
 };
+
+type MarketplaceCreatorMatchingPreferences = MarketplaceCreatorMatchingPreferencesWrite & {
+  contractVersion: "marketplace-creator-matching-preferences.v1";
+  evidenceSource: "creator_declared";
+  revision: number;
+  updatedAt: string;
+};
 ```
 
 `creatorType = "migration"` in storage maps to `"other"` in the response.
@@ -233,6 +286,22 @@ The response intentionally does not include `ownerUserId`, raw WorkOS IDs,
 membership IDs, email, or profile metadata. `phone` is included because this is
 the authenticated self-service edit surface; public discovery responses must
 continue to exclude it.
+
+### Matching preference visibility and provider evidence
+
+All raw creator matching preferences are private to the authenticated creator
+and internal matching services. Hotels and public discovery APIs must not
+receive them. A later matching response may expose only approved user-safe
+reason codes such as `destination_match`, `deliverable_match`, or
+`compensation_match`; it must not expose private values or minimums.
+
+`updated_by_user_id` is internal audit metadata and is not returned. The API
+marks the saved document `evidenceSource: "creator_declared"` and accepts no
+provider-derived metrics, audience data, handles, or verification claims in the
+preference object. Provider evidence remains usable only through the separate
+connection/import contract with active consent, an imported field, and a
+successful snapshot no older than 30 days. Compensation minimums are not in v1
+because VAY-1407 did not approve an exact minimum-value contract.
 
 ## Discovery Coherence
 
@@ -273,17 +342,18 @@ type MarketplaceCreatorSelfServiceError = {
 };
 ```
 
-| Case                                       | Status | Code                        |
-| ------------------------------------------ | ------ | --------------------------- |
-| Missing/invalid auth                       | `401`  | `unauthorized`              |
-| Wrong organization kind                    | `403`  | `forbidden`                 |
-| Inactive org, membership, or resource link | `403`  | `forbidden`                 |
-| Missing permission                         | `403`  | `forbidden`                 |
-| No linked creator profile resource         | `403`  | `missing_resource_access`   |
-| Linked target profile row missing          | `404`  | `creator_profile_not_found` |
-| Invalid request body                       | `400`  | `invalid_body`              |
-| Concurrent update/version conflict         | `409`  | `profile_conflict`          |
-| Unexpected failure                         | `500`  | `internal_error`            |
+| Case                                             | Status | Code                        |
+| ------------------------------------------------ | ------ | --------------------------- |
+| Missing/invalid auth                             | `401`  | `unauthorized`              |
+| Wrong organization kind                          | `403`  | `forbidden`                 |
+| Inactive org, membership, or resource link       | `403`  | `forbidden`                 |
+| Missing permission                               | `403`  | `forbidden`                 |
+| No linked creator profile and provisioning fails | `403`  | `missing_resource_access`   |
+| Multiple active creator profile links            | `409`  | `creator_profile_conflict`  |
+| Linked target profile row missing                | `404`  | `creator_profile_not_found` |
+| Invalid request body                             | `400`  | `invalid_body`              |
+| Concurrent update/version conflict               | `409`  | `profile_conflict`          |
+| Unexpected failure                               | `500`  | `internal_error`            |
 
 Empty platform collections are successful reads: `platforms: []`,
 `audienceSize: 0`, and `missingPlatforms: true`.
@@ -305,18 +375,19 @@ Empty platform collections are successful reads: `platforms: []`,
 (`contractVersion: "marketplace-creator-self-service.v1"`) defines the cases
 for follow-up route and client tickets:
 
-| Case                                | Asserts                                                                                       |
-| ----------------------------------- | --------------------------------------------------------------------------------------------- |
-| `profile-status-complete`           | Complete active creator returns no missing fields and can publish.                            |
-| `profile-status-incomplete`         | Missing profile fields and platform requirements are reported.                                |
-| `profile-read-populated`            | Full self-service profile shape, private auth fields excluded.                                |
-| `profile-read-empty-platforms`      | Empty platform list is valid with `audienceSize: 0`.                                          |
-| `authz-allowed-owner-link`          | Creator workspace owner with permission and active resource link passes.                      |
-| `authz-denial-matrix`               | Missing auth, wrong org kind, inactive membership, missing permission, missing/inactive link. |
-| `profile-write-profile-fields`      | Partial patch updates only profile fields and recalculates completion.                        |
-| `profile-write-replaces-platforms`  | Present `platforms` replaces the full platform set atomically.                                |
-| `profile-write-invalid-body`        | Invalid enum, URL, handle, follower, and percentage inputs are rejected.                      |
-| `profile-write-discovery-coherence` | Write results match public discovery inclusion/exclusion rules.                               |
+| Case                                | Asserts                                                                                           |
+| ----------------------------------- | ------------------------------------------------------------------------------------------------- |
+| `profile-status-complete`           | Complete active creator returns no missing fields and can publish.                                |
+| `profile-status-incomplete`         | Missing profile fields and platform requirements are reported.                                    |
+| `profile-read-populated`            | Full self-service profile shape, private auth fields excluded.                                    |
+| `profile-read-empty-platforms`      | Empty platform list is valid with `audienceSize: 0`.                                              |
+| `authz-allowed-owner-link`          | Creator workspace owner with permission and active resource link passes.                          |
+| `authz-denial-matrix`               | Missing/invalid auth, wrong org kind, inactive membership, missing permission, inactive link.     |
+| `authz-bootstrap-missing-link`      | Authorized creator workspace without a profile gets one lifecycle-managed profile and owner link. |
+| `profile-write-profile-fields`      | Partial patch updates only profile fields and recalculates completion.                            |
+| `profile-write-replaces-platforms`  | Present `platforms` replaces the full platform set atomically.                                    |
+| `profile-write-invalid-body`        | Invalid enum, URL, handle, follower, and percentage inputs are rejected.                          |
+| `profile-write-discovery-coherence` | Write results match public discovery inclusion/exclusion rules.                                   |
 
 ## References
 

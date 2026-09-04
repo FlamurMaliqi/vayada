@@ -136,7 +136,7 @@ export default function HotelAccountInvitePage() {
           </div>
           <h1 className="mt-5 text-2xl font-bold text-gray-950">Open your hotel invitation</h1>
           <p className="mt-2 text-sm leading-6 text-gray-600">
-            Enter the code shared by the Vayada team. Invitation codes are accepted here and are
+            Enter the code shared by the vayada team. Invitation codes are accepted here and are
             never added to the page address.
           </p>
           <form onSubmit={submitCode} className="mt-7 text-left">

@@ -5,6 +5,10 @@ import pg, { type QueryResultRow } from "pg";
 import type { PublicHotelProfileReadPool, PublicHotelProfileRepository } from "./aiHotels.js";
 
 type ActiveProfileRow = QueryResultRow & { propertyId: string; publicContent: unknown };
+type CurrentPublicGatesRow = QueryResultRow & {
+  domainVerified: boolean;
+  referralEnabled: boolean;
+};
 
 const ACTIVE_PROFILE_SELECT = `SELECT
   active.property_id::text AS "propertyId",
@@ -70,7 +74,7 @@ export function createActiveBookingPublicationProfileRepository(config: {
          LIMIT 1`,
         [domain],
       );
-      const profile = activeProfile(result.rows[0]);
+      const profile = await currentActiveProfile(pool, result.rows[0]);
       return profile && normalizedDomain(profile.hotel.customDomainUrl ?? "") === domain
         ? profile
         : null;
@@ -100,21 +104,77 @@ async function currentActiveProfile(
   row: ActiveProfileRow | undefined,
 ): Promise<PublicBookabilityProfileProjection | null> {
   const profile = activeProfile(row);
-  if (!profile?.hotel.customDomainUrl || !row) return profile;
-  const domain = normalizedDomain(profile.hotel.customDomainUrl);
-  if (!domain) return null;
-  const result = await pool.query<QueryResultRow & { verified: boolean }>(
-    `SELECT EXISTS (
-       SELECT 1
-       FROM hotel_catalog.property_domains current_domain
-       WHERE current_domain.property_id = $1::uuid
-         AND current_domain.hostname = $2
-         AND current_domain.verification_status = 'verified'
-         AND current_domain.canonical_when_verified = TRUE
-     ) AS verified`,
+  if (!profile || !row) return null;
+  const domain = profile.hotel.customDomainUrl
+    ? normalizedDomain(profile.hotel.customDomainUrl)
+    : null;
+  if (profile.hotel.customDomainUrl && !domain) return null;
+  const result = await pool.query<CurrentPublicGatesRow>(
+    `SELECT
+       CASE WHEN $2::text IS NULL THEN TRUE ELSE EXISTS (
+         SELECT 1
+         FROM hotel_catalog.property_domains current_domain
+         WHERE current_domain.property_id = $1::uuid
+           AND current_domain.hostname = $2
+           AND current_domain.verification_status = 'verified'
+           AND current_domain.canonical_when_verified = TRUE
+       ) END AS "domainVerified",
+       EXISTS (
+         SELECT 1
+         FROM identity.product_entitlements entitlement
+         WHERE entitlement.product = 'pms'
+           AND entitlement.entitlement_key = 'module:affiliates'
+           AND entitlement.status = 'active'
+           AND entitlement.resource_product = 'pms'
+           AND entitlement.resource_type = 'pms_property'
+           AND entitlement.resource_id = $1::text
+           AND (entitlement.starts_at IS NULL OR entitlement.starts_at <= now())
+           AND (entitlement.expires_at IS NULL OR entitlement.expires_at > now())
+           AND EXISTS (
+             SELECT 1
+             FROM identity.organization_resource_links pms_resource
+             WHERE pms_resource.organization_id = entitlement.organization_id
+               AND pms_resource.product = 'pms'
+               AND pms_resource.resource_type = 'pms_property'
+               AND pms_resource.resource_id = $1::text
+               AND pms_resource.relationship IN ('owner', 'operator')
+               AND pms_resource.status = 'active'
+           )
+           AND EXISTS (
+             SELECT 1
+             FROM identity.organization_resource_links booking_resource
+             WHERE booking_resource.organization_id = entitlement.organization_id
+               AND booking_resource.product = 'booking'
+               AND booking_resource.resource_type = 'booking_hotel'
+               AND booking_resource.resource_id = $1::text
+               AND booking_resource.relationship IN ('owner', 'operator')
+               AND booking_resource.status = 'active'
+           )
+       ) AS "referralEnabled"`,
     [row.propertyId, domain],
   );
-  return result.rows[0]?.verified === true ? profile : null;
+  const gates = result.rows[0];
+  if (gates?.domainVerified !== true) return null;
+  const referralEnabled = gates.referralEnabled === true;
+  const branding = profile.hotel.branding;
+  return {
+    ...profile,
+    hotel: {
+      ...profile.hotel,
+      capabilities: {
+        ...profile.hotel.capabilities,
+        referralCodes: profile.hotel.capabilities.referralCodes && referralEnabled,
+      },
+      ...(branding
+        ? {
+            branding: {
+              ...branding,
+              showReferAGuestButton: branding.showReferAGuestButton === true && referralEnabled,
+            },
+          }
+        : {}),
+    },
+  };
 }
 
 const normalizedSlug = (value: string) => {

@@ -17,3 +17,23 @@ export async function getPmsStaffRoster(): Promise<PmsStaffMember[]> {
   );
   return response.members;
 }
+
+export async function updatePmsStaffStatus(
+  membershipId: string,
+  status: "active" | "deactivated",
+): Promise<{ membershipId: string; status: "active" | "deactivated" }> {
+  return pmsOperationsClient.patch<{
+    membershipId: string;
+    status: "active" | "deactivated";
+  }>(
+    `/api/identity/staff/members/${encodeURIComponent(membershipId)}/status`,
+    { status },
+    {
+      ...pmsOperationsRequestOptions,
+      headers: {
+        ...(pmsOperationsRequestOptions.headers as Record<string, string>),
+        "Idempotency-Key": `pms-staff-status:${globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`}`,
+      },
+    },
+  );
+}

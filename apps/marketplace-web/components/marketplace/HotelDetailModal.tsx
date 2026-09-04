@@ -403,12 +403,6 @@ export function HotelDetailModal({
                   <div className="text-xs text-gray-500 mt-1">Nights</div>
                 </div>
               )}
-              {hotel.boardType && (
-                <div className="bg-gray-50 rounded-xl p-4 text-center">
-                  <div className="text-sm font-bold text-gray-900">{hotel.boardType}</div>
-                  <div className="text-xs text-gray-500 mt-1">Board Type</div>
-                </div>
-              )}
               {hotel.domain && (
                 <a
                   href={`https://${hotel.domain}`}
@@ -498,17 +492,6 @@ export function HotelDetailModal({
                             ? `Up to ${hotel.numberOfNights} nights`
                             : "Dates flexible"}
                         </div>
-                      </div>
-                    </div>
-                  )}
-                  {hotel.boardType && (
-                    <div className="flex items-center gap-3">
-                      <div className="w-10 h-10 rounded-lg bg-white flex items-center justify-center shadow-sm">
-                        <HotelIcon className="w-5 h-5 text-primary-600" />
-                      </div>
-                      <div>
-                        <div className="text-sm font-medium text-gray-900">{hotel.boardType}</div>
-                        <div className="text-xs text-gray-500">Meal plan included</div>
                       </div>
                     </div>
                   )}

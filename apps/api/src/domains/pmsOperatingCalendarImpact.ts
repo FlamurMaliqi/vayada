@@ -817,7 +817,6 @@ async function readInventoryDays(
       !coverageFrom ||
       !coverageThrough ||
       coverageDayCount < 1 ||
-      coverageDayCount > 366 ||
       roomTypeCount !== expectedRooms.size ||
       expected !== roomTypeCount * coverageDayCount ||
       expected !== materialized ||

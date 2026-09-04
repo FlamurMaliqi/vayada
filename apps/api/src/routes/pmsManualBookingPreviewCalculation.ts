@@ -81,10 +81,8 @@ export async function calculateManualBookingPreview(
       ports.booking.getCurrentGuestPolicy(scope),
       ports.pms.getPhysicalRoomAvailability(propertyId, pricedStays),
     ]);
+  if (!pricing || !recurring) fail(404, "rate_not_found", "ratePlanId", command.stays[0]?.position);
   if (
-    !pricing ||
-    !recurring ||
-    !policy ||
     !addonContext ||
     pricing.propertyId !== propertyId ||
     recurring.propertyId !== propertyId ||
@@ -98,8 +96,6 @@ export async function calculateManualBookingPreview(
     pricing,
     recurringPricing: recurring,
   });
-  if (policy.bundle.pricingSourceFingerprint !== fingerprint)
-    throw new TypeError("Manual booking pricing evidence is stale");
   let grand = 0n;
   const stays = pricedStays.map((stay, index) => {
     const room = rooms.items.find((item) => item.roomId === stay.roomId);
@@ -109,10 +105,11 @@ export async function calculateManualBookingPreview(
     const roomType = roomTypes.items.find((item) => item.roomTypeId === room.roomTypeId);
     if (!roomType?.active) fail(404, "room_not_found", "roomId", stay.position);
     const limits = roomType.occupancyLimits;
+    const totalLimit = limits.total ?? 0;
     if (
-      stay.adults > (limits.adults ?? 0) ||
-      stay.children > (limits.children ?? 0) ||
-      stay.adults + stay.children > (limits.total ?? 0)
+      stay.adults > (limits.adults ?? totalLimit) ||
+      stay.children > (limits.children ?? totalLimit) ||
+      stay.adults + stay.children > totalLimit
     )
       fail(422, "occupancy_exceeded", "stays", stay.position);
     let standards: bigint[] | null = null;
@@ -234,7 +231,7 @@ function standardNights(
   scope: { propertyId: string; organizationId: string },
   stay: Extract<PricedManualBookingStay, { pricing: { kind: "rate_plan" } }>,
   roomTypeId: string,
-  policy: BookingGuestPolicyRevision,
+  policy: BookingGuestPolicyRevision | null,
   pricing: PmsPricingSourceSnapshot,
   recurring: PmsRecurringPricingBookingEvidence,
   roomPublication: RoomPublicationSnapshot,
@@ -243,39 +240,41 @@ function standardNights(
   const plan = pricing.flexibleRatePlans.find(
     (item) => item.roomTypeId === roomTypeId && item.flexibleRatePlanId === stay.ratePlanId,
   );
-  const disclosure = policy.bundle.rates.find((rate) => rate.roomTypeId === roomTypeId);
+  if (!plan) fail(404, "rate_not_found", "ratePlanId", stay.position);
+  const additional = recurring.sources.filter(
+    (
+      item,
+    ): item is Extract<
+      PmsRecurringPricingBookingEvidence["sources"][number],
+      { sourceKind: "additional_guest" }
+    > =>
+      item.lifecycle === "active" &&
+      item.sourceKind === "additional_guest" &&
+      item.roomTypeId === roomTypeId,
+  );
+  if (additional.length > 1)
+    throw new TypeError("Manual booking additional-guest pricing sources overlap");
+  const source = additional[0] ?? null;
   if (
-    !plan ||
-    !disclosure ||
-    policy.organizationId !== scope.organizationId ||
-    policy.propertyId !== scope.propertyId ||
-    policy.bundle.pricingCurrency !== pricing.pricingCurrency.currency ||
-    disclosure.flexible.source.entityId !== stay.ratePlanId ||
-    disclosure.flexible.source.revision !== String(plan.flexibleRatePlanRevision)
-  )
-    throw new TypeError("Manual booking pricing evidence is inconsistent");
-  const additional = disclosure.additionalGuest;
-  const source = additional
-    ? recurring.sources.find((item) => item.sourceId === additional.source.source.entityId)
-    : null;
-  if (
-    additional &&
-    (!source ||
-      source.sourceKind !== "additional_guest" ||
-      String(source.sourceRevision) !== additional.source.source.revision ||
-      source.validation.validationRevision !== additional.source.validationRevision ||
-      source.materializationRevision !== additional.source.materializationRevision ||
-      source.includedGuests !== additional.includedGuestsPerRoom ||
-      source.amountDecimal !== additional.amountDecimal ||
-      source.currency !== additional.currency)
+    source &&
+    (source.roomFactsRevision !== plan.sourceRoomFactsRevision ||
+      source.flexibleRatePlanId !== stay.ratePlanId ||
+      source.flexibleRatePlanRevision !== plan.flexibleRatePlanRevision)
   )
     throw new TypeError("Manual booking additional-guest evidence is inconsistent");
   const countedGuests =
     stay.adults +
-    (additional?.countedGuestTypes.some((guestType) => guestType === "child") ? stay.children : 0);
-  const chargeableGuestCount = additional
-    ? Math.max(0, countedGuests - additional.includedGuestsPerRoom)
-    : 0;
+    (countsChildren(
+      policy,
+      scope,
+      fingerprint,
+      roomTypeId,
+      stay.ratePlanId,
+      source?.sourceId ?? null,
+    )
+      ? stay.children
+      : 0);
+  const chargeableGuestCount = source ? Math.max(0, countedGuests - source.includedGuests) : 0;
   const choose = (date: string, kind: "season" | "weekend_surcharge") => {
     const matches = recurring.sources.filter(
       (item) =>
@@ -312,6 +311,28 @@ function standardNights(
     calculation.nights.map((night) => [night.stayDate, BigInt(night.finalNightTotalMinorUnits)]),
   );
   return stay.dates.map((date) => nights.get(date) ?? invalid());
+}
+
+function countsChildren(
+  policy: BookingGuestPolicyRevision | null,
+  scope: { propertyId: string; organizationId: string },
+  fingerprint: BookingPricingSourceFingerprint,
+  roomTypeId: string,
+  ratePlanId: string,
+  additionalGuestSourceId: string | null,
+): boolean {
+  if (
+    !policy ||
+    policy.propertyId !== scope.propertyId ||
+    policy.organizationId !== scope.organizationId ||
+    policy.bundle.pricingSourceFingerprint !== fingerprint
+  )
+    return true;
+  const disclosure = policy.bundle.rates.find(
+    (rate) => rate.roomTypeId === roomTypeId && rate.flexible.source.entityId === ratePlanId,
+  )?.additionalGuest;
+  if (!disclosure || disclosure.source.source.entityId !== additionalGuestSourceId) return true;
+  return disclosure.countedGuestTypes.some((guestType) => guestType === "child");
 }
 
 export class PreviewError extends Error {

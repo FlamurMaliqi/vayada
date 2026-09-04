@@ -160,8 +160,10 @@ export function useLocalizationSettingsTab({
       });
       applyLocalizationSettings(saved);
       showFeedback("success", t("bookingFlow.localization.feedback.saveSuccess"));
+      return saved;
     } catch {
       showFeedback("error", t("bookingFlow.localization.feedback.saveError"));
+      return null;
     } finally {
       setSavingCurrencyLang(false);
     }

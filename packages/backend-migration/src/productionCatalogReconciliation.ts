@@ -2,7 +2,11 @@ import { createHash } from "node:crypto";
 
 import type { IdentityMigrationBlocker } from "./productionIdentityDisposition.js";
 import { sortedBy } from "./productionIdentityOwnershipPolicy.js";
-import { addBlocker, stableJson } from "./productionIdentitySourceValidation.js";
+import {
+  addBlocker,
+  canonicalTimestamp,
+  stableJson,
+} from "./productionIdentitySourceValidation.js";
 import type {
   PlannedCatalogAmenity,
   PlannedCatalogContact,
@@ -320,6 +324,7 @@ function sameOwnedFields(
 }
 function normalize(field: string, value: unknown): unknown {
   if (value == null) return null;
+  if (field === "verifiedAt") return canonicalTimestamp(value, field);
   if (["starRating", "latitude", "longitude", "sortOrder"].includes(field)) return Number(value);
   if (["checkInTime", "checkOutTime"].includes(field) && typeof value === "string")
     return value.slice(0, 5);

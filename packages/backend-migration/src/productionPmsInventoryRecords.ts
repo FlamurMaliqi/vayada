@@ -53,6 +53,7 @@ type InventoryFacts = {
   linkedActivity: IdentitySourceRow[];
   hotel: IdentitySourceRow;
   checksumInput: unknown;
+  effectiveRoomTypeActive: boolean;
 };
 
 function inventoryFacts(context: PmsBuildContext, source: IdentitySourceRow): InventoryFacts {
@@ -90,6 +91,9 @@ function inventoryFacts(context: PmsBuildContext, source: IdentitySourceRow): In
     blocks,
     linkedActivity,
     hotel,
+    effectiveRoomTypeActive:
+      context.effectiveRoomTypeActiveById.get(roomTypeId) ??
+      bool(source.data["is_active"], "is_active", true),
     checksumInput: {
       hotel: hotel.data,
       roomType: source.data,
@@ -97,6 +101,7 @@ function inventoryFacts(context: PmsBuildContext, source: IdentitySourceRow): In
       drafts: drafts.map((row) => row.data),
       blocks: blocks.map((row) => row.data),
       linkedActivity: linkedActivity.map((row) => ({ table: row.sourceTable, row: row.data })),
+      effectiveRoomTypeActive: context.effectiveRoomTypeActiveById.get(roomTypeId) ?? null,
     },
   };
 }
@@ -122,16 +127,23 @@ function inventoryDay(
     if (row.sourceTable === "booking_drafts") return activeDraft(context, row, stayDate);
     return activeBlock(row, stayDate);
   });
-  const calendarOpen = sellableAtSnapshot(context, source, facts.hotel, stayDate);
-  if (assignedCount + blockedCount > facts.totalCount)
+  const calendarOpen =
+    facts.effectiveRoomTypeActive && sellableAtSnapshot(context, source, facts.hotel, stayDate);
+  if (assignedCount > facts.totalCount)
     throw new Error(
-      `${stayDate} assigned (${assignedCount}) plus blocked (${blockedCount}) exceeds total_rooms (${facts.totalCount})`,
+      `${stayDate} assigned (${assignedCount}) exceeds total_rooms (${facts.totalCount})`,
     );
+  const overCapacity = assignedCount + blockedCount > facts.totalCount;
+  // Legacy can contain duplicate historical blocks. Preserve their raw total as evidence,
+  // but never increase capacity or let an impossible envelope become sellable in the target.
+  const migratedBlockedCount = overCapacity
+    ? Math.max(0, facts.totalCount - assignedCount)
+    : blockedCount;
   const availableCount =
-    calendarOpen && !linkedStopSell
-      ? Math.max(0, facts.totalCount - assignedCount - blockedCount - softHeldCount)
+    calendarOpen && !linkedStopSell && !overCapacity
+      ? Math.max(0, facts.totalCount - assignedCount - migratedBlockedCount - softHeldCount)
       : 0;
-  const status = calendarOpen ? "open" : "closed";
+  const status = calendarOpen && !overCapacity ? "open" : "closed";
   const targetId = `${facts.propertyId}:${facts.roomTypeId}:${stayDate}`;
   const linkedSourceRevision = nextLinkedSourceRevision(
     existingInventory.get(targetId),
@@ -149,7 +161,7 @@ function inventoryDay(
       stayDate,
       totalCount: facts.totalCount,
       assignedCount,
-      blockedCount,
+      blockedCount: migratedBlockedCount,
       availableCount,
       status,
       sourceFreshness: {
@@ -162,6 +174,13 @@ function inventoryDay(
           softHeldCount,
           linkedStopSell,
           calendarOpen,
+          effectiveRoomTypeActive: facts.effectiveRoomTypeActive,
+          ...(overCapacity
+            ? {
+                migratedBlockedCount,
+                migrationDisposition: "legacy_over_capacity_closed",
+              }
+            : {}),
         },
       },
       updatedAt: context.completedAt,

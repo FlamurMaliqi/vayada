@@ -140,7 +140,9 @@ export function AppSwitcher({
         {!isCollapsed && (
           <>
             <div className="min-w-0 text-left flex-1">
-              <p className="text-xs font-semibold text-gray-900 leading-tight">Marketplace</p>
+              <p className="text-xs font-semibold text-gray-900 leading-tight">
+                vayada Marketplace
+              </p>
               <p className="text-[10px] text-gray-500 leading-tight truncate">
                 Creator collaborations
               </p>
@@ -207,7 +209,7 @@ export function AppSwitcher({
               </svg>
             </div>
             <div className="min-w-0 flex-1 text-left">
-              <p className="text-xs font-medium text-gray-900 leading-tight">Marketplace</p>
+              <p className="text-xs font-medium text-gray-900 leading-tight">vayada Marketplace</p>
               <p className="text-[10px] text-gray-500 leading-tight">Creator collaborations</p>
             </div>
             <CheckIcon className="w-4 h-4 text-primary-500 shrink-0" />

@@ -106,13 +106,13 @@ export function HotelOverviewTab({
             />
             <span>
               <span className="block font-semibold">
-                Show city and country on public Vayada surfaces
+                Show city and country on public vayada surfaces
               </span>
               <span
                 id="hotel-profile-locality-help"
                 className="mt-1 block text-xs leading-5 text-gray-600"
               >
-                Turning this off hides your locality across Vayada’s public surfaces and makes your
+                Turning this off hides your locality across vayada’s public surfaces and makes your
                 Marketplace offer private. Your street address and coordinates stay private.
               </span>
             </span>

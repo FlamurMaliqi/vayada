@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import type { IdentityLifecycleCommandBus, RequestContext } from "@vayada/backend-auth";
 import pg, { type QueryResult, type QueryResultRow } from "pg";
 import type {
+  MarketplaceCreatorMatchingPreferences,
   CreatorPlatformVerificationStatus,
   CreatorProfileCompletionStep,
   CreatorProfileDocument,
@@ -14,6 +15,11 @@ import type {
   MarketplaceCreatorType,
   MarketplacePlatformName,
   UpdateCreatorProfileRequest,
+} from "@vayada/domain-marketplace";
+import {
+  MARKETPLACE_CREATOR_MATCHING_PREFERENCES_CONTRACT_VERSION,
+  parseMarketplaceCreatorMatchingPreferences,
+  parseMarketplaceCreatorMatchingPreferencesWrite,
 } from "@vayada/domain-marketplace";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 
@@ -35,6 +41,7 @@ export type MarketplaceCreatorSelfServiceRepository = {
   updateCreatorProfile(input: {
     organizationId: string;
     creatorProfileId: string;
+    actorUserId: string;
     patch: UpdateCreatorProfileRequest;
   }): Promise<CreatorProfileDocument | null>;
   close?(): Promise<void>;
@@ -88,6 +95,7 @@ type CreatorProfileRow = {
   platforms: unknown;
   averageRating: number | string | null;
   totalReviews: number | string | null;
+  matchingPreferences: unknown;
   createdAt: Date | string;
   updatedAt: Date | string;
 };
@@ -149,13 +157,13 @@ export async function registerMarketplaceCreatorSelfServiceRoutes(
   });
 
   app.put("/creators/me", async (request, reply) => {
+    const access = await resolveAccess(request, reply);
+    if (!access) return;
+
     const parsed = parseUpdateCreatorProfileRequest(request.body);
     if (!parsed.ok) {
       return reply.status(400).send({ code: "invalid_body", detail: parsed.error });
     }
-
-    const access = await resolveAccess(request, reply);
-    if (!access) return;
 
     const mediaError = await validateCreatorProfileMediaPatch(
       parsed.value,
@@ -360,7 +368,7 @@ export function createPgMarketplaceCreatorSelfServiceRepository(config: {
       return readCreatorProfile(pool, input);
     },
 
-    async updateCreatorProfile({ organizationId, creatorProfileId, patch }) {
+    async updateCreatorProfile({ organizationId, creatorProfileId, actorUserId, patch }) {
       const client = await pool.connect();
       try {
         await client.query("BEGIN");
@@ -370,6 +378,14 @@ export function createPgMarketplaceCreatorSelfServiceRepository(config: {
             organizationId,
             creatorProfileId,
             platforms: patch.platforms,
+          });
+        }
+        if (has(patch, "matchingPreferences")) {
+          await updateCreatorMatchingPreferences(client, {
+            organizationId,
+            creatorProfileId,
+            actorUserId,
+            preferences: patch.matchingPreferences ?? null,
           });
         }
         await recalculateProfileCompletion(client, { organizationId, creatorProfileId });
@@ -560,6 +576,15 @@ async function readCreatorProfile(
        COALESCE(platforms.platforms, '[]'::jsonb) AS platforms,
        COALESCE(ROUND(ratings.average_rating::numeric, 2), 0) AS "averageRating",
        COALESCE(ratings.total_reviews, 0)::text AS "totalReviews",
+       CASE
+         WHEN matching_preferences.creator_profile_id IS NULL THEN NULL
+         ELSE jsonb_build_object(
+           'contractVersion', matching_preferences.contract_version,
+           'evidenceSource', 'creator_declared',
+           'revision', matching_preferences.revision,
+           'updatedAt', matching_preferences.updated_at
+         ) || matching_preferences.preferences
+       END AS "matchingPreferences",
        profile.created_at AS "createdAt",
        profile.updated_at AS "updatedAt"
      FROM marketplace.creator_profiles profile
@@ -590,6 +615,9 @@ async function readCreatorProfile(
        WHERE rating.creator_profile_id = profile.id
          AND rating.creator_organization_id = profile.organization_id
      ) ratings ON TRUE
+     LEFT JOIN marketplace.creator_matching_preferences matching_preferences
+       ON matching_preferences.creator_profile_id = profile.id
+      AND matching_preferences.organization_id = profile.organization_id
      WHERE profile.id::text = $1
        AND profile.organization_id::text = $2
      LIMIT 1`,
@@ -621,6 +649,7 @@ async function readCreatorProfile(
       averageRating: toNumber(row.averageRating),
       totalReviews: toInteger(row.totalReviews),
     },
+    matchingPreferences: toCreatorMatchingPreferences(row.matchingPreferences),
     createdAt: toIsoString(row.createdAt),
     updatedAt: toIsoString(row.updatedAt),
   };
@@ -900,6 +929,46 @@ async function replaceCreatorPlatforms(
   );
 }
 
+async function updateCreatorMatchingPreferences(
+  client: MarketplaceCreatorSelfServiceClient,
+  input: {
+    organizationId: string;
+    creatorProfileId: string;
+    actorUserId: string;
+    preferences: NonNullable<UpdateCreatorProfileRequest["matchingPreferences"]> | null;
+  },
+): Promise<void> {
+  if (input.preferences === null) {
+    await client.query(
+      `DELETE FROM marketplace.creator_matching_preferences
+       WHERE creator_profile_id::text = $1 AND organization_id::text = $2`,
+      [input.creatorProfileId, input.organizationId],
+    );
+    return;
+  }
+
+  await client.query(
+    `INSERT INTO marketplace.creator_matching_preferences (
+       creator_profile_id, organization_id, contract_version, preferences, updated_by_user_id
+     )
+     SELECT profile.id, profile.organization_id, $3, $4::jsonb, $5::uuid
+     FROM marketplace.creator_profiles profile
+     WHERE profile.id::text = $1 AND profile.organization_id::text = $2
+     ON CONFLICT (creator_profile_id) DO UPDATE
+     SET preferences = EXCLUDED.preferences,
+         revision = marketplace.creator_matching_preferences.revision + 1,
+         updated_by_user_id = EXCLUDED.updated_by_user_id,
+         updated_at = now()`,
+    [
+      input.creatorProfileId,
+      input.organizationId,
+      MARKETPLACE_CREATOR_MATCHING_PREFERENCES_CONTRACT_VERSION,
+      JSON.stringify(input.preferences),
+      input.actorUserId,
+    ],
+  );
+}
+
 async function recalculateProfileCompletion(
   client: MarketplaceCreatorSelfServiceClient,
   input: { organizationId: string; creatorProfileId: string },
@@ -1000,6 +1069,7 @@ function parseUpdateCreatorProfileRequest(
     "profilePictureUrl",
     "profilePictureMediaObjectId",
     "platforms",
+    "matchingPreferences",
   ]);
   for (const key of Object.keys(body)) {
     if (!allowedKeys.has(key)) return { ok: false, error: `Unsupported field: ${key}` };
@@ -1068,6 +1138,15 @@ function parseUpdateCreatorProfileRequest(
       platforms.push(parsed.value);
     }
     patch.platforms = platforms;
+  }
+  if (has(body, "matchingPreferences")) {
+    if (body.matchingPreferences === null) {
+      patch.matchingPreferences = null;
+    } else {
+      const preferences = parseMarketplaceCreatorMatchingPreferencesWrite(body.matchingPreferences);
+      if (!preferences) return { ok: false, error: "matchingPreferences is invalid" };
+      patch.matchingPreferences = preferences;
+    }
   }
 
   return { ok: true, value: patch };
@@ -1392,6 +1471,13 @@ function parseAudienceGenderSplit(
 
 function toVerificationStatus(raw: unknown): CreatorPlatformVerificationStatus {
   return raw === "verified" || raw === "rejected" || raw === "stale" ? raw : "unverified";
+}
+
+function toCreatorMatchingPreferences(raw: unknown): MarketplaceCreatorMatchingPreferences | null {
+  if (raw === null || raw === undefined) return null;
+  const preferences = parseMarketplaceCreatorMatchingPreferences(raw);
+  if (!preferences) throw new Error("Stored Marketplace creator matching preferences are invalid");
+  return preferences;
 }
 
 function toPublicCreatorType(value: string): MarketplaceCreatorType {

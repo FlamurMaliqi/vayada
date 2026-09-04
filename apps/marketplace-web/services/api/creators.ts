@@ -16,6 +16,10 @@ import {
   type MarketplaceCreatorReadModel,
   type MarketplacePlatformName,
 } from "@vayada/marketplace-shared/api/discovery";
+import type {
+  MarketplaceCreatorMatchingPreferences,
+  MarketplaceCreatorMatchingPreferencesWrite,
+} from "@vayada/domain-marketplace";
 import { uploadPlatformMedia } from "@vayada/marketplace-shared/api/platformMedia";
 import { targetApiClient } from "./targetClient";
 
@@ -71,6 +75,7 @@ type TargetCreatorProfile = {
     averageRating: number;
     totalReviews: number;
   };
+  matchingPreferences: MarketplaceCreatorMatchingPreferences | null;
   createdAt: string;
   updatedAt: string;
 };
@@ -153,6 +158,16 @@ export const creatorService = {
         "/api/marketplace/creators/me",
         toTargetCreatorUpdate(data),
       ),
+    );
+  },
+
+  updateMatchingPreferences: async (
+    matchingPreferences: MarketplaceCreatorMatchingPreferencesWrite | null,
+  ): Promise<Creator> => {
+    return toLegacyCreator(
+      await targetApiClient.put<TargetCreatorProfile>("/api/marketplace/creators/me", {
+        matchingPreferences,
+      }),
     );
   },
 
@@ -342,6 +357,7 @@ function toLegacyCreator(profile: TargetCreatorProfile): Creator {
     profilePicture: profile.profilePictureUrl ?? undefined,
     profilePictureMediaObjectId: profile.profilePictureMediaObjectId ?? undefined,
     creatorType: toLegacyCreatorType(profile.creatorType),
+    matchingPreferences: profile.matchingPreferences,
     rating: profile.rating,
     status: toLegacyStatus(profile.profileStatus),
     createdAt: new Date(profile.createdAt),

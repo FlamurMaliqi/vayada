@@ -8,6 +8,7 @@ import {
   type PublicBookabilityQuoteProjection,
 } from "@vayada/domain-distribution";
 import { createHash } from "node:crypto";
+import type { QueryResultRow } from "pg";
 import { describe, expect, it } from "vitest";
 
 import { buildApp } from "../app.js";
@@ -21,8 +22,10 @@ import {
 import type {
   BookingWebAffiliateRegistrationRequest,
   BookingWebAffiliateRepository,
+  BookingWebAffiliateHotelResolverPool,
   BookingWebAffiliateStripeConnectRequest,
 } from "./bookingWebAffiliate.js";
+import { createPgBookingWebAffiliateHotelResolver } from "./bookingWebAffiliate.js";
 import {
   createTargetBookingWebCheckoutAdapter,
   recordTargetCheckoutCommand,
@@ -555,6 +558,64 @@ describe("Booking Web public bootstrap parity", () => {
     expect(response.statusCode).toBe(200);
     expect(response.json()).toEqual({ exists: false });
     await app.close();
+  });
+
+  it("fails public affiliate registration closed when the property module is inactive", async () => {
+    const affiliateRepository = new InMemoryAffiliateRepository();
+    const app = buildApp({
+      logger: false,
+      bookingWebAffiliateRepository: affiliateRepository,
+      bookingWebAffiliateHotelResolver: {
+        async findProfileBySlug() {
+          return { hotel: { capabilities: { referralCodes: false } } };
+        },
+      },
+    });
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/booking-web/hotels/hotel-alpenrose/affiliates",
+      payload: { fullName: "Creator Example", email: "creator@example.com" },
+    });
+
+    expect(response.statusCode).toBe(404);
+    expect(affiliateRepository.identityCount).toBe(0);
+    await app.close();
+  });
+
+  it.each([
+    { name: "PMS ownership only", pms: true, booking: false, expected: false },
+    { name: "Booking ownership only", pms: false, booking: true, expected: false },
+    { name: "both ownership links", pms: true, booking: true, expected: true },
+  ])("requires both ownership links in the direct PG resolver: $name", async (ownership) => {
+    let sql = "";
+    const pool: BookingWebAffiliateHotelResolverPool = {
+      async query<Row extends QueryResultRow>(text: string) {
+        sql = text;
+        return {
+          rows: [
+            {
+              referralCodes: ownership.pms && ownership.booking,
+            } as unknown as Row,
+          ],
+        };
+      },
+      async end() {},
+    };
+    const resolver = createPgBookingWebAffiliateHotelResolver({
+      connectionString: "postgresql://unused",
+      pool,
+    });
+
+    await expect(resolver.findProfileBySlug("hotel-alpenrose")).resolves.toEqual({
+      hotel: { capabilities: { referralCodes: ownership.expected } },
+    });
+    expect(sql).toContain("FROM identity.organization_resource_links pms_resource");
+    expect(sql).toContain("pms_resource.product = 'pms'");
+    expect(sql).toContain("pms_resource.resource_type = 'pms_property'");
+    expect(sql).toContain("FROM identity.organization_resource_links booking_resource");
+    expect(sql).toContain("booking_resource.product = 'booking'");
+    expect(sql).toContain("booking_resource.resource_type = 'booking_hotel'");
   });
 
   it("fails closed for target-owned affiliate routes without a hotel resolver", async () => {

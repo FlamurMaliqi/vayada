@@ -1,15 +1,32 @@
 # Marketplace matching contract
 
-Contract version: `marketplace-matching-contract.v1`.
+Contract version: `marketplace-matching-contract.v2`.
 
 Decision inputs:
 
 - [VAY-1404 matching recommendation](https://linear.app/vayadacom/document/marketplace-hotel-creator-matching-recommendation-vay-1404-36658c2c005e)
 - [VAY-1406 production coverage audit](https://linear.app/vayadacom/document/production-marketplace-matching-signal-coverage-audit-vay-1406-a659eb8a0257)
+- [VAY-1442 creator preference vocabulary and analytics decision](https://linear.app/vayadacom/issue/VAY-1442/define-creator-preference-vocabulary-and-save-analytics-contract)
+- [VAY-1445 matching event storage and retention decision](https://linear.app/vayadacom/issue/VAY-1445/define-matching-event-storage-and-retention-policy)
+- [VAY-1458 dismissal and feedback revision decision](https://linear.app/vayadacom/issue/VAY-1458/define-matching-dismissal-and-feedback-revision-semantics)
 
 This is the source of truth for Marketplace eligibility, two-sided scoring,
 explanations, measurement, and rollout. It defines a rules-based service
 contract, not a learned or AI ranking model.
+
+Version 2 approves the first-party measurement boundary, qualified-impression
+semantics, event deduplication and attribution windows, rating treatment, and
+retention/privacy rules. It also defines creator dismissal reasons and how
+editable feedback revisions continue after measurement events expire. It does
+not approve production ranking weights, thresholds, or rollout cohorts.
+
+VAY-1445 records the requester's human product/privacy approval for these
+measurement decisions on 2026-09-03. Implementation remains gated on the
+notice, deletion/export path, and access controls defined below.
+
+VAY-1458 records the requester's product approval for dismissal and revision
+semantics on 2026-09-04. These decisions close ambiguities before the related
+source models or event producers exist; they do not change live behavior.
 
 ## Current release posture
 
@@ -63,6 +80,36 @@ the owning record becomes inactive. Provider-derived metrics are `known` only
 when the connection is active, the field is in `imported_fields`, consent still
 applies, and the successful snapshot is at most 30 days old. No fallback may
 present self-declared platform totals as provider-verified evidence.
+
+## Creator preference vocabulary
+
+The first creator-facing matching-preference UI uses this content-category
+vocabulary. Stored codes are stable; changing or removing a code requires a
+reviewed contract change.
+
+| Stored code          | Creator-facing label |
+| -------------------- | -------------------- |
+| `travel`             | Travel               |
+| `lifestyle`          | Lifestyle            |
+| `food_drink`         | Food & drink         |
+| `wellness_fitness`   | Wellness & fitness   |
+| `adventure_outdoors` | Adventure & outdoors |
+| `family`             | Family travel        |
+| `luxury`             | Luxury               |
+| `fashion_beauty`     | Fashion & beauty     |
+| `business_events`    | Business & events    |
+| `other`              | Other                |
+
+Creator deliverable preferences reuse the hotel collaboration vocabulary:
+`post`, `story`, `short_form_video`, `long_form_video`, `photography`, and
+`other`. Compensation types and collaboration goals remain the closed sets in
+`marketplace-creator-matching-preferences.v1`.
+
+The UI must keep `unknown` (not answered), explicit `no_preference`, and a
+nonempty selected set distinct. An existing stored code outside the current UI
+vocabulary is shown as an existing custom preference and preserved until the
+creator explicitly removes it. Saving another field must never silently erase
+such a value.
 
 ## Eligibility
 
@@ -265,15 +312,59 @@ Every evaluation returns its eligibility result, side/pair score availability,
 coverage, confidence, reason codes, and input freshness summary. It never
 mutates profiles, offers, collaborations, or preferences.
 
+## Measurement storage boundary
+
+`platform.domain_events` is the canonical append-only envelope for matching
+event identity, type, version, occurrence time, correlation, and idempotency.
+A normalized Marketplace projection is written in the same transaction and is
+the query boundary for pair identity, policy context, impression deduplication,
+frozen attribution, monotonic revisions, retention, and reporting. It has a
+one-to-one foreign key to its domain event. Neither store may contain a field
+forbidden by the privacy rules below.
+
+Normal application roles cannot update or delete either record. A privileged,
+audited retention/privacy process is the only exception to append-only storage:
+it may erase an expired or deletion-scoped event and its projection together.
+The implementation must replace the current unconditional
+`platform.domain_events` delete trigger with a narrow exception that permits
+only the approved retention function to delete Marketplace matching events.
+That function runs as a non-login, least-privilege owner through a
+`SECURITY DEFINER` entry point with a fixed search path and execution revoked
+from general application roles; only the dedicated retention executor may call
+it. It may select only `source_system = 'marketplace'` rows whose event type is
+in the `marketplace.match.*` allowlist and whose expiry or approved subject
+scope is verified from durable retention/deletion records. It cannot update
+events, accept arbitrary SQL predicates, or bypass another product's
+append-only protection.
+
+Matching measurement events must not create outbox, job, webhook, dead-letter,
+or per-event product-audit rows that retain a foreign key to the domain event.
+The retention transaction selects the approved scope, deletes the Marketplace
+projection first, deletes matching instrumentation idempotency records, and
+then deletes the domain event. It fails closed if an unexpected dependent row
+exists. As the final statement in the same transaction, it writes one summary
+audit fact containing the retention policy version, reason, execution time, and
+row counts, but no erased pair, event, user, organization, property, offer, or
+collaboration identifiers. Matching events do not use a third-party analytics
+SDK or a separate product-analytics transport.
+
+Raw matching events have no creator- or hotel-facing read route. Internal
+aggregate reporting requires the dedicated
+`marketplace.matching_metrics.read` permission; raw event access is restricted
+to the measurement service and audited privacy/support operations.
+
 ## Event vocabulary and attribution
 
 All events use the jobs/events envelope and include `eventId`, `eventType`,
-`occurredAt`, `creatorProfileId`, `offerId`, `contractVersion`, `mode`, and
-`correlationId`. `evaluated` requires `policyVersion` and `evaluationId`;
-`impression` additionally requires `impressionId` and recommendation session.
-Later action/outcome events use a tagged attribution union: `recommended`
-requires those immutable matching IDs, while `organic` sets them to null and
-must not inherit the current policy.
+`occurredAt`, `creatorProfileId`, `offerId`, `contractVersion`, and
+`correlationId`. `evaluated` requires `policyVersion`, `evaluationId`, and
+`evaluationMode: shadow | active`. `impression` additionally requires
+`impressionId`, recommendation session, and
+`presentationMode: ranked | exploration`. Later action/outcome events use a
+tagged attribution union. `recommended` requires those immutable matching IDs
+and presentation mode. `organic` sets `policyVersion`, `evaluationId`,
+`impressionId`, `recommendationSessionId`, and `presentationMode` to null; it
+must not inherit the current policy or invent a presentation mode.
 
 | Event type                                   | Meaning                                                                                         |
 | -------------------------------------------- | ----------------------------------------------------------------------------------------------- |
@@ -286,44 +377,173 @@ must not inherit the current policy.
 | `marketplace.match.response_recorded.v1`     | The recipient responded `positive` or `declined`.                                               |
 | `marketplace.match.accepted.v1`              | Both parties approved the frozen terms.                                                         |
 | `marketplace.match.completed.v1`             | Collaboration and agreed deliverables reached operational completion.                           |
+| `marketplace.match.rating_recorded.v1`       | A current one-sided 1–5 collaboration rating was first recorded.                                |
 | `marketplace.match.satisfaction_recorded.v1` | One side recorded `satisfied`, `neutral`, or `dissatisfied`.                                    |
 | `marketplace.match.guardrail_recorded.v1`    | A versioned cancellation, no-show, dispute, block, report, or policy-violation state changed.   |
 
 Shadow evaluation emits `evaluated` only. It must not emit an `impression` or
 claim that the computed order was presented.
 
-`satisfaction_recorded` requires `feedbackId`, monotonic `revision`,
+### Creator dismissal reasons
+
+`marketplace.match.dismissed.v1` accepts no free text. Its optional
+`dismissalReason` is either `null` or one stable code from this closed set:
+
+| Stable code                 | Creator-facing label           |
+| --------------------------- | ------------------------------ |
+| `destination_not_suitable`  | Destination doesn't fit        |
+| `dates_not_suitable`        | Dates don't work               |
+| `compensation_not_suitable` | Compensation doesn't fit       |
+| `deliverables_not_suitable` | Content requirements don't fit |
+| `brief_not_suitable`        | Brief or workload doesn't fit  |
+| `not_interested`            | Not interested right now       |
+| `other`                     | Other                          |
+
+The UI may let the creator dismiss without selecting a reason, which stores
+`null`. Selecting `other` does not reveal a text field. The server rejects
+unknown codes. Dismissal reasons are measurement inputs, not explanation
+reasons, and the two vocabularies must not be reused interchangeably.
+
+### Authoritative producers and current capability
+
+The producer is the same transaction that persists the authoritative fact. It
+uses server-owned timestamps; a client timestamp is never a lifecycle or
+attribution clock. A producer must be absent where the product has no
+authoritative transition.
+
+| Event                   | Authoritative source fact and event identity                                                                                                                                                                                                          | Current v1 capability                                                                                                                                       |
+| ----------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `evaluated`             | The matching service persists one immutable evaluation. Source ID is `evaluationId`, revision `1`, and `occurredAt` is server-owned `evaluatedAt`.                                                                                                    | Deferred to the evaluator implementation; shadow mode never produces an impression.                                                                         |
+| `impression`            | The authorized impression route accepts an issued session/pair binding. Source ID is `impressionId`, revision `1`, and `occurredAt` is the server acceptance time.                                                                                    | Deferred to the impression implementation.                                                                                                                  |
+| `saved`, `dismissed`    | A persisted creator save/dismiss transition, identified by its source record and monotonic revision.                                                                                                                                                  | No authoritative source exists; do not emit.                                                                                                                |
+| `application_submitted` | `POST /api/marketplace/collaborations` creates a creator-initiated collaboration. Source ID is the collaboration ID, revision `1`, and time is `created_at`.                                                                                          | Available once event persistence is added.                                                                                                                  |
+| `invitation_sent`       | The same route creates a hotel-initiated collaboration with the collaboration ID, revision `1`, and `created_at`.                                                                                                                                     | Available, but organic in v1 because there is no hotel recommendation surface.                                                                              |
+| `response_recorded`     | `POST .../respond` changes a pending collaboration to `negotiating` for a positive response or `declined` for a decline. Source ID is the collaboration ID plus `response`, revision `1`, and time is `responded_at`.                                 | Available once event persistence is added. A positive response is not acceptance.                                                                           |
+| `accepted`              | `POST .../approve` changes the collaboration to `accepted` only when both sides have approved the current terms. Source ID is the collaboration ID plus `accepted`, revision `1`, and time is the later of `creator_agreed_at` and `hotel_agreed_at`. | Available once event persistence is added; the first one-sided approval emits nothing.                                                                      |
+| `completed`             | A collaboration-level `completed` transition plus completed/approved agreed deliverables.                                                                                                                                                             | No authoritative API transition exists; deliverable toggles alone do not emit completion.                                                                   |
+| `rating_recorded`       | The first inserted `creator_ratings` row. Source ID is `ratingId`, revision `1`, and time is `created_at`.                                                                                                                                            | Available once the producer can distinguish the first insert. The current conflict path preserves the first value, so later calls emit no revision.         |
+| `satisfaction_recorded` | A persisted response from each side with a monotonic revision.                                                                                                                                                                                        | No authoritative source exists; do not infer it from a rating.                                                                                              |
+| `guardrail_recorded`    | `POST .../cancel` changes a collaboration to `cancelled`. Source ID is the collaboration ID plus `cancellation`, revision `1`, state `opened`, and time is `cancelled_at`.                                                                            | Cancellation is available once event persistence is added. No current producer exists for resolution, no-show, dispute, block, report, or policy violation. |
+
+Lifecycle event keys are derived from the named source ID, transition, and
+revision, and command replay returns the already persisted event. A later
+contract may introduce revisions only after the source model persists them;
+calling the current endpoint again cannot synthesize a revision.
+
+### Feedback and guardrail revisions
+
+Editable satisfaction and guardrail facts use an authoritative current source
+record, not retained measurement events, as their revision authority. A
+satisfaction stream has a stable `feedbackId` for one collaboration and
+respondent side. A guardrail stream has a stable `guardrailId` for one
+collaboration and guardrail occurrence. Each source record stores only its
+latest structured outcome or state and its current positive integer revision.
+
+Creating a record writes revision `1`. An edit supplies the expected current
+revision; the server atomically verifies it, updates the source to exactly the
+next revision, and emits the matching event in the same transaction. The
+client cannot choose the new revision. If two edits use the same expected
+revision, one succeeds and the other receives a conflict and must reload.
+
+Expiry of raw measurement events does not reset or renumber the source record.
+For example, if the source is revision `8` after older event revisions expire,
+the next accepted edit is revision `9`. Event storage must validate an emitted
+revision against that authoritative source transition, not infer the next
+revision from the maximum retained matching event. No separate permanent
+matching revision cursor or high-water table is permitted.
+
+The authoritative current record follows the owning product's retention,
+export, and subject-deletion policy. Deleting it also deletes its revision
+state. A genuinely new response or guardrail after deletion receives a new
+source ID and starts at revision `1`; a deleted identity must not be recreated
+only to preserve numbering. Until these source models and transitions exist,
+their event producers remain absent.
+
+The canonical platform envelope uses event key
+`<eventType>:<sourceId>:<revision>`, resource product `marketplace`, resource type
+`matching_event`, and resource ID `sourceId`. Its event type/version,
+occurrence/recording time, property, correlation, and actor equal the projection.
+
+Saving creator matching preferences does not emit a product analytics event in
+the first UI release. Marketplace has no approved product-event transport, and
+a preference update is an input rather than a matching outcome. The VAY-1412
+implementation follow-ups own event contracts, consent, retention, storage, and
+reporting; clients must not add a one-off analytics endpoint or reuse Booking
+Web tracking.
+
+`rating_recorded` requires `ratingId`, monotonic `revision`, `respondentSide`,
+`subjectSide`, and an integer score from 1 to 5. The current hotel-authored
+creator rating emits revision `1` only for the first persisted value; its
+existing conflict behavior does not revise that value. The rating is supporting
+evidence and never implies a satisfaction outcome. `satisfaction_recorded`
+requires `feedbackId`, monotonic `revision`,
 `respondentSide: creator | hotel`, and outcome. Its latest revision per side is
 authoritative. `guardrail_recorded` requires `guardrailId`, monotonic `revision`,
 `state: opened | resolved`, and one stable code: `cancellation`, `no_show`,
 `dispute`, `block`, `report`, or `policy_violation`. Its latest revision is
 authoritative. A successful-match reducer requires latest creator and hotel
 outcomes both `satisfied` and no guardrail whose latest state is `opened`.
+Operational completion or a unilateral rating without both satisfaction
+responses leaves success `unknown`, not `false` or `true`. Rating, satisfaction,
+and guardrail events are emitted only from authoritative product transitions;
+missing product capabilities do not create synthetic outcomes.
 
-A qualified impression has the policy-defined visibility threshold and the
-deduplication ID SHA-256 of:
+A qualified impression is an eligible, server-issued recommendation shown to
+the authenticated creator with at least 50% of its card visible for one
+continuous second while the document is visible. The browser reports only the
+visibility qualification and server-issued recommendation session reference.
+The server resolves the viewer, pair, evaluation, policy, rank, slot, and mode,
+and stamps the accepted occurrence time. Client-supplied copies of those facts
+are ignored or rejected.
+
+The server issues an opaque recommendation session for one authenticated
+creator-discovery query. The session is bound to the viewer, creator profile,
+surface, policy version, and a canonical fingerprint of filters, search, and
+sort. Its fixed lifetime is 30 minutes from server-issued `issuedAt`; pagination
+reuses the session without extending it and appends the exact issued
+`offerId`/`evaluationId`/rank/slot bindings. A browser refresh or any
+filter/search/sort change starts a new session. An impression is accepted only
+for an exact binding issued in that unexpired session. Expired sessions and
+pair/evaluation substitutions are rejected without an event; an exact replay
+of an already completed idempotent request returns its first result even after
+session expiry.
+
+The impression deduplication ID is the SHA-256 of:
 
 ```text
 <policyVersion>|creator_offer_discovery|creator:<creatorProfileId>|<offerId>|<UTC dedup epoch>
 ```
 
-`creator_offer_discovery` is the only v1 surface code. The server derives the
-epoch as base-10 ASCII `floor(unixMilliseconds(occurredAt) /
-dedupDurationMilliseconds)`, where the duration is a positive policy integer.
-Re-renders, pagination, virtualization, or repeated sessions within that epoch
-reuse the same impression; rank/session/slot remain context, not identity.
+`creator_offer_discovery` is the only v1 surface code. The deduplication duration
+is `86400000` milliseconds. The server derives the UTC epoch as base-10 ASCII
+`floor(unixMilliseconds(occurredAt) / 86400000)`. Re-renders, pagination,
+virtualization, or repeated sessions within that epoch reuse the same
+impression; rank, session, and slot remain immutable event context, not
+identity. Exact retries replay the first result. Reuse of an idempotency key
+with a different request fingerprint is rejected.
 
 Applications and invitations carry a server-verified `impressionId` when the
-action came from a recommendation. That direct reference wins attribution. If
-it is absent, the server may attribute the action to the most recent qualified
-impression for the same pair, viewer, and policy inside the policy's attribution
-window. Attribution is frozen on collaboration creation and inherited by later
-events. Otherwise the action is `organic`.
+action came from a recommendation. A valid direct reference for the same pair,
+viewer, and surface wins attribution only when collaboration `created_at` is at
+or after the impression's server-stamped `occurredAt` and no more than 30 days
+(`2592000000` milliseconds) later. The action inherits that impression's policy
+version; a direct reference never bypasses the window. If the direct reference
+is absent or invalid, the server searches qualified impressions for the same
+pair, viewer, and surface across policy versions within the same window, ordered
+by `occurredAt` descending and then `impressionId` ascending. It freezes the
+winning impression's policy and matching IDs; if none exists, the action is
+`organic`. Hotel-originated invitations are always organic in v1 because
+`creator_offer_discovery` is creator-side only.
 
-Attribution-window, visibility, and impression-dedup durations are unresolved
-VAY-1415 decisions. Raw events must be retained so the approved values can be
-evaluated without rewriting historical facts. Command and event idempotency
-must prevent retries from creating duplicate funnel outcomes.
+Attribution is frozen in the collaboration-creation transaction and copied to
+later lifecycle events. All comparisons use server timestamps; late client
+reports cannot backdate an impression, and an impression recorded after
+creation never changes attribution. The frozen snapshot is stored independently
+of the impression row, so later outcome events do not require a retained raw
+impression. Purging an impression prevents new attribution through it but does
+not rewrite attribution already frozen on an existing collaboration. Command
+and event idempotency must prevent retries from creating duplicate funnel
+outcomes.
 
 ## Metrics and guardrails
 
@@ -371,8 +591,56 @@ VAY-1415 must approve them before a limited cohort.
   handles, contact details, profile/portfolio text, messages, travel notes,
   private preference values, content URLs, or private thresholds.
 - User-facing explanations never expose another party's private data.
-- The event-retention duration and deletion/export behavior require a reviewed
-  data-retention decision before production collection begins.
+- Matching measurement is first-party operational product measurement disclosed
+  in the privacy notice. It is not marketing communication and does not depend
+  on the analytics-cookie toggle. Collection remains feature-flagged off until
+  the notice and the retention/delete/export implementation are reviewed.
+- Authoritative satisfaction and guardrail source records are operational
+  product facts, not raw measurement history. They retain only the latest
+  structured state and revision, contain no historical free text, and follow
+  the owning product's retention, export, and subject-deletion policy.
+- Provider-derived evidence may influence an evaluation only while the
+  connection, imported-field authorization, applicable consent, and freshness
+  are active. Events keep only approved derived classes and codes.
+- Identifiable raw matching events and projections expire at
+  `recordedAt + 18 calendar months`, calculated in UTC. Client occurrence time
+  cannot extend retention. De-identified cohort aggregates expire at the end of
+  the aggregate's UTC period plus 36 calendar months.
+- A retained aggregate contains no pair, event, impression, session, user,
+  creator profile, organization, property, offer, collaboration, or stable
+  pseudonymous identifier. Allowed dimensions are UTC week/month,
+  `policyVersion`, surface, presentation mode, confidence band, new/established
+  participant band, country-or-larger geography, platform, offer type, and
+  compensation type. A row may use at most two cohort dimensions in addition to
+  time and policy, and is retained or reported only when it contains at least
+  10 distinct creators and 10 distinct offers; smaller cells are suppressed or
+  merged into `other`. Percentages are not reported when their numerator or
+  denominator is suppressed.
+- The normalized projection records the subject links needed for deletion:
+  actor user, creator profile and organization, hotel organization, property,
+  offer, and collaboration where applicable. Deleting a creator profile erases
+  every raw event/projection for that profile. Before identity membership or
+  `creator_profiles.owner_user_id` is removed, the deletion service snapshots
+  the user's creator scope. If the user owns a creator profile at that point,
+  every profile-linked raw fact is erased even if the profile is transferred or
+  its owner foreign key later becomes null. For a non-owner creator-workspace
+  member, only facts where that user is the actor are erased; workspace-owned
+  system or other-member facts remain. Deleting a hotel organization, property,
+  or offer erases its directly linked raw facts. Deleting an individual hotel
+  member likewise erases raw events where that user is the actor but does not
+  erase organization-owned facts created by another actor or the system.
+  Subject-authored rating or satisfaction facts are erased with that subject.
+- An approved deletion request executes the privileged purge graph defined in
+  the storage boundary. A documented legal/security obligation may retain only
+  a narrower audit fact that irreversibly removes all joinable subject and pair
+  identifiers. Truly de-identified aggregates are not rewritten for a later
+  account deletion because they cannot be linked back to the subject. A user
+  export includes that user's declared matching feedback and satisfaction
+  responses, but excludes internal scores, private other-party data, and
+  security/audit-only metadata.
+- Raw access is least-privilege and audited. Retention cleanup, deletion,
+  pseudonymization, and export actions are audited without retaining the erased
+  identifiers in the audit payload.
 
 ## Rollout gates and flags
 
@@ -395,6 +663,9 @@ Before shadow scoring:
    instrumentation have contract tests.
 4. Provider signals are disabled unless connection, consent, field import, and
    30-day freshness checks pass.
+5. The matching measurement privacy notice, 18-month identifiable retention,
+   36-month de-identified aggregate retention, and deletion/export paths are
+   reviewed and operational.
 
 Before user-visible ordering:
 
@@ -428,8 +699,8 @@ VAY-1415 or a later versioned policy decision must approve:
 - production enabled signals, category/signal weights, and evaluator parameters;
 - confidence coverage, history sample, and signal freshness thresholds other
   than the audited 30-day provider ceiling;
-- rotation epoch, exploration positions, attribution window, qualified
-  impression threshold, dedup window, and event retention;
-- satisfactory-outcome capture and the minimum evidence for success;
+- rotation epoch and exploration positions;
+- the user-facing reciprocal satisfaction capture and the minimum evidence
+  sample for enabling an outcome-history signal;
 - cohort definitions, experiment sample sizes, and guardrail thresholds;
 - any audience targeting beyond consented country-level aggregates.

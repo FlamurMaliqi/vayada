@@ -80,6 +80,38 @@ describe("planProductionCatalogPresentation", () => {
     expect(JSON.stringify(plan.media)).not.toContain("legacy.invalid");
   });
 
+  it("keeps checksums stable across equivalent PostgreSQL timestamp text", () => {
+    const { ownership, content } = plans();
+    const domain = {
+      id: MEDIA,
+      propertyId: PROPERTY,
+      hostname: "stay.example.test",
+      verificationStatus: "verified" as const,
+      canonicalWhenVerified: true,
+      verifiedAt: "2026-08-03T00:00:00.123456Z",
+      updatedAt: "2026-08-03T00:00:00.123456Z",
+    };
+    const iso = planProductionCatalogPresentation(rows, ownership, content, {
+      domains: [domain],
+    });
+    const postgres = planProductionCatalogPresentation(rows, ownership, content, {
+      domains: [
+        {
+          ...domain,
+          verifiedAt: "2026-08-03 02:00:00.123456+02",
+          updatedAt: "2026-08-03 02:00:00.123456+02",
+        },
+      ],
+    });
+
+    expect(postgres.domains).toEqual(iso.domains);
+    expect(postgres.checksum).toBe(iso.checksum);
+    expect(postgres.domains[0]).toMatchObject({
+      verifiedAt: "2026-08-03T00:00:00.123456Z",
+      updatedAt: "2026-08-03T00:00:00.123456Z",
+    });
+  });
+
   it("blocks raw media references until VAY-1055 supplies an object", () => {
     const { ownership, content } = plans();
     const plan = planProductionCatalogPresentation(rows, ownership, content);

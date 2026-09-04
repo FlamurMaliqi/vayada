@@ -43,6 +43,9 @@ describe("PMS inventory public offer projection", () => {
       projectedOfferDays: 366,
     });
     expect(target.publishedEventIds).toEqual(["f6855f00-0000-0000-0000-000000000001"]);
+    const claim = target.queries.find((query) => query.includes("WITH candidate_event AS"));
+    expect(claim).toContain("outbox.destination = 'distribution.inventory-projection'");
+    expect(claim).toContain("outbox.event_type = 'pms.inventory.projection_refresh_requested'");
     expect(PROJECT_PMS_INVENTORY_TO_PUBLIC_OFFERS).toContain("inventory.available_count");
     expect(PROJECT_PMS_INVENTORY_TO_PUBLIC_OFFERS).toContain(
       "hashtextextended(concat('pms-inventory:', $1::text), 0)",
@@ -79,6 +82,15 @@ describe("PMS inventory public offer projection", () => {
       "input.stay_date < ($2::timestamptz AT TIME ZONE input.timezone)::date THEN 'closed'",
     );
     expect(PROJECT_PMS_INVENTORY_TO_PUBLIC_OFFERS).toContain("input.inventory_status = 'closed'");
+    expect(PROJECT_PMS_INVENTORY_TO_PUBLIC_OFFERS).toContain(
+      "COALESCE(inventory.rate_gate_open, TRUE) AS rate_gate_open",
+    );
+    expect(PROJECT_PMS_INVENTORY_TO_PUBLIC_OFFERS).toContain(
+      "input.rate_gate_open\n      AND input.room_type_active",
+    );
+    expect(PROJECT_PMS_INVENTORY_TO_PUBLIC_OFFERS).toContain(
+      "CASE WHEN input.rate_gate_open THEN input.available_count ELSE 0 END",
+    );
     expect(PROJECT_PMS_INVENTORY_TO_PUBLIC_OFFERS).toContain(
       "ON CONFLICT (property_id, public_offer_key, stay_date) DO UPDATE",
     );

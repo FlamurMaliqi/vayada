@@ -1,5 +1,5 @@
 import { importedNationalityMap } from "./importedNationality.js";
-import { propertyFor } from "./productionBookingContext.js";
+import { isEmptyAdditionalGuest, propertyFor } from "./productionBookingContext.js";
 import type { IdentitySourceRow } from "./productionIdentityDisposition.js";
 import type { BookingBuildContext, BookingTargetRecord } from "./productionBookingTypes.js";
 import {
@@ -9,7 +9,6 @@ import {
   integer,
   iso,
   money,
-  optionalDate,
   optionalIso,
   optionalText,
   requiredText,
@@ -28,8 +27,10 @@ export function buildBookingRelatedRecords(context: BookingBuildContext): Bookin
   );
   return context.rows.flatMap((source) => {
     try {
-      if (source.sourceDatabase === "pms" && source.sourceTable === "booking_additional_guests")
-        return [additionalGuest(context, source)];
+      if (source.sourceDatabase === "pms" && source.sourceTable === "booking_additional_guests") {
+        const guest = additionalGuest(context, source);
+        return guest ? [guest] : [];
+      }
       if (source.sourceDatabase === "pms" && source.sourceTable === "booking_change_requests")
         return [changeRequest(context, source)];
       if (source.sourceDatabase === "pms" && source.sourceTable === "booking_promo_usage_state")
@@ -61,7 +62,8 @@ export function buildBookingRelatedRecords(context: BookingBuildContext): Bookin
 function additionalGuest(
   context: BookingBuildContext,
   source: IdentitySourceRow,
-): BookingTargetRecord {
+): BookingTargetRecord | null {
+  if (isEmptyAdditionalGuest(source)) return null;
   const data = source.data;
   const id = uuid(data["id"], "id");
   const booking = sourceBooking(context, data["booking_id"], "booking_id");
@@ -252,52 +254,148 @@ function addonSelections(
   source: IdentitySourceRow,
 ): BookingTargetRecord[] {
   const data = source.data;
-  const ids = Array.isArray(data["addon_ids"]) ? data["addon_ids"] : [];
-  const quantities = object(data["addon_quantities"]);
-  const dates = object(data["addon_dates"]);
+  if (
+    data["addon_ids"] !== null &&
+    data["addon_ids"] !== undefined &&
+    !Array.isArray(data["addon_ids"])
+  )
+    throw new Error("addon_ids must be an array");
+  const rawIds = (data["addon_ids"] as unknown[] | null | undefined) ?? [];
+  const ids = rawIds.map((value, index) => uuid(value, `addon_ids[${index}]`));
+  if (new Set(ids).size !== ids.length) throw new Error("addon_ids must be unique");
+  const bookedTotal = money(data["addon_total"], "addon_total", ids.length ? undefined : "0.00");
+  const rawNamesValue = data["addon_names"];
+  const rawQuantities = data["addon_quantities"];
+  const rawDates = data["addon_dates"];
+  if (!ids.length) {
+    const hasSnapshotEvidence =
+      Number(bookedTotal) !== 0 ||
+      (Array.isArray(rawNamesValue) && rawNamesValue.length > 0) ||
+      Object.keys(object(rawQuantities)).length > 0 ||
+      Object.keys(object(rawDates)).length > 0;
+    if (hasSnapshotEvidence) throw new Error("add-on snapshot has evidence but no addon_ids");
+    return [];
+  }
+  if (rawNamesValue !== null && rawNamesValue !== undefined && !Array.isArray(rawNamesValue))
+    throw new Error("addon_names must align exactly with addon_ids");
+  const rawNames = Array.isArray(rawNamesValue) ? rawNamesValue : [];
+  if (rawNames.length !== 0 && rawNames.length !== ids.length)
+    throw new Error("addon_names must align exactly with addon_ids");
+  const hasSnapshotNames = rawNames.length === ids.length;
+  const names = hasSnapshotNames
+    ? rawNames.map((value, index) => requiredText(value, `addon_names[${index}]`))
+    : ids.map(() => "Add-ons");
+  const quantities = normalizedAddonMap(rawQuantities, "addon_quantities", ids, true);
+  const dates = normalizedAddonMap(rawDates, "addon_dates", ids, true);
   const bookingId = uuid(data["id"], "id");
   const propertyId = propertyFor(context, "pms", "hotels", data["hotel_id"]);
   const updatedAt = iso(data["updated_at"], "updated_at");
-  const selections = ids.map((rawId, index) => {
-    const addonId = uuid(rawId, `addon_ids[${index}]`);
-    const addon = context.addonById.get(addonId);
-    if (!addon) throw new Error(`addon ${addonId} has no source definition`);
-    const quantity = integer(quantities[addonId], "addon quantity", 1);
-    const amount = Number(money(addon.data["price"], "addon.price", "0.00")) * quantity;
-    const id = deterministicUuid(
-      "production-booking",
-      "addon-selection",
-      bookingId,
-      addonId,
-      String(index),
-    );
-    return record(source, "booking_addon_selections", id, updatedAt, false, {
+  const bookingCurrency = currency(data["currency"] ?? "EUR");
+  const items = ids.map((addonId, index) => {
+    const hasSnapshotQuantity = quantities.has(addonId);
+    const quantity = hasSnapshotQuantity
+      ? integer(quantities.get(addonId), `addon_quantities[${addonId}]`)
+      : 1;
+    if (quantity < 1) throw new Error(`addon_quantities[${addonId}] must be positive`);
+    const serviceDates = addonServiceDates(dates.get(addonId), addonId);
+    return {
+      sourceAddonId: addonId,
+      name: names[index]!,
+      nameBasis: hasSnapshotNames ? "booking_snapshot" : "legacy_invoice_fallback",
+      quantity,
+      quantityBasis: hasSnapshotQuantity ? "booking_snapshot" : "legacy_invoice_default",
+      serviceDates,
+      definitionStatus: context.addonById.has(addonId) ? "matched" : "missing_at_snapshot",
+    };
+  });
+  if (items.length > 1) {
+    const id = deterministicUuid("production-booking", "addon-selection-bundle", bookingId);
+    return [
+      record(source, "booking_addon_selections", id, updatedAt, false, {
+        id,
+        propertyId,
+        guestBookingId: bookingId,
+        quoteSessionId: null,
+        addonDefinitionId: null,
+        addonSnapshot: {
+          name: hasSnapshotNames ? names.join(", ") : "Add-ons",
+          nameBasis: hasSnapshotNames ? "booking_snapshot_bundle" : "legacy_invoice_fallback",
+          category: null,
+          pricingModel: "legacy_bundle_snapshot",
+          amountBasis: "booking_addon_total",
+          items,
+        },
+        quantity: 1,
+        serviceDate: null,
+        totalAmount: bookedTotal,
+        currency: bookingCurrency,
+        createdAt: iso(data["created_at"], "created_at"),
+      }),
+    ];
+  }
+  const item = items[0]!;
+  const id = deterministicUuid(
+    "production-booking",
+    "addon-selection",
+    bookingId,
+    item.sourceAddonId,
+    "0",
+  );
+  return [
+    record(source, "booking_addon_selections", id, updatedAt, false, {
       id,
       propertyId,
       guestBookingId: bookingId,
       quoteSessionId: null,
-      addonDefinitionId: addonId,
+      addonDefinitionId: context.addonById.has(item.sourceAddonId) ? item.sourceAddonId : null,
       addonSnapshot: {
-        name: addon.data["name"],
-        category: addon.data["category"],
-        pricingModel: addon.data["per_person"] === true ? "per_guest" : "per_stay",
+        sourceAddonId: item.sourceAddonId,
+        name: item.name,
+        nameBasis: item.nameBasis,
+        category: null,
+        pricingModel: "legacy_snapshot",
+        definitionStatus: item.definitionStatus,
+        amountBasis: "booking_addon_total",
+        quantityBasis: item.quantityBasis,
+        serviceDates: item.serviceDates,
       },
-      quantity,
-      serviceDate: optionalDate(dates[addonId], "addon service date"),
-      totalAmount: amount.toFixed(2),
-      currency: currency(data["currency"] ?? addon.data["currency"] ?? "EUR"),
+      quantity: item.quantity,
+      serviceDate: item.serviceDates.length === 1 ? item.serviceDates[0] : null,
+      totalAmount: bookedTotal,
+      currency: bookingCurrency,
       createdAt: iso(data["created_at"], "created_at"),
-    });
-  });
-  if (data["addon_total"] !== null && data["addon_total"] !== undefined) {
-    const expected = money(data["addon_total"], "addon_total");
-    const actual = selections
-      .reduce((sum, selection) => sum + Number(selection.row["totalAmount"]), 0)
-      .toFixed(2);
-    if (actual !== expected)
-      throw new Error(`addon_total ${expected} does not match selection total ${actual}`);
+    }),
+  ];
+}
+
+function normalizedAddonMap(
+  value: unknown,
+  field: string,
+  addonIds: string[],
+  allowMissing = false,
+): Map<string, unknown> {
+  if (allowMissing && (value === null || value === undefined)) return new Map();
+  if (!value || typeof value !== "object" || Array.isArray(value))
+    throw new Error(`${field} must be an object`);
+  const result = new Map<string, unknown>();
+  for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
+    const addonId = uuid(key, `${field} key`);
+    if (!addonIds.includes(addonId)) throw new Error(`${field} contains an unknown add-on`);
+    if (result.has(addonId)) throw new Error(`${field} contains a duplicate add-on`);
+    result.set(addonId, entry);
   }
-  return selections;
+  if (!allowMissing && addonIds.some((addonId) => !result.has(addonId)))
+    throw new Error(`${field} must contain every addon_id`);
+  return result;
+}
+
+function addonServiceDates(value: unknown, addonId: string): string[] {
+  if (value === null || value === undefined) return [];
+  if (!Array.isArray(value)) throw new Error(`addon_dates[${addonId}] must be an array`);
+  const dates = value.map((entry, index) => date(entry, `addon_dates[${addonId}][${index}]`));
+  if (new Set(dates).size !== dates.length)
+    throw new Error(`addon_dates[${addonId}] must not contain duplicates`);
+  return dates;
 }
 
 function sourceBooking(

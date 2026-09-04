@@ -529,6 +529,20 @@ failed or interrupted run requires `--resume`; completed steps are not executed
 again. The run ID and all guard inputs are immutable, and a PostgreSQL advisory
 lock excludes concurrent orchestration.
 
+Staging and pre-production targets must run on a PostgreSQL instance/cluster
+that does not serve production. A separate database on the production instance
+does not isolate memory, CPU, or restart risk. The restored rehearsal instance
+may host a separate target database only while every source role remains
+read-only and the immutable source attestations remain unchanged. Record and
+verify the source/target instance identities before starting; a changed target
+identity or application release requires a fresh run and clean-target evidence.
+
+PMS collision checks exclude tables without secondary-unique predicates and
+process at most 500 candidates per statement. PMS row and shared provenance
+writes also use 500-row statements inside the existing single domain transaction;
+a later batch failure still rolls back every earlier batch. Batching does not
+replace the resource-isolation requirement.
+
 All run modes require these inputs in addition to the four source database URLs
 and `TARGET_DATABASE_URL`:
 

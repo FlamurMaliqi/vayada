@@ -8,8 +8,10 @@ import { ProfilePictureModal } from "../ProfilePictureModal";
 import { CreatorOverviewTab } from "./CreatorOverviewTab";
 import { PlatformCardView } from "./PlatformCardView";
 import { CreatorReviewsTab } from "./CreatorReviewsTab";
+import { CreatorMatchingPreferencesTab } from "./CreatorMatchingPreferencesTab";
 import { useCreatorProfile } from "@/hooks/useCreatorProfile";
 import { useErrorModal } from "@/hooks/useErrorModal";
+import { creatorService } from "@/services/api/creators";
 import type { CreatorProfileStatus } from "@/lib/types";
 
 export function CreatorProfile() {
@@ -127,6 +129,7 @@ export function CreatorProfile() {
           <div className="flex flex-wrap gap-1 rounded-lg bg-gray-100 p-1">
             <button
               onClick={() => setActiveCreatorTab("overview")}
+              aria-pressed={activeCreatorTab === "overview"}
               className={`rounded-md px-3 py-2 text-sm font-medium transition-colors ${
                 activeCreatorTab === "overview"
                   ? "bg-white text-gray-950 shadow-sm"
@@ -136,7 +139,21 @@ export function CreatorProfile() {
               Overview
             </button>
             <button
+              onClick={() => setActiveCreatorTab("matching")}
+              disabled={isEditingProfile}
+              aria-pressed={activeCreatorTab === "matching"}
+              title={isEditingProfile ? "Save or cancel profile details first" : undefined}
+              className={`rounded-md px-3 py-2 text-sm font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
+                activeCreatorTab === "matching"
+                  ? "bg-white text-gray-950 shadow-sm"
+                  : "text-gray-500 hover:text-gray-900"
+              }`}
+            >
+              Matching
+            </button>
+            <button
               onClick={() => setActiveCreatorTab("platforms")}
+              aria-pressed={activeCreatorTab === "platforms"}
               className={`rounded-md px-3 py-2 text-sm font-medium transition-colors ${
                 activeCreatorTab === "platforms"
                   ? "bg-white text-gray-950 shadow-sm"
@@ -147,6 +164,7 @@ export function CreatorProfile() {
             </button>
             <button
               onClick={() => setActiveCreatorTab("reviews")}
+              aria-pressed={activeCreatorTab === "reviews"}
               className={`rounded-md px-3 py-2 text-sm font-medium transition-colors ${
                 activeCreatorTab === "reviews"
                   ? "bg-white text-gray-950 shadow-sm"
@@ -156,7 +174,7 @@ export function CreatorProfile() {
               Reviews
             </button>
           </div>
-          {isEditingProfile ? (
+          {activeCreatorTab === "matching" ? null : isEditingProfile ? (
             <div className="flex gap-3">
               <button
                 onClick={handleCancelEdit}
@@ -243,6 +261,21 @@ export function CreatorProfile() {
             </div>
           </div>
         )}
+
+        <div hidden={activeCreatorTab !== "matching"}>
+          <CreatorMatchingPreferencesTab
+            initialPreferences={creatorProfile.matchingPreferences ?? null}
+            onManageTrips={() => router.push(ROUTES.CALENDAR)}
+            onSave={async (preferences) => {
+              const updated = await creatorService.updateMatchingPreferences(preferences);
+              const matchingPreferences = updated.matchingPreferences ?? null;
+              setCreatorProfile((current) =>
+                current ? { ...current, matchingPreferences } : current,
+              );
+              return matchingPreferences;
+            }}
+          />
+        </div>
 
         {activeCreatorTab === "reviews" && <CreatorReviewsTab rating={creatorProfile.rating} />}
       </div>

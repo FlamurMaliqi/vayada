@@ -79,6 +79,10 @@ const quoteParametersSchema = z.strictObject({
 });
 const brandingSchema = z.strictObject({
   logoUrl: httpsUrl.nullable().optional(),
+  showContactButton: z.boolean().optional(),
+  showReferAGuestButton: z.boolean().optional(),
+  showLanguageSelector: z.boolean().optional(),
+  showCurrencySelector: z.boolean().optional(),
   heroImage: httpsUrl.nullable(),
   heroHeading: nonEmpty.nullable(),
   heroSubtext: nonEmpty.nullable(),

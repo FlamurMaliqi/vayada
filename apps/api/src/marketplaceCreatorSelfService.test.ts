@@ -11,6 +11,7 @@ import {
 import { injectJson } from "@vayada/backend-test";
 import type {
   CreatorProfileDocument,
+  MarketplaceCreatorMatchingPreferencesWrite,
   UpdateCreatorProfileRequest,
 } from "@vayada/domain-marketplace";
 import type { FastifyInstance } from "fastify";
@@ -296,6 +297,7 @@ describe("marketplace creator self-service routes", () => {
             engagementRate: 4.2,
           },
         ],
+        matchingPreferences: matchingPreferencesWrite(),
       },
     });
 
@@ -317,7 +319,64 @@ describe("marketplace creator self-service routes", () => {
           engagementRate: 4.2,
         },
       ],
+      matchingPreferences: matchingPreferencesWrite(),
     });
+  });
+
+  it("rejects provider-derived and malformed matching preference inputs", async () => {
+    app = buildMarketplaceCreatorApp({ repository: repositoryThatShouldNotBeCalled() });
+
+    const response = await injectJson<{ detail: string }>(app, {
+      method: "PUT",
+      url: "/api/marketplace/creators/me",
+      headers: { authorization: "Bearer valid-token" },
+      payload: {
+        matchingPreferences: {
+          ...matchingPreferencesWrite(),
+          providerAudience: { countries: ["DE"] },
+        },
+      },
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.body.detail).toBe("matchingPreferences is invalid");
+  });
+
+  it.each([
+    ["missing session", {}, undefined, 401],
+    ["invalid session", { authorization: "Bearer invalid-token" }, undefined, 401],
+    ["missing permission", { authorization: "Bearer valid-token" }, [], 403],
+    ["wrong organization kind", { authorization: "Bearer valid-token" }, undefined, 403],
+  ] as const)(
+    "denies matching preference updates for %s",
+    async (name, headers, permissions, status) => {
+      app = buildMarketplaceCreatorApp({
+        repository: repositoryThatShouldNotBeCalled(),
+        ...(permissions ? { permissions: [...permissions] } : {}),
+        ...(name === "wrong organization kind" ? { organizationKind: "hotel_group" } : {}),
+      });
+
+      const response = await injectJson(app, {
+        method: "PUT",
+        url: "/api/marketplace/creators/me",
+        headers,
+        payload: { matchingPreferences: matchingPreferencesWrite() },
+      });
+
+      expect(response.statusCode).toBe(status);
+    },
+  );
+
+  it("authenticates before validating matching preference updates", async () => {
+    app = buildMarketplaceCreatorApp({ repository: repositoryThatShouldNotBeCalled() });
+
+    const response = await injectJson(app, {
+      method: "PUT",
+      url: "/api/marketplace/creators/me",
+      payload: { matchingPreferences: { providerAudience: true } },
+    });
+
+    expect(response.statusCode).toBe(401);
   });
 
   it("rejects raw profile updates that inflate connected provider metrics", async () => {
@@ -747,7 +806,82 @@ describe("marketplace creator self-service routes", () => {
   });
 });
 
-describe("marketplace creator platform persistence", () => {
+describe("marketplace creator self-service persistence", () => {
+  it("round-trips, preserves, revises, clears, and recreates audited matching preferences", async () => {
+    const target = creatorPlatformRepositoryTarget(["platform-1"]);
+    const repository = createPgMarketplaceCreatorSelfServiceRepository({
+      connectionString: "postgres://unused",
+      pool: target.pool as never,
+    });
+
+    const saved = await repository.updateCreatorProfile({
+      organizationId: "org_creator_workspace",
+      creatorProfileId,
+      actorUserId: "user_creator",
+      patch: { matchingPreferences: matchingPreferencesWrite() },
+    });
+
+    expect(saved?.matchingPreferences).toMatchObject({
+      ...matchingPreferencesWrite(),
+      evidenceSource: "creator_declared",
+      revision: 1,
+    });
+    const upsert = target.queries.find((query) =>
+      query.text.trim().startsWith("INSERT INTO marketplace.creator_matching_preferences"),
+    );
+    expect(upsert?.values?.slice(0, 3)).toEqual([
+      creatorProfileId,
+      "org_creator_workspace",
+      "marketplace-creator-matching-preferences.v1",
+    ]);
+    expect(upsert?.values?.[4]).toBe("user_creator");
+    expect(upsert?.text).toContain("profile.organization_id::text = $2");
+
+    const preserved = await repository.updateCreatorProfile({
+      organizationId: "org_creator_workspace",
+      creatorProfileId,
+      actorUserId: "user_creator",
+      patch: { shortDescription: "Updated without touching preferences" },
+    });
+    expect(preserved?.matchingPreferences).toMatchObject({ revision: 1 });
+    expect(
+      target.queries.filter((query) =>
+        query.text.trim().startsWith("INSERT INTO marketplace.creator_matching_preferences"),
+      ),
+    ).toHaveLength(1);
+
+    const revisedPreferences = {
+      ...matchingPreferencesWrite(),
+      contentCategories: { mode: "no_preference" as const },
+    };
+    const revised = await repository.updateCreatorProfile({
+      organizationId: "org_creator_workspace",
+      creatorProfileId,
+      actorUserId: "user_creator",
+      patch: { matchingPreferences: revisedPreferences },
+    });
+    expect(revised?.matchingPreferences).toMatchObject({
+      ...revisedPreferences,
+      revision: 2,
+    });
+
+    const cleared = await repository.updateCreatorProfile({
+      organizationId: "org_creator_workspace",
+      creatorProfileId,
+      actorUserId: "user_creator",
+      patch: { matchingPreferences: null },
+    });
+    expect(cleared?.matchingPreferences).toBeNull();
+
+    const recreated = await repository.updateCreatorProfile({
+      organizationId: "org_creator_workspace",
+      creatorProfileId,
+      actorUserId: "user_creator",
+      patch: { matchingPreferences: matchingPreferencesWrite() },
+    });
+    expect(recreated?.matchingPreferences).toMatchObject({ revision: 1 });
+  });
+
   it("updates stable IDs, creates explicit new rows, and deletes only omitted rows", async () => {
     const target = creatorPlatformRepositoryTarget(["platform-1", "platform-removed"]);
     const repository = createPgMarketplaceCreatorSelfServiceRepository({
@@ -758,6 +892,7 @@ describe("marketplace creator platform persistence", () => {
     await repository.updateCreatorProfile({
       organizationId: "org_creator_workspace",
       creatorProfileId,
+      actorUserId: "user_creator",
       patch: {
         platforms: [
           {
@@ -820,6 +955,7 @@ describe("marketplace creator platform persistence", () => {
     const profile = await repository.updateCreatorProfile({
       organizationId: "org_creator_workspace",
       creatorProfileId,
+      actorUserId: "user_creator",
       patch: { displayName: "Lina Creator" },
     });
 
@@ -852,6 +988,7 @@ describe("marketplace creator platform persistence", () => {
     await repository.updateCreatorProfile({
       organizationId: "org_creator_workspace",
       creatorProfileId,
+      actorUserId: "user_creator",
       patch: {
         platforms: [
           {
@@ -905,6 +1042,7 @@ describe("marketplace creator platform persistence", () => {
         repository.updateCreatorProfile({
           organizationId: "org_creator_workspace",
           creatorProfileId,
+          actorUserId: "user_creator",
           patch: { platforms },
         }),
       ).rejects.toThrow(/refresh|changed/);
@@ -934,6 +1072,7 @@ describe("marketplace creator platform persistence", () => {
       repository.updateCreatorProfile({
         organizationId: "org_creator_workspace",
         creatorProfileId,
+        actorUserId: "user_creator",
         patch: { platforms: [] },
       }),
     ).rejects.toThrow("Disconnect a connected account");
@@ -957,6 +1096,8 @@ function creatorPlatformRepositoryTarget(
   const queries: Array<{ text: string; values?: readonly unknown[] }> = [];
   let insertedPlatformCount = 0;
   let persistedProfileComplete = false;
+  let persistedMatchingPreferences: unknown = null;
+  let persistedMatchingPreferencesRevision = 0;
   const query = vi.fn(async (text: string, values?: readonly unknown[]) => {
     queries.push({ text, values });
     const normalized = text.trim();
@@ -1000,6 +1141,22 @@ function creatorPlatformRepositoryTarget(
       insertedPlatformCount += 1;
       return { rows: [{ platformId: `platform-new-${insertedPlatformCount}` }] };
     }
+    if (normalized.startsWith("INSERT INTO marketplace.creator_matching_preferences")) {
+      persistedMatchingPreferencesRevision += 1;
+      persistedMatchingPreferences = {
+        ...(JSON.parse(String(values?.[3])) as object),
+        contractVersion: values?.[2],
+        evidenceSource: "creator_declared",
+        revision: persistedMatchingPreferencesRevision,
+        updatedAt: "2026-09-03T01:00:00.000Z",
+      };
+      return { rows: [] };
+    }
+    if (normalized.startsWith("DELETE FROM marketplace.creator_matching_preferences")) {
+      persistedMatchingPreferences = null;
+      persistedMatchingPreferencesRevision = 0;
+      return { rows: [] };
+    }
     if (normalized.startsWith("WITH completion AS")) {
       persistedProfileComplete = false;
       return { rows: [] };
@@ -1025,6 +1182,7 @@ function creatorPlatformRepositoryTarget(
             platforms: [],
             averageRating: 0,
             totalReviews: 0,
+            matchingPreferences: persistedMatchingPreferences,
             createdAt: "2026-07-05T10:00:00.000Z",
             updatedAt: "2026-07-05T10:00:00.000Z",
           },
@@ -1245,8 +1403,23 @@ function profileDocument(overrides: Partial<CreatorProfileDocument> = {}): Creat
     platforms: [],
     audienceSize: 0,
     rating: { averageRating: 0, totalReviews: 0 },
+    matchingPreferences: null,
     createdAt: "2026-07-05T10:00:00.000Z",
     updatedAt: "2026-07-05T10:00:00.000Z",
     ...overrides,
+  };
+}
+
+function matchingPreferencesWrite(): MarketplaceCreatorMatchingPreferencesWrite {
+  return {
+    contentCategories: { mode: "selected" as const, values: ["travel", "wellness"] },
+    deliverableTypes: { mode: "selected" as const, values: ["reel", "story"] },
+    compensationTypes: { mode: "selected" as const, values: ["free_stay", "paid"] },
+    collaborationGoals: { mode: "selected" as const, values: ["ugc_creation"] },
+    travel: {
+      mode: "planned_trips" as const,
+      flexibilityDaysBefore: 3,
+      flexibilityDaysAfter: 5,
+    },
   };
 }

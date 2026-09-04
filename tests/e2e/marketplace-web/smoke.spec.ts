@@ -115,7 +115,7 @@ test.describe("marketplace-web smoke", () => {
 
     await page.goto("/onboarding");
     await expect(
-      page.getByRole("heading", { name: "Welcome to Vayada — what brings you here?" }),
+      page.getByRole("heading", { name: "Welcome to vayada — what brings you here?" }),
     ).toBeVisible();
     await expect(page.getByText("Account created", { exact: true })).toBeVisible();
     await expect(page.getByText("Choose your role so we can tailor your setup.")).toBeVisible();
@@ -191,7 +191,7 @@ test.describe("marketplace-web smoke", () => {
     await expect(page).toHaveURL(/\/setup\?/);
     const url = new URL(page.url());
     expect(url.searchParams.get("entryProduct")).toBe("marketplace");
-    await expect(page.getByRole("heading", { name: "Choose how you’ll use Vayada" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Choose how you’ll use vayada" })).toBeVisible();
     await expect(page.getByLabel("Creator Marketplace")).toBeVisible();
     await expect(page.getByLabel("Hotel Operations")).toBeVisible();
     await expect(page.getByText("We'd like to get to know you better")).toHaveCount(0);
@@ -587,7 +587,7 @@ test.describe("marketplace-web smoke", () => {
 
     await page.goto("/onboarding");
     await expect(
-      page.getByRole("heading", { name: "Welcome to Vayada — what brings you here?" }),
+      page.getByRole("heading", { name: "Welcome to vayada — what brings you here?" }),
     ).toBeVisible();
     await expect(page.getByRole("button", { name: "Continue", exact: true })).toBeDisabled();
     await page.getByRole("radio", { name: /i’m a creator/i }).click();
@@ -878,7 +878,7 @@ test.describe("marketplace-web smoke", () => {
     );
 
     await expect(page.getByRole("heading", { name: "Show hotels your reach" })).toBeVisible();
-    await expect(page.getByText("Instagram is connected. Vayada is importing")).toBeVisible();
+    await expect(page.getByText("Instagram is connected. vayada is importing")).toBeVisible();
     await expect(page.getByText("Connected", { exact: true })).toBeVisible();
     const connectedUsername = page.locator('input[placeholder="@ username"]');
     await expect(connectedUsername).toHaveValue("@lina");
@@ -1895,7 +1895,7 @@ test.describe("marketplace-web smoke", () => {
 
     await page.getByRole("button", { name: "Retry session" }).click();
     await expect(
-      page.getByRole("heading", { name: "Welcome to Vayada — what brings you here?" }),
+      page.getByRole("heading", { name: "Welcome to vayada — what brings you here?" }),
     ).toBeVisible();
   });
 

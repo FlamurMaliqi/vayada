@@ -272,7 +272,7 @@ also create semantic domain-event keys:
 | Channex message ingest            | `channex.message.ingest:<property_id>:<thread_id>:<source_message_id>:v1`                      |
 | Channex booking ingest            | `channex.booking.ingest:<property_id>:<channel_booking_id>:<revision>:v1`                      |
 | ARI push                          | `channex.push-ari:<property_id>:<room_type_id>:<date_start>_<date_end>:<inventory_version>:v1` |
-| Rolling calendar auto-open        | `pms.calendar-auto-open:<property_id>:<open_through>:v1`                                       |
+| Calendar auto-open                | `pms.calendar-auto-open:<property_id>:<open_through>:source-<source_fingerprint>:v2`           |
 | Booking expiry/cancellation sweep | `booking.lifecycle-sweep:<booking_id>:<action>:<deadline_or_window>:v1`                        |
 
 ### Job keys

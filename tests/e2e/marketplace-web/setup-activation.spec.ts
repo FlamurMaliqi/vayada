@@ -90,7 +90,7 @@ test.describe("marketplace-web shared setup activation", () => {
     await expect(unavailableAction).toBeDisabled();
     await expect(unavailableAction).toHaveAttribute(
       "title",
-      "Adding creators outside Vayada isn’t available yet.",
+      "Adding creators outside vayada isn’t available yet.",
     );
     await expect(page.getByRole("button", { name: "Add External Creator" })).toHaveCount(0);
   });
@@ -349,7 +349,7 @@ test.describe("marketplace-web shared setup activation", () => {
 
     await page.goto(setupUrl(baseURL));
 
-    await expect(page.getByRole("heading", { name: "Choose how you’ll use Vayada" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Choose how you’ll use vayada" })).toBeVisible();
     await page.getByLabel("Creator Marketplace").locator("xpath=ancestor::label").click();
     await page.getByRole("button", { name: "Continue" }).click();
     await expect(page.getByRole("heading", { name: "Let’s get to know your hotel" })).toBeVisible();
@@ -1378,7 +1378,7 @@ test.describe("marketplace-web shared setup activation", () => {
     expect(marketplaceProfileUpdates).toEqual([{ hostSummary: sharedCopy }]);
     await expect(page.getByLabel("Hotel description", { exact: true })).toHaveCount(0);
     await expect(
-      page.getByRole("checkbox", { name: /Show city and country on public Vayada surfaces/ }),
+      page.getByRole("checkbox", { name: /Show city and country on public vayada surfaces/ }),
     ).toHaveCount(0);
     await expect(page.getByRole("heading", { name: /Public hotel cover/ })).toHaveCount(0);
     await expect(page.getByLabel("Offer title", { exact: true })).toBeVisible();
@@ -1714,7 +1714,7 @@ test.describe("marketplace-web shared setup activation", () => {
     await expect(page.getByRole("button", { name: "Save collaboration offer" })).toBeDisabled();
     await expect(page.getByLabel("Hotel description", { exact: true })).toHaveCount(0);
     await expect(
-      page.getByRole("checkbox", { name: /Show city and country on public Vayada surfaces/ }),
+      page.getByRole("checkbox", { name: /Show city and country on public vayada surfaces/ }),
     ).toHaveCount(0);
   });
 

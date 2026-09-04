@@ -40,7 +40,7 @@ describe("room shuffle notice", () => {
     vi.unstubAllGlobals();
   });
 
-  it("shows the exact count for five seconds and stays silent for zero moves", () => {
+  it("shows the exact count for five seconds", () => {
     let visible!: ReactTestRenderer;
     act(() => {
       visible = create(createElement(RoomShuffleNotice, { bookingCount: 2, eventId: "command-1" }));
@@ -64,11 +64,22 @@ describe("room shuffle notice", () => {
     act(() => {
       visible.update(createElement(RoomShuffleNotice, { bookingCount: 3, eventId: "command-3" }));
     });
+  });
+
+  it("clears an active toast immediately when the next result has zero moves", () => {
+    let visible!: ReactTestRenderer;
+    act(() => {
+      visible = create(createElement(RoomShuffleNotice, { bookingCount: 3, eventId: "command-3" }));
+      vi.advanceTimersByTime(1_000);
+    });
+    expect(visible.root.findAllByProps({ role: "status" })).toHaveLength(1);
     act(() => {
       visible.update(createElement(RoomShuffleNotice, { bookingCount: 0, eventId: "command-4" }));
     });
     expect(visible.root.findAllByProps({ role: "status" })).toHaveLength(0);
+  });
 
+  it("stays silent when the first result has zero moves", () => {
     let silent!: ReactTestRenderer;
     act(() => {
       silent = create(

@@ -321,7 +321,15 @@ const publicOffers = {
 
 type MockBookingApisOptions = {
   supportedQuoteParameters?: Partial<typeof publicHotelProfile.hotel.supportedQuoteParameters>;
+  supportedLocales?: string[];
+  supportedCurrencies?: string[];
   headerLogoUrl?: string;
+  headerSettings?: {
+    showContactButton: boolean;
+    showReferAGuestButton: boolean;
+    showLanguageSelector: boolean;
+    showCurrencySelector: boolean;
+  };
   gardenAmenities?: string[];
   publicContacts?: typeof publicHotelProfile.hotel.publicContacts;
 };
@@ -332,10 +340,14 @@ export async function mockBookingApis(page: Page, options: MockBookingApisOption
     ...publicHotelProfile,
     hotel: {
       ...publicHotelProfile.hotel,
-      ...(options.headerLogoUrl
+      ...(options.headerLogoUrl || options.headerSettings
         ? {
             branding: {
-              logoUrl: options.headerLogoUrl,
+              logoUrl: options.headerLogoUrl ?? null,
+              showContactButton: options.headerSettings?.showContactButton ?? true,
+              showReferAGuestButton: options.headerSettings?.showReferAGuestButton ?? true,
+              showLanguageSelector: options.headerSettings?.showLanguageSelector ?? true,
+              showCurrencySelector: options.headerSettings?.showCurrencySelector ?? true,
               heroImage: null,
               heroHeading: null,
               heroSubtext: null,
@@ -345,6 +357,9 @@ export async function mockBookingApis(page: Page, options: MockBookingApisOption
           }
         : {}),
       publicContacts: options.publicContacts ?? publicHotelProfile.hotel.publicContacts,
+      supportedLocales: options.supportedLocales ?? publicHotelProfile.hotel.supportedLocales,
+      supportedCurrencies:
+        options.supportedCurrencies ?? publicHotelProfile.hotel.supportedCurrencies,
       supportedQuoteParameters: {
         ...publicHotelProfile.hotel.supportedQuoteParameters,
         ...options.supportedQuoteParameters,

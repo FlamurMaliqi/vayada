@@ -113,10 +113,18 @@ export async function readProductionBookingOwnership(
     [sourceRunId],
   );
   const slugs = await client.query<BookingPropertySlug>(
-    `SELECT slug, property_id::text AS "propertyId", purpose, status
-     FROM hotel_catalog.property_slugs
-     WHERE status = 'active'
-     ORDER BY slug, property_id`,
+    `SELECT source.slug, source.property_id::text AS "propertyId",
+            source.purpose, source.status,
+            target.property_id::text AS "redirectTargetPropertyId",
+            target.purpose AS "redirectTargetPurpose",
+            target.status AS "redirectTargetStatus"
+     FROM hotel_catalog.property_slugs source
+     LEFT JOIN hotel_catalog.property_slugs target ON target.id = source.redirects_to_id
+     WHERE (source.purpose = 'canonical' AND source.status = 'active')
+        OR (source.purpose = 'redirect' AND source.status = 'redirected'
+            AND target.purpose = 'canonical' AND target.status = 'active'
+            AND target.property_id = source.property_id)
+     ORDER BY source.slug, source.property_id`,
   );
   const media = await client.query<BookingMediaReference>(
     `SELECT media.id::text AS "mediaObjectId", media.property_id::text AS "propertyId",

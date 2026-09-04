@@ -4,6 +4,7 @@ import type { PmsTargetRecord } from "./productionPmsTypes.js";
 import { PRODUCTION_PMS_TABLES, PRODUCTION_PMS_WRITE_ORDER } from "./productionPmsTables.js";
 
 type QueryClient = Pick<pg.ClientBase, "query">;
+const WRITE_BATCH_SIZE = 500;
 
 export async function writeProductionPmsRecords(
   client: QueryClient,
@@ -33,13 +34,17 @@ export async function writeProductionPmsRecords(
     const conflict = definition.mutable
       ? `ON CONFLICT (${definition.key.join(", ")}) DO UPDATE SET ${updates}`
       : `ON CONFLICT (${definition.key.join(", ")}) DO NOTHING`;
-    const result = await client.query(
-      `INSERT INTO ${definition.table} (${names})
+    const sql = `INSERT INTO ${definition.table} (${names})
        SELECT ${values} FROM jsonb_to_recordset($1::jsonb) AS source(${aliases})
-       ${conflict}`,
-      [JSON.stringify(rows.map((row) => row.row))],
-    );
-    counts[targetTable] = result.rowCount ?? 0;
+       ${conflict}`;
+    counts[targetTable] = 0;
+    // Bound PostgreSQL's JSON expansion; the caller retains one transaction for all batches.
+    for (let offset = 0; offset < rows.length; offset += WRITE_BATCH_SIZE) {
+      const result = await client.query(sql, [
+        JSON.stringify(rows.slice(offset, offset + WRITE_BATCH_SIZE).map((row) => row.row)),
+      ]);
+      counts[targetTable] += result.rowCount ?? 0;
+    }
   }
   return counts;
 }

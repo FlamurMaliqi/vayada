@@ -15,6 +15,7 @@ export function createProductionMarketplaceContext(input: {
   const context: MarketplaceBuildContext = {
     ...input,
     blockers: [...(input.target.blockers ?? [])],
+    quarantines: [],
     rowsByTable: groupBy(input.rows, (row) => row.sourceTable),
     creatorById: new Map(),
     hotelById: new Map(),

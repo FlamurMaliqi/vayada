@@ -7,9 +7,11 @@ import type {
   BookingMediaReference,
   BookingPropertyLink,
   BookingPropertySlug,
+  ProductionBookingQuarantine,
+  ProductionBookingInference,
   ProductionBookingTargetState,
 } from "./productionBookingTypes.js";
-import { optionalText, requiredText, sourceId } from "./productionBookingValues.js";
+import { date, optionalText, requiredText, sha256, sourceId } from "./productionBookingValues.js";
 
 export function createProductionBookingContext(input: {
   sourceRunId: string;
@@ -42,12 +44,15 @@ export function createProductionBookingContext(input: {
   const mediaBySource = new Map(
     (input.target.media ?? []).map((media) => [`${media.sourceTable}:${media.sourceRowId}`, media]),
   );
+  const quarantines = collectGuestQuarantines(input.rows, bookingById, blockers);
+  const inferences = collectBillingPlanInferences(input.rows);
 
-  validateRequiredProperties(input.rows, propertyBySource, propertyBySlug, blockers);
-  validateUnsupportedSensitiveFields(input.rows, blockers);
+  validateRequiredProperties(input.rows, propertyBySource, blockers);
   return {
     ...input,
     blockers,
+    quarantines,
+    inferences,
     propertyBySource,
     ownerStatusBySource,
     propertyBySlug,
@@ -274,7 +279,14 @@ function propertySlugMap(
 ): Map<string, string> {
   const grouped = new Map<string, Set<string>>();
   for (const slug of slugs) {
-    if (slug.status !== "active") continue;
+    const canonical = slug.purpose === "canonical" && slug.status === "active";
+    const redirect =
+      slug.purpose === "redirect" &&
+      slug.status === "redirected" &&
+      slug.redirectTargetPurpose === "canonical" &&
+      slug.redirectTargetStatus === "active" &&
+      slug.redirectTargetPropertyId === slug.propertyId;
+    if (!canonical && !redirect) continue;
     const key = slug.slug.trim().toLowerCase();
     grouped.set(key, new Set([...(grouped.get(key) ?? []), slug.propertyId]));
   }
@@ -328,7 +340,6 @@ function uniqueMap(
 function validateRequiredProperties(
   rows: IdentitySourceRow[],
   bySource: Map<string, string>,
-  bySlug: Map<string, string>,
   blockers: IdentityMigrationBlocker[],
 ): void {
   for (const row of rows) {
@@ -353,39 +364,113 @@ function validateRequiredProperties(
         safeId(row),
         `No active catalog source link for ${key}`,
       );
-    if (row.sourceDatabase === "booking" && row.sourceTable === "booking_events") {
-      const slug = String(row.data["hotel_slug"] ?? "")
-        .trim()
-        .toLowerCase();
-      if (!slug || !bySlug.has(slug))
-        addBookingBlocker(
-          blockers,
-          "UNRESOLVED_EVENT_PROPERTY",
-          "booking.booking_events",
-          safeId(row),
-          "Event hotel_slug has no unique active target property",
-        );
-    }
   }
 }
 
-function validateUnsupportedSensitiveFields(
+function collectGuestQuarantines(
   rows: IdentitySourceRow[],
+  bookingById: Map<string, IdentitySourceRow>,
   blockers: IdentityMigrationBlocker[],
-): void {
-  for (const row of rows.filter((item) => item.sourceTable === "booking_additional_guests")) {
-    const unsupported = ["gender", "date_of_birth", "passport_number", "room_position"].filter(
-      (field) =>
-        row.data[field] !== null && row.data[field] !== undefined && row.data[field] !== "",
+): ProductionBookingQuarantine[] {
+  const quarantines: ProductionBookingQuarantine[] = [];
+  for (const row of rows.filter(
+    (item) => item.sourceDatabase === "pms" && item.sourceTable === "booking_additional_guests",
+  )) {
+    const sourceId = safeId(row);
+    const retentionUntil = guestRetentionUntil(row, bookingById, blockers);
+    if (!retentionUntil) continue;
+    if (isEmptyAdditionalGuest(row)) {
+      quarantines.push({
+        sourceDatabase: "pms",
+        sourceTable: row.sourceTable,
+        sourceId,
+        sourceField: "*",
+        sourceValueSha256: sha256(row.data),
+        reasonCode: "EMPTY_ADDITIONAL_GUEST_PLACEHOLDER",
+        retentionUntil,
+      });
+      continue;
+    }
+    for (const field of ["gender", "date_of_birth", "passport_number", "room_position"])
+      if (hasGuestValue(row.data[field]))
+        quarantines.push({
+          sourceDatabase: "pms",
+          sourceTable: row.sourceTable,
+          sourceId,
+          sourceField: field,
+          sourceValueSha256: sha256(row.data[field]),
+          reasonCode: "UNSUPPORTED_GUEST_PRIVATE_FIELD",
+          retentionUntil,
+        });
+  }
+  return quarantines.sort((left, right) =>
+    `${left.sourceTable}:${left.sourceId}:${left.sourceField}`.localeCompare(
+      `${right.sourceTable}:${right.sourceId}:${right.sourceField}`,
+    ),
+  );
+}
+
+function collectBillingPlanInferences(rows: IdentitySourceRow[]): ProductionBookingInference[] {
+  return rows
+    .filter(
+      (row) =>
+        row.sourceDatabase === "pms" &&
+        row.sourceTable === "bookings" &&
+        !String(row.data["billing_plan_at_creation"] ?? "").trim(),
+    )
+    .map((row) => ({
+      sourceDatabase: "pms" as const,
+      sourceTable: "bookings" as const,
+      sourceId: safeId(row),
+      sourceField: "billing_plan_at_creation" as const,
+      sourceValueSha256: sha256(row.data["billing_plan_at_creation"] ?? null),
+      sourceRowSha256: sha256(row.data),
+      inferredValue: "commission" as const,
+      reasonCode: "MISSING_BILLING_PLAN_PRE_SWITCH_COMMISSION" as const,
+    }))
+    .sort((left, right) => left.sourceId.localeCompare(right.sourceId));
+}
+
+export function isEmptyAdditionalGuest(row: IdentitySourceRow): boolean {
+  return ![
+    "first_name",
+    "last_name",
+    "email",
+    "phone",
+    "nationality",
+    "gender",
+    "date_of_birth",
+    "passport_number",
+    "room_position",
+  ].some((field) => hasGuestValue(row.data[field]));
+}
+
+function hasGuestValue(value: unknown): boolean {
+  return (
+    value !== null && value !== undefined && (typeof value !== "string" || value.trim() !== "")
+  );
+}
+
+function guestRetentionUntil(
+  row: IdentitySourceRow,
+  bookingById: Map<string, IdentitySourceRow>,
+  blockers: IdentityMigrationBlocker[],
+): string | null {
+  try {
+    const bookingId = requiredText(row.data["booking_id"], "booking_id").toLowerCase();
+    const checkOut = date(bookingById.get(bookingId)?.data["check_out"], "booking.check_out");
+    const retention = new Date(`${checkOut}T00:00:00Z`);
+    retention.setUTCFullYear(retention.getUTCFullYear() + 1);
+    return retention.toISOString().slice(0, 10);
+  } catch (error) {
+    addBookingBlocker(
+      blockers,
+      "INVALID_GUEST_QUARANTINE_RETENTION",
+      "pms.booking_additional_guests",
+      safeId(row),
+      error instanceof Error ? error.message : "Guest quarantine retention cannot be derived",
     );
-    if (unsupported.length)
-      addBookingBlocker(
-        blockers,
-        "UNSUPPORTED_SENSITIVE_GUEST_FIELDS",
-        "pms.booking_additional_guests",
-        safeId(row),
-        `Encrypted target contract required for: ${unsupported.join(", ")}`,
-      );
+    return null;
   }
 }
 

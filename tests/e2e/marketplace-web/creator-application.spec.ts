@@ -160,6 +160,7 @@ test("creator selects one compensation option when applying", async ({ page }) =
   });
 
   await page.goto("/marketplace");
+  await expect(page.getByText("Board", { exact: true })).toHaveCount(0);
   await page.getByRole("button", { name: "Apply", exact: true }).click();
   await expect(page.getByRole("heading", { name: "Apply for Collaboration" })).toBeVisible();
 
@@ -358,6 +359,8 @@ test("creator can navigate the hotel detail gallery", async ({ page }) => {
 
   const dialog = page.getByRole("dialog", { name: "Gallery hotel" });
   await expect(dialog).toBeVisible();
+  await expect(dialog.getByText("Board Type", { exact: true })).toHaveCount(0);
+  await expect(dialog.getByText("Meal plan included", { exact: true })).toHaveCount(0);
   const closeButton = dialog.getByRole("button", { name: "Close hotel details" });
   await expect(closeButton).toBeFocused();
   await expect(dialog.getByAltText("Gallery hotel - Image 1")).toHaveCount(0);
