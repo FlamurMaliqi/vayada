@@ -20,7 +20,7 @@ const outcomeMigration = await readFile(
   "utf8",
 );
 const currentOutcomeMigration = await readFile(
-  join(import.meta.dirname, "../migrations/0148_marketplace_matching_current_outcomes.sql"),
+  join(import.meta.dirname, "../migrations/0149_marketplace_matching_current_outcomes.sql"),
   "utf8",
 );
 const TEST_DATABASE_URL = process.env["TEST_DATABASE_URL"];
