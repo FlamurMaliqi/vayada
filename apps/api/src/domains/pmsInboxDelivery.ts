@@ -48,6 +48,11 @@ export type PmsInboxDeliveryProvider = {
   reconcile?(input: PmsInboxDeliveryProviderInput): Promise<PmsInboxDeliveryReconciliation>;
 };
 
+export type PmsInboxDeliveryProviderAvailability = Readonly<{
+  channex: boolean;
+  resend: boolean;
+}>;
+
 export type PmsInboxDeliveryJob = {
   id: string;
   workerId: string;
@@ -91,7 +96,10 @@ export type PmsInboxDeliveryCompletion =
 
 export type PmsInboxDeliveryStore = {
   claim(workerId: string): Promise<PmsInboxDeliveryJob | null>;
-  prepare(job: PmsInboxDeliveryJob): Promise<PmsInboxPreparedDelivery>;
+  prepare(
+    job: PmsInboxDeliveryJob,
+    providers: PmsInboxDeliveryProviderAvailability,
+  ): Promise<PmsInboxPreparedDelivery>;
   complete(job: PmsInboxDeliveryJob, completion: PmsInboxDeliveryCompletion): Promise<boolean>;
 };
 

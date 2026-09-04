@@ -187,9 +187,13 @@ export function createS3PlatformMediaAdapter(
         !/^[0-9a-f]{64}$/.test(input.expectedChecksumSha256)
       )
         throw new Error("Private object integrity evidence is invalid");
-      const object = await s3.send(
-        new GetObjectCommand({ Bucket: bucketName, Key: input.storageKey }),
-      );
+      let object: GetObjectCommandOutput;
+      try {
+        object = await s3.send(new GetObjectCommand({ Bucket: bucketName, Key: input.storageKey }));
+      } catch (error) {
+        if (isMissingS3ObjectError(error)) throw new PlatformMediaObjectIntegrityError();
+        throw error;
+      }
       if (
         !object.Body ||
         (object.ContentLength !== undefined && object.ContentLength !== input.expectedSizeBytes)

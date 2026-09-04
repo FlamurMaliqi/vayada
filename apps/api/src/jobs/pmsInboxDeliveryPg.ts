@@ -47,12 +47,13 @@ export function createPgPmsInboxDeliveryStore(config: {
   let closed = false;
   return {
     claim: (workerId) => transaction(pool, (client) => claimPmsInboxDeliveryJob(client, workerId)),
-    prepare: (job) =>
+    prepare: (job, providers) =>
       transaction(pool, (client) =>
         preparePmsInboxDeliveryJob(client, job, {
           media: config.media,
           emailReplyRoutes: config.emailReplyRoutes,
           emailDeliveryRoutes: config.emailDeliveryRoutes,
+          providers,
         }),
       ),
     complete: (job, completion) =>
@@ -191,6 +192,7 @@ export async function preparePmsInboxDeliveryJob(
     emailReplyRoutes: PmsInboxEmailReplyRouteReadPort;
     emailDeliveryRoutes: PmsInboxDeliveryEmailRoutePort;
     media: PmsInboxDeliveryMediaPort;
+    providers: { channex: boolean; resend: boolean };
   },
 ): Promise<PmsInboxPreparedDelivery> {
   const lease = await client.query(
@@ -298,6 +300,8 @@ export async function preparePmsInboxDeliveryJob(
     return { state: "blocked", failure: "ambiguous_provider_outcome" };
   const adapter = routeAdapter(row);
   if (!adapter) return { state: "blocked", failure: "provider_configuration_unavailable" };
+  if (!options.providers[adapter])
+    return { state: "blocked", failure: "provider_configuration_unavailable" };
   if (adapter === "resend") {
     const routes = await resolvePmsInboxEmailReplyRoutes(options.emailReplyRoutes, job.propertyId, [
       { threadId: row.threadId, guestEmail: row.guestEmail },

@@ -39,6 +39,21 @@ describe("S3 platform media private-object reads", () => {
     ).rejects.toBeInstanceOf(PlatformMediaObjectIntegrityError);
     expect(send).toHaveBeenCalledOnce();
   });
+
+  it("classifies a missing private object as permanent integrity failure", async () => {
+    const missing = new Error("missing");
+    missing.name = "NoSuchKey";
+    const reader = createS3PlatformMediaAdapter({
+      bucketName: "media-test",
+      cdnBaseUrl: "https://media.example.test",
+      publicCacheControl: "public, max-age=60",
+      s3Client: { send: vi.fn(async () => Promise.reject(missing)) } as never,
+    });
+
+    await expect(reader.readPrivateObject(input(new Uint8Array([1])))).rejects.toBeInstanceOf(
+      PlatformMediaObjectIntegrityError,
+    );
+  });
 });
 
 function adapter(send: ReturnType<typeof vi.fn>) {

@@ -34,9 +34,17 @@ describe("Channex guest-message delivery", () => {
     });
   });
 
-  it("retries an explicit provider outage before any message was accepted", async () => {
+  it("holds a Channex send rejected with 5xx because the provider has no idempotency key", async () => {
     const request = vi.fn<typeof fetch>().mockResolvedValue(new Response("", { status: 503 }));
     await expect(provider(request).send(input({ attachments: [] }))).resolves.toEqual({
+      ok: false,
+      failure: "ambiguous_provider_outcome",
+    });
+  });
+
+  it("retries an attachment upload outage before any guest-visible send", async () => {
+    const request = vi.fn<typeof fetch>().mockResolvedValue(new Response("", { status: 503 }));
+    await expect(provider(request).send(input())).resolves.toEqual({
       ok: false,
       failure: "transient_provider_failure",
     });

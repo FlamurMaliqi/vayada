@@ -138,13 +138,17 @@ async function providerRequest(
   const providerRequestId = response.headers.get("x-request-id") ?? undefined;
   if (!response.ok) {
     const failure =
-      response.status === 429 || response.status >= 500
+      response.status === 429
         ? "transient_provider_failure"
-        : response.status === 401 || response.status === 403
-          ? "provider_configuration_unavailable"
-          : operation === "upload" && [400, 413, 415, 422].includes(response.status)
-            ? "invalid_delivery_payload"
-            : "provider_rejected";
+        : response.status >= 500
+          ? operation === "send"
+            ? "ambiguous_provider_outcome"
+            : "transient_provider_failure"
+          : response.status === 401 || response.status === 403
+            ? "provider_configuration_unavailable"
+            : operation === "upload" && [400, 413, 415, 422].includes(response.status)
+              ? "invalid_delivery_payload"
+              : "provider_rejected";
     return { ok: false, failure, ...(providerRequestId ? { providerRequestId } : {}) };
   }
   const providerReference = responseId(await response.json().catch(() => null));

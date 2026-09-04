@@ -5,7 +5,7 @@ import { createPgPmsInboxDeliveryReceiptPort } from "./pmsInboxDeliveryReceipts.
 describe("PMS Inbox delivery receipts", () => {
   it("deduplicates trusted receipts and projects only inserted acknowledgements", async () => {
     const query = vi.fn(async (_sql: string, _values?: readonly unknown[]) => ({
-      rows: [{ recorded: true }],
+      rows: [{ matched: true, recorded: true }],
     }));
     const port = createPgPmsInboxDeliveryReceiptPort({
       connectionString: "",
@@ -13,23 +13,23 @@ describe("PMS Inbox delivery receipts", () => {
     });
     const acknowledgedAt = new Date("2026-09-04T01:00:00.000Z");
     await expect(
-      port.recordTrustedReceipt({
-        propertyId: "property-1",
-        messageId: "message-1",
-        attemptNumber: 1,
+      port.recordTrustedProviderReceipt({
+        adapter: "resend",
+        providerReference: "email-1",
         receiptType: "delivered",
         providerReceiptId: "receipt-1",
         acknowledgedAt,
       }),
-    ).resolves.toEqual({ recorded: true });
+    ).resolves.toEqual({ matched: true, recorded: true });
     const [sql, values] = query.mock.calls[0]!;
     expect(sql).toContain("attempt.outcome = 'accepted'");
+    expect(sql).toContain("attempt.provider_reference = $2");
     expect(sql).toContain("ON CONFLICT (property_id, provider_receipt_id)");
     expect(sql).toContain("latest_provider_receipt_at = GREATEST");
+    expect(sql).toContain("EXISTS (SELECT 1 FROM accepted) AS matched");
     expect(values).toEqual([
-      "property-1",
-      "message-1",
-      1,
+      "resend",
+      "email-1",
       "delivered",
       "receipt-1",
       acknowledgedAt.toISOString(),
@@ -43,10 +43,9 @@ describe("PMS Inbox delivery receipts", () => {
       pool: { query } as never,
     });
     await expect(
-      port.recordTrustedReceipt({
-        propertyId: "property-1",
-        messageId: "message-1",
-        attemptNumber: 0,
+      port.recordTrustedProviderReceipt({
+        adapter: "resend",
+        providerReference: "",
         receiptType: "read",
         providerReceiptId: "",
         acknowledgedAt: new Date("invalid"),

@@ -98,6 +98,7 @@ describe("PostgreSQL PMS Inbox delivery store", () => {
         emailReplyRoutes: createUnavailablePmsInboxEmailReplyRouteReadPort(),
         emailDeliveryRoutes: createUnavailablePmsInboxDeliveryEmailRoutePort(),
         media: { read },
+        providers: { channex: true, resend: true },
       }),
     ).resolves.toMatchObject({
       state: "ready",
@@ -129,6 +130,7 @@ describe("PostgreSQL PMS Inbox delivery store", () => {
         emailReplyRoutes: createUnavailablePmsInboxEmailReplyRouteReadPort(),
         emailDeliveryRoutes: createUnavailablePmsInboxDeliveryEmailRoutePort(),
         media: { read: vi.fn() },
+        providers: { channex: true, resend: true },
       }),
     ).resolves.toEqual({ state: "blocked", failure: "access_unavailable" });
     expect(query).toHaveBeenCalledTimes(2);
@@ -212,7 +214,7 @@ describe("PostgreSQL PMS Inbox delivery store", () => {
       media: { read: vi.fn() },
     });
 
-    await expect(store.prepare(JOB)).resolves.toEqual({
+    await expect(store.prepare(JOB, { channex: true, resend: true })).resolves.toEqual({
       state: "blocked",
       failure: "access_unavailable",
     });

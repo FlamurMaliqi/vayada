@@ -36,7 +36,10 @@ export async function runPmsInboxDeliveryJobs(
   for (let index = 0; index < (options.limit ?? 25); index += 1) {
     const job = await store.claim(workerId);
     if (!job) break;
-    const prepared = await store.prepare(job);
+    const prepared = await store.prepare(job, {
+      channex: Boolean(providers.channex),
+      resend: Boolean(providers.resend),
+    });
     let completion: PmsInboxDeliveryCompletion;
     if (prepared.state === "blocked") {
       completion = failedCompletion(job, prepared.failure, prepared.attemptId ?? null, options);

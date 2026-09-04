@@ -9,14 +9,13 @@ type Pool = {
 };
 
 export type PmsInboxDeliveryReceiptPort = {
-  recordTrustedReceipt(input: {
-    propertyId: string;
-    messageId: string;
-    attemptNumber: number;
+  recordTrustedProviderReceipt(input: {
+    adapter: "channex" | "resend";
+    providerReference: string;
     receiptType: "delivered" | "read";
     providerReceiptId: string;
     acknowledgedAt: Date;
-  }): Promise<{ recorded: boolean }>;
+  }): Promise<{ matched: boolean; recorded: boolean }>;
   close(): Promise<void>;
 };
 
@@ -27,31 +26,32 @@ export function createPgPmsInboxDeliveryReceiptPort(config: {
   const ownsPool = !config.pool;
   const pool = config.pool ?? new pg.Pool({ connectionString: config.connectionString, max: 2 });
   return {
-    async recordTrustedReceipt(input) {
+    async recordTrustedProviderReceipt(input) {
       if (
-        !Number.isInteger(input.attemptNumber) ||
-        input.attemptNumber < 1 ||
+        !input.providerReference.trim() ||
         !input.providerReceiptId.trim() ||
         !Number.isFinite(input.acknowledgedAt.getTime())
       )
         throw new Error("PMS Inbox delivery receipt is invalid");
-      const result = await pool.query<{ recorded: boolean }>(
+      const result = await pool.query<{ matched: boolean; recorded: boolean }>(
         `WITH accepted AS (
-           SELECT attempt.id
+           SELECT attempt.id, attempt.property_id, attempt.message_id
            FROM pms.message_delivery_attempts attempt
-           WHERE attempt.property_id = $1::uuid AND attempt.message_id = $2::uuid
-             AND attempt.attempt_number = $3 AND attempt.outcome = 'accepted'
+           WHERE attempt.adapter = $1 AND attempt.provider_reference = $2
+             AND attempt.outcome = 'accepted'
+           ORDER BY attempt.completed_at DESC, attempt.id DESC
+           LIMIT 1
          ), inserted AS (
            INSERT INTO pms.message_delivery_receipts (
              property_id, message_id, attempt_id, receipt_type,
              provider_receipt_id, acknowledged_at, receipt_metadata
            )
-           SELECT $1::uuid, $2::uuid, accepted.id, $4, $5, $6::timestamptz,
+           SELECT accepted.property_id, accepted.message_id, accepted.id, $3, $4, $5::timestamptz,
                   jsonb_build_object('source', 'trusted-provider-adapter')
            FROM accepted
            ON CONFLICT (property_id, provider_receipt_id)
              WHERE provider_receipt_id IS NOT NULL DO NOTHING
-           RETURNING acknowledged_at
+           RETURNING property_id, message_id, acknowledged_at
          ), projected AS (
            UPDATE pms.messages message
            SET latest_provider_receipt_at = GREATEST(
@@ -59,20 +59,23 @@ export function createPgPmsInboxDeliveryReceiptPort(config: {
              inserted.acknowledged_at
            )
            FROM inserted
-           WHERE message.property_id = $1::uuid AND message.id = $2::uuid
+           WHERE message.property_id = inserted.property_id AND message.id = inserted.message_id
            RETURNING message.id
          )
-         SELECT EXISTS (SELECT 1 FROM projected) AS recorded`,
+         SELECT EXISTS (SELECT 1 FROM accepted) AS matched,
+                EXISTS (SELECT 1 FROM projected) AS recorded`,
         [
-          input.propertyId,
-          input.messageId,
-          input.attemptNumber,
+          input.adapter,
+          input.providerReference.trim(),
           input.receiptType,
           input.providerReceiptId.trim(),
           input.acknowledgedAt.toISOString(),
         ],
       );
-      return { recorded: result.rows[0]?.recorded ?? false };
+      return {
+        matched: result.rows[0]?.matched ?? false,
+        recorded: result.rows[0]?.recorded ?? false,
+      };
     },
     async close() {
       if (ownsPool) await pool.end?.();

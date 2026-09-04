@@ -139,6 +139,7 @@ import { runPlatformMediaCleanupJobs } from "./jobs/platformMediaCleanup.js";
 import { startPmsInboxAssignmentReconciliationWorker } from "./jobs/pmsInboxAssignmentReconciliation.js";
 import { startPmsInboxFollowUpReleaseWorker } from "./jobs/pmsInboxFollowUpRelease.js";
 import { createPgPmsInboxDeliveryStore } from "./jobs/pmsInboxDeliveryPg.js";
+import { createPgPmsInboxDeliveryReceiptPort } from "./jobs/pmsInboxDeliveryReceipts.js";
 import { relayPmsInboxDeliveryOutbox } from "./jobs/pmsInboxDeliveryOutbox.js";
 import { runPmsInboxDeliveryJobs } from "./jobs/pmsInboxDeliveryWorker.js";
 import {
@@ -565,6 +566,7 @@ const providerWebhookSecrets = {
   stripe: config.providerWebhooks.stripeSecret,
   xendit: config.providerWebhooks.xenditSecret,
   channex: config.providerWebhooks.channexSecret,
+  resend: config.providerWebhooks.resendSecret,
 };
 const hasProviderWebhookSecret = Object.values(providerWebhookSecrets).some(Boolean);
 
@@ -690,6 +692,12 @@ const pmsInboxDeliveryStore =
         },
       })
     : undefined;
+const pmsInboxDeliveryReceipts = pmsInboxDeliveryPool
+  ? createPgPmsInboxDeliveryReceiptPort({
+      connectionString: targetDatabaseUrl,
+      pool: pmsInboxDeliveryPool,
+    })
+  : undefined;
 const pmsInboxChannexDelivery =
   config.channexManagement.capabilityModes.messaging === "mutating" &&
   config.channexManagement.apiBaseUrl &&
@@ -1149,6 +1157,7 @@ const app = buildApp({
           stripeConnectProvider,
           stripePaymentProvider: stripeBookingPaymentProvider,
         }),
+        pmsInboxDeliveryReceipts,
       }
     : undefined,
   bookingReservationsRepository,

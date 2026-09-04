@@ -3,7 +3,10 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vites
 
 import { relayPmsInboxDeliveryOutbox } from "../jobs/pmsInboxDeliveryOutbox.js";
 import { createPgPmsInboxDeliveryStore } from "../jobs/pmsInboxDeliveryPg.js";
-import { runPmsInboxDeliveryJobs } from "../jobs/pmsInboxDeliveryWorker.js";
+import {
+  runPmsInboxDeliveryJobs,
+  type PmsInboxDeliveryProviders,
+} from "../jobs/pmsInboxDeliveryWorker.js";
 import { createPgPmsInboxDeliveryReceiptPort } from "../jobs/pmsInboxDeliveryReceipts.js";
 import { PlatformMediaObjectIntegrityError } from "../platform/platformMediaS3.js";
 import type { PmsInboxEmailReplyRouteReadPort } from "./pmsInbox.js";
@@ -240,25 +243,32 @@ describe.skipIf(!URL)("PostgreSQL PMS Inbox manual reply command", () => {
     });
     const acknowledgedAt = new Date("2026-09-03T09:01:00.000Z");
     await expect(
-      receipts.recordTrustedReceipt({
-        propertyId: PROPERTY,
-        messageId,
-        attemptNumber: 1,
+      receipts.recordTrustedProviderReceipt({
+        adapter: "channex",
+        providerReference: "ota-message-1",
         receiptType: "delivered",
         providerReceiptId: "ota-receipt-1",
         acknowledgedAt,
       }),
-    ).resolves.toEqual({ recorded: true });
+    ).resolves.toEqual({ matched: true, recorded: true });
     await expect(
-      receipts.recordTrustedReceipt({
-        propertyId: PROPERTY,
-        messageId,
-        attemptNumber: 1,
+      receipts.recordTrustedProviderReceipt({
+        adapter: "channex",
+        providerReference: "ota-message-1",
         receiptType: "delivered",
         providerReceiptId: "ota-receipt-1",
         acknowledgedAt,
       }),
-    ).resolves.toEqual({ recorded: false });
+    ).resolves.toEqual({ matched: true, recorded: false });
+    await expect(
+      receipts.recordTrustedProviderReceipt({
+        adapter: "channex",
+        providerReference: "unknown-provider-reference",
+        receiptType: "delivered",
+        providerReceiptId: "ota-receipt-unknown",
+        acknowledgedAt,
+      }),
+    ).resolves.toEqual({ matched: false, recorded: false });
     expect(
       (
         await admin.query(
@@ -353,6 +363,23 @@ describe.skipIf(!URL)("PostgreSQL PMS Inbox manual reply command", () => {
     });
   });
 
+  it("holds missing runtime provider configuration without creating a provider attempt", async () => {
+    const accepted = await reply.reply(command("delivery-provider-disabled"));
+    const send = vi.fn<PmsInboxDeliveryProvider["send"]>();
+
+    await expect(
+      deliver(send, approvedEmailRoutes, approvedDeliveryEmailRoutes, { read: vi.fn() }, {}),
+    ).resolves.toMatchObject({ processed: 1, held: 1 });
+    expect(send).not.toHaveBeenCalled();
+    const messageId = accepted.ok ? accepted.value.messageId : "";
+    const persisted = await state(messageId);
+    expect(persisted.message).toMatchObject({
+      deliveryState: "held",
+      deliveryReasonCode: "provider_configuration_unavailable",
+    });
+    expect(persisted.counts.attempts).toBe(0);
+  });
+
   it("retries a known provider failure with stable identity and persists only one acceptance", async () => {
     const accepted = await reply.reply(command("provider-retry"));
     const send = vi
@@ -443,7 +470,10 @@ describe.skipIf(!URL)("PostgreSQL PMS Inbox manual reply command", () => {
         const original = await store.claim("crashed-worker");
         expect(original?.attemptNumber).toBe(5);
         if (!original) throw new Error("Expected a claimed job");
-        if (started) expect((await store.prepare(original)).state).toBe("ready");
+        if (started)
+          expect((await store.prepare(original, { channex: true, resend: true })).state).toBe(
+            "ready",
+          );
         await admin.query(
           "UPDATE platform.jobs SET locked_at = now() - interval '6 minutes' WHERE id = $1::uuid",
           [original.id],
@@ -754,6 +784,7 @@ describe.skipIf(!URL)("PostgreSQL PMS Inbox manual reply command", () => {
     media: PmsInboxDeliveryMediaPort = {
       read: async ({ expectedSizeBytes }) => new Uint8Array(expectedSizeBytes),
     },
+    providers: PmsInboxDeliveryProviders = { channex: { send }, resend: { send } },
   ) {
     await relayPmsInboxDeliveryOutbox(URL!, { now: new Date(NOW) });
     const store = createPgPmsInboxDeliveryStore({
@@ -763,7 +794,7 @@ describe.skipIf(!URL)("PostgreSQL PMS Inbox manual reply command", () => {
       media,
     });
     try {
-      return await runPmsInboxDeliveryJobs(store, { channex: { send }, resend: { send } });
+      return await runPmsInboxDeliveryJobs(store, providers);
     } finally {
       await store.close();
     }
