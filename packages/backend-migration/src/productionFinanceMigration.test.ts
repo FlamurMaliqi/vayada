@@ -107,7 +107,6 @@ function serviceFixture(): ProductionFinanceMigrationServices {
     resourceLinks: [],
     guestBookings: [],
     userIds: [],
-    identityEntitlements: [],
   };
   return {
     readSnapshot: vi.fn(async () => ({ rows: [], completedAt: "2026-08-30T00:00:00.000Z" })),

@@ -84,6 +84,42 @@ describe("production Finance plan", () => {
     expect(JSON.stringify(plan)).not.toContain("pi_exact");
   });
 
+  it("leaves the trigger-owned Identity entitlement link out of post-write reconciliation", () => {
+    const rows = sourceRows().filter((row) => row.sourceTable !== "payouts");
+    const initial = buildProductionFinancePlan({
+      sourceRunId: RUN,
+      completedAt: "2026-08-30T00:00:00.000Z",
+      rows,
+      target: target(),
+    });
+    const billing = initial.records.find((row) => row.targetTable === "billing_entitlements")!;
+    expect(billing.row).not.toHaveProperty("identityEntitlementId");
+
+    const state = target();
+    state.records = initial.records.map((record) => ({
+      targetProduct: "finance",
+      targetTable: record.targetTable,
+      targetId: record.targetId,
+      updatedAt: String(record.row["updatedAt"]),
+      row:
+        record.targetTable === "billing_entitlements"
+          ? { ...record.row, identityEntitlementId: "a0000000-0000-4000-8000-000000000001" }
+          : record.row,
+    }));
+    state.provenance = initial.provenance;
+
+    const verified = buildProductionFinancePlan({
+      sourceRunId: RUN,
+      completedAt: "2026-08-30T00:00:00.000Z",
+      rows,
+      target: state,
+    });
+
+    expect(verified.blockers).toEqual([]);
+    expect(verified.writes).toEqual([]);
+    expect(verified.checksum).toBe(initial.checksum);
+  });
+
   it("blocks folio fabrication and unsafe payout secret copying", () => {
     const rows = sourceRows();
     rows.splice(
@@ -1397,7 +1433,6 @@ function target(): ProductionFinanceTargetState {
       { id: TARGET_BOOKING, propertyId: PROPERTY, sourceBookingId: BOOKING, currency: "EUR" },
     ],
     userIds: [ADMIN],
-    identityEntitlements: [],
     records: [],
     provenance: [],
   };
