@@ -8,6 +8,7 @@ Decision inputs:
 - [VAY-1406 production coverage audit](https://linear.app/vayadacom/document/production-marketplace-matching-signal-coverage-audit-vay-1406-a659eb8a0257)
 - [VAY-1442 creator preference vocabulary and analytics decision](https://linear.app/vayadacom/issue/VAY-1442/define-creator-preference-vocabulary-and-save-analytics-contract)
 - [VAY-1445 matching event storage and retention decision](https://linear.app/vayadacom/issue/VAY-1445/define-matching-event-storage-and-retention-policy)
+- [VAY-1458 dismissal and feedback revision decision](https://linear.app/vayadacom/issue/VAY-1458/define-matching-dismissal-and-feedback-revision-semantics)
 
 This is the source of truth for Marketplace eligibility, two-sided scoring,
 explanations, measurement, and rollout. It defines a rules-based service
@@ -15,12 +16,17 @@ contract, not a learned or AI ranking model.
 
 Version 2 approves the first-party measurement boundary, qualified-impression
 semantics, event deduplication and attribution windows, rating treatment, and
-retention/privacy rules. It does not approve production ranking weights,
-thresholds, or rollout cohorts.
+retention/privacy rules. It also defines creator dismissal reasons and how
+editable feedback revisions continue after measurement events expire. It does
+not approve production ranking weights, thresholds, or rollout cohorts.
 
 VAY-1445 records the requester's human product/privacy approval for these
 measurement decisions on 2026-09-03. Implementation remains gated on the
 notice, deletion/export path, and access controls defined below.
+
+VAY-1458 records the requester's product approval for dismissal and revision
+semantics on 2026-09-04. These decisions close ambiguities before the related
+source models or event producers exist; they do not change live behavior.
 
 ## Current release posture
 
@@ -378,6 +384,26 @@ must not inherit the current policy or invent a presentation mode.
 Shadow evaluation emits `evaluated` only. It must not emit an `impression` or
 claim that the computed order was presented.
 
+### Creator dismissal reasons
+
+`marketplace.match.dismissed.v1` accepts no free text. Its optional
+`dismissalReason` is either `null` or one stable code from this closed set:
+
+| Stable code                 | Creator-facing label           |
+| --------------------------- | ------------------------------ |
+| `destination_not_suitable`  | Destination doesn't fit        |
+| `dates_not_suitable`        | Dates don't work               |
+| `compensation_not_suitable` | Compensation doesn't fit       |
+| `deliverables_not_suitable` | Content requirements don't fit |
+| `brief_not_suitable`        | Brief or workload doesn't fit  |
+| `not_interested`            | Not interested right now       |
+| `other`                     | Other                          |
+
+The UI may let the creator dismiss without selecting a reason, which stores
+`null`. Selecting `other` does not reveal a text field. The server rejects
+unknown codes. Dismissal reasons are measurement inputs, not explanation
+reasons, and the two vocabularies must not be reused interchangeably.
+
 ### Authoritative producers and current capability
 
 The producer is the same transaction that persists the authoritative fact. It
@@ -403,6 +429,35 @@ Lifecycle event keys are derived from the named source ID, transition, and
 revision, and command replay returns the already persisted event. A later
 contract may introduce revisions only after the source model persists them;
 calling the current endpoint again cannot synthesize a revision.
+
+### Feedback and guardrail revisions
+
+Editable satisfaction and guardrail facts use an authoritative current source
+record, not retained measurement events, as their revision authority. A
+satisfaction stream has a stable `feedbackId` for one collaboration and
+respondent side. A guardrail stream has a stable `guardrailId` for one
+collaboration and guardrail occurrence. Each source record stores only its
+latest structured outcome or state and its current positive integer revision.
+
+Creating a record writes revision `1`. An edit supplies the expected current
+revision; the server atomically verifies it, updates the source to exactly the
+next revision, and emits the matching event in the same transaction. The
+client cannot choose the new revision. If two edits use the same expected
+revision, one succeeds and the other receives a conflict and must reload.
+
+Expiry of raw measurement events does not reset or renumber the source record.
+For example, if the source is revision `8` after older event revisions expire,
+the next accepted edit is revision `9`. Event storage must validate an emitted
+revision against that authoritative source transition, not infer the next
+revision from the maximum retained matching event. No separate permanent
+matching revision cursor or high-water table is permitted.
+
+The authoritative current record follows the owning product's retention,
+export, and subject-deletion policy. Deleting it also deletes its revision
+state. A genuinely new response or guardrail after deletion receives a new
+source ID and starts at revision `1`; a deleted identity must not be recreated
+only to preserve numbering. Until these source models and transitions exist,
+their event producers remain absent.
 
 The canonical platform envelope uses event key
 `<eventType>:<sourceId>:<revision>`, resource product `marketplace`, resource type
@@ -540,6 +595,10 @@ VAY-1415 must approve them before a limited cohort.
   in the privacy notice. It is not marketing communication and does not depend
   on the analytics-cookie toggle. Collection remains feature-flagged off until
   the notice and the retention/delete/export implementation are reviewed.
+- Authoritative satisfaction and guardrail source records are operational
+  product facts, not raw measurement history. They retain only the latest
+  structured state and revision, contain no historical free text, and follow
+  the owning product's retention, export, and subject-deletion policy.
 - Provider-derived evidence may influence an evaluation only while the
   connection, imported-field authorization, applicable consent, and freshness
   are active. Events keep only approved derived classes and codes.
