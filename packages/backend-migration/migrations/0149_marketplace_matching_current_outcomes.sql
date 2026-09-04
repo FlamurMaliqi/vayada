@@ -1,4 +1,4 @@
--- Migration: 0148_marketplace_matching_current_outcomes
+-- Migration: 0149_marketplace_matching_current_outcomes
 -- Owner: domain-marketplace; see VAY-1459, engineering/marketplace-matching-contract.md
 
 DROP INDEX marketplace.uq_marketplace_matching_satisfaction_revision;
