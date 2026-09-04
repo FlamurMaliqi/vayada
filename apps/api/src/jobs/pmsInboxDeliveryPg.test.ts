@@ -239,6 +239,7 @@ function delivery() {
     organizationId: "13750000-0000-4000-8000-000000000006",
     actorUserId: "13750000-0000-4000-8000-000000000007",
     actorMembershipId: "13750000-0000-4000-8000-000000000008",
+    emailIdempotencyExpired: false,
     body: "Welcome!",
     deliveryState: "queued",
     deliveryChannel: "ota",

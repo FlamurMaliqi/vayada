@@ -532,7 +532,7 @@ const text = (value: unknown): string | null =>
   typeof value === "string" && value.trim() ? value.trim() : null;
 function dates(from: string, to: string): string[] {
   const result: string[] = [];
-  for (let date = new Date(`${from}T00:00:00Z`); date < new Date(`${to}T00:00:00Z`);) {
+  for (let date = new Date(`${from}T00:00:00Z`); date < new Date(`${to}T00:00:00Z`); ) {
     result.push(date.toISOString().slice(0, 10));
     date = new Date(date.getTime() + 86_400_000);
   }

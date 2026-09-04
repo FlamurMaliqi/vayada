@@ -51,6 +51,14 @@ describe("Resend PMS Inbox delivery", () => {
     });
   });
 
+  it.each([
+    [200, {}, "ambiguous_provider_outcome"],
+    [409, { name: "idempotency_key_in_use" }, "ambiguous_provider_outcome"],
+  ])("holds an uncertain %s response for manual review", async (status, body, failure) => {
+    const request = vi.fn<typeof fetch>().mockResolvedValue(json(body, status));
+    await expect(provider(request).send(input())).resolves.toEqual({ ok: false, failure });
+  });
+
   it("rejects missing direct-email routing without calling Resend", async () => {
     const request = vi.fn<typeof fetch>();
     await expect(provider(request).send(input({ recipientEmail: null }))).resolves.toEqual({

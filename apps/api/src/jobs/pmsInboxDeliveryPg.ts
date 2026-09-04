@@ -142,6 +142,7 @@ type DeliveryRow = {
   organizationId: string | null;
   actorMembershipId: string | null;
   actorUserId: string | null;
+  emailIdempotencyExpired: boolean;
   body: string;
   deliveryState: string;
   deliveryChannel: "ota" | "email";
@@ -205,6 +206,12 @@ export async function preparePmsInboxDeliveryJob(
             source.event_metadata ->> 'organizationId' AS "organizationId",
             source.event_metadata ->> 'actorMembershipId' AS "actorMembershipId",
             source.actor_user_id::text AS "actorUserId",
+            EXISTS (
+              SELECT 1 FROM pms.message_delivery_attempts previous
+              WHERE previous.message_id = message.id AND previous.property_id = message.property_id
+                AND previous.adapter = 'resend'
+                AND previous.started_at <= clock_timestamp() - interval '23 hours'
+            ) AS "emailIdempotencyExpired",
             EXISTS (
               SELECT 1 FROM pms.channel_connections connection
               WHERE connection.property_id = message.property_id
@@ -278,6 +285,8 @@ export async function preparePmsInboxDeliveryJob(
     ))
   )
     return { state: "blocked", failure: "access_unavailable" };
+  if (row.deliveryChannel === "email" && row.emailIdempotencyExpired)
+    return { state: "blocked", failure: "ambiguous_provider_outcome" };
   const adapter = routeAdapter(row);
   if (!adapter) return { state: "blocked", failure: "provider_configuration_unavailable" };
   if (adapter === "resend") {
@@ -492,7 +501,11 @@ async function failProviderAttempt(
   const updated = await client.query(
     `UPDATE pms.message_delivery_attempts
      SET outcome = $4, completed_at = now(), failure_code = $5,
-         failure_metadata = jsonb_build_object('providerRequestId', $6::text)
+         provider_reference = COALESCE($7, provider_reference),
+         failure_metadata = jsonb_build_object(
+           'providerRequestId', $6::text,
+           'acceptedProviderReferences', COALESCE($8::jsonb, '[]'::jsonb)
+         )
      WHERE id = $1::uuid AND message_id = $2::uuid AND property_id = $3::uuid
        AND outcome = 'running'`,
     [
@@ -502,6 +515,10 @@ async function failProviderAttempt(
       completion.projection.attemptOutcome,
       completion.failure,
       completion.providerRequestId ?? null,
+      completion.acceptedProviderReferences?.join(",") || null,
+      completion.acceptedProviderReferences
+        ? JSON.stringify(completion.acceptedProviderReferences)
+        : null,
     ],
   );
   if (updated.rowCount !== 1)

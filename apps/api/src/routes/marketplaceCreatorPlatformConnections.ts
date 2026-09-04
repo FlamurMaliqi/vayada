@@ -52,7 +52,12 @@ export type CreatorPlatformConnectionDocument = {
 };
 
 type AuthorizationStatus =
-  "authorizing" | "processing" | "pending_account_selection" | "active" | "failed" | "expired";
+  | "authorizing"
+  | "processing"
+  | "pending_account_selection"
+  | "active"
+  | "failed"
+  | "expired";
 
 type AuthorizationRecord = {
   authorizationId: string;

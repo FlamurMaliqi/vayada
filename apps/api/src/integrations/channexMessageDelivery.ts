@@ -36,7 +36,13 @@ export function createChannexMessageDelivery(config: {
           attachmentId,
         });
         if (!sent.ok)
-          return references.length ? { ok: false, failure: "ambiguous_provider_outcome" } : sent;
+          return references.length
+            ? {
+                ok: false,
+                failure: "ambiguous_provider_outcome",
+                acceptedProviderReferences: references,
+              }
+            : sent;
         references.push(sent.providerReference);
       }
       return { ok: true, providerReference: references.join(",") };
@@ -115,9 +121,11 @@ async function providerRequest(
     const failure =
       response.status === 429 || response.status >= 500
         ? "transient_provider_failure"
-        : operation === "upload" && [400, 413, 415, 422].includes(response.status)
-          ? "invalid_delivery_payload"
-          : "provider_rejected";
+        : response.status === 401 || response.status === 403
+          ? "provider_configuration_unavailable"
+          : operation === "upload" && [400, 413, 415, 422].includes(response.status)
+            ? "invalid_delivery_payload"
+            : "provider_rejected";
     return { ok: false, failure, ...(providerRequestId ? { providerRequestId } : {}) };
   }
   const providerReference = responseId(await response.json().catch(() => null));
@@ -125,7 +133,7 @@ async function providerRequest(
     ? { ok: true, providerReference }
     : {
         ok: false,
-        failure: "provider_rejected",
+        failure: operation === "send" ? "ambiguous_provider_outcome" : "provider_rejected",
         ...(providerRequestId ? { providerRequestId } : {}),
       };
 }

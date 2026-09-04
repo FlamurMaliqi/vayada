@@ -81,6 +81,14 @@ describe("PMS Inbox delivery worker", () => {
       attemptId: "attempt-1",
       projection: { state: "held", reasonCode: "ambiguous_provider_outcome", retry: false },
     });
+
+    const unexpected = readyStore();
+    await runPmsInboxDeliveryJobs(unexpected, {
+      channex: { send: vi.fn(async () => Promise.reject(new Error("adapter crashed"))) },
+    });
+    expect(completion(unexpected)).toMatchObject({
+      projection: { state: "held", reasonCode: "ambiguous_provider_outcome", retry: false },
+    });
   });
 
   it("dead-letters exhausted transient failures", async () => {

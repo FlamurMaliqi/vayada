@@ -52,6 +52,20 @@ describe("Channex guest-message delivery", () => {
     await expect(provider(request).send(input())).resolves.toEqual({
       ok: false,
       failure: "ambiguous_provider_outcome",
+      acceptedProviderReferences: ["message-1"],
+    });
+  });
+
+  it.each([
+    [200, "ambiguous_provider_outcome"],
+    [401, "provider_configuration_unavailable"],
+  ])("classifies a %s send without pretending it is safe to resend", async (status, failure) => {
+    const response =
+      status === 200 ? new Response("not-json", { status }) : new Response("", { status });
+    const request = vi.fn<typeof fetch>().mockResolvedValue(response);
+    await expect(provider(request).send(input({ attachments: [] }))).resolves.toEqual({
+      ok: false,
+      failure,
     });
   });
 });

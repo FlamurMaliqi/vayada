@@ -55,7 +55,10 @@ export async function runPmsInboxDeliveryJobs(
           options,
         );
       } else {
-        const result = await provider.send(prepared.input);
+        const result = await provider.send(prepared.input).catch(() => ({
+          ok: false as const,
+          failure: "ambiguous_provider_outcome" as const,
+        }));
         completion = result.ok
           ? {
               outcome: "accepted",
@@ -68,6 +71,7 @@ export async function runPmsInboxDeliveryJobs(
               prepared.attemptId,
               options,
               result.providerRequestId,
+              result.acceptedProviderReferences,
             );
       }
     }
@@ -89,6 +93,7 @@ function failedCompletion(
   attemptId: string | null,
   options: { now?: () => Date; random?: () => number },
   providerRequestId?: string,
+  acceptedProviderReferences?: readonly string[],
 ): PmsInboxDeliveryCompletion {
   const projection = projectPmsInboxDeliveryFailure(failure, job.attemptNumber, job.maxAttempts);
   return {
@@ -97,6 +102,7 @@ function failedCompletion(
     failure: projection.reasonCode === "retry_exhausted" ? "retry_exhausted" : failure,
     projection,
     ...(providerRequestId ? { providerRequestId } : {}),
+    ...(acceptedProviderReferences?.length ? { acceptedProviderReferences } : {}),
     ...(projection.retry
       ? {
           retryAt: nextPmsInboxDeliveryRunAt(

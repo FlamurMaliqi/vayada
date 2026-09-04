@@ -767,7 +767,9 @@ function failure(code: string, currentRevision?: number): BookingDesignCommandRe
         ok: false,
         error: {
           code: code as
-            "command_in_progress" | "idempotency_key_conflict" | "setup_scope_unavailable",
+            | "command_in_progress"
+            | "idempotency_key_conflict"
+            | "setup_scope_unavailable",
         },
       };
 }

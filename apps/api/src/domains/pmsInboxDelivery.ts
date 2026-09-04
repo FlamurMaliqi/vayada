@@ -30,7 +30,12 @@ export type PmsInboxDeliveryProviderInput = {
 
 export type PmsInboxDeliveryProviderResult =
   | { ok: true; providerReference: string }
-  | { ok: false; failure: PmsInboxDeliveryFailure; providerRequestId?: string };
+  | {
+      ok: false;
+      failure: PmsInboxDeliveryFailure;
+      providerRequestId?: string;
+      acceptedProviderReferences?: readonly string[];
+    };
 
 export type PmsInboxDeliveryProvider = {
   send(input: PmsInboxDeliveryProviderInput): Promise<PmsInboxDeliveryProviderResult>;
@@ -73,6 +78,7 @@ export type PmsInboxDeliveryCompletion =
       failure: PmsInboxDeliveryFailure | "retry_exhausted";
       projection: PmsInboxDeliveryProjection;
       providerRequestId?: string;
+      acceptedProviderReferences?: readonly string[];
       retryAt?: Date;
     };
 

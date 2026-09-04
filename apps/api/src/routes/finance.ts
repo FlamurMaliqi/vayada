@@ -2557,7 +2557,8 @@ async function createStripeProviderAccountInClient(
   }
 
   let loserCompensation:
-    { kind: "compensated" } | { kind: "durably_owned"; account: StripeProviderAccountOwnershipRow };
+    | { kind: "compensated" }
+    | { kind: "durably_owned"; account: StripeProviderAccountOwnershipRow };
   try {
     loserCompensation = await compensateStripeProviderAccountIfUnowned(
       client,
@@ -6593,7 +6594,8 @@ function currencyArray(value: unknown): string[] | null {
 }
 
 type FinanceJsonPolicyBodyResult =
-  { ok: true; value: FinanceJsonPolicy } | { ok: false; error: FinanceValidationError };
+  | { ok: true; value: FinanceJsonPolicy }
+  | { ok: false; error: FinanceValidationError };
 
 function jsonPolicyBody(value: unknown, name: string): FinanceJsonPolicyBodyResult {
   const record = plainRecord(value);

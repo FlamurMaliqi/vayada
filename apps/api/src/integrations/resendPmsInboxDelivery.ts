@@ -51,7 +51,7 @@ export function createResendPmsInboxDelivery(config: {
       const providerReference = responseId(body);
       return providerReference
         ? { ok: true, providerReference }
-        : { ok: false, failure: "provider_rejected" };
+        : { ok: false, failure: "ambiguous_provider_outcome" };
     },
   };
 }
@@ -64,11 +64,13 @@ function failure(response: Response, body: unknown): PmsInboxDeliveryProviderRes
     response.status >= 500 ||
     (response.status === 409 && name === "concurrent_idempotent_requests")
       ? "transient_provider_failure"
-      : response.status === 401 || response.status === 403 || name === "invalid_from_address"
-        ? "provider_configuration_unavailable"
-        : [400, 413, 422].includes(response.status)
-          ? "invalid_delivery_payload"
-          : "provider_rejected";
+      : response.status === 409
+        ? "ambiguous_provider_outcome"
+        : response.status === 401 || response.status === 403 || name === "invalid_from_address"
+          ? "provider_configuration_unavailable"
+          : [400, 413, 422].includes(response.status)
+            ? "invalid_delivery_payload"
+            : "provider_rejected";
   return { ok: false as const, failure, ...(providerRequestId ? { providerRequestId } : {}) };
 }
 
