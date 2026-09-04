@@ -3,6 +3,7 @@ import type { ProductionMigrationSourceLink } from "./productionBookingTypes.js"
 import {
   block,
   createProductionFinanceContext,
+  disposition,
   organizationFor,
   propertyFor,
   sourceId,
@@ -92,6 +93,7 @@ export function reconcileProductionFinanceRecords(
     else counts.preservedTargetDeletions += 1;
   }
   validateReconciledReferentialClosure(context, writes, actions);
+  addUnboundBookingAllocationDispositions(context, records);
   counts.plannedRecords = records.length;
   const dispositions = [...context.dispositions].sort((left, right) =>
     dispositionKey(left).localeCompare(dispositionKey(right)),
@@ -175,7 +177,8 @@ export function reconcileProductionFinanceRecords(
       "omitted",
     ),
     targetPayoutNetByCurrencyStatusOwner: economicSums(records, "payouts", "netAmount"),
-    sourcePayoutAllocationsByBookingOwner: rawPayoutAllocations(context),
+    sourcePayoutAllocationsByBookingOwner: rawPayoutAllocations(context, "all"),
+    omittedPayoutAllocationsByBookingOwner: rawPayoutAllocations(context, "omitted"),
     targetPayoutAllocationsByBookingOwner: targetPayoutAllocations(context, records),
   };
   for (const [source, target, omitted, code, table, message] of [
@@ -246,7 +249,7 @@ export function reconcileProductionFinanceRecords(
     [
       parity.sourcePayoutAllocationsByBookingOwner,
       parity.targetPayoutAllocationsByBookingOwner,
-      {},
+      parity.omittedPayoutAllocationsByBookingOwner,
       "FINANCE_PAYOUT_ALLOCATION_PARITY_MISMATCH",
       "payouts",
       "booking-owner allocations",
@@ -641,48 +644,47 @@ function blockUnreadableEconomicValue(
   );
 }
 
-function rawPayoutAllocations(context: FinanceBuildContext): Record<string, string> {
-  const sums = new Map<string, bigint>();
-  const invalidAllocations = new Set(
-    context.dispositions
-      .filter((row) =>
-        [
-          "INVALID_BOOKING_FINANCE_ALLOCATION",
-          "BOOKING_FINANCE_ALLOCATION_EVIDENCE_REQUIRED",
-        ].includes(row.reasonCode),
-      )
-      .map((row) => row.sourceId),
-  );
+type BookingPayoutAllocation = {
+  key: string;
+  amount: string;
+  sourceField: "affiliate_commission_amount" | "property_payout_amount";
+};
+
+function addUnboundBookingAllocationDispositions(
+  context: FinanceBuildContext,
+  records: FinanceTargetRecord[],
+): void {
+  const target = targetPayoutAllocations(context, records, true);
   for (const booking of sourceRows(context, "pms", "bookings")) {
     try {
-      const bookingId = sourceId(booking);
-      if (invalidAllocations.has(bookingId)) continue;
-      const fields = [
-        "platform_fee_amount",
-        "affiliate_commission_amount",
-        "property_payout_amount",
-      ];
-      if (fields.every((field) => booking.data[field] == null || booking.data[field] === ""))
-        continue;
-      const hotelId = uuid(booking.data["hotel_id"], "hotel_id");
-      const propertyId = propertyFor(context, "pms", "hotels", hotelId);
-      addAllocation(
-        sums,
-        `${dimension("booking", bookingId)}:property:${dimension("owner", propertyId)}`,
-        exactMoney(booking.data["property_payout_amount"], "property_payout_amount"),
-      );
-      const affiliateAmount = exactMoney(
-        booking.data["affiliate_commission_amount"],
-        "affiliate_commission_amount",
-      );
-      if (minor(affiliateAmount) > 0n) {
-        const affiliateId = uuid(booking.data["affiliate_id"], "affiliate_id");
-        const organizationId = organizationFor(context, "affiliate", "affiliate", affiliateId);
-        addAllocation(
-          sums,
-          `${dimension("booking", bookingId)}:organization:${dimension("owner", organizationId)}`,
-          affiliateAmount,
-        );
+      if (hasInvalidBookingAllocation(context, booking)) continue;
+      for (const allocation of bookingPayoutAllocations(context, booking)) {
+        if (target[allocation.key] !== undefined) continue;
+        disposition(context, booking, {
+          sourceField: allocation.sourceField,
+          sourceValue: allocation.amount,
+          reasonCode: "BOOKING_FINANCE_ALLOCATION_EVIDENCE_REQUIRED",
+          disposition: "unbound_history",
+        });
+      }
+    } catch {
+      // Booking allocation validation already records incomplete or invalid evidence.
+    }
+  }
+}
+
+function rawPayoutAllocations(
+  context: FinanceBuildContext,
+  selection: "all" | "omitted",
+): Record<string, string> {
+  const sums = new Map<string, bigint>();
+  for (const booking of sourceRows(context, "pms", "bookings")) {
+    try {
+      if (hasInvalidBookingAllocation(context, booking)) continue;
+      for (const allocation of bookingPayoutAllocations(context, booking)) {
+        if (selection === "omitted" && !hasAllocationDisposition(context, booking, allocation))
+          continue;
+        addAllocation(sums, allocation.key, allocation.amount);
       }
     } catch {
       // Booking allocation validation emits the blocking evidence.
@@ -694,38 +696,99 @@ function rawPayoutAllocations(context: FinanceBuildContext): Record<string, stri
 function targetPayoutAllocations(
   context: FinanceBuildContext,
   records: FinanceTargetRecord[],
+  includeZero = false,
 ): Record<string, string> {
   const sourceBookingByTarget = new Map(
     context.target.guestBookings.map((booking) => [booking.id, booking.sourceBookingId]),
   );
   const sums = new Map<string, bigint>();
-  const invalidAllocations = new Set(
-    context.dispositions
-      .filter((row) =>
-        [
-          "INVALID_BOOKING_FINANCE_ALLOCATION",
-          "BOOKING_FINANCE_ALLOCATION_EVIDENCE_REQUIRED",
-        ].includes(row.reasonCode),
-      )
-      .map((row) => row.sourceId),
-  );
   for (const record of records.filter((row) => row.targetTable === "payouts")) {
     const bookingId = sourceBookingByTarget.get(String(record.row["guestBookingId"]));
     if (!bookingId) continue;
-    if (invalidAllocations.has(bookingId)) continue;
+    const booking = context.pmsBookingById.get(bookingId);
+    if (!booking || hasInvalidBookingAllocation(context, booking)) continue;
     const scope = String(record.row["ownerScope"]);
     const owner = String(record.row[scope === "property" ? "propertyId" : "organizationId"]);
     addAllocation(
       sums,
       `${dimension("booking", bookingId)}:${scope}:${dimension("owner", owner)}`,
       String(record.row["amount"]),
+      includeZero,
     );
   }
   return formattedSums(sums);
 }
 
-function addAllocation(sums: Map<string, bigint>, key: string, amount: string): void {
-  if (minor(amount) > 0n) sums.set(key, (sums.get(key) ?? 0n) + minor(amount));
+function bookingPayoutAllocations(
+  context: FinanceBuildContext,
+  booking: IdentitySourceRow,
+): BookingPayoutAllocation[] {
+  const fields = ["platform_fee_amount", "affiliate_commission_amount", "property_payout_amount"];
+  if (fields.every((field) => booking.data[field] == null || booking.data[field] === "")) return [];
+  const bookingId = sourceId(booking);
+  const hotelId = uuid(booking.data["hotel_id"], "hotel_id");
+  const propertyId = propertyFor(context, "pms", "hotels", hotelId);
+  const allocations: BookingPayoutAllocation[] = [
+    {
+      key: `${dimension("booking", bookingId)}:property:${dimension("owner", propertyId)}`,
+      amount: exactMoney(booking.data["property_payout_amount"], "property_payout_amount"),
+      sourceField: "property_payout_amount",
+    },
+  ];
+  const affiliateAmount = exactMoney(
+    booking.data["affiliate_commission_amount"],
+    "affiliate_commission_amount",
+  );
+  if (minor(affiliateAmount) > 0n) {
+    const affiliateId = uuid(booking.data["affiliate_id"], "affiliate_id");
+    const organizationId = organizationFor(context, "affiliate", "affiliate", affiliateId);
+    allocations.push({
+      key: `${dimension("booking", bookingId)}:organization:${dimension("owner", organizationId)}`,
+      amount: affiliateAmount,
+      sourceField: "affiliate_commission_amount",
+    });
+  }
+  return allocations.filter((allocation) => minor(allocation.amount) > 0n);
+}
+
+function hasInvalidBookingAllocation(
+  context: FinanceBuildContext,
+  booking: IdentitySourceRow,
+): boolean {
+  const bookingId = sourceId(booking);
+  return context.dispositions.some(
+    (row) =>
+      row.sourceId === bookingId &&
+      row.sourceField === "finance_allocation" &&
+      [
+        "INVALID_BOOKING_FINANCE_ALLOCATION",
+        "BOOKING_FINANCE_ALLOCATION_EVIDENCE_REQUIRED",
+      ].includes(row.reasonCode),
+  );
+}
+
+function hasAllocationDisposition(
+  context: FinanceBuildContext,
+  booking: IdentitySourceRow,
+  allocation: BookingPayoutAllocation,
+): boolean {
+  const bookingId = sourceId(booking);
+  return context.dispositions.some(
+    (row) =>
+      row.sourceId === bookingId &&
+      row.sourceField === allocation.sourceField &&
+      row.reasonCode === "BOOKING_FINANCE_ALLOCATION_EVIDENCE_REQUIRED" &&
+      row.disposition === "unbound_history",
+  );
+}
+
+function addAllocation(
+  sums: Map<string, bigint>,
+  key: string,
+  amount: string,
+  includeZero = false,
+): void {
+  if (minor(amount) > 0n || includeZero) sums.set(key, (sums.get(key) ?? 0n) + minor(amount));
 }
 
 function formattedSums(sums: Map<string, bigint>): Record<string, string> {

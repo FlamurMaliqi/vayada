@@ -61,6 +61,27 @@ describe("production migration parity", () => {
     );
   });
 
+  it("reconciles hash-only booking allocation omissions in the final gate", async () => {
+    const reports = domainReports();
+    const dimension = "booking_0123456789abcdef:property:owner_fedcba9876543210";
+    reports.finance.parity.sourcePayoutAllocationsByBookingOwner = {
+      [dimension]: "100.00",
+    };
+    reports.finance.parity.omittedPayoutAllocationsByBookingOwner = {
+      [dimension]: "100.00",
+    };
+
+    const reconciled = await runProductionParity(config(), services({ reports }));
+    expect(reconciled.decision).toBe("go");
+
+    reports.finance.parity.omittedPayoutAllocationsByBookingOwner = {};
+    const unexplained = await runProductionParity(config(), services({ reports }));
+    expect(unexplained.decision).toBe("no-go");
+    expect(unexplained.findings).toContainEqual(
+      expect.objectContaining({ code: "FINANCIAL_VARIANCE" }),
+    );
+  });
+
   it("requires human review for preserved newer target state even within the warning budget", async () => {
     const reports = domainReports();
     reports.booking.counts.preservedNewerTarget = 1;
@@ -538,6 +559,7 @@ function domainReports(): {
         omittedPayoutNetByCurrencyStatusOwner: {},
         targetPayoutNetByCurrencyStatusOwner: {},
         sourcePayoutAllocationsByBookingOwner: {},
+        omittedPayoutAllocationsByBookingOwner: {},
         targetPayoutAllocationsByBookingOwner: {},
       },
       blockers: [],

@@ -183,6 +183,7 @@ function plan(withWrite: boolean): ProductionFinancePlan {
       omittedPayoutNetByCurrencyStatusOwner: {},
       targetPayoutNetByCurrencyStatusOwner: {},
       sourcePayoutAllocationsByBookingOwner: {},
+      omittedPayoutAllocationsByBookingOwner: {},
       targetPayoutAllocationsByBookingOwner: {},
     },
     counts: {

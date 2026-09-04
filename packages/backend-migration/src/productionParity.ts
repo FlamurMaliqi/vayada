@@ -1134,7 +1134,7 @@ function addDomainInvariantFindings(
       [
         parity.sourcePayoutAllocationsByBookingOwner,
         parity.targetPayoutAllocationsByBookingOwner,
-        {},
+        parity.omittedPayoutAllocationsByBookingOwner,
       ],
     ];
     if (

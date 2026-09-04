@@ -796,6 +796,141 @@ describe("production Finance plan", () => {
     expect(plan.blockers).toEqual([]);
   });
 
+  it("retains an unmatched valid booking payout estimate only as hash evidence", () => {
+    const rows = sourceRows().filter((row) => row.sourceTable !== "payouts");
+    Object.assign(rows.find((row) => row.sourceTable === "bookings")!.data, {
+      total_amount: "103.45",
+      platform_fee_amount: "3.45",
+      affiliate_commission_amount: "0.00",
+      property_payout_amount: "100.00",
+    });
+
+    const plan = buildProductionFinancePlan({
+      sourceRunId: RUN,
+      completedAt: "2026-08-30T00:00:00.000Z",
+      rows,
+      target: target(),
+    });
+
+    expect(plan.blockers).toEqual([]);
+    expect(plan.records.some((row) => row.targetTable === "payouts")).toBe(false);
+    expect(plan.dispositions).toContainEqual(
+      expect.objectContaining({
+        sourceTable: "bookings",
+        sourceField: "property_payout_amount",
+        sourceValueSha256: expect.stringMatching(/^[0-9a-f]{64}$/),
+        reasonCode: "BOOKING_FINANCE_ALLOCATION_EVIDENCE_REQUIRED",
+        disposition: "unbound_history",
+      }),
+    );
+    expect(plan.parity.omittedPayoutAllocationsByBookingOwner).toEqual(
+      plan.parity.sourcePayoutAllocationsByBookingOwner,
+    );
+    expect(Object.values(plan.parity.omittedPayoutAllocationsByBookingOwner)).toEqual(["100.00"]);
+    expect(plan.parity.targetPayoutAllocationsByBookingOwner).toEqual({});
+  });
+
+  it("accepts an actual payout that exactly represents a valid booking allocation", () => {
+    const rows = sourceRows();
+    Object.assign(rows.find((row) => row.sourceTable === "bookings")!.data, {
+      total_amount: "103.45",
+      platform_fee_amount: "3.45",
+      affiliate_commission_amount: "0.00",
+      property_payout_amount: "100.00",
+    });
+
+    const plan = buildProductionFinancePlan({
+      sourceRunId: RUN,
+      completedAt: "2026-08-30T00:00:00.000Z",
+      rows,
+      target: target(),
+    });
+
+    expect(plan.blockers).toEqual([]);
+    expect(plan.parity.omittedPayoutAllocationsByBookingOwner).toEqual({});
+    expect(plan.parity.targetPayoutAllocationsByBookingOwner).toEqual(
+      plan.parity.sourcePayoutAllocationsByBookingOwner,
+    );
+    expect(plan.dispositions.some((row) => row.sourceField === "property_payout_amount")).toBe(
+      false,
+    );
+  });
+
+  it("blocks conflicting actual payout evidence instead of omitting it", () => {
+    const rows = sourceRows();
+    Object.assign(rows.find((row) => row.sourceTable === "bookings")!.data, {
+      total_amount: "103.45",
+      platform_fee_amount: "3.45",
+      affiliate_commission_amount: "0.00",
+      property_payout_amount: "100.00",
+    });
+    rows.find((row) => row.sourceTable === "payouts")!.data["amount"] = "0.00";
+
+    const plan = buildProductionFinancePlan({
+      sourceRunId: RUN,
+      completedAt: "2026-08-30T00:00:00.000Z",
+      rows,
+      target: target(),
+    });
+
+    expect(plan.blockers.map((row) => row.code)).toContain(
+      "FINANCE_PAYOUT_ALLOCATION_PARITY_MISMATCH",
+    );
+    expect(plan.parity.omittedPayoutAllocationsByBookingOwner).toEqual({});
+    expect(plan.dispositions.some((row) => row.sourceField === "property_payout_amount")).toBe(
+      false,
+    );
+  });
+
+  it("counts represented and omitted booking owners independently", () => {
+    const affiliateId = "a2000000-0000-4000-8000-000000000004";
+    const rows = sourceRows();
+    Object.assign(rows.find((row) => row.sourceTable === "bookings")!.data, {
+      total_amount: "110.00",
+      platform_fee_amount: "0.00",
+      affiliate_commission_amount: "10.00",
+      property_payout_amount: "100.00",
+      affiliate_id: affiliateId,
+    });
+    rows.push(
+      source("pms", "affiliates", {
+        id: affiliateId,
+        stripe_connect_account_id: null,
+      }),
+    );
+    const state = target();
+    state.resourceLinks.push({
+      organizationId: OTHER_ORGANIZATION,
+      product: "affiliate",
+      resourceType: "affiliate",
+      resourceId: affiliateId,
+      relationship: "owner",
+      status: "active",
+    });
+
+    const plan = buildProductionFinancePlan({
+      sourceRunId: RUN,
+      completedAt: "2026-08-30T00:00:00.000Z",
+      rows,
+      target: state,
+    });
+
+    expect(plan.blockers).toEqual([]);
+    expect(Object.values(plan.parity.sourcePayoutAllocationsByBookingOwner).sort()).toEqual([
+      "10.00",
+      "100.00",
+    ]);
+    expect(Object.values(plan.parity.targetPayoutAllocationsByBookingOwner)).toEqual(["100.00"]);
+    expect(Object.values(plan.parity.omittedPayoutAllocationsByBookingOwner)).toEqual(["10.00"]);
+    expect(plan.dispositions).toContainEqual(
+      expect.objectContaining({
+        sourceField: "affiliate_commission_amount",
+        reasonCode: "BOOKING_FINANCE_ALLOCATION_EVIDENCE_REQUIRED",
+        disposition: "unbound_history",
+      }),
+    );
+  });
+
   it("blocks commission pricing while a legacy fixed subscription is active", () => {
     const rows = sourceRows().filter((row) => row.sourceTable !== "payouts");
     const settings = rows.find((row) => row.sourceTable === "hotel_payment_settings")!;
