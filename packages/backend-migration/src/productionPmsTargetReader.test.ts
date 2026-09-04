@@ -6,8 +6,66 @@ import {
   readProductionPmsTargetState,
 } from "./productionPmsTargetReader.js";
 import type { PmsTargetRecord } from "./productionPmsTypes.js";
+import { PRODUCTION_PMS_TABLES } from "./productionPmsTables.js";
 
 describe("production PMS target reader", () => {
+  it("excludes inventory from bounded collision batches while covering every SQL predicate", async () => {
+    const [roomType, inventory] = candidates();
+    const cohort = [
+      ...Array.from({ length: 160_000 }, (_, index) => ({
+        ...inventory!,
+        targetId: `inventory-${index}`,
+      })),
+      ...Array.from({ length: 1_001 }, (_, index) => ({
+        ...roomType!,
+        targetId: `room-${index}`,
+      })),
+      ...Object.entries(PRODUCTION_PMS_TABLES).map(([table, definition]) => ({
+        ...roomType!,
+        targetProduct: definition.product,
+        targetTable: table,
+        targetId: table,
+      })),
+    ];
+    const batches: { targetTable: string; targetId: string }[][] = [];
+    let collisionSql = "";
+    const client = {
+      async query(sql: string, values?: unknown[]) {
+        if (!sql.includes("WITH requested AS")) return { rows: [] };
+        collisionSql = sql;
+        const rows = JSON.parse(String(values?.[0]));
+        batches.push(rows);
+        return {
+          rows: [
+            {
+              code: "TARGET_UNIQUE_CONFLICT",
+              source: "pms.rooms",
+              sourceId: `collision-${batches.length}`,
+              message: "collision",
+            },
+          ],
+        };
+      },
+    };
+    const target = await readProductionPmsTargetState(client as never, cohort, {
+      propertyLinks: [],
+      bookings: [],
+      userIds: [],
+      mediaIds: [],
+    });
+    expect(batches).toHaveLength(3);
+    expect(batches.every((batch) => batch.length <= 500)).toBe(true);
+    const sent = batches.flat();
+    const checkedTables = new Set(
+      [...collisionSql.matchAll(/requested\."targetTable" = '([^']+)'/g)].map((match) => match[1]),
+    );
+    expect(new Set(sent.map((row) => row.targetTable))).toEqual(checkedTables);
+    expect(sent.map((row) => row.targetId)).toEqual(
+      cohort.filter((row) => checkedTables.has(row.targetTable)).map((row) => row.targetId),
+    );
+    expect(target.blockers).toHaveLength(3);
+  }, 10_000);
+
   it("preserves missing booking freshness without throwing", async () => {
     const client = {
       async query(sql: string) {

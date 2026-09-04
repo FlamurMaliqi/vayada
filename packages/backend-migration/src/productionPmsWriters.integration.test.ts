@@ -40,6 +40,53 @@ describe.skipIf(!URL)("production PMS writers (PostgreSQL)", () => {
   });
   afterAll(async () => client.end());
 
+  it("rolls back an earlier inventory batch when a later batch violates a constraint", async () => {
+    await client.query("BEGIN");
+    try {
+      await seedPrerequisites(client);
+      const prerequisites = await readProductionPmsPrerequisites(client, RUN);
+      const plan = buildProductionPmsPlan({
+        sourceRunId: RUN,
+        snapshotAt: "2026-09-04T00:00:00Z",
+        completedAt: "2026-09-04T00:00:00Z",
+        rows: sourceRows(),
+        target: { ...prerequisites, records: [], provenance: [] },
+      });
+      expect(plan.blockers).toEqual([]);
+      await writeProductionPmsRecords(
+        client,
+        plan.writes.filter((record) => record.targetTable !== "inventory_days"),
+      );
+      const template = plan.writes.find((record) => record.targetTable === "inventory_days")!;
+      const records = Array.from({ length: 501 }, (_, index) => {
+        const stayDate = new Date(Date.UTC(2030, 0, 1 + index)).toISOString().slice(0, 10);
+        return {
+          ...template,
+          targetId: `${PROPERTY}:${ROOM_TYPE}:${stayDate}`,
+          row: { ...template.row, stayDate, totalCount: index === 500 ? -1 : 1 },
+        };
+      });
+      let inventoryStatements = 0;
+      const boundedClient = {
+        query(sql: string, values?: unknown[]) {
+          inventoryStatements += 1;
+          return client.query(sql, values);
+        },
+      };
+      await expect(
+        writeProductionPmsRecords(boundedClient as never, records),
+      ).rejects.toMatchObject({ code: "23514" });
+      expect(inventoryStatements).toBe(2);
+    } finally {
+      await client.query("ROLLBACK");
+    }
+    const stored = await client.query(
+      "SELECT count(*)::int AS count FROM pms.inventory_days WHERE property_id=$1",
+      [PROPERTY],
+    );
+    expect(stored.rows[0].count).toBe(0);
+  });
+
   it("writes and verifies a complete inert PMS migration flow", async () => {
     await client.query("BEGIN");
     try {
@@ -58,6 +105,18 @@ describe.skipIf(!URL)("production PMS writers (PostgreSQL)", () => {
           channex_room_index: 1,
         },
       });
+      const roomType = source.find((row) => row.sourceTable === "room_types")!;
+      for (const suffix of [107, 108])
+        source.push({
+          ...roomType,
+          rowOrdinal: source.length + 1,
+          data: {
+            ...roomType.data,
+            id: `13560000-0000-4000-8000-000000000${suffix}`,
+            name: `Batch room ${suffix}`,
+            images: [],
+          },
+        });
       const plan = buildProductionPmsPlan({
         sourceRunId: RUN,
         snapshotAt: "2026-09-04T00:00:00Z",
@@ -66,6 +125,7 @@ describe.skipIf(!URL)("production PMS writers (PostgreSQL)", () => {
         target: { ...prerequisites, records: [], provenance: [] },
       });
       expect(plan.blockers).toEqual([]);
+      expect(plan.provenance.length).toBeGreaterThan(1_000);
       const expectedCounts = Object.fromEntries(
         [...new Set(plan.writes.map((row) => row.targetTable))].map((table) => [
           table,
@@ -105,7 +165,7 @@ describe.skipIf(!URL)("production PMS writers (PostgreSQL)", () => {
         [PROPERTY, BOOKING, ROOM_TYPE],
       );
       expect(stored.rows[0]).toMatchObject({
-        inventory: 366,
+        inventory: 1_098,
         assignments: 1,
         mappings: 2,
         ignored_mappings: 1,

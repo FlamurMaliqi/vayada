@@ -6,6 +6,8 @@ import {
   type ProductionPmsMigrationServices,
 } from "./productionPmsMigration.js";
 import type { ProductionPmsPlan } from "./productionPmsTypes.js";
+import { writeProductionPmsRecords } from "./productionPmsWriter.js";
+import { writeProductionMigrationProvenance } from "./productionBookingWriter.js";
 
 const RUN = "vay1351-0123456789abcdef01234567";
 
@@ -64,6 +66,43 @@ describe("production PMS migration transaction", () => {
       runProductionPmsTransaction(client as never, { sourceRunId: RUN, mode: "apply" }, services),
     ).rejects.toThrow("applied 0 of 1");
     expect(client.sql.at(-1)).toBe("ROLLBACK");
+  });
+
+  it.each(["records", "provenance"])("rolls back when a later %s batch fails", async (layer) => {
+    const sql: string[] = [];
+    let batches = 0;
+    const client = {
+      async query(statement: string, values?: unknown[]) {
+        sql.push(statement);
+        if (!statement.startsWith("INSERT INTO")) return { rows: [], rowCount: 0 };
+        if (++batches === 2) throw new Error("later batch failed");
+        return { rowCount: JSON.parse(String(values?.[0])).length };
+      },
+    };
+    const services = serviceFixture();
+    const planned = plan(true);
+    if (layer === "records") {
+      planned.writes = Array.from({ length: 1_001 }, (_, index) => ({
+        ...planned.writes[0]!,
+        targetId: `room-${index}`,
+        row: { id: `room-${index}` },
+      }));
+      services.writeRecords = writeProductionPmsRecords;
+    } else {
+      planned.provenance = Array.from({ length: 1_001 }, (_, index) => ({
+        ...planned.provenance[0]!,
+        targetId: `room-${index}`,
+      }));
+      services.writeProvenance = writeProductionMigrationProvenance;
+    }
+    services.buildPlan = vi.fn(() => planned);
+    await expect(
+      runProductionPmsTransaction(client as never, { sourceRunId: RUN, mode: "apply" }, services),
+    ).rejects.toThrow("later batch failed");
+    expect(batches).toBe(2);
+    expect(sql.at(-1)).toBe("ROLLBACK");
+    expect(sql).not.toContain("COMMIT");
+    if (layer === "records") expect(services.writeProvenance).not.toHaveBeenCalled();
   });
 
   it("never writes a blocked apply plan", async () => {
