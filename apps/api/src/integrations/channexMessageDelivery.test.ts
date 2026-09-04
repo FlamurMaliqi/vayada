@@ -68,6 +68,26 @@ describe("Channex guest-message delivery", () => {
       failure,
     });
   });
+
+  it("bounds the complete multipart operation below the delivery lease", async () => {
+    const request = vi.fn<typeof fetch>(
+      async (_url, options) =>
+        new Promise<Response>((_resolve, reject) => {
+          options?.signal?.addEventListener("abort", () => reject(new Error("deadline")));
+        }),
+    );
+    const bounded = createChannexMessageDelivery({
+      apiBaseUrl: "https://channex.test",
+      apiKey: "secret",
+      fetch: request,
+      deliveryTimeoutMs: 5,
+    });
+    await expect(bounded.send(input())).resolves.toEqual({
+      ok: false,
+      failure: "transient_provider_failure",
+    });
+    expect(request).toHaveBeenCalledOnce();
+  });
 });
 
 function provider(request: typeof fetch) {

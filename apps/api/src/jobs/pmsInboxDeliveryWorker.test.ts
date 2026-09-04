@@ -91,6 +91,77 @@ describe("PMS Inbox delivery worker", () => {
     });
   });
 
+  it("records an uncertain send as accepted when provider reconciliation finds it", async () => {
+    const store = readyStore();
+    const reconcile = vi.fn(async () => ({
+      state: "accepted" as const,
+      providerReference: "reconciled-message-1",
+    }));
+
+    await expect(
+      runPmsInboxDeliveryJobs(store, {
+        channex: {
+          send: vi.fn(async () => ({
+            ok: false as const,
+            failure: "ambiguous_provider_outcome" as const,
+          })),
+          reconcile,
+        },
+      }),
+    ).resolves.toMatchObject({ sent: 1, held: 0 });
+    expect(reconcile).toHaveBeenCalledWith(expect.objectContaining({ messageId: "message-1" }));
+    expect(completion(store)).toEqual({
+      outcome: "accepted",
+      attemptId: "attempt-1",
+      providerReference: "reconciled-message-1",
+    });
+  });
+
+  it.each(["unknown", "throws"])(
+    "holds an uncertain send when provider reconciliation %s",
+    async (outcome) => {
+      const store = readyStore();
+      const reconcile =
+        outcome === "throws"
+          ? vi.fn(async () => Promise.reject(new Error("reconciliation unavailable")))
+          : vi.fn(async () => ({ state: "unknown" as const }));
+      await runPmsInboxDeliveryJobs(store, {
+        channex: {
+          send: vi.fn(async () => ({
+            ok: false as const,
+            failure: "ambiguous_provider_outcome" as const,
+          })),
+          reconcile,
+        },
+      });
+      expect(completion(store)).toMatchObject({
+        projection: { state: "held", reasonCode: "ambiguous_provider_outcome", retry: false },
+      });
+    },
+  );
+
+  it("retries an uncertain send only after reconciliation proves it was not accepted", async () => {
+    const store = readyStore();
+    await runPmsInboxDeliveryJobs(
+      store,
+      {
+        channex: {
+          send: vi.fn(async () => ({
+            ok: false as const,
+            failure: "ambiguous_provider_outcome" as const,
+          })),
+          reconcile: vi.fn(async () => ({ state: "not_accepted" as const })),
+        },
+      },
+      { now: () => new Date("2026-09-03T00:00:00.000Z"), random: () => 0.5 },
+    );
+    expect(completion(store)).toMatchObject({
+      failure: "transient_provider_failure",
+      retryAt: new Date("2026-09-03T00:00:30.000Z"),
+      projection: { state: "retrying", retry: true },
+    });
+  });
+
   it("dead-letters exhausted transient failures", async () => {
     const store = readyStore({ attemptNumber: 5 });
     await expect(

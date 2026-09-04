@@ -8,11 +8,13 @@ export function createChannexMessageDelivery(config: {
   apiBaseUrl: string;
   apiKey: string;
   fetch?: typeof fetch;
+  deliveryTimeoutMs?: number;
 }): PmsInboxDeliveryProvider {
   const baseUrl = new URL(config.apiBaseUrl);
   const request = config.fetch ?? fetch;
   return {
     async send(input) {
+      const deliverySignal = AbortSignal.timeout(config.deliveryTimeoutMs ?? 4 * 60_000);
       if (
         input.channel !== "ota" ||
         !input.providerConversationId?.trim() ||
@@ -22,7 +24,13 @@ export function createChannexMessageDelivery(config: {
 
       const attachmentIds: string[] = [];
       for (const attachment of input.attachments) {
-        const uploaded = await uploadAttachment(request, baseUrl, config.apiKey, attachment);
+        const uploaded = await uploadAttachment(
+          request,
+          baseUrl,
+          config.apiKey,
+          attachment,
+          deliverySignal,
+        );
         if (!uploaded.ok) return uploaded;
         attachmentIds.push(uploaded.providerReference);
       }
@@ -30,11 +38,17 @@ export function createChannexMessageDelivery(config: {
       const references: string[] = [];
       const messages = attachmentIds.length ? attachmentIds : [null];
       for (const [index, attachmentId] of messages.entries()) {
-        const sent = await postMessage(request, baseUrl, config.apiKey, {
-          conversationId: input.providerConversationId,
-          text: index === 0 ? input.text.trim() : "",
-          attachmentId,
-        });
+        const sent = await postMessage(
+          request,
+          baseUrl,
+          config.apiKey,
+          {
+            conversationId: input.providerConversationId,
+            text: index === 0 ? input.text.trim() : "",
+            attachmentId,
+          },
+          deliverySignal,
+        );
         if (!sent.ok)
           return references.length
             ? {
@@ -55,6 +69,7 @@ async function uploadAttachment(
   baseUrl: URL,
   apiKey: string,
   attachment: PmsInboxDeliveryAttachmentContent,
+  deliverySignal: AbortSignal,
 ): Promise<PmsInboxDeliveryProviderResult> {
   if (!attachment.filename.trim() || !attachment.contentType.trim() || !attachment.bytes.length)
     return { ok: false, failure: "invalid_delivery_payload" };
@@ -71,6 +86,7 @@ async function uploadAttachment(
       },
     },
     "upload",
+    deliverySignal,
   );
 }
 
@@ -79,6 +95,7 @@ async function postMessage(
   baseUrl: URL,
   apiKey: string,
   input: { conversationId: string; text: string; attachmentId: string | null },
+  deliverySignal: AbortSignal,
 ): Promise<PmsInboxDeliveryProviderResult> {
   const message = {
     ...(input.text ? { message: input.text } : {}),
@@ -91,6 +108,7 @@ async function postMessage(
     `/api/v1/message_threads/${encodeURIComponent(input.conversationId)}/messages`,
     { message },
     "send",
+    deliverySignal,
   );
 }
 
@@ -101,6 +119,7 @@ async function providerRequest(
   path: string,
   body: unknown,
   operation: "upload" | "send",
+  deliverySignal: AbortSignal,
 ): Promise<PmsInboxDeliveryProviderResult> {
   let response: Response;
   try {
@@ -108,7 +127,7 @@ async function providerRequest(
       method: "POST",
       headers: { "content-type": "application/json", "user-api-key": apiKey },
       body: JSON.stringify(body),
-      signal: AbortSignal.timeout(30_000),
+      signal: AbortSignal.any([deliverySignal, AbortSignal.timeout(30_000)]),
     });
   } catch {
     return {

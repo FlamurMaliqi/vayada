@@ -86,6 +86,13 @@ export type PlatformMediaPrivateObjectReader = {
   }): Promise<Uint8Array>;
 };
 
+export class PlatformMediaObjectIntegrityError extends Error {
+  constructor() {
+    super("Private object does not match its media record");
+    this.name = "PlatformMediaObjectIntegrityError";
+  }
+}
+
 export type S3PlatformMediaAdapter = PlatformMediaUploadSigner &
   PlatformMediaUploadFinalizer &
   PlatformMediaPrivateDownloadSigner &
@@ -187,13 +194,13 @@ export function createS3PlatformMediaAdapter(
         !object.Body ||
         (object.ContentLength !== undefined && object.ContentLength !== input.expectedSizeBytes)
       )
-        throw new Error("Private object does not match its media record");
+        throw new PlatformMediaObjectIntegrityError();
       const bytes = await readBody(object.Body, input.expectedSizeBytes);
       if (
         bytes.length !== input.expectedSizeBytes ||
         sha256(bytes) !== input.expectedChecksumSha256
       )
-        throw new Error("Private object does not match its media record");
+        throw new PlatformMediaObjectIntegrityError();
       return bytes;
     },
 

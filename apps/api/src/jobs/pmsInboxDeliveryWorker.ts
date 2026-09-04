@@ -62,20 +62,37 @@ export async function runPmsInboxDeliveryJobs(
             failure: "ambiguous_provider_outcome",
           }),
         );
-        completion = result.ok
-          ? {
-              outcome: "accepted",
-              attemptId: prepared.attemptId,
-              providerReference: result.providerReference,
-            }
-          : failedCompletion(
-              job,
-              result.failure,
-              prepared.attemptId,
-              options,
-              result.providerRequestId,
-              result.acceptedProviderReferences,
-            );
+        if (result.ok) {
+          completion = {
+            outcome: "accepted",
+            attemptId: prepared.attemptId,
+            providerReference: result.providerReference,
+          };
+        } else {
+          const reconciled =
+            result.failure === "ambiguous_provider_outcome" && provider.reconcile
+              ? await provider
+                  .reconcile(prepared.input)
+                  .catch(() => ({ state: "unknown" }) as const)
+              : null;
+          completion =
+            reconciled?.state === "accepted"
+              ? {
+                  outcome: "accepted",
+                  attemptId: prepared.attemptId,
+                  providerReference: reconciled.providerReference,
+                }
+              : failedCompletion(
+                  job,
+                  reconciled?.state === "not_accepted"
+                    ? "transient_provider_failure"
+                    : result.failure,
+                  prepared.attemptId,
+                  options,
+                  result.providerRequestId,
+                  result.acceptedProviderReferences,
+                );
+        }
       }
     }
     if (!(await store.complete(job, completion))) continue;

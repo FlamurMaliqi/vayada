@@ -38,8 +38,14 @@ export type PmsInboxDeliveryProviderResult =
       acceptedProviderReferences?: readonly string[];
     };
 
+export type PmsInboxDeliveryReconciliation =
+  | { state: "accepted"; providerReference: string }
+  | { state: "not_accepted" }
+  | { state: "unknown" };
+
 export type PmsInboxDeliveryProvider = {
   send(input: PmsInboxDeliveryProviderInput): Promise<PmsInboxDeliveryProviderResult>;
+  reconcile?(input: PmsInboxDeliveryProviderInput): Promise<PmsInboxDeliveryReconciliation>;
 };
 
 export type PmsInboxDeliveryJob = {

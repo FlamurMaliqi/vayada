@@ -3,6 +3,7 @@ import pg, { type QueryResultRow } from "pg";
 import type { PmsInboxEmailReplyRouteReadPort } from "../domains/pmsInbox.js";
 import { resolvePmsInboxEmailReplyRoutes } from "../domains/pmsInboxEmailReplyRoutes.js";
 import { lockPmsInboxReplyActorScope } from "../domains/pmsInboxProviderActionCommand.js";
+import { PlatformMediaObjectIntegrityError } from "../platform/platformMediaS3.js";
 import type { PmsInboxDeliveryEmailRoutePort } from "../domains/pmsInboxDeliveryEmailRoutes.js";
 import {
   PMS_INBOX_DELIVERY_JOB_TYPE,
@@ -317,8 +318,14 @@ export async function preparePmsInboxDeliveryJob(
   let attachments: Awaited<ReturnType<typeof loadAttachments>>;
   try {
     attachments = await loadAttachments(client, job, row, options.media);
-  } catch {
-    return { state: "blocked", failure: "transient_provider_failure" };
+  } catch (error) {
+    return {
+      state: "blocked",
+      failure:
+        error instanceof PlatformMediaObjectIntegrityError
+          ? "invalid_delivery_payload"
+          : "transient_provider_failure",
+    };
   }
   if (!attachments) return { state: "blocked", failure: "invalid_delivery_payload" };
   const attempt = await client.query<{ id: string }>(

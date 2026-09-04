@@ -4,7 +4,9 @@ import { createPgPmsInboxDeliveryReceiptPort } from "./pmsInboxDeliveryReceipts.
 
 describe("PMS Inbox delivery receipts", () => {
   it("deduplicates trusted receipts and projects only inserted acknowledgements", async () => {
-    const query = vi.fn(async () => ({ rows: [{ recorded: true }] }));
+    const query = vi.fn(async (_sql: string, _values?: readonly unknown[]) => ({
+      rows: [{ recorded: true }],
+    }));
     const port = createPgPmsInboxDeliveryReceiptPort({
       connectionString: "",
       pool: { query } as never,

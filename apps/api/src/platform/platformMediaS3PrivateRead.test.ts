@@ -2,7 +2,10 @@ import { GetObjectCommand, type S3Client } from "@aws-sdk/client-s3";
 import { createHash } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 
-import { createS3PlatformMediaAdapter } from "./platformMediaS3.js";
+import {
+  createS3PlatformMediaAdapter,
+  PlatformMediaObjectIntegrityError,
+} from "./platformMediaS3.js";
 
 describe("S3 platform media private-object reads", () => {
   it("returns only bytes matching the finalized media evidence", async () => {
@@ -33,7 +36,7 @@ describe("S3 platform media private-object reads", () => {
     ).rejects.toThrow("private prefix");
     await expect(
       reader.readPrivateObject({ ...input(bytes), expectedChecksumSha256: "0".repeat(64) }),
-    ).rejects.toThrow("does not match");
+    ).rejects.toBeInstanceOf(PlatformMediaObjectIntegrityError);
     expect(send).toHaveBeenCalledOnce();
   });
 });

@@ -5,8 +5,9 @@ import { relayPmsInboxDeliveryOutbox } from "../jobs/pmsInboxDeliveryOutbox.js";
 import { createPgPmsInboxDeliveryStore } from "../jobs/pmsInboxDeliveryPg.js";
 import { runPmsInboxDeliveryJobs } from "../jobs/pmsInboxDeliveryWorker.js";
 import { createPgPmsInboxDeliveryReceiptPort } from "../jobs/pmsInboxDeliveryReceipts.js";
+import { PlatformMediaObjectIntegrityError } from "../platform/platformMediaS3.js";
 import type { PmsInboxEmailReplyRouteReadPort } from "./pmsInbox.js";
-import type { PmsInboxDeliveryProvider } from "./pmsInboxDelivery.js";
+import type { PmsInboxDeliveryMediaPort, PmsInboxDeliveryProvider } from "./pmsInboxDelivery.js";
 import {
   createPgPmsInboxEmailRoutes,
   createUnavailablePmsInboxDeliveryEmailRoutePort,
@@ -324,6 +325,31 @@ describe.skipIf(!URL)("PostgreSQL PMS Inbox manual reply command", () => {
         : changed === "entitlement"
           ? "access_unavailable"
           : "provider_configuration_unavailable",
+    });
+  });
+
+  it("fails deterministic attachment corruption without calling the provider", async () => {
+    const accepted = await reply.reply(
+      command("delivery-corrupt-object", { attachmentMediaIds: [MEDIA] }),
+    );
+    await admin.query(
+      "UPDATE platform.media_objects SET checksum_sha256 = repeat('a', 64) WHERE id = $1::uuid",
+      [MEDIA],
+    );
+    const send = vi.fn<PmsInboxDeliveryProvider["send"]>();
+    const read = vi.fn<PmsInboxDeliveryMediaPort["read"]>(async () => {
+      throw new PlatformMediaObjectIntegrityError();
+    });
+
+    await expect(
+      deliver(send, approvedEmailRoutes, approvedDeliveryEmailRoutes, { read }),
+    ).resolves.toMatchObject({ processed: 1, failed: 1, retrying: 0 });
+    expect(read).toHaveBeenCalledOnce();
+    expect(send).not.toHaveBeenCalled();
+    const messageId = accepted.ok ? accepted.value.messageId : "";
+    expect((await state(messageId)).message).toMatchObject({
+      deliveryState: "failed",
+      deliveryReasonCode: "invalid_delivery_payload",
     });
   });
 
@@ -725,13 +751,16 @@ describe.skipIf(!URL)("PostgreSQL PMS Inbox manual reply command", () => {
     send: PmsInboxDeliveryProvider["send"],
     emailReplyRoutes = approvedEmailRoutes,
     emailDeliveryRoutes = approvedDeliveryEmailRoutes,
+    media: PmsInboxDeliveryMediaPort = {
+      read: async ({ expectedSizeBytes }) => new Uint8Array(expectedSizeBytes),
+    },
   ) {
     await relayPmsInboxDeliveryOutbox(URL!, { now: new Date(NOW) });
     const store = createPgPmsInboxDeliveryStore({
       connectionString: URL!,
       emailReplyRoutes,
       emailDeliveryRoutes,
-      media: { read: async ({ expectedSizeBytes }) => new Uint8Array(expectedSizeBytes) },
+      media,
     });
     try {
       return await runPmsInboxDeliveryJobs(store, { channex: { send }, resend: { send } });
