@@ -1,4 +1,4 @@
--- Migration: 0144_native_guest_inbox
+-- Migration: 0145_native_guest_inbox
 -- Owner: domain-pms
 -- See: engineering/native-guest-inbox-contract.md, VAY-1373
 -- Production row counts and the resulting lock profile must be audited by VAY-1370
