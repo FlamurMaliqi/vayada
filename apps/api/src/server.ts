@@ -138,6 +138,9 @@ import { createPropertySetupRouteStateReadPort } from "./platform/propertySetupR
 import { runPlatformMediaCleanupJobs } from "./jobs/platformMediaCleanup.js";
 import { startPmsInboxAssignmentReconciliationWorker } from "./jobs/pmsInboxAssignmentReconciliation.js";
 import { startPmsInboxFollowUpReleaseWorker } from "./jobs/pmsInboxFollowUpRelease.js";
+import { createPgPmsInboxDeliveryStore } from "./jobs/pmsInboxDeliveryPg.js";
+import { relayPmsInboxDeliveryOutbox } from "./jobs/pmsInboxDeliveryOutbox.js";
+import { runPmsInboxDeliveryJobs } from "./jobs/pmsInboxDeliveryWorker.js";
 import {
   createPgBookingLifecycleStore,
   runBookingLifecycleSchedulerJobs,
@@ -151,6 +154,7 @@ import { createPgCreatorPlatformSyncStore } from "./jobs/creatorPlatformSyncStor
 import { runChannexReviewJobs } from "./jobs/channexReviews.js";
 import { runChannexBookingJobs } from "./jobs/channexBookings.js";
 import { createChannexManagementProvider } from "./integrations/channexManagement.js";
+import { createChannexMessageDelivery } from "./integrations/channexMessageDelivery.js";
 import { createPgChannexManagementPlanPort } from "./integrations/channexManagementPlans.js";
 import { runPmsChannexManagementWorkerOnce } from "./jobs/pmsChannexManagementWorker.js";
 import { createPgPmsChannexManagementWorkerStore } from "./jobs/pmsChannexManagementWorkerStore.js";
@@ -666,6 +670,33 @@ const pmsInboxRuntime = pmsOperationsRepository
       attachmentMediaAccessEnabled: Boolean(platformMediaRuntime),
     })
   : undefined;
+
+const pmsInboxDeliveryPool = pmsInboxRuntime
+  ? new pg.Pool({ connectionString: targetDatabaseUrl, max: 4 })
+  : undefined;
+const pmsInboxDeliveryStore =
+  pmsInboxRuntime && pmsInboxDeliveryPool
+    ? createPgPmsInboxDeliveryStore({
+        connectionString: targetDatabaseUrl,
+        pool: pmsInboxDeliveryPool,
+        emailReplyRoutes: pmsInboxRuntime.emailReplyRoutes,
+        media: {
+          async read(input) {
+            if (!platformMediaRuntime) throw new Error("PMS Inbox attachment media is unavailable");
+            return platformMediaRuntime.privateDownloads.reader.readPrivateObject(input);
+          },
+        },
+      })
+    : undefined;
+const pmsInboxChannexDelivery =
+  config.channexManagement.capabilityModes.messaging === "mutating" &&
+  config.channexManagement.apiBaseUrl &&
+  config.channexManagement.apiKey
+    ? createChannexMessageDelivery({
+        apiBaseUrl: config.channexManagement.apiBaseUrl,
+        apiKey: config.channexManagement.apiKey,
+      })
+    : undefined;
 
 const marketplaceSetupLifecycleStatusRepository = createPgMarketplaceSetupLifecycleStatusRepository(
   { connectionString: targetDatabaseUrl },
@@ -1819,6 +1850,32 @@ const bookingLifecycleTimer = setInterval(runBookingLifecycle, 60_000);
 bookingLifecycleTimer.unref();
 runBookingLifecycle();
 
+let activePmsInboxDelivery: Promise<void> | undefined;
+const runPmsInboxDelivery = () => {
+  if (!pmsInboxDeliveryStore || !pmsInboxDeliveryPool || activePmsInboxDelivery) return;
+  activePmsInboxDelivery = relayPmsInboxDeliveryOutbox(targetDatabaseUrl, {
+    pool: pmsInboxDeliveryPool,
+  })
+    .then(() =>
+      runPmsInboxDeliveryJobs(pmsInboxDeliveryStore, {
+        ...(pmsInboxChannexDelivery ? { channex: pmsInboxChannexDelivery } : {}),
+      }),
+    )
+    .then((result) => {
+      if (result.failed || result.deadLettered)
+        app.log.warn({ result }, "PMS Inbox delivery completed with failures");
+    })
+    .catch((error: unknown) => app.log.warn({ err: error }, "PMS Inbox delivery failed"))
+    .finally(() => {
+      activePmsInboxDelivery = undefined;
+    });
+};
+const pmsInboxDeliveryTimer = pmsInboxDeliveryStore
+  ? setInterval(runPmsInboxDelivery, 2_000)
+  : undefined;
+pmsInboxDeliveryTimer?.unref();
+if (pmsInboxDeliveryStore) runPmsInboxDelivery();
+
 const bookingEmailDelivery = config.bookingEmailDelivery
   ? createResendBookingEmailDelivery(config.bookingEmailDelivery)
   : undefined;
@@ -1847,6 +1904,10 @@ app.addHook("onClose", async () => {
   await activeBookingLifecycleRun;
   await activeBookingEmailDelivery;
   await bookingLifecycleStore.close();
+  if (pmsInboxDeliveryTimer) clearInterval(pmsInboxDeliveryTimer);
+  await activePmsInboxDelivery;
+  await pmsInboxDeliveryStore?.close();
+  await pmsInboxDeliveryPool?.end();
 });
 
 const propertySetupDraftRetentionWorker = startPropertySetupDraftRetentionWorker({

@@ -56,6 +56,7 @@ export type PmsInboxProductionRoutes = Readonly<{
 
 export type PmsInboxProductionRuntime = Readonly<{
   routes: PmsInboxProductionRoutes;
+  emailReplyRoutes: PmsInboxEmailReplyRouteReadPort;
   close(): Promise<void>;
 }>;
 
@@ -138,6 +139,7 @@ export function createPmsInboxProductionRuntime(
 
   return Object.freeze({
     routes,
+    emailReplyRoutes,
     async close() {
       if (closed) return;
       closing ??= (async () => {

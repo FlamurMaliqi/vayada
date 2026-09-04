@@ -30,6 +30,7 @@ describe("PMS Inbox production runtime", () => {
       "pmsInboxStartDirectEmailPort",
       "pmsInboxTriagePort",
     ]);
+    expect(runtime.emailReplyRoutes).toBeDefined();
     await runtime.close();
     expect(pool.end).not.toHaveBeenCalled();
   });
