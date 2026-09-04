@@ -167,6 +167,38 @@ describe("PMS room-facts read model", () => {
     });
   });
 
+  it("maps the legacy zero room-size sentinel to an unknown size", () => {
+    const snapshot = pmsRoomFactsSnapshotFromRow(
+      roomFactsRow({
+        roomAttributes: {
+          bedType: "1 King Bed",
+          bedrooms: 1,
+          bathrooms: 1,
+          bathroomType: "private",
+          size: 0,
+        },
+      }),
+    );
+
+    expect(snapshot.facts.size).toBeNull();
+
+    for (const size of [-1, "0"]) {
+      expect(() =>
+        pmsRoomFactsSnapshotFromRow(
+          roomFactsRow({
+            roomAttributes: {
+              bedType: "1 King Bed",
+              bedrooms: 1,
+              bathrooms: 1,
+              bathroomType: "private",
+              size,
+            },
+          }),
+        ),
+      ).toThrow("row failed contract validation");
+    }
+  });
+
   it("lists active and inactive facts in creation order within one property", async () => {
     const target = targetPool([
       [roomFactsRow(), roomFactsRow({ roomTypeId: otherRoomTypeId, active: false })],

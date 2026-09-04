@@ -297,7 +297,8 @@ function legacyBeds(value: unknown): unknown {
 }
 
 function legacyRoomSize(value: unknown): unknown {
-  return typeof value === "number" ? { value, unit: "sqm" } : value;
+  if (typeof value !== "number") return value;
+  return value === 0 ? null : { value, unit: "sqm" };
 }
 
 function dataRecord(value: unknown): Record<string, unknown> | null {
