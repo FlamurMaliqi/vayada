@@ -63,6 +63,12 @@ test("hydrates the selected property on direct booking navigation without a relo
   await expect(page.getByText("Loading...", { exact: true })).toBeVisible();
   releaseDiscovery();
   await expect(page.getByRole("button", { name: "Alpenrose Munich" })).toBeVisible();
+  const messageGuest = page.getByRole("link", { name: "Message guest" });
+  await expect(messageGuest).toBeVisible();
+  await expect(messageGuest).toHaveAttribute(
+    "href",
+    `/inbox?booking=${encodeURIComponent(PMS_WEB_RESERVATION_ID)}`,
+  );
   await expect(page).toHaveURL(new RegExp(`/bookings/${PMS_WEB_RESERVATION_ID}$`));
   await assertHealthy();
 });

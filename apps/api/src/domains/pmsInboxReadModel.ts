@@ -2,6 +2,7 @@ import pg, { type QueryResult, type QueryResultRow } from "pg";
 
 import type {
   PmsInboxAttachment,
+  PmsInboxDirectBooking,
   PmsInboxEmailReplyRoute,
   PmsInboxEmailReplyRouteReadPort,
   PmsInboxReadPort,
@@ -48,6 +49,17 @@ type ThreadRow = {
   sourceReference: string | null;
   inquiryArrivalDate: string | null;
   inquiryDepartureDate: string | null;
+  inquiryAdults: number | null;
+  inquiryChildren: number | null;
+  linkedCheckIn: string | null;
+  linkedCheckOut: string | null;
+  linkedNights: number | null;
+  linkedAdults: number | null;
+  linkedChildren: number | null;
+  linkedRoomCount: number | null;
+  linkedRoomName: string | null;
+  linkedRoomNumber: string | null;
+  linkedStatus: string | null;
   unreadCount: number;
   activityAt: Date | string;
   lastMessagePreview: string | null;
@@ -102,6 +114,12 @@ const THREAD_COLUMNS = `thread.id::text, thread.version::text, thread.attention_
         COALESCE(thread.source_booking_id, thread.source_thread_id) AS "sourceReference",
         thread.inquiry_arrival_date::text AS "inquiryArrivalDate",
         thread.inquiry_departure_date::text AS "inquiryDepartureDate",
+        thread.inquiry_adults AS "inquiryAdults", thread.inquiry_children AS "inquiryChildren",
+        booking.check_in::text AS "linkedCheckIn", booking.check_out::text AS "linkedCheckOut",
+        (booking.check_out - booking.check_in)::int AS "linkedNights",
+        booking.adults AS "linkedAdults", booking.children AS "linkedChildren",
+        booking.room_count AS "linkedRoomCount", booking.lifecycle_status AS "linkedStatus",
+        booking_room.name AS "linkedRoomName", booking_room.room_number AS "linkedRoomNumber",
         thread.unread_count AS "unreadCount",
         to_char(${ACTIVITY} AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS "activityAt",
         thread.last_message_preview AS "lastMessagePreview", thread.last_message_at AS "lastMessageAt",
@@ -112,7 +130,16 @@ const THREAD_COLUMNS = `thread.id::text, thread.version::text, thread.attention_
                   AND connection.messaging_app_installed) AS "otaConnectionReady",
         COALESCE((thread.source = 'channex' AND thread.delivery_channel = 'ota'
           AND lower(BTRIM(thread.provider_channel)) IN ('booking.com', 'booking_com', 'bookingcom')
-          AND BTRIM(thread.source_thread_id) <> ''), FALSE) AS "providerActionAvailable"`;
+          AND BTRIM(thread.source_thread_id) <> ''
+          AND NOT EXISTS (
+            SELECT 1 FROM platform.jobs provider_action_job
+            WHERE provider_action_job.property_id = thread.property_id
+              AND provider_action_job.resource_product = 'pms'
+              AND provider_action_job.resource_type = 'message_thread'
+              AND provider_action_job.resource_id = thread.id::text
+              AND provider_action_job.job_type = 'pms.inbox.provider-action.deliver'
+              AND provider_action_job.source_domain_event_id IS NOT NULL
+          )), FALSE) AS "providerActionAvailable"`;
 
 const THREAD_FROM = `FROM pms.message_threads thread
   LEFT JOIN booking.guest_bookings booking
@@ -127,6 +154,16 @@ const THREAD_FROM = `FROM pms.message_threads thread
   LEFT JOIN identity.organization_memberships assigned_membership
     ON assigned_membership.id = thread.assigned_to_membership_id
   LEFT JOIN identity.users assigned_user ON assigned_user.id = assigned_membership.user_id
+  LEFT JOIN LATERAL (
+    SELECT room_type.name, room.room_number
+    FROM pms.operational_booking_assignments assignment
+    LEFT JOIN pms.room_types room_type
+      ON room_type.id = assignment.room_type_id AND room_type.property_id = assignment.property_id
+    LEFT JOIN pms.rooms room
+      ON room.id = assignment.room_id AND room.property_id = assignment.property_id
+    WHERE assignment.guest_booking_id = booking.id AND assignment.property_id = booking.property_id
+    ORDER BY assignment.position, assignment.id LIMIT 1
+  ) booking_room ON TRUE
   LEFT JOIN LATERAL (
     SELECT EXISTS (SELECT 1 FROM pms.message_attachments attachment
                    WHERE attachment.property_id = message.property_id AND attachment.message_id = message.id)
@@ -364,6 +401,47 @@ export function createPgPmsInboxReadPort(config: {
       return { propertyId, ...count };
     },
 
+    async listDirectBookings(propertyId) {
+      const result = await pool.query<
+        Omit<PmsInboxDirectBooking, "propertyId" | "source" | "primaryGuest" | "stay"> & {
+          guestDisplayName: string;
+          checkIn: string;
+          checkOut: string;
+        }
+      >(
+        `SELECT booking.id::text AS "guestBookingId",
+                booking.public_reference AS "bookingReference",
+                booking.lifecycle_status AS status,
+                booking.check_in::text AS "checkIn", booking.check_out::text AS "checkOut",
+                COALESCE(NULLIF(BTRIM(CONCAT_WS(' ', guest.first_name, guest.last_name)), ''), 'Guest')
+                  AS "guestDisplayName"
+         FROM booking.guest_bookings booking
+         LEFT JOIN LATERAL (
+           SELECT booking_guest.first_name, booking_guest.last_name
+           FROM booking.booking_guests booking_guest
+           WHERE booking_guest.guest_booking_id = booking.id
+           ORDER BY CASE booking_guest.guest_role WHEN 'booker' THEN 0 WHEN 'primary_guest' THEN 1 ELSE 2 END,
+                    booking_guest.created_at, booking_guest.id LIMIT 1
+         ) guest ON TRUE
+         WHERE booking.property_id = $1::uuid AND booking.booking_channel = 'direct'
+           AND booking.lifecycle_status IN ('confirmed', 'canceled', 'completed', 'no_show')
+         ORDER BY booking.check_in DESC, booking.id DESC LIMIT 500`,
+        [propertyId],
+      );
+      return {
+        propertyId,
+        items: result.rows.map((row) => ({
+          propertyId,
+          guestBookingId: row.guestBookingId,
+          bookingReference: row.bookingReference,
+          source: "direct_booking" as const,
+          status: row.status,
+          primaryGuest: { displayName: row.guestDisplayName },
+          stay: { checkIn: row.checkIn, checkOut: row.checkOut },
+        })),
+      };
+    },
+
     async close() {
       if (ownsPool) await pool.end?.();
     },
@@ -493,6 +571,17 @@ function toSummary(row: ThreadRow, emailRoute?: PmsInboxEmailReplyRoute): PmsInb
           state: "linked" as const,
           bookingId: required(row.bookingId),
           reference: required(row.bookingReference),
+          stay: {
+            checkIn: required(row.linkedCheckIn),
+            checkOut: required(row.linkedCheckOut),
+            nights: requiredNonNegativeInteger(row.linkedNights, "linked booking nights"),
+            adults: requiredNonNegativeInteger(row.linkedAdults, "linked booking adults"),
+            children: requiredNonNegativeInteger(row.linkedChildren, "linked booking children"),
+            roomCount: requiredNonNegativeInteger(row.linkedRoomCount, "linked booking room count"),
+            roomName: row.linkedRoomName,
+            roomNumber: row.linkedRoomNumber,
+            status: required(row.linkedStatus),
+          },
         }
       : row.conversationContextState === "inquiry"
         ? {
@@ -501,6 +590,8 @@ function toSummary(row: ThreadRow, emailRoute?: PmsInboxEmailReplyRoute): PmsInb
             sourceReference: required(row.sourceReference),
             arrivalDate: row.inquiryArrivalDate,
             departureDate: row.inquiryDepartureDate,
+            adults: row.inquiryAdults,
+            children: row.inquiryChildren,
           }
         : { state: "unlinked" as const, bookingId: null, sourceReference: row.sourceReference };
   return {
@@ -552,5 +643,12 @@ function instant(value: Date | string | null): string | null {
 
 function required<T extends string>(value: T | null): T {
   if (!value) throw new Error("Incomplete PMS Inbox read model row");
+  return value;
+}
+
+function requiredNonNegativeInteger(value: number | null, label: string): number {
+  if (value === null || !Number.isSafeInteger(value) || value < 0) {
+    throw new Error(`Invalid PMS Inbox ${label}`);
+  }
   return value;
 }

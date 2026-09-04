@@ -21,7 +21,9 @@ export type PmsInboxEmailReplyRoute =
       channel: null;
       providerChannel: null;
       reasonCode:
-        "guest_email_unavailable" | "approved_sender_unavailable" | "email_policy_disallowed";
+        | "guest_email_unavailable"
+        | "approved_sender_unavailable"
+        | "email_policy_disallowed";
     };
 
 export type PmsInboxEmailReplyRouteReadPort = {
@@ -38,15 +40,42 @@ export type PmsInboxEmailReplyRouteReadPort = {
 };
 
 export type PmsInboxConversationContext =
-  | { state: "linked"; bookingId: string; reference: string }
+  | {
+      state: "linked";
+      bookingId: string;
+      reference: string;
+      stay: {
+        checkIn: string;
+        checkOut: string;
+        nights: number;
+        adults: number;
+        children: number;
+        roomCount: number;
+        roomName: string | null;
+        roomNumber: string | null;
+        status: string;
+      };
+    }
   | {
       state: "inquiry";
       bookingId: null;
       sourceReference: string;
       arrivalDate: string | null;
       departureDate: string | null;
+      adults: number | null;
+      children: number | null;
     }
   | { state: "unlinked"; bookingId: null; sourceReference: string | null };
+
+export type PmsInboxDirectBooking = {
+  propertyId: string;
+  guestBookingId: string;
+  bookingReference: string;
+  source: "direct_booking";
+  status: "confirmed" | "canceled" | "completed" | "no_show";
+  primaryGuest: { displayName: string };
+  stay: { checkIn: string; checkOut: string };
+};
 
 export type PmsInboxThreadSummary = {
   id: string;
@@ -117,7 +146,8 @@ export type PmsInboxReadError = {
   message: string;
 };
 export type PmsInboxPortResult<T> =
-  { ok: true; value: T } | { ok: false; error: PmsInboxReadError };
+  | { ok: true; value: T }
+  | { ok: false; error: PmsInboxReadError };
 
 export type PmsInboxReadPort = {
   listThreads(input: {
@@ -157,6 +187,10 @@ export type PmsInboxReadPort = {
     propertyId: string;
     threadCount: number;
     messageCount: number;
+  }>;
+  listDirectBookings?(propertyId: string): Promise<{
+    propertyId: string;
+    items: readonly PmsInboxDirectBooking[];
   }>;
   close?(): Promise<void>;
 };
@@ -273,7 +307,10 @@ export type PmsInboxTriagePort = {
 
 export type PmsInboxStaffCommandError = {
   code:
-    "validation_failed" | "thread_not_found" | "thread_version_conflict" | "idempotency_conflict";
+    | "validation_failed"
+    | "thread_not_found"
+    | "thread_version_conflict"
+    | "idempotency_conflict";
   message: string;
   currentVersion?: number;
 };
@@ -418,7 +455,10 @@ export type PmsInboxQuickReplyPort = {
 };
 
 export type PmsInboxAssistanceKind =
-  "translate_message" | "translate_draft" | "summarize" | "draft_reply";
+  | "translate_message"
+  | "translate_draft"
+  | "summarize"
+  | "draft_reply";
 
 export type PmsInboxAssistanceRequest =
   | {
@@ -430,7 +470,10 @@ export type PmsInboxAssistanceRequest =
 
 export type PmsInboxAssistanceError = {
   code:
-    "validation_failed" | "thread_not_found" | "idempotency_conflict" | "assistance_unavailable";
+    | "validation_failed"
+    | "thread_not_found"
+    | "idempotency_conflict"
+    | "assistance_unavailable";
   message: string;
 };
 

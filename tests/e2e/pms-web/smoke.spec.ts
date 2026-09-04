@@ -5,6 +5,7 @@ import {
   PMS_WEB_ROOM_TYPE_ID,
   mockPmsWebAuthenticatedSession,
   mockPmsWebTargetRoutes,
+  pmsWebInboxThread,
   pmsWebRoomType,
 } from "../support/pmsWebMocks";
 import { watchNoLegacyCalls } from "../support/noLegacyCalls";
@@ -415,7 +416,8 @@ test.describe("pms-web smoke", () => {
 
     await page.goto("/inbox");
     await expect(page.getByRole("heading", { level: 1, name: "Inbox" })).toBeVisible();
-    await expect(page.getByRole("heading", { name: "Not available yet" })).toBeVisible();
+    await expect(page.getByRole("button", { name: /Ada Lovelace, Booking.com/ })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Not available yet" })).toHaveCount(0);
 
     await page.goto("/financials");
     await expect(page.getByRole("heading", { level: 1, name: "Financials" })).toBeVisible();
@@ -454,6 +456,386 @@ test.describe("pms-web smoke", () => {
 
     await assertNoLegacyCalls();
     await assertHealthy();
+  });
+
+  test("runs the guest Inbox workflow at mobile, tablet, and desktop widths", async ({
+    page,
+  }, testInfo) => {
+    const assertHealthy = watchPageHealth(page, testInfo);
+
+    await mockPmsWebAuthenticatedSession(page);
+    await mockPmsWebTargetRoutes(page);
+
+    await page.setViewportSize({ width: 1280, height: 800 });
+    await page.goto("/inbox");
+    await expect
+      .poll(() =>
+        page.evaluate(
+          () => document.documentElement.scrollWidth <= document.documentElement.clientWidth,
+        ),
+      )
+      .toBe(true);
+    const desktopThread = page.getByRole("button", { name: /Ada Lovelace, Booking.com/ });
+    await expect(desktopThread).toBeVisible();
+    await desktopThread.click();
+    await expect(page.getByRole("heading", { level: 2, name: "Ada Lovelace" })).toBeVisible();
+    await expect(page.getByText("Linked booking")).toBeVisible();
+    await expect(page.getByRole("separator", { name: "Unread messages" })).not.toBeVisible();
+    const moreActions = page.getByRole("button", { name: "More conversation actions" });
+    await moreActions.click();
+    const providerAction = page.getByRole("button", { name: /Tell Booking.com/ });
+    await expect(providerAction).toBeFocused();
+    await page.keyboard.press("Escape");
+    await expect(moreActions).toBeFocused();
+    await moreActions.click();
+    await providerAction.click();
+    await expect(providerAction).toHaveCount(0);
+    const quickReplies = page.getByRole("button", { name: "Quick replies" });
+    await quickReplies.click();
+    await expect(page.getByRole("button", { name: /Early arrival/ })).toBeFocused();
+    await page.keyboard.press("Escape");
+    await expect(quickReplies).toBeFocused();
+    await page.getByLabel("Reply").fill("We will check and get back to you shortly.");
+    await page.getByRole("button", { name: "Send" }).click();
+    await expect(page.getByText("Queued", { exact: true })).toBeVisible();
+
+    await page.setViewportSize({ width: 768, height: 900 });
+    await expect
+      .poll(() =>
+        page.evaluate(
+          () => document.documentElement.scrollWidth <= document.documentElement.clientWidth,
+        ),
+      )
+      .toBe(true);
+    await expect(page.getByRole("button", { name: "Guest & stay" })).toBeVisible();
+    await page.getByRole("button", { name: "Guest & stay" }).click();
+    const contextDrawer = page.getByRole("dialog", { name: "Guest and stay" });
+    await expect(contextDrawer).toBeVisible();
+    await expect
+      .poll(async () => (await contextDrawer.boundingBox())?.x)
+      .toBeGreaterThanOrEqual(360);
+    await page.keyboard.press("Escape");
+
+    await page.setViewportSize({ width: 320, height: 720 });
+    await page.goto("/inbox");
+    await expect
+      .poll(() =>
+        page.evaluate(
+          () => document.documentElement.scrollWidth <= document.documentElement.clientWidth,
+        ),
+      )
+      .toBe(true);
+    const mobileThread = page.getByRole("button", { name: /Ada Lovelace, Booking.com/ });
+    await mobileThread.click();
+    await expect(page.getByRole("button", { name: "Back to Inbox" })).toBeVisible();
+    await expect(page.getByLabel("Reply")).toBeVisible();
+    await page.getByRole("button", { name: "Back to Inbox" }).click();
+    await expect(mobileThread).toBeFocused();
+
+    await assertHealthy();
+  });
+
+  test("keeps read-only Inbox access useful and preserves a reply after a version conflict", async ({
+    page,
+  }) => {
+    const quickRepliesPath = `**/api/pms/properties/${PMS_WEB_PROPERTY_ID}/messaging/quick-replies**`;
+    const threadsPath = `**/api/pms/properties/${PMS_WEB_PROPERTY_ID}/messaging/threads**`;
+    let replyFailure: "version" | "resource" = "version";
+
+    await mockPmsWebAuthenticatedSession(page);
+    await mockPmsWebTargetRoutes(page);
+    await page.unroute(quickRepliesPath);
+    await page.route(quickRepliesPath, (route) =>
+      route.fulfill({
+        status: 403,
+        json: {
+          error: {
+            code: "missing_permission",
+            message: "Missing required PMS Inbox reply permission.",
+            requestId: "request-read-only",
+          },
+        },
+      }),
+    );
+    await page.goto("/inbox");
+    await page.getByRole("button", { name: /Ada Lovelace, Booking.com/ }).click();
+    await expect(page.getByText("Could we arrive a little early?")).toBeVisible();
+    await expect(page.getByText(/Reply access is required/)).toBeVisible();
+    await expect(page.getByLabel("Reply")).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "Translate" })).toHaveCount(0);
+
+    await page.unroute(quickRepliesPath);
+    await page.route(quickRepliesPath, (route) =>
+      route.fulfill({
+        json: {
+          contractVersion: "native-guest-inbox.v2",
+          propertyId: PMS_WEB_PROPERTY_ID,
+          items: [],
+        },
+      }),
+    );
+    await page.route(threadsPath, (route) => {
+      if (
+        route.request().method() === "POST" &&
+        new URL(route.request().url()).pathname.endsWith("/messages")
+      ) {
+        if (replyFailure === "resource") {
+          return route.fulfill({
+            status: 403,
+            json: {
+              error: {
+                code: "missing_resource_access",
+                message: "This property is no longer available.",
+                requestId: "request-mutation-property-denied",
+              },
+            },
+          });
+        }
+        return route.fulfill({
+          status: 409,
+          json: {
+            error: {
+              code: "thread_version_conflict",
+              message: "The conversation changed. Refresh and try again.",
+              requestId: "request-version-conflict",
+              details: { currentVersion: 4 },
+            },
+          },
+        });
+      }
+      return route.fallback();
+    });
+    await page.reload();
+    await page.getByRole("button", { name: /Ada Lovelace, Booking.com/ }).click();
+    const reply = page.getByLabel("Reply");
+    await reply.fill("Please keep this unsent draft.");
+    await reply.press("Control+Enter");
+    await expect(reply).toHaveValue("Please keep this unsent draft.");
+    await expect(
+      page.getByRole("alert").filter({ hasText: "Your draft is preserved" }),
+    ).toBeVisible();
+    replyFailure = "resource";
+    await reply.press("Control+Enter");
+    await expect(page.getByRole("heading", { name: "Inbox access unavailable" })).toBeVisible();
+    await expect.poll(() => new URL(page.url()).searchParams.has("thread")).toBe(false);
+  });
+
+  test("keeps guest search out of browser history while restoring operational filters", async ({
+    page,
+  }) => {
+    await mockPmsWebAuthenticatedSession(page);
+    await mockPmsWebTargetRoutes(page);
+    await page.goto("/inbox");
+
+    await page.getByLabel("Search conversations").fill("Ada Lovelace");
+    await expect.poll(() => page.url()).not.toContain("Ada");
+    await page.getByRole("button", { name: "Unread", exact: true }).click();
+    await expect.poll(() => new URL(page.url()).searchParams.get("unread")).toBe("true");
+  });
+
+  test("clears property Inbox data when read access is denied", async ({ page }) => {
+    const threadsPath = `**/api/pms/properties/${PMS_WEB_PROPERTY_ID}/messaging/threads**`;
+
+    await mockPmsWebAuthenticatedSession(page);
+    await mockPmsWebTargetRoutes(page);
+    await page.unroute(threadsPath);
+    await page.route(threadsPath, (route) =>
+      route.fulfill({
+        status: 403,
+        json: {
+          error: {
+            code: "missing_resource_access",
+            message: "This property is no longer available.",
+            requestId: "request-property-denied",
+          },
+        },
+      }),
+    );
+
+    await page.goto("/inbox?thread=thread-booking");
+    await expect(page.getByRole("heading", { name: "Inbox access unavailable" })).toBeVisible();
+    await expect(page.getByText("Ada Lovelace")).toHaveCount(0);
+    await expect.poll(() => new URL(page.url()).searchParams.has("thread")).toBe(false);
+  });
+
+  test("clears cached Inbox data when a reply denial cannot revalidate read access", async ({
+    page,
+  }) => {
+    const quickRepliesPath = `**/api/pms/properties/${PMS_WEB_PROPERTY_ID}/messaging/quick-replies**`;
+    const threadsPath = `**/api/pms/properties/${PMS_WEB_PROPERTY_ID}/messaging/threads**`;
+
+    await mockPmsWebAuthenticatedSession(page);
+    await mockPmsWebTargetRoutes(page);
+    await page.unroute(quickRepliesPath);
+    await page.route(quickRepliesPath, (route) =>
+      route.fulfill({
+        status: 403,
+        json: {
+          error: {
+            code: "missing_permission",
+            message: "Missing required PMS Inbox permission.",
+            requestId: "request-capability-denied",
+          },
+        },
+      }),
+    );
+    await page.route(threadsPath, (route) => {
+      const url = new URL(route.request().url());
+      if (
+        route.request().method() === "GET" &&
+        url.pathname.endsWith("/messaging/threads") &&
+        url.searchParams.get("limit") === "1"
+      ) {
+        return route.fulfill({
+          status: 403,
+          json: {
+            error: {
+              code: "missing_permission",
+              message: "Missing required PMS Inbox read permission.",
+              requestId: "request-read-recheck-denied",
+            },
+          },
+        });
+      }
+      return route.fallback();
+    });
+
+    await page.goto("/inbox");
+    await expect(page.getByRole("heading", { name: "Inbox access unavailable" })).toBeVisible();
+    await expect(page.getByText("Ada Lovelace")).toHaveCount(0);
+  });
+
+  test("focuses the next conversation after a selected thread disappears", async ({ page }) => {
+    const graceThread = {
+      ...pmsWebInboxThread,
+      id: "thread_grace_after_delete",
+      guest: { displayName: "Grace Hopper" },
+      unreadCount: 0,
+    };
+    let listRequests = 0;
+
+    await mockPmsWebAuthenticatedSession(page);
+    await mockPmsWebTargetRoutes(page);
+    await page.route(
+      `**/api/pms/properties/${PMS_WEB_PROPERTY_ID}/messaging/threads**`,
+      async (route) => {
+        const request = route.request();
+        const url = new URL(request.url());
+        if (request.method() !== "GET") return route.fallback();
+        if (url.pathname.endsWith("/messaging/threads")) {
+          listRequests += 1;
+          return route.fulfill({
+            json: {
+              contractVersion: "native-guest-inbox.v2",
+              items: listRequests === 1 ? [pmsWebInboxThread, graceThread] : [graceThread],
+              nextCursor: null,
+            },
+          });
+        }
+        if (url.pathname.endsWith(`/${pmsWebInboxThread.id}`)) {
+          await new Promise((resolve) => setTimeout(resolve, 50));
+          return route.fulfill({
+            status: 404,
+            json: {
+              error: {
+                code: "thread_not_found",
+                message: "Inbox thread was not found.",
+                requestId: "request-thread-removed",
+              },
+            },
+          });
+        }
+        return route.fallback();
+      },
+    );
+
+    await page.goto(`/inbox?thread=${encodeURIComponent(pmsWebInboxThread.id)}`);
+    const grace = page.getByRole("button", { name: /Grace Hopper, Booking.com/ });
+    await expect(grace).toBeFocused();
+    await expect.poll(() => new URL(page.url()).searchParams.has("thread")).toBe(false);
+  });
+
+  test("does not show a stale conversation after rapid thread selection", async ({ page }) => {
+    let releaseAda!: () => void;
+    let noteAdaRequested!: () => void;
+    let noteAdaCompleted!: () => void;
+    const adaRelease = new Promise<void>((resolve) => {
+      releaseAda = resolve;
+    });
+    const adaRequested = new Promise<void>((resolve) => {
+      noteAdaRequested = resolve;
+    });
+    const adaCompleted = new Promise<void>((resolve) => {
+      noteAdaCompleted = resolve;
+    });
+    const graceThread = {
+      ...pmsWebInboxThread,
+      id: "thread_grace",
+      guest: { displayName: "Grace Hopper" },
+      unreadCount: 0,
+      lastMessage: {
+        preview: "Thank you for the directions.",
+        at: "2026-09-04T08:15:00.000Z",
+        hasAttachments: false,
+      },
+    };
+
+    await mockPmsWebAuthenticatedSession(page);
+    await mockPmsWebTargetRoutes(page);
+    await page.route(
+      `**/api/pms/properties/${PMS_WEB_PROPERTY_ID}/messaging/threads**`,
+      async (route) => {
+        const request = route.request();
+        const url = new URL(request.url());
+        if (request.method() !== "GET") return route.fallback();
+        if (url.pathname.endsWith("/messaging/threads")) {
+          return route.fulfill({
+            json: {
+              contractVersion: "native-guest-inbox.v2",
+              items: [pmsWebInboxThread, graceThread],
+              nextCursor: null,
+            },
+          });
+        }
+        if (url.pathname.endsWith(`/${pmsWebInboxThread.id}`)) {
+          noteAdaRequested();
+          await adaRelease;
+          await route.fulfill({
+            json: {
+              contractVersion: "native-guest-inbox.v2",
+              thread: pmsWebInboxThread,
+              availableProviderActions: ["booking_com_no_reply_needed"],
+              timeline: [],
+              previousCursor: null,
+            },
+          });
+          noteAdaCompleted();
+          return;
+        }
+        if (url.pathname.endsWith(`/${graceThread.id}`)) {
+          return route.fulfill({
+            json: {
+              contractVersion: "native-guest-inbox.v2",
+              thread: graceThread,
+              availableProviderActions: [],
+              timeline: [],
+              previousCursor: null,
+            },
+          });
+        }
+        return route.fallback();
+      },
+    );
+
+    await page.goto("/inbox");
+    await page.getByRole("button", { name: /Ada Lovelace, Booking.com/ }).click();
+    await adaRequested;
+    await page.getByRole("button", { name: /Grace Hopper, Booking.com/ }).click();
+    await expect(page.getByRole("heading", { level: 2, name: "Grace Hopper" })).toBeVisible();
+    releaseAda();
+    await adaCompleted;
+    await expect(page.getByRole("heading", { level: 2, name: "Grace Hopper" })).toBeVisible();
+    await expect(page.getByRole("heading", { level: 2, name: "Ada Lovelace" })).toHaveCount(0);
   });
 
   test("creates a room type without updating payment settings", async ({ page }, testInfo) => {

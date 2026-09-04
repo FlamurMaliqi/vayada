@@ -33,6 +33,17 @@ const thread = {
   sourceReference: "provider-thread",
   inquiryArrivalDate: null,
   inquiryDepartureDate: null,
+  inquiryAdults: null,
+  inquiryChildren: null,
+  linkedCheckIn: null,
+  linkedCheckOut: null,
+  linkedNights: null,
+  linkedAdults: null,
+  linkedChildren: null,
+  linkedRoomCount: null,
+  linkedRoomName: null,
+  linkedRoomNumber: null,
+  linkedStatus: null,
   unreadCount: 1,
   activityAt: "2026-09-02T08:00:00.000300Z",
   lastMessagePreview: "Sent",
@@ -191,6 +202,8 @@ describe("PostgreSQL PMS Inbox thread detail read model", () => {
       expect(sql).not.toContain("source_url");
     }
     expect(calls[1]![0]).toContain('ORDER BY "occurredAtValue" DESC, kind DESC, id DESC');
+    expect(calls[0]![0]).toContain("pms.inbox.provider-action.deliver");
+    expect(calls[0]![0]).toContain("provider_action_job.source_domain_event_id IS NOT NULL");
     expect(calls[1]![0]).toContain("timeline_thread.source IN ('channex', 'migration')");
     expect(calls[1]![0]).toContain(
       'message.latest_provider_receipt_at AS "providerAcknowledgedAt"',
