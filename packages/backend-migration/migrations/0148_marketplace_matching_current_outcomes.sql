@@ -105,7 +105,7 @@ BEGIN
     'marketplace.match.guardrail_recorded.v1'
   ) AND NOT EXISTS (
     SELECT 1 FROM marketplace.current_matching_outcomes source
-    WHERE source.source_id::TEXT = NEW.source_id
+    WHERE source.source_id = NEW.source_id::UUID
       AND source.transition_xid = pg_current_xact_id()
       AND source.revision = NEW.revision
       AND source.collaboration_id = NEW.collaboration_id
