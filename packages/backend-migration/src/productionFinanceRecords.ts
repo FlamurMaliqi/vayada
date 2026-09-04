@@ -1236,12 +1236,6 @@ function bookingHotelFinanceRecords(
     propertyId,
     "booking",
   );
-  const identityEntitlement = context.target.identityEntitlements.find(
-    (entry) =>
-      entry.organizationId === organizationId &&
-      entry.product === "booking" &&
-      entry.resourceId === hotelId,
-  );
   const providerStatus = hps
     ? optionalText(hps.data["stripe_billing_status"], "stripe_billing_status")
     : null;
@@ -1376,7 +1370,6 @@ function bookingHotelFinanceRecords(
         id: entitlementId,
         organizationId,
         propertyId,
-        identityEntitlementId: identityEntitlement?.id ?? null,
         product: "booking",
         entitlementKey: "direct-booking-finance",
         billingStatus: ownerActive && entitlementActivationReady ? "active" : "suspended",

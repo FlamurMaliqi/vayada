@@ -99,12 +99,6 @@ export type ProductionFinancePrerequisites = {
   resourceLinks: FinanceResourceLink[];
   guestBookings: FinanceGuestBooking[];
   userIds: string[];
-  identityEntitlements: Array<{
-    id: string;
-    organizationId: string;
-    product: string;
-    resourceId: string | null;
-  }>;
 };
 
 export type ProductionFinanceTargetState = ProductionFinancePrerequisites & {
