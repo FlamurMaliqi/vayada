@@ -19,6 +19,10 @@ const outcomeMigration = await readFile(
   join(import.meta.dirname, "../migrations/0144_marketplace_matching_evaluation_outcomes.sql"),
   "utf8",
 );
+const currentOutcomeMigration = await readFile(
+  join(import.meta.dirname, "../migrations/0148_marketplace_matching_current_outcomes.sql"),
+  "utf8",
+);
 const TEST_DATABASE_URL = process.env["TEST_DATABASE_URL"];
 const ids = {
   actor: "10000000-0000-4000-8000-000000000001",
@@ -57,6 +61,10 @@ describe("Marketplace matching event projection migration contract", () => {
     );
     expect(outcomeMigration).toContain("uq_marketplace_matching_satisfaction_revision");
     expect(outcomeMigration).toContain("uq_marketplace_matching_guardrail_revision");
+    expect(currentOutcomeMigration).toContain("CREATE TABLE marketplace.current_matching_outcomes");
+    expect(currentOutcomeMigration).toContain("transition_xid          XID8");
+    expect(currentOutcomeMigration).toContain("source.transition_xid = pg_current_xact_id()");
+    expect(currentOutcomeMigration).not.toMatch(/\b(?:jsonb|free_text|message|payload|cursor)\b/i);
   });
 });
 
@@ -380,6 +388,85 @@ describe.skipIf(!TEST_DATABASE_URL)(
       }
     });
 
+    it("ties current satisfaction and guardrail facts to exact same-transaction events", async () => {
+      await applyCurrentOutcomeMigrations(client);
+      await insertCollaboration(client, ids.collaboration, "creator");
+      const satisfactionId = randomUUID();
+      const guardrailId = randomUUID();
+      await recordCurrentOutcome(client, satisfactionSource(satisfactionId, "satisfied"));
+      await recordCurrentOutcome(client, guardrailSource(guardrailId, "opened", "dispute"));
+      for (const mismatch of [
+        satisfactionSource(satisfactionId, "neutral", 2),
+        guardrailSource(guardrailId, "resolved", "dispute", 2),
+      ])
+        await expect(
+          insertMatchingEvent(client, currentOutcomeEvent(mismatch, occurredAt)),
+        ).rejects.toMatchObject({
+          constraint: "chk_marketplace_matching_event_current_source_transition",
+        });
+    });
+
+    it("enforces source revisions and keeps them independent of retained events", async () => {
+      await applyCurrentOutcomeMigrations(client);
+      await insertCollaboration(client, ids.collaboration, "creator");
+      await expect(
+        insertCurrentOutcome(client, satisfactionSource(randomUUID(), "satisfied", 2)),
+      ).rejects.toMatchObject({
+        constraint: "chk_marketplace_current_matching_outcome_revision_transition",
+      });
+      await client.query("BEGIN");
+      await insertCurrentOutcome(client, guardrailSource(randomUUID(), "opened", "report"));
+      await expect(client.query("COMMIT")).rejects.toMatchObject({
+        constraint: "chk_marketplace_current_matching_outcome_projection_required",
+      });
+      await client.query("ROLLBACK");
+
+      const sourceId = randomUUID();
+      await recordCurrentOutcome(client, satisfactionSource(sourceId, "satisfied"));
+      await client.query("DELETE FROM marketplace.current_matching_outcomes WHERE source_id=$1", [
+        sourceId,
+      ]);
+      const replacementId = randomUUID();
+      await recordCurrentOutcome(client, satisfactionSource(replacementId, "satisfied"));
+      expect(await currentRevision(client, replacementId)).toBe(1);
+      await client.query(
+        "ALTER TABLE marketplace.matching_event_projections DISABLE TRIGGER trg_marketplace_matching_event_append_only",
+      );
+      await client.query(
+        "DELETE FROM marketplace.matching_event_projections WHERE source_id=$1 AND revision=1",
+        [replacementId],
+      );
+      await client.query(
+        "ALTER TABLE marketplace.matching_event_projections ENABLE TRIGGER trg_marketplace_matching_event_append_only",
+      );
+      await recordCurrentOutcome(client, satisfactionSource(replacementId, "neutral", 2));
+      expect(await currentRevision(client, replacementId)).toBe(2);
+    });
+
+    it("rejects one of two edits from the same current revision", async () => {
+      await applyCurrentOutcomeMigrations(client);
+      await insertCollaboration(client, ids.collaboration, "creator");
+      const sourceId = randomUUID();
+      await recordCurrentOutcome(client, satisfactionSource(sourceId, "satisfied", 1, "hotel"));
+      const writer = new pg.Client({ connectionString: TEST_DATABASE_URL });
+      await writer.connect();
+      try {
+        const results = await Promise.allSettled([
+          recordCurrentOutcome(client, satisfactionSource(sourceId, "neutral", 2, "hotel")),
+          recordCurrentOutcome(writer, satisfactionSource(sourceId, "dissatisfied", 2, "hotel")),
+        ]);
+        expect(results.filter(({ status }) => status === "fulfilled")).toHaveLength(1);
+        expect(results.find(({ status }) => status === "rejected")).toMatchObject({
+          reason: {
+            constraint: "chk_marketplace_current_matching_outcome_revision_transition",
+          },
+        });
+        expect(await currentRevision(client, sourceId)).toBe(2);
+      } finally {
+        await writer.end();
+      }
+    });
+
     it("rolls back all DDL when an append-only prerequisite is missing", async () => {
       await client.query("DROP FUNCTION platform.prevent_append_only_mutation()");
       await client.query("BEGIN");
@@ -451,6 +538,8 @@ async function insertProjection(client: pg.Client, input: ProjectionInput): Prom
 type MatchingEventInput = {
   eventType: string;
   sourceId?: string;
+  revision?: number;
+  actorUserId?: string;
   occurredAt?: string;
   collaborationId?: string;
   attributionKind?: "organic" | "recommended";
@@ -574,6 +663,7 @@ async function insertCollaboration(
 async function insertMatchingEvent(client: pg.Client, input: MatchingEventInput): Promise<void> {
   const domainEventId = randomUUID();
   const sourceId = input.sourceId ?? randomUUID();
+  const revision = input.revision ?? 1;
   const acceptedAt = input.occurredAt ?? occurredAt;
   await client.query(
     `INSERT INTO platform.domain_events VALUES
@@ -581,11 +671,11 @@ async function insertMatchingEvent(client: pg.Client, input: MatchingEventInput)
       'matching_event',$7,'{}','{}')`,
     [
       domainEventId,
-      `${input.eventType}:${sourceId}:1`,
+      `${input.eventType}:${sourceId}:${revision}`,
       input.eventType,
       acceptedAt,
       ids.property,
-      ids.actor,
+      input.actorUserId ?? ids.actor,
       sourceId,
     ],
   );
@@ -644,14 +734,15 @@ async function insertMatchingEvent(client: pg.Client, input: MatchingEventInput)
       contract_version,correlation_id,occurred_at,recorded_at,attribution_kind,policy_version,
       evaluation_id,evaluation_mode,impression_id,recommendation_session_id,surface,
       presentation_mode,impression_rank,impression_slot,${detailColumns.join(",")})
-     VALUES ($1,$2,$3,1,$4,$5,$6,$7,$8,$9,$10,'marketplace-matching-contract.v2',
-       'correlation-1',$11,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,
-       ${detailValues.map((_, index) => `$${index + 22}`).join(",")})`,
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'marketplace-matching-contract.v2',
+       'correlation-1',$12,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,
+       ${detailValues.map((_, index) => `$${index + 23}`).join(",")})`,
     [
       domainEventId,
       input.eventType,
       sourceId,
-      ids.actor,
+      revision,
+      input.actorUserId ?? ids.actor,
       ids.creator,
       ids.creatorOrg,
       ids.hotelOrg,
@@ -672,6 +763,122 @@ async function insertMatchingEvent(client: pg.Client, input: MatchingEventInput)
       ...detailValues,
     ],
   );
+}
+
+type CurrentOutcomeInput = {
+  sourceId: string;
+  kind: "satisfaction" | "guardrail";
+  revision?: number;
+  respondentSide?: "creator" | "hotel";
+  satisfactionOutcome?: "satisfied" | "neutral" | "dissatisfied";
+  guardrailState?: "opened" | "resolved";
+  guardrailCode?: "cancellation" | "no_show" | "dispute" | "block" | "report" | "policy_violation";
+};
+
+function satisfactionSource(
+  sourceId: string,
+  satisfactionOutcome: CurrentOutcomeInput["satisfactionOutcome"],
+  revision = 1,
+  respondentSide: "creator" | "hotel" = "creator",
+): CurrentOutcomeInput {
+  return { sourceId, kind: "satisfaction", revision, respondentSide, satisfactionOutcome };
+}
+
+function guardrailSource(
+  sourceId: string,
+  guardrailState: CurrentOutcomeInput["guardrailState"],
+  guardrailCode: CurrentOutcomeInput["guardrailCode"],
+  revision = 1,
+): CurrentOutcomeInput {
+  return { sourceId, kind: "guardrail", revision, guardrailState, guardrailCode };
+}
+
+function currentOutcomeEvent(input: CurrentOutcomeInput, occurredAt: string): MatchingEventInput {
+  return {
+    eventType:
+      input.kind === "satisfaction"
+        ? "marketplace.match.satisfaction_recorded.v1"
+        : "marketplace.match.guardrail_recorded.v1",
+    ...input,
+    occurredAt,
+    collaborationId: ids.collaboration,
+    attributionKind: "organic",
+  };
+}
+
+async function applyCurrentOutcomeMigrations(client: pg.Client): Promise<void> {
+  await client.query(migration);
+  await client.query(attributionMigration);
+  await client.query(outcomeMigration);
+  await client.query(currentOutcomeMigration);
+}
+
+async function insertCurrentOutcome(
+  client: pg.Client,
+  input: CurrentOutcomeInput,
+): Promise<string> {
+  const result = await client.query<{ occurredAt: string }>(
+    `INSERT INTO marketplace.current_matching_outcomes
+     (source_id,source_kind,collaboration_id,creator_profile_id,creator_organization_id,
+      hotel_organization_id,property_id,offer_id,subject_user_id,actor_user_id,respondent_side,
+      satisfaction_outcome,guardrail_state,guardrail_code,revision)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$9,$10,$11,$12,$13,$14)
+     RETURNING to_char(updated_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS "occurredAt"`,
+    [
+      input.sourceId,
+      input.kind,
+      ids.collaboration,
+      ids.creator,
+      ids.creatorOrg,
+      ids.hotelOrg,
+      ids.property,
+      ids.offer,
+      ids.actor,
+      input.respondentSide ?? null,
+      input.satisfactionOutcome ?? null,
+      input.guardrailState ?? null,
+      input.guardrailCode ?? null,
+      input.revision ?? 1,
+    ],
+  );
+  return result.rows[0]!.occurredAt;
+}
+
+async function recordCurrentOutcome(client: pg.Client, input: CurrentOutcomeInput): Promise<void> {
+  await client.query("BEGIN");
+  try {
+    const revision = input.revision ?? 1;
+    const occurredAt =
+      revision === 1
+        ? await insertCurrentOutcome(client, input)
+        : (
+            await client.query<{ occurredAt: string }>(
+              `UPDATE marketplace.current_matching_outcomes SET revision=$2,
+                 satisfaction_outcome=$3,guardrail_state=$4
+               WHERE source_id=$1
+               RETURNING to_char(updated_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS "occurredAt"`,
+              [
+                input.sourceId,
+                revision,
+                input.satisfactionOutcome ?? null,
+                input.guardrailState ?? null,
+              ],
+            )
+          ).rows[0]!.occurredAt;
+    await insertMatchingEvent(client, currentOutcomeEvent({ ...input, revision }, occurredAt));
+    await client.query("COMMIT");
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  }
+}
+
+async function currentRevision(client: pg.Client, sourceId: string): Promise<number> {
+  const result = await client.query<{ revision: number }>(
+    "SELECT revision FROM marketplace.current_matching_outcomes WHERE source_id=$1",
+    [sourceId],
+  );
+  return result.rows[0]!.revision;
 }
 
 const fixtureSql = `
