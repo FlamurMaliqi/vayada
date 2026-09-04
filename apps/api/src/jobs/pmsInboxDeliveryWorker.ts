@@ -5,6 +5,7 @@ import {
   projectPmsInboxDeliveryFailure,
   type PmsInboxDeliveryCompletion,
   type PmsInboxDeliveryProvider,
+  type PmsInboxDeliveryProviderResult,
   type PmsInboxDeliveryStore,
 } from "../domains/pmsInboxDelivery.js";
 
@@ -55,10 +56,12 @@ export async function runPmsInboxDeliveryJobs(
           options,
         );
       } else {
-        const result = await provider.send(prepared.input).catch(() => ({
-          ok: false as const,
-          failure: "ambiguous_provider_outcome" as const,
-        }));
+        const result = await provider.send(prepared.input).catch(
+          (): PmsInboxDeliveryProviderResult => ({
+            ok: false,
+            failure: "ambiguous_provider_outcome",
+          }),
+        );
         completion = result.ok
           ? {
               outcome: "accepted",
