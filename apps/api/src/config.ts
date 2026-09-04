@@ -14,11 +14,7 @@ export type ApiAuthConfig = {
 };
 
 export type ApiAuthSurface =
-  | "platform-admin"
-  | "booking-admin"
-  | "pms-web"
-  | "affiliate-dashboard"
-  | "marketplace-web";
+  "platform-admin" | "booking-admin" | "pms-web" | "affiliate-dashboard" | "marketplace-web";
 
 export type ApiAuthSessionConfig = {
   workosClientId: string;

@@ -14,8 +14,7 @@ export type InventoryReservationTransaction = {
 };
 
 export type InventoryReservationReceipt =
-  | PmsInventoryReservationReceipt
-  | PmsInventoryReservationMarker;
+  PmsInventoryReservationReceipt | PmsInventoryReservationMarker;
 
 export type DirectBookingInventoryReservationPort = {
   reserve(input: {

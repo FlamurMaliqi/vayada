@@ -21,9 +21,7 @@ export type PmsInboxEmailReplyRoute =
       channel: null;
       providerChannel: null;
       reasonCode:
-        | "guest_email_unavailable"
-        | "approved_sender_unavailable"
-        | "email_policy_disallowed";
+        "guest_email_unavailable" | "approved_sender_unavailable" | "email_policy_disallowed";
     };
 
 export type PmsInboxEmailReplyRouteReadPort = {
@@ -119,8 +117,7 @@ export type PmsInboxReadError = {
   message: string;
 };
 export type PmsInboxPortResult<T> =
-  | { ok: true; value: T }
-  | { ok: false; error: PmsInboxReadError };
+  { ok: true; value: T } | { ok: false; error: PmsInboxReadError };
 
 export type PmsInboxReadPort = {
   listThreads(input: {
@@ -276,10 +273,7 @@ export type PmsInboxTriagePort = {
 
 export type PmsInboxStaffCommandError = {
   code:
-    | "validation_failed"
-    | "thread_not_found"
-    | "thread_version_conflict"
-    | "idempotency_conflict";
+    "validation_failed" | "thread_not_found" | "thread_version_conflict" | "idempotency_conflict";
   message: string;
   currentVersion?: number;
 };
@@ -424,10 +418,7 @@ export type PmsInboxQuickReplyPort = {
 };
 
 export type PmsInboxAssistanceKind =
-  | "translate_message"
-  | "translate_draft"
-  | "summarize"
-  | "draft_reply";
+  "translate_message" | "translate_draft" | "summarize" | "draft_reply";
 
 export type PmsInboxAssistanceRequest =
   | {
@@ -439,10 +430,7 @@ export type PmsInboxAssistanceRequest =
 
 export type PmsInboxAssistanceError = {
   code:
-    | "validation_failed"
-    | "thread_not_found"
-    | "idempotency_conflict"
-    | "assistance_unavailable";
+    "validation_failed" | "thread_not_found" | "idempotency_conflict" | "assistance_unavailable";
   message: string;
 };
 

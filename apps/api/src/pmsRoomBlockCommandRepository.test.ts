@@ -307,7 +307,7 @@ function updateCommand(): PmsRoomBlockUpdateCommand {
 
 function calendarDays(from: string, to: string): string[] {
   const days: string[] = [];
-  for (let day = new Date(`${from}T00:00:00Z`); day <= new Date(`${to}T00:00:00Z`); ) {
+  for (let day = new Date(`${from}T00:00:00Z`); day <= new Date(`${to}T00:00:00Z`);) {
     days.push(day.toISOString().slice(0, 10));
     day = new Date(day.getTime() + 86_400_000);
   }

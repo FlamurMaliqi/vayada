@@ -34,13 +34,7 @@ export class CreatorPlatformRequestError extends Error {
 }
 
 export type CreatorPlatformRequestErrorCategory =
-  | "authorization"
-  | "permission"
-  | "privacy"
-  | "rate_limit"
-  | "quota"
-  | "transient"
-  | "request";
+  "authorization" | "permission" | "privacy" | "rate_limit" | "quota" | "transient" | "request";
 
 export type CreatorPlatformOptionalResponse =
   | { ok: true; value: unknown }

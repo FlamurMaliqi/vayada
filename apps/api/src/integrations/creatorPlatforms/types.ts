@@ -3,11 +3,7 @@ export const CREATOR_PLATFORM_PROVIDERS = ["instagram", "facebook", "tiktok", "y
 export type CreatorPlatformProvider = (typeof CREATOR_PLATFORM_PROVIDERS)[number];
 
 export type CreatorPlatformUnavailableReason =
-  | "not_supported"
-  | "not_returned"
-  | "privacy_threshold"
-  | "missing_permission"
-  | "no_data";
+  "not_supported" | "not_returned" | "privacy_threshold" | "missing_permission" | "no_data";
 
 export type CreatorPlatformMetric<T> =
   | { value: T; unavailableReason?: never }
