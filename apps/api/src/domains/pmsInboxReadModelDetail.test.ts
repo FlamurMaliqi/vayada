@@ -192,6 +192,10 @@ describe("PostgreSQL PMS Inbox thread detail read model", () => {
     }
     expect(calls[1]![0]).toContain('ORDER BY "occurredAtValue" DESC, kind DESC, id DESC');
     expect(calls[1]![0]).toContain("timeline_thread.source IN ('channex', 'migration')");
+    expect(calls[1]![0]).toContain(
+      'message.latest_provider_receipt_at AS "providerAcknowledgedAt"',
+    );
+    expect(calls[1]![0]).not.toContain("THEN message.sent_at END");
     expect(calls[2]![0]).toContain("media.resource_id = message.thread_id::text");
     expect(calls[2]![0]).toContain("media.resource_id = attachment.id::text");
     expect(calls[2]![1]).toEqual([PROPERTY, THREAD, [MESSAGE]]);

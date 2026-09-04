@@ -285,10 +285,7 @@ export function createPgPmsInboxReadPort(config: {
                                 AND timeline_thread.source IN ('channex', 'migration')
                       THEN timeline_thread.delivery_channel END) AS "deliveryChannel",
                   message.delivery_reason_code AS "deliveryReasonCode",
-                  COALESCE(message.latest_provider_receipt_at,
-                    CASE WHEN message.direction = 'outbound'
-                                AND timeline_thread.source IN ('channex', 'migration')
-                      THEN message.sent_at END) AS "providerAcknowledgedAt",
+                  message.latest_provider_receipt_at AS "providerAcknowledgedAt",
                   NULL::uuid AS "authorMembershipId", NULL::text AS "authorDisplayName"
            FROM pms.messages message
            JOIN pms.message_threads timeline_thread

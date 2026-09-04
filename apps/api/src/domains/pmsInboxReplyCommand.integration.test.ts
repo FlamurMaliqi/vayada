@@ -4,6 +4,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vites
 import { relayPmsInboxDeliveryOutbox } from "../jobs/pmsInboxDeliveryOutbox.js";
 import { createPgPmsInboxDeliveryStore } from "../jobs/pmsInboxDeliveryPg.js";
 import { runPmsInboxDeliveryJobs } from "../jobs/pmsInboxDeliveryWorker.js";
+import { createPgPmsInboxDeliveryReceiptPort } from "../jobs/pmsInboxDeliveryReceipts.js";
 import type { PmsInboxEmailReplyRouteReadPort } from "./pmsInbox.js";
 import type { PmsInboxDeliveryProvider } from "./pmsInboxDelivery.js";
 import {
@@ -232,6 +233,49 @@ describe.skipIf(!URL)("PostgreSQL PMS Inbox manual reply command", () => {
         )
       ).rows,
     ).toEqual([{ outcome: "accepted", provider_reference: "ota-message-1" }]);
+    const receipts = createPgPmsInboxDeliveryReceiptPort({
+      connectionString: "",
+      pool: admin as never,
+    });
+    const acknowledgedAt = new Date("2026-09-03T09:01:00.000Z");
+    await expect(
+      receipts.recordTrustedReceipt({
+        propertyId: PROPERTY,
+        messageId,
+        attemptNumber: 1,
+        receiptType: "delivered",
+        providerReceiptId: "ota-receipt-1",
+        acknowledgedAt,
+      }),
+    ).resolves.toEqual({ recorded: true });
+    await expect(
+      receipts.recordTrustedReceipt({
+        propertyId: PROPERTY,
+        messageId,
+        attemptNumber: 1,
+        receiptType: "delivered",
+        providerReceiptId: "ota-receipt-1",
+        acknowledgedAt,
+      }),
+    ).resolves.toEqual({ recorded: false });
+    expect(
+      (
+        await admin.query(
+          `SELECT count(*)::int AS count, max(acknowledged_at) AS "acknowledgedAt"
+           FROM pms.message_delivery_receipts WHERE message_id = $1::uuid`,
+          [messageId],
+        )
+      ).rows,
+    ).toEqual([{ count: 1, acknowledgedAt }]);
+    expect(
+      (
+        await admin.query(
+          `SELECT latest_provider_receipt_at AS "acknowledgedAt"
+           FROM pms.messages WHERE id = $1::uuid`,
+          [messageId],
+        )
+      ).rows,
+    ).toEqual([{ acknowledgedAt }]);
   });
 
   it.each([
@@ -451,6 +495,29 @@ describe.skipIf(!URL)("PostgreSQL PMS Inbox manual reply command", () => {
     expect(persisted.audits).toEqual(
       expect.arrayContaining([expect.objectContaining({ action: "pms.inbox.reply.held" })]),
     );
+  });
+
+  it("holds an inquiry reply at acceptance because inquiry sending is out of scope", async () => {
+    await admin.query(
+      `UPDATE pms.message_threads SET conversation_context_state = 'inquiry',
+         inquiry_arrival_date = '2026-09-04', inquiry_departure_date = '2026-09-05',
+         inquiry_adults = 2, inquiry_children = 0
+       WHERE property_id = $1::uuid AND id = $2::uuid`,
+      [PROPERTY, THREAD],
+    );
+    const accepted = await reply.reply(command("inquiry-held"));
+    expect(accepted).toMatchObject({
+      ok: true,
+      value: {
+        delivery: {
+          state: "held",
+          channel: null,
+          reasonCode: "provider_conversation_unavailable",
+        },
+      },
+    });
+    const messageId = accepted.ok ? accepted.value.messageId : "";
+    expect((await state(messageId)).counts.outbox).toBe(0);
   });
 
   it("rejects stale versions and cross-property attachments without side effects", async () => {

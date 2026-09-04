@@ -112,6 +112,7 @@ class FakeDatabase {
           sourceThreadId: "provider-thread",
           deliveryChannel: "ota",
           providerChannel: "booking.com",
+          conversationContextState: "linked",
           guestEmail: "guest@example.com",
           attentionState: "done",
           ...this.options.thread,

@@ -45,6 +45,7 @@ type ThreadRow = {
   sourceThreadId: string;
   deliveryChannel: "ota" | "email";
   providerChannel: string | null;
+  conversationContextState: string;
   guestEmail: string | null;
   attentionState: "needs_attention" | "follow_up" | "done";
 };
@@ -420,6 +421,7 @@ async function lockThread(
             thread.source_thread_id AS "sourceThreadId",
             thread.delivery_channel AS "deliveryChannel",
             thread.provider_channel AS "providerChannel",
+            thread.conversation_context_state AS "conversationContextState",
             current_guest.email AS "guestEmail",
             thread.attention_state AS "attentionState"
      FROM pms.message_threads thread
@@ -455,7 +457,12 @@ async function resolveRoute(
 ): Promise<PmsInboxReplyRoute> {
   if (thread.deliveryChannel === "ota") {
     const providerChannel = trimmed(thread.providerChannel);
-    if (thread.source !== "channex" || !providerChannel || !thread.sourceThreadId.trim())
+    if (
+      thread.source !== "channex" ||
+      !providerChannel ||
+      !thread.sourceThreadId.trim() ||
+      thread.conversationContextState === "inquiry"
+    )
       return {
         state: "held",
         channel: null,
