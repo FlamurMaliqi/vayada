@@ -23,6 +23,7 @@ import {
 } from "@/services/api/booking";
 import { ApiError } from "@/services/api/client";
 import { getFreeCancellationDays } from "@/lib/constants/booking";
+import { storedGoogleHotelTrafficSource } from "@/lib/googleHotel";
 import { usePricing } from "@/lib/hooks/usePricing";
 import { useBookingSteps } from "@/lib/hooks/useBookingSteps";
 import {
@@ -362,6 +363,7 @@ function PaymentPageContent() {
       quoteId: quote.quoteId,
       expectedTotalAmount: quote.totalAmount,
       balanceAmount: quote.balanceAmount,
+      trafficSource: storedGoogleHotelTrafficSource(),
     };
     const pendingAttempt = quote.quoteId
       ? {

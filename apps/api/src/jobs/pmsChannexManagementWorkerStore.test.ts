@@ -24,6 +24,21 @@ describe("PMS Channex management worker store", () => {
     expect(harness.db.sql()).toContain("INSERT INTO platform.job_attempts");
   });
 
+  it("enqueues automatic Google reconciliation only from confirmed canonical drift", async () => {
+    const harness = setup({ googleCandidate: true });
+
+    await expect(harness.store.claim({ workerId: "worker-1", now })).resolves.toBeNull();
+
+    expect(harness.db.sql()).toContain("businessProfileConfirmedAt");
+    expect(harness.db.sql()).toContain("sourceFingerprint");
+    expect(harness.db.sql()).not.toContain("source.revision");
+    expect(harness.db.sql()).toContain("mapping.channel = 'google_hotel'");
+    expect(harness.db.sql()).toContain("automatic-google-reconciliation");
+    expect(
+      harness.db.calls.find(({ text }) => text.includes("INSERT INTO platform.jobs"))?.values,
+    ).toContain("property-1");
+  });
+
   it("persists completion", async () => {
     const harness = setup();
     await harness.store.succeed(
@@ -165,6 +180,7 @@ type FakeJobRow = {
 
 type FakeDbOptions = Partial<FakeJobRow> & {
   withJob?: boolean;
+  googleCandidate?: boolean;
   jobUpdateRowCount?: number;
   leaseUpdateRowCount?: number;
   attemptUpdateRowCount?: number;
@@ -205,19 +221,21 @@ class FakeDb {
     this.calls.push({ text, values });
     if (text === "ROLLBACK" && this.options.rollbackError) throw this.options.rollbackError;
     const rows =
-      this.options.withJob && text.includes("FROM platform.jobs")
-        ? [
-            {
-              jobId: job.jobId,
-              propertyId: job.propertyId,
-              correlationId: job.correlationId,
-              status: this.options.status ?? "pending",
-              attemptsCount: this.options.attemptsCount ?? 0,
-              maxAttempts: this.options.maxAttempts ?? 5,
-              payload: job.input,
-            },
-          ]
-        : [];
+      text.includes("FROM pms.channel_connections") && this.options.googleCandidate
+        ? [{ propertyId: "property-1", stateFingerprint: "state-1" }]
+        : this.options.withJob && text.includes("FROM platform.jobs")
+          ? [
+              {
+                jobId: job.jobId,
+                propertyId: job.propertyId,
+                correlationId: job.correlationId,
+                status: this.options.status ?? "pending",
+                attemptsCount: this.options.attemptsCount ?? 0,
+                maxAttempts: this.options.maxAttempts ?? 5,
+                payload: job.input,
+              },
+            ]
+          : [];
     const leaseUpdate = text.includes("UPDATE platform.jobs SET locked_at = now()");
     const attemptUpdate =
       text.includes("UPDATE platform.job_attempts SET status = 'succeeded'") ||

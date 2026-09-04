@@ -8,6 +8,7 @@ export const CHANNEX_MANAGEMENT_OPERATION_TYPES = [
   "enable",
   "disable",
   "provision",
+  "setup_google",
   "sync_ari",
   "sync_bookings",
   "update_markups",
@@ -71,6 +72,21 @@ export type ChannexConnectedChannel = {
   isActive: boolean;
 };
 
+export type GoogleFreeBookingLinksPreflight = {
+  propertyName: boolean;
+  address: boolean;
+  phone: boolean;
+  bookingEngine: boolean;
+  activeRatesAndAvailability: boolean;
+};
+
+export type GoogleFreeBookingLinksStatus =
+  | "disabled"
+  | "pending"
+  | "active"
+  | "manual_confirmation_required"
+  | "error";
+
 export type ChannexManagementOperation = {
   contractVersion: typeof CHANNEX_MANAGEMENT_CONTRACT_VERSION;
   operationId: string;
@@ -99,6 +115,13 @@ export type ChannexManagementSnapshot = {
     ratePlans: ChannexRatePlanMapping[];
   };
   channels: ChannexConnectedChannel[];
+  googleFreeBookingLinks: {
+    status: GoogleFreeBookingLinksStatus;
+    bookingUrlTemplate: string | null;
+    currency: string | null;
+    businessProfileConfirmedAt: ChannexUtcDateTime | null;
+    preflight: GoogleFreeBookingLinksPreflight;
+  };
   markups: Array<{ channel: string; markupPercent: number }>;
   sync: Record<"booking" | "ari" | "message" | "mapping", ChannexSyncDomainState>;
   capabilityModes: ChannexManagementCapabilityModes;
@@ -109,6 +132,7 @@ export type ChannexManagementCommandRequest = {
   commandId: string;
   idempotencyKey: string;
   operationType: Exclude<ChannexManagementOperationType, "update_markups">;
+  businessProfileConfirmed?: boolean;
 };
 
 export function buildChannexManagementJobKey(input: {

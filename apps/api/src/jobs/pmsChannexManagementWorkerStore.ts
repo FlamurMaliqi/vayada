@@ -3,6 +3,7 @@ import pg from "pg";
 
 import type { PmsChannexManagementCommandInput } from "../domains/pmsChannexManagementCommands.js";
 import { PMS_CHANNEX_MANAGEMENT_QUEUE } from "../domains/pmsChannexManagementReadModel.js";
+import { GOOGLE_FREE_BOOKING_LINKS_SOURCE_FINGERPRINT_SQL } from "../domains/pmsGoogleFreeBookingLinks.js";
 import type {
   ChannexManagementJob,
   ChannexManagementProviderFailure,
@@ -70,6 +71,7 @@ async function claim(
   input: { workerId: string; now: Date },
 ): Promise<ChannexManagementJob | null> {
   return transaction(pool, async (client) => {
+    await enqueueAutomaticGoogleReconciliation(client, input.now);
     const result = await client.query<JobRow>(
       `SELECT id::text AS "jobId", property_id::text AS "propertyId",
          correlation_id AS "correlationId", status, attempts_count AS "attemptsCount",
@@ -134,6 +136,109 @@ async function claim(
     );
     return toJob(row, attemptNumber);
   });
+}
+
+async function enqueueAutomaticGoogleReconciliation(client: Client, now: Date) {
+  const candidate = await client.query<{ propertyId: string; stateFingerprint: string }>(
+    `SELECT connection.property_id::text AS "propertyId",
+       md5(concat_ws('|', source.fingerprint,
+         (SELECT string_agg(
+           concat_ws(':', mapping.room_type_id::text, mapping.status,
+             mapping.external_room_type_id), ',' ORDER BY mapping.room_type_id
+         ) FROM pms.channel_room_type_mappings mapping
+           WHERE mapping.connection_id = connection.id),
+         (SELECT string_agg(
+           concat_ws(':', mapping.rate_plan_id::text, mapping.channel, mapping.status,
+             mapping.external_rate_plan_id), ',' ORDER BY mapping.rate_plan_id, mapping.channel
+         ) FROM pms.channel_rate_plan_mappings mapping
+           WHERE mapping.connection_id = connection.id)
+       )) AS "stateFingerprint"
+     FROM pms.channel_connections connection
+     JOIN hotel_catalog.properties property ON property.id = connection.property_id
+     LEFT JOIN hotel_catalog.property_locations location ON location.property_id = property.id
+     LEFT JOIN distribution.public_hotel_bookability_profiles profile
+       ON profile.property_id = property.id
+     CROSS JOIN LATERAL (
+       SELECT ${GOOGLE_FREE_BOOKING_LINKS_SOURCE_FINGERPRINT_SQL} AS fingerprint
+     ) source
+     WHERE connection.provider = 'channex'
+       AND connection.connection_status IN ('connected', 'degraded')
+       AND connection.external_property_id IS NOT NULL
+       AND COALESCE(
+         connection.connection_metadata #>> '{googleFreeBookingLinks,businessProfileConfirmedAt}',
+         ''
+       ) <> ''
+       AND (
+         source.fingerprint IS DISTINCT FROM
+           connection.connection_metadata #>> '{googleFreeBookingLinks,sourceFingerprint}'
+         OR EXISTS (
+           SELECT 1 FROM pms.room_types room
+           WHERE room.property_id = property.id AND room.active
+             AND NOT EXISTS (
+               SELECT 1 FROM pms.channel_room_type_mappings mapping
+               WHERE mapping.connection_id = connection.id AND mapping.room_type_id = room.id
+                 AND mapping.status = 'active'
+             )
+         )
+         OR EXISTS (
+           SELECT 1 FROM pms.rate_plans plan
+           JOIN pms.room_types room ON room.id = plan.room_type_id AND room.active
+           WHERE plan.property_id = property.id AND plan.active
+             AND NOT EXISTS (
+               SELECT 1 FROM pms.channel_rate_plan_mappings mapping
+               WHERE mapping.connection_id = connection.id AND mapping.rate_plan_id = plan.id
+                 AND mapping.channel = 'google_hotel' AND mapping.status = 'active'
+             )
+         )
+         OR EXISTS (
+           SELECT 1 FROM pms.channel_rate_plan_mappings mapping
+           JOIN pms.rate_plans plan ON plan.id = mapping.rate_plan_id
+           JOIN pms.room_types room ON room.id = mapping.room_type_id
+           WHERE mapping.connection_id = connection.id
+             AND mapping.channel = 'google_hotel' AND mapping.status = 'active'
+             AND (NOT plan.active OR NOT room.active)
+         )
+         OR EXISTS (
+           SELECT 1 FROM pms.channel_room_type_mappings mapping
+           JOIN pms.room_types room ON room.id = mapping.room_type_id
+           WHERE mapping.connection_id = connection.id AND mapping.status = 'active'
+             AND NOT room.active
+         )
+       )
+     ORDER BY connection.property_id
+     FOR UPDATE OF connection SKIP LOCKED
+     LIMIT 1`,
+  );
+  const row = candidate.rows[0];
+  if (!row) return;
+  const idempotencyKey = `google-reconcile:${row.stateFingerprint}`;
+  const payload: PmsChannexManagementCommandInput = {
+    commandId: idempotencyKey,
+    idempotencyKey,
+    operationType: "setup_google",
+    businessProfileConfirmed: false,
+    actorUserId: null,
+  };
+  await client.query(
+    `INSERT INTO platform.jobs (
+       job_key, queue_name, job_type, status, max_attempts, run_after, tenant_scope,
+       property_id, resource_product, resource_type, resource_id, correlation_id,
+       idempotency_key_hash, payload, job_metadata
+     ) VALUES (
+       $1, $2, 'channex.setup_google', 'pending', 5, $3::timestamptz, 'property',
+       $4::uuid, 'pms', 'channex_connection', $4, $5, $6, $7::jsonb,
+       jsonb_build_object('source', 'automatic-google-reconciliation')
+     ) ON CONFLICT (queue_name, job_key) DO NOTHING`,
+    [
+      `channex.management:setup_google:property:${row.propertyId}:${idempotencyKey}:v1`,
+      PMS_CHANNEX_MANAGEMENT_QUEUE,
+      now.toISOString(),
+      row.propertyId,
+      `automatic-google-reconciliation:${row.propertyId}`,
+      sha256(idempotencyKey),
+      JSON.stringify(payload),
+    ],
+  );
 }
 
 async function heartbeat(pool: Pool, job: ChannexManagementJob, input: { workerId: string }) {

@@ -56,6 +56,31 @@ describe("PMS Channex iframe sessions", () => {
     });
     expect(fetcher).not.toHaveBeenCalled();
   });
+
+  it("scopes Google setup to the provider's GHA channel", async () => {
+    const port = createPgPmsChannexIframeSessionPort({
+      connectionString: "postgresql://target",
+      apiBaseUrl: "https://staging.channex.io",
+      apiKey: "api-secret",
+      pool: new FakePool("external-property"),
+      fetch: vi
+        .fn<typeof fetch>()
+        .mockResolvedValue(
+          new Response(JSON.stringify({ data: { token: "one-time-secret" } }), { status: 200 }),
+        ),
+      now: () => now,
+    });
+
+    const result = await port.createSession(context(), "property-1", {
+      channel: "google_hotel",
+    });
+
+    expect(result).toMatchObject({ ok: true });
+    if (!result.ok) throw new Error("Expected a Google setup session");
+    expect(new URL(result.iframeUrl).searchParams.get("redirect_to")).toBe(
+      "/channels?channels=GHA&available_channels=GHA&channels_filter=GHA",
+    );
+  });
 });
 
 class FakePool {

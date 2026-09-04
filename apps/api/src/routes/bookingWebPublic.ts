@@ -3382,6 +3382,7 @@ async function createTargetGuestBooking(
             paypalPaymentWindowHours,
           }
         : null;
+  const trafficSource = googleHotelTrafficSource(request);
   const metadata = {
     targetSource: "booking_checkout_command",
     quoteReference: quote.publicQuoteReference,
@@ -3392,6 +3393,7 @@ async function createTargetGuestBooking(
     acceptanceMode: quote.acceptanceMode,
     pmsHandoffStatus: "pending_handoff",
     inventoryReservation,
+    ...(trafficSource ? { channel: trafficSource, trafficSource } : {}),
     ...(quote.acceptanceMode === "request" &&
     (quote.paymentMethod === "card" ||
       quote.paymentMethod === "pay_at_property" ||
@@ -3708,6 +3710,13 @@ async function createTargetGuestBooking(
     throw createHttpError(409, "Checkout quote is no longer available. Please refresh.");
   }
   return booking;
+}
+
+function googleHotelTrafficSource(
+  request: BookingWebCheckoutRequest,
+): "Google Free Booking Links" | "Google Hotel Ads" | null {
+  const source = request["trafficSource"];
+  return source === "Google Free Booking Links" || source === "Google Hotel Ads" ? source : null;
 }
 
 async function createTargetCardPayment(

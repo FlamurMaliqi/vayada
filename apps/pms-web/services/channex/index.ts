@@ -9,6 +9,7 @@ export type ChannexOperationType =
   | "enable"
   | "disable"
   | "provision"
+  | "setup_google"
   | "sync_ari"
   | "sync_bookings"
   | "update_markups"
@@ -73,6 +74,20 @@ export interface ConnectedChannel {
   isActive: boolean;
 }
 
+export interface GoogleFreeBookingLinks {
+  status: "disabled" | "pending" | "active" | "manual_confirmation_required" | "error";
+  bookingUrlTemplate: string | null;
+  currency: string | null;
+  businessProfileConfirmedAt: string | null;
+  preflight: {
+    propertyName: boolean;
+    address: boolean;
+    phone: boolean;
+    bookingEngine: boolean;
+    activeRatesAndAvailability: boolean;
+  };
+}
+
 export interface ChannexSnapshot {
   contractVersion: "pms-channex-management.v1";
   propertyId: string;
@@ -86,6 +101,7 @@ export interface ChannexSnapshot {
     ratePlans: ChannexRatePlanMapping[];
   };
   channels: ConnectedChannel[];
+  googleFreeBookingLinks: GoogleFreeBookingLinks;
   markups: Array<{ channel: string; markupPercent: number }>;
   sync: Record<"booking" | "ari" | "message" | "mapping", ChannexSyncDomainState>;
   capabilityModes: {
@@ -110,10 +126,13 @@ async function endpoint(action: string, suffix = "channex") {
   return `/api/pms/properties/${encodeURIComponent(propertyId)}/${suffix}`;
 }
 
-async function command(operationType: Exclude<ChannexOperationType, "update_markups">) {
+async function command(
+  operationType: Exclude<ChannexOperationType, "update_markups">,
+  extra?: Record<string, unknown>,
+) {
   return pmsOperationsClient.post<ChannexOperation>(
     await endpoint(`starting Channex ${operationType}`, "channex/commands"),
-    identity(operationType),
+    { ...identity(operationType), ...extra },
     pmsOperationsRequestOptions,
   );
 }
@@ -144,14 +163,16 @@ export const channexService = {
   enable: () => command("enable"),
   disable: () => command("disable"),
   provision: () => command("provision"),
+  setupGoogle: (businessProfileConfirmed = false) =>
+    command("setup_google", { businessProfileConfirmed }),
   syncAri: () => command("sync_ari"),
   syncBookings: () => command("sync_bookings"),
   installMessagingApp: () => command("install_messaging"),
 
-  async getIframeUrl() {
+  async getIframeUrl(channel?: "google_hotel", businessProfileConfirmed?: boolean) {
     const session = await pmsOperationsClient.post<{ iframeUrl: string; expiresAt: string }>(
       await endpoint("opening Channex channel settings", "channex/iframe-session"),
-      undefined,
+      channel ? { channel, businessProfileConfirmed } : undefined,
       pmsOperationsRequestOptions,
     );
     return { iframe_url: session.iframeUrl, expiresAt: session.expiresAt };

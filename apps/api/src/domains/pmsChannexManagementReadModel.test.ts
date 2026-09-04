@@ -27,15 +27,98 @@ describe("PMS Channex management read model", () => {
       connection: { status: "disconnected", externalPropertyId: null },
       mappings: { roomTypes: [], ratePlans: [] },
       channels: [],
+      googleFreeBookingLinks: {
+        status: "disabled",
+        bookingUrlTemplate: null,
+        currency: null,
+        businessProfileConfirmedAt: null,
+        preflight: {
+          propertyName: false,
+          address: false,
+          phone: false,
+          bookingEngine: false,
+          activeRatesAndAvailability: false,
+        },
+      },
       markups: [],
       capabilityModes: modes,
       activeOperation: null,
     });
     expect(snapshot.sync.ari.status).toBe("idle");
-    expect(query).toHaveBeenCalledTimes(5);
+    expect(query).toHaveBeenCalledTimes(6);
     for (const callIndex of [1, 2, 3]) {
       expect(query.mock.calls[callIndex]?.[0]).toContain("connection.provider = 'channex'");
     }
+  });
+
+  it("publishes Google readiness from canonical target state", async () => {
+    const query = vi
+      .fn()
+      .mockResolvedValueOnce({
+        rows: [
+          {
+            status: "connected",
+            externalPropertyId: "external-1",
+            messagingAppInstalled: false,
+            metadata: {
+              googleFreeBookingLinks: {
+                businessProfileConfirmedAt: "2026-08-13T10:00:00.000Z",
+              },
+              connectedChannels: [
+                {
+                  key: "google_hotel",
+                  application: "GHA",
+                  title: "Google Hotel",
+                  isActive: true,
+                },
+              ],
+            },
+            ariMappingMissing: false,
+          },
+        ],
+      })
+      .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({
+        rows: [
+          {
+            propertyName: true,
+            address: true,
+            phone: true,
+            bookingEngine: true,
+            activeRatesAndAvailability: true,
+            bookingBaseUrl: "https://book.vayada.com/alpine",
+            customDomainUrl: "https://book.alpine.test/stay",
+            currency: "EUR",
+          },
+        ],
+      });
+    const repository = createPgPmsChannexManagementReadRepository({
+      connectionString: "postgres://target",
+      pool: { query, end: vi.fn() } as never,
+    });
+
+    const snapshot = await repository.getSnapshot("00000000-0000-4000-8000-000000000001", modes);
+
+    expect(snapshot.googleFreeBookingLinks).toEqual({
+      status: "active",
+      bookingUrlTemplate: "https://book.alpine.test/stay?checkin=(CHECKIN_DATE)&nights=(LENGTH)",
+      currency: "EUR",
+      businessProfileConfirmedAt: "2026-08-13T10:00:00.000Z",
+      preflight: {
+        propertyName: true,
+        address: true,
+        phone: true,
+        bookingEngine: true,
+        activeRatesAndAvailability: true,
+      },
+    });
+    expect(query.mock.calls[5]?.[0]).toContain("hotel_catalog.property_contact_channels");
+    expect(query.mock.calls[5]?.[0]).toContain("distribution.public_hotel_bookability_profiles");
+    expect(query.mock.calls[5]?.[0]).toContain("pms.inventory_days");
+    expect(query.mock.calls[5]?.[0]).toContain("plan.currency = profile.default_currency::text");
   });
 
   it("suppresses inactive or disconnected markups", async () => {

@@ -1793,6 +1793,7 @@ describe("Booking Web public bootstrap parity", () => {
       directBookingSource: "whatsapp",
       booking_channel: "expedia",
       direct_booking_source: "call",
+      trafficSource: "Google Free Booking Links",
     };
     const context = {
       operation: "booking-create",
@@ -1855,6 +1856,8 @@ describe("Booking Web public bootstrap parity", () => {
       { ownershipKind: "partner", partnerCommissionRate: "18.7500" },
     ]);
     expect(JSON.parse(String(optionalPhone.bookingWriteValues?.[18]))).toMatchObject({
+      channel: "Google Free Booking Links",
+      trafficSource: "Google Free Booking Links",
       acceptanceMode: "request",
       hostResponseDeadlineAt: "2026-06-26T12:00:00.000Z",
       policySnapshot: { freeUntilDays: 7 },

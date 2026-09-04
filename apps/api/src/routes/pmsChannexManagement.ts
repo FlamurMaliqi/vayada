@@ -59,6 +59,21 @@ export async function registerPmsChannexManagementRoutes(
       if (!isMutating(options.capabilityModes, input.operationType)) {
         return reply.code(409).send({ code: "channex_capability_not_mutating" });
       }
+      if (input.operationType === "setup_google") {
+        const snapshot = await options.repository.getSnapshot(
+          request.params.propertyId,
+          options.capabilityModes,
+        );
+        if (!googlePreflightPassed(snapshot.googleFreeBookingLinks.preflight)) {
+          return reply.code(409).send({ code: "google_free_booking_links_not_ready" });
+        }
+        if (
+          !snapshot.googleFreeBookingLinks.businessProfileConfirmedAt &&
+          !input.businessProfileConfirmed
+        ) {
+          return reply.code(409).send({ code: "google_business_profile_confirmation_required" });
+        }
+      }
       if (!options.commandPort) {
         return reply.code(503).send({ code: "channex_commands_unavailable" });
       }
@@ -95,7 +110,7 @@ export async function registerPmsChannexManagementRoutes(
     },
   );
 
-  app.post<{ Params: { propertyId: string } }>(
+  app.post<{ Params: { propertyId: string }; Body: unknown }>(
     "/properties/:propertyId/channex/iframe-session",
     async (request, reply) => {
       const context = enforcePmsChannexPolicy(
@@ -109,14 +124,49 @@ export async function registerPmsChannexManagementRoutes(
       if (!options.iframeSessionPort) {
         return reply.code(503).send({ code: "channex_iframe_unavailable" });
       }
+      const iframeOptions = parseIframeOptions(request.body);
+      if (!iframeOptions) return reply.code(400).send({ code: "invalid_channex_iframe_scope" });
+      if (iframeOptions.channel === "google_hotel") {
+        const snapshot = await options.repository.getSnapshot(
+          request.params.propertyId,
+          options.capabilityModes,
+        );
+        if (!googlePreflightPassed(snapshot.googleFreeBookingLinks.preflight)) {
+          return reply.code(409).send({ code: "google_free_booking_links_not_ready" });
+        }
+        if (
+          !snapshot.googleFreeBookingLinks.businessProfileConfirmedAt &&
+          !iframeOptions.businessProfileConfirmed
+        ) {
+          return reply.code(409).send({ code: "google_business_profile_confirmation_required" });
+        }
+      }
       const result = await options.iframeSessionPort.createSession(
         context,
         request.params.propertyId,
+        { channel: iframeOptions.channel },
       );
       if (result.ok) return result;
       return reply.code(result.code === "connection_required" ? 409 : 502).send(result);
     },
   );
+}
+
+function parseIframeOptions(
+  body: unknown,
+): { channel?: "google_hotel"; businessProfileConfirmed?: boolean } | null {
+  if (body === undefined || body === null) return {};
+  if (!body || typeof body !== "object" || Array.isArray(body)) return null;
+  const channel = (body as Record<string, unknown>).channel;
+  const businessProfileConfirmed = (body as Record<string, unknown>).businessProfileConfirmed;
+  if (businessProfileConfirmed !== undefined && typeof businessProfileConfirmed !== "boolean") {
+    return null;
+  }
+  return channel === undefined
+    ? {}
+    : channel === "google_hotel"
+      ? { channel, businessProfileConfirmed }
+      : null;
 }
 
 function parseCommand(body: unknown) {
@@ -136,7 +186,20 @@ function parseCommand(body: unknown) {
     commandId: value.commandId as string,
     idempotencyKey: value.idempotencyKey as string,
     operationType: value.operationType as Exclude<ChannexManagementOperationType, "update_markups">,
+    ...(value.operationType === "setup_google"
+      ? { businessProfileConfirmed: value.businessProfileConfirmed === true }
+      : {}),
   };
+}
+
+function googlePreflightPassed(preflight: {
+  propertyName: boolean;
+  address: boolean;
+  phone: boolean;
+  bookingEngine: boolean;
+  activeRatesAndAvailability: boolean;
+}) {
+  return Object.values(preflight).every(Boolean);
 }
 
 function parseMarkups(body: unknown) {
@@ -177,6 +240,7 @@ function isMutating(modes: ChannexManagementCapabilityModes, type: ChannexManage
     enable: "connection",
     disable: "connection",
     provision: "provisioning",
+    setup_google: "provisioning",
     sync_ari: "ariSync",
     sync_bookings: "bookingSync",
     update_markups: "markups",

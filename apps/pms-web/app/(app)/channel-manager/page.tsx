@@ -6,8 +6,10 @@ import {
   CloudArrowUpIcon,
   Cog6ToothIcon,
   ExclamationTriangleIcon,
+  GlobeAltIcon,
   LinkIcon,
 } from "@heroicons/react/24/outline";
+import { useState } from "react";
 import { useTranslation } from "@/lib/i18n";
 import { channexService } from "@/services/channex";
 import {
@@ -26,6 +28,7 @@ import {
 
 export default function ChannelManagerPage() {
   const { t } = useTranslation();
+  const [businessProfileConfirmed, setBusinessProfileConfirmed] = useState(false);
   const {
     snapshot,
     operation,
@@ -71,6 +74,9 @@ export default function ChannelManagerPage() {
   const observeOnly = Object.values(snapshot.capabilityModes).some(
     (mode) => !modeAllowsChanges(mode),
   );
+  const google = snapshot.googleFreeBookingLinks;
+  const googleReady = Object.values(google.preflight).every(Boolean);
+  const googleNeedsConfirmation = !google.businessProfileConfirmedAt;
 
   return (
     <div className="p-4 md:p-6">
@@ -149,6 +155,101 @@ export default function ChannelManagerPage() {
                   <Cog6ToothIcon className="h-4 w-4" /> Open channel settings
                 </button>
               </div>
+            </section>
+
+            <section className="rounded-xl border border-gray-200 bg-white p-5 md:p-6">
+              <div className="flex items-start justify-between gap-4">
+                <div className="flex gap-3">
+                  <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-blue-50 text-blue-700">
+                    <GlobeAltIcon className="h-5 w-5" />
+                  </div>
+                  <div>
+                    <h2 className="font-semibold text-gray-950">Google Free Booking Links</h2>
+                    <p className="mt-1 text-sm text-gray-500">
+                      Publish direct availability on Google with the same rates and currency as your
+                      booking engine.
+                    </p>
+                  </div>
+                </div>
+                <span className="rounded-full bg-gray-100 px-2.5 py-1 text-xs font-semibold capitalize text-gray-700">
+                  {google.status.replaceAll("_", " ")}
+                </span>
+              </div>
+
+              <ul className="mt-5 grid gap-2 text-sm sm:grid-cols-2">
+                {[
+                  ["Property name", google.preflight.propertyName],
+                  ["Full address", google.preflight.address],
+                  ["Public phone number", google.preflight.phone],
+                  ["Booking engine is live", google.preflight.bookingEngine],
+                  ["Active rates and availability", google.preflight.activeRatesAndAvailability],
+                ].map(([label, passed]) => (
+                  <li key={String(label)} className={passed ? "text-green-700" : "text-amber-700"}>
+                    {passed ? "✓" : "○"} {label}
+                  </li>
+                ))}
+              </ul>
+
+              {google.bookingUrlTemplate && (
+                <div className="mt-4 rounded-lg bg-gray-50 p-3">
+                  <p className="text-xs font-semibold uppercase tracking-wide text-gray-500">
+                    Booking link{google.currency ? ` · ${google.currency}` : ""}
+                  </p>
+                  <p className="mt-1 break-all font-mono text-xs text-gray-700">
+                    {google.bookingUrlTemplate}
+                  </p>
+                </div>
+              )}
+
+              {googleNeedsConfirmation && (
+                <label className="mt-4 flex items-start gap-2 text-sm text-gray-700">
+                  <input
+                    type="checkbox"
+                    checked={businessProfileConfirmed}
+                    onChange={(event) => setBusinessProfileConfirmed(event.target.checked)}
+                    className="mt-0.5 h-4 w-4 rounded border-gray-300 text-primary-600"
+                  />
+                  <span>I confirm this property has a Google Business Profile.</span>
+                </label>
+              )}
+
+              <div className="mt-5 border-t border-gray-100 pt-5">
+                <button
+                  type="button"
+                  onClick={() =>
+                    void openConsole("google_hotel", businessProfileConfirmed, !connected)
+                  }
+                  disabled={
+                    busy ||
+                    (!connected && !modeAllowsChanges(snapshot.capabilityModes.connection)) ||
+                    !modeAllowsChanges(snapshot.capabilityModes.iframe) ||
+                    !modeAllowsChanges(snapshot.capabilityModes.provisioning) ||
+                    (googleNeedsConfirmation && (!googleReady || !businessProfileConfirmed))
+                  }
+                  className={`${buttonClass} bg-primary-600 text-white hover:bg-primary-700`}
+                >
+                  {googleNeedsConfirmation
+                    ? "Continue to Google setup"
+                    : "Manage Google connection"}
+                </button>
+                {!googleReady && (
+                  <p className="mt-2 text-xs text-amber-700">
+                    Complete every readiness check before continuing.
+                  </p>
+                )}
+              </div>
+
+              <details className="mt-4 text-sm text-gray-600">
+                <summary className="cursor-pointer font-medium text-gray-800">
+                  How this works
+                </summary>
+                <p className="mt-2 leading-6">
+                  Google setup opens a secure, property-scoped Channex session. Review the mapped
+                  rooms and rates, add the booking link shown above, and activate Google Hotel.
+                  Google controls matching and publication timing, so a new connection may remain
+                  pending. Reopen this setup any time to pause or disable the connection.
+                </p>
+              </details>
             </section>
 
             <section className="rounded-xl border border-gray-200 bg-white p-5 md:p-6">

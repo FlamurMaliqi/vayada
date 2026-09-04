@@ -17,6 +17,19 @@ export const pmsWebChannexSnapshot = {
   },
   mappings: { roomTypes: [], ratePlans: [] },
   channels: [],
+  googleFreeBookingLinks: {
+    status: "disabled",
+    bookingUrlTemplate: null,
+    currency: null,
+    businessProfileConfirmedAt: null,
+    preflight: {
+      propertyName: false,
+      address: false,
+      phone: false,
+      bookingEngine: false,
+      activeRatesAndAvailability: false,
+    },
+  },
   markups: [],
   sync: Object.fromEntries(
     ["booking", "ari", "message", "mapping"].map((domain) => [

@@ -118,8 +118,12 @@ export function useChannexManager() {
     }
   };
 
-  const openConsole = async () => {
-    setPendingAction("channel settings");
+  const openConsole = async (
+    channel?: "google_hotel",
+    businessProfileConfirmed = false,
+    connectFirst = false,
+  ) => {
+    setPendingAction(channel === "google_hotel" ? "Google setup" : "channel settings");
     setActionError("");
     const popup = window.open("about:blank", "_blank");
     if (!popup) {
@@ -129,8 +133,32 @@ export function useChannexManager() {
     }
     popup.opener = null;
     try {
-      const session = await channexService.getIframeUrl();
+      if (channel === "google_hotel") {
+        if (connectFirst) {
+          const connected = await waitForOperation(await channexService.enable());
+          setOperation(connected);
+          if (connected.status !== "succeeded") {
+            throw new Error(connected.lastError?.message ?? "Channex connection failed.");
+          }
+        }
+        const prepared = await waitForOperation(
+          await channexService.setupGoogle(businessProfileConfirmed),
+        );
+        setOperation(prepared);
+        if (prepared.status !== "succeeded") {
+          throw new Error(prepared.lastError?.message ?? "Google mapping preparation failed.");
+        }
+        await loadSnapshot({ preserveOperation: prepared, background: true });
+      }
+      const session = await channexService.getIframeUrl(channel, businessProfileConfirmed);
       popup.location.replace(session.iframe_url);
+      if (channel === "google_hotel") {
+        const refreshWhenClosed = window.setInterval(() => {
+          if (!popup.closed) return;
+          window.clearInterval(refreshWhenClosed);
+          void runCommand("Google mapping refresh", () => channexService.setupGoogle(false));
+        }, 1_000);
+      }
     } catch {
       popup.close();
       setActionError("A secure channel settings session couldn’t be opened. Try again.");
@@ -182,4 +210,17 @@ export function useChannexManager() {
     openConsole,
     saveMarkups,
   };
+}
+
+async function waitForOperation(operation: ChannexOperation): Promise<ChannexOperation> {
+  let current = operation;
+  for (
+    let attempts = 0;
+    attempts < 60 && !terminalChannexStatuses.has(current.status);
+    attempts++
+  ) {
+    await new Promise((resolve) => window.setTimeout(resolve, 1_000));
+    current = await channexService.getOperation(current.operationId);
+  }
+  return current;
 }
