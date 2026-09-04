@@ -43,11 +43,7 @@ export type PmsRoomFactsRoutesOptions = {
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
-/**
- * VAY-1068 cutover adapter. Its canonical room-type paths overlap the legacy
- * pmsOperations route group, so this factory must remain unmounted until the
- * reviewed PMS room-type cutover replaces those handlers.
- */
+/** VAY-1068 canonical room-facts adapter, mounted below a non-overlapping setup prefix. */
 export async function registerPmsRoomFactsRoutes(
   app: FastifyInstance,
   options: PmsRoomFactsRoutesOptions,

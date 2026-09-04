@@ -7,6 +7,7 @@ import type {
 import type { MembershipPropertyScope } from "@vayada/backend-authorization";
 import {
   PMS_CALENDAR_AUTO_OPEN_CONTRACT_VERSION,
+  type PmsCalendarAutoOpenSetupError,
   type PmsCalendarAutoOpenSettingsPort,
   type UpdatePmsCalendarAutoOpenSetting,
 } from "@vayada/domain-pms";
@@ -58,14 +59,37 @@ describe("PMS calendar auto-open routes", () => {
         targetOpenThrough: null,
       },
       warnings: [warning],
+      setupError: null,
     });
     expect(test.findContext).toHaveBeenCalledWith(propertyId);
+  });
+
+  it("does not expose a target horizon when canonical setup is stale", async () => {
+    const test = await testApp(
+      {},
+      success(),
+      { code: "operating_calendar_room_bindings_stale" },
+      setting(3, true),
+    );
+    app = test.app;
+    const response = await app.inject({
+      method: "GET",
+      url: route(propertyId),
+      headers: headers(),
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({
+      setting: { enabled: true },
+      horizon: { targetOpenThrough: null },
+      setupError: { code: "operating_calendar_room_bindings_stale" },
+    });
   });
 
   it.each(["owner", "operator"] as const)(
     "allows a %s to save the exact command and returns its enqueue intent",
     async (relationship) => {
-      const test = await testApp({ links: links(relationship) });
+      const test = await testApp({ links: links(relationship) }, success(), null, setting(1, true));
       const response = await test.app.inject({
         method: "PATCH",
         url: route(propertyId.toUpperCase()),
@@ -79,7 +103,8 @@ describe("PMS calendar auto-open routes", () => {
         outcome: "created",
         setting: { propertyId, revision: 1, enabled: true },
         horizon: { targetOpenThrough: "2028-03-31" },
-        warnings: [],
+        warnings: [warning],
+        setupError: null,
         enqueueIntentId: "14340000-0000-4000-8000-000000000005",
       });
       expect(test.updates[0]).toMatchObject({
@@ -95,6 +120,31 @@ describe("PMS calendar auto-open routes", () => {
       });
     },
   );
+
+  it("returns paused live readiness when an exact successful retry finds stale setup", async () => {
+    const test = await testApp(
+      {},
+      success(),
+      { code: "operating_calendar_room_bindings_stale" },
+      setting(1, true),
+    );
+    app = test.app;
+
+    const response = await app.inject({
+      method: "PATCH",
+      url: route(propertyId),
+      headers: headers("retried-save-key"),
+      payload: body(),
+    });
+
+    expect(response.statusCode).toBe(201);
+    expect(response.json()).toMatchObject({
+      setting: { revision: 1, enabled: true },
+      horizon: { targetOpenThrough: null },
+      setupError: { code: "operating_calendar_room_bindings_stale" },
+    });
+    expect(test.findContext).toHaveBeenCalledWith(propertyId);
+  });
 
   it("rejects missing idempotency, extra keys, and invalid mode combinations", async () => {
     const test = await testApp();
@@ -117,6 +167,9 @@ describe("PMS calendar auto-open routes", () => {
   it("maps repository validation and conflict results without hiding their codes", async () => {
     const cases = [
       [{ code: "property_time_zone_invalid" }, 422],
+      [{ code: "operating_calendar_not_configured" }, 409],
+      [{ code: "operating_calendar_room_bindings_stale" }, 409],
+      [{ code: "physical_room_labels_unverified" }, 409],
       [{ code: "calendar_auto_open_revision_conflict", currentRevision: 2 }, 409],
       [{ code: "idempotency_key_conflict" }, 409],
     ] as const;
@@ -200,13 +253,16 @@ describe("PMS calendar auto-open routes", () => {
 async function testApp(
   auth: Auth = {},
   updateResult: Awaited<ReturnType<PmsCalendarAutoOpenSettingsPort["update"]>> = success(),
+  setupError: PmsCalendarAutoOpenSetupError | null = null,
+  contextSetting = setting(0, false),
 ) {
   const app = Fastify({ logger: false });
   const updates: UpdatePmsCalendarAutoOpenSetting[] = [];
   const findContext = vi.fn(async () => ({
-    setting: setting(0, false),
+    setting: contextSetting,
     propertyTimeZone: "Asia/Taipei",
     warnings: [warning],
+    setupError,
   }));
   app.decorateRequest("authContext", null);
   app.addHook("onRequest", async (request) => {

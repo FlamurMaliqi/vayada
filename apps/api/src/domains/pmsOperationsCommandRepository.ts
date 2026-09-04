@@ -224,17 +224,11 @@ type BookingPaymentLifecycleRow = QueryResultRow & {
   chargeType: string | null;
 };
 type PmsOperationalTemplateOperation =
-  | "checkin_checklist_template_update"
-  | "checkout_inspection_template_update";
+  "checkin_checklist_template_update" | "checkout_inspection_template_update";
 type PmsCheckoutChargeOperation =
-  | "checkout_charge_create"
-  | "checkout_charge_mark_paid"
-  | "checkout_charge_waive";
+  "checkout_charge_create" | "checkout_charge_mark_paid" | "checkout_charge_waive";
 type PmsRoomTypeCommandOperation =
-  | "room_type_create"
-  | "room_type_location_update"
-  | "room_type_duplicate"
-  | "room_type_retire";
+  "room_type_create" | "room_type_location_update" | "room_type_duplicate" | "room_type_retire";
 type PmsRoomTypeCommand =
   | PmsRoomTypeCreateCommand
   | PmsRoomTypeUpdateCommand
@@ -258,9 +252,7 @@ type PmsLegacyRatePlanRow = {
   active: boolean;
 };
 type PmsRoomBlockCommand =
-  | PmsRoomBlockCreateCommand
-  | PmsRoomBlockUpdateCommand
-  | PmsRoomBlockReleaseCommand;
+  PmsRoomBlockCreateCommand | PmsRoomBlockUpdateCommand | PmsRoomBlockReleaseCommand;
 type PmsRoomBlockOperation = "room_block_create" | "room_block_update" | "room_block_release";
 
 type PmsRoomBlockRow = {
@@ -2583,6 +2575,7 @@ async function insertInitialRooms(
        property_id,
        room_type_id,
        room_number,
+       operational_label_status,
        status,
        sort_order,
        room_metadata,
@@ -2592,28 +2585,19 @@ async function insertInitialRooms(
      SELECT
        $1::uuid,
        $2::uuid,
-       concat($3::text, ' ', room_number_seed.max_suffix + source.n),
+       NULL,
+       'unverified',
        'available',
        room_order_seed.max_sort_order + source.n,
-       jsonb_build_object('roomTypeName', $3::text),
+       jsonb_build_object('roomTypeName', $3::text, 'setupGenerated', TRUE),
        $5::timestamptz,
        $5::timestamptz
      FROM (
-       SELECT COALESCE(
-         MAX(NULLIF(regexp_replace(room_number, '^.*[^0-9]', ''), '')::integer),
-         0
-       ) AS max_suffix
-       FROM pms.rooms
-       WHERE property_id = $1::uuid
-         AND left(room_number, char_length($3::text) + 1) = $3::text || ' '
-     ) room_number_seed
-     CROSS JOIN (
        SELECT COALESCE(MAX(sort_order), 0) AS max_sort_order
        FROM pms.rooms
        WHERE property_id = $1::uuid AND status <> 'retired'
      ) room_order_seed
      CROSS JOIN generate_series(1, $4::integer) AS source(n)
-     ON CONFLICT (property_id, room_number) DO NOTHING
      RETURNING id`,
     [command.propertyId, roomTypeId, command.name, command.roomCount, acceptedAt],
   );
@@ -5953,9 +5937,7 @@ async function insertPrivateNoteAuditEvent(
     action: "pms.private_note.created" | "pms.private_note.edited" | "pms.private_note.deleted";
     auditKey: string;
     command:
-      | PmsPrivateNoteCreateCommand
-      | PmsPrivateNoteUpdateCommand
-      | PmsPrivateNoteDeleteCommand;
+      PmsPrivateNoteCreateCommand | PmsPrivateNoteUpdateCommand | PmsPrivateNoteDeleteCommand;
     keyHash: string;
     noteId: string;
     occurredAt: string;

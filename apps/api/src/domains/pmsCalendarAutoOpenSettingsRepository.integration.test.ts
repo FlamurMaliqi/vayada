@@ -51,6 +51,51 @@ describe.skipIf(!TEST_DATABASE_URL)("PMS calendar auto-open settings concurrency
        VALUES ($1::uuid, 'Europe/Vienna')`,
       [propertyId],
     );
+    const roomTypeId = randomUUID();
+    const seed = await admin.connect();
+    try {
+      await seed.query("BEGIN");
+      await seed.query("SET LOCAL session_replication_role = replica");
+      await seed.query(
+        `INSERT INTO pms.room_types
+           (id, property_id, name, room_facts_revision, room_units_revision)
+         VALUES ($1::uuid, $2::uuid, 'Verified Suite', 1, 1)`,
+        [roomTypeId, propertyId],
+      );
+      await seed.query(
+        `INSERT INTO pms.rooms
+           (id, property_id, room_type_id, room_number, operational_label_status)
+         VALUES ($1::uuid, $2::uuid, $3::uuid, 'Verified Suite 1', 'verified')`,
+        [randomUUID(), propertyId, roomTypeId],
+      );
+      await seed.query(
+        `INSERT INTO pms.operating_calendar_revisions
+           (organization_id, property_id, calendar_revision, contract_version,
+            property_profile_revision, property_time_zone, schedule_mode,
+            recurring_period_count, room_binding_count, default_minimum_stay_nights,
+            idempotency_key_id, domain_event_id, outbox_event_id, created_by_user_id,
+            created_at, updated_at)
+         VALUES
+           ($1::uuid, $2::uuid, 1, 'pms-operating-calendar.v1', 1, 'Europe/Vienna',
+            'year_round', 0, 1, 1, $3::uuid, $4::uuid, $5::uuid, $6::uuid,
+            now(), now())`,
+        [randomUUID(), propertyId, randomUUID(), randomUUID(), randomUUID(), actorUserId],
+      );
+      await seed.query(
+        `INSERT INTO pms.operating_calendar_room_bindings
+           (property_id, calendar_revision, room_type_id, source_room_facts_revision,
+            source_room_units_revision, physical_capacity_count,
+            starting_sellable_limit_count)
+         VALUES ($1::uuid, 1, $2::uuid, 1, 1, 1, 1)`,
+        [propertyId, roomTypeId],
+      );
+      await seed.query("COMMIT");
+    } catch (error) {
+      await seed.query("ROLLBACK");
+      throw error;
+    } finally {
+      seed.release();
+    }
   });
 
   afterAll(async () => {

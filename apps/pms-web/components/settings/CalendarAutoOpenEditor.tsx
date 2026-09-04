@@ -51,6 +51,13 @@ export function CalendarAutoOpenEditor() {
       const saved = await updatePmsCalendarAutoOpen(draft);
       setRead(saved);
       setDraft(saved.setting);
+      if (saved.setupError) {
+        setSaveError(
+          setupErrorMessage(saved.setupError.code) ??
+            "Auto-open was saved, but room and calendar setup are not ready.",
+        );
+        return;
+      }
       setSuccess(
         saved.enqueueIntentId
           ? "Saved. Inventory and connected channels are updating in the background."
@@ -75,6 +82,11 @@ export function CalendarAutoOpenEditor() {
             "This setting changed in another session. Reload the current setting and try again.",
           );
         }
+      } else if (error instanceof ApiErrorResponse) {
+        const setupMessage = setupErrorMessage(error.data.code);
+        setSaveError(
+          setupMessage ?? "We couldn’t save auto-open. Reload the current setting and try again.",
+        );
       } else {
         setSaveError("We couldn’t save auto-open. Reload the current setting and try again.");
       }
@@ -129,7 +141,9 @@ export function CalendarAutoOpenEditor() {
         <div className="min-w-0 flex-1">
           <p id="auto-open-state" className="text-sm text-gray-700">
             {draft.enabled
-              ? "On. The selected schedule extends automatically."
+              ? read.setupError
+                ? "On, but paused until room and calendar setup are ready."
+                : "On. The selected schedule extends automatically."
               : "Off. Existing open dates stay open."}
           </p>
         </div>
@@ -229,6 +243,15 @@ export function CalendarAutoOpenEditor() {
           : "Not active"}
       </div>
 
+      {read.setupError && (
+        <p
+          role="alert"
+          className="mt-3 rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800"
+        >
+          {setupErrorMessage(read.setupError.code)}
+        </p>
+      )}
+
       {read.warnings.map((warning) => (
         <p
           key={`${warning.roomTypeId}:${warning.from}:${warning.through}`}
@@ -294,4 +317,14 @@ function formatDate(value: string): string {
   return Number.isFinite(date.getTime())
     ? new Intl.DateTimeFormat("en", { dateStyle: "medium", timeZone: "UTC" }).format(date)
     : value;
+}
+
+function setupErrorMessage(code: unknown): string | null {
+  if (code === "operating_calendar_not_configured")
+    return "Finish Calendar setup before turning on auto-open.";
+  if (code === "operating_calendar_room_bindings_stale")
+    return "Room setup changed. Reopen Calendar setup and save the current room availability before turning on auto-open.";
+  if (code === "physical_room_labels_unverified")
+    return "Verify every physical room label in Rooms setup before turning on auto-open.";
+  return null;
 }

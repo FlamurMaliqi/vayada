@@ -68,6 +68,7 @@ test.describe("adaptive room authoring", () => {
     expect(owner.draftWrites).toBeGreaterThanOrEqual(4);
     expect(owner.events.indexOf("draft")).toBeLessThan(owner.events.indexOf("facts:create"));
     expect(owner.events).toContain("units:reconcile");
+    expect(owner.events.filter((event) => event === "units:label")).toHaveLength(5);
     expect(owner.events).toContain("media:assign");
     expect(owner.events).toContain("amenities:confirm-empty");
     expect(owner.events.join(" ")).not.toMatch(/pricing|calendar/);
@@ -244,6 +245,8 @@ async function mockRoomOwnerApis(page: Page) {
     facts: Record<string, unknown>;
     roomFactsRevision: number;
     activeUnitCount: number;
+    roomUnitIds: string[];
+    nextRoomUnitOrdinal: number;
     roomUnitsRevision: number;
     mediaObjectIds: string[];
     roomMediaRevision: number;
@@ -259,6 +262,27 @@ async function mockRoomOwnerApis(page: Page) {
   let sessionRevision = 7;
   let lastDraftPayload: Record<string, unknown> | null = null;
   let lastDraftRoomId: string | null = null;
+
+  await page.route(/\/api\/pms\/properties\/[^/]+\/plan-limits$/, async (route) => {
+    if (route.request().method() === "OPTIONS") return fulfillCorsPreflight(route);
+    await route.fulfill({
+      status: 200,
+      headers: corsHeaders(route),
+      json: {
+        contractVersion: "pms-operations.v1",
+        propertyId,
+        propertyPlan: {
+          propertyId,
+          plan: "commission",
+          limits: {
+            maxRoomPhotosPerType: 10,
+            maxAddons: 3,
+            guestContactAccess: "after_acceptance",
+          },
+        },
+      },
+    });
+  });
 
   await page.route(/\/api\/hotel-setup\/properties\/[^/]+\/setup-drafts\/rooms$/, async (route) => {
     if (route.request().method() === "OPTIONS") return fulfillCorsPreflight(route);
@@ -288,7 +312,7 @@ async function mockRoomOwnerApis(page: Page) {
     });
   });
 
-  await page.route(/\/api\/pms\/properties\/[^/]+\/room-types(?:\?|$)/, async (route) => {
+  await page.route(/\/api\/pms\/setup\/properties\/[^/]+\/room-types(?:\?|$)/, async (route) => {
     if (route.request().method() === "OPTIONS") return fulfillCorsPreflight(route);
     if (route.request().method() === "GET") {
       await route.fulfill({
@@ -311,6 +335,8 @@ async function mockRoomOwnerApis(page: Page) {
         facts: body.facts,
         roomFactsRevision: 1,
         activeUnitCount: 0,
+        roomUnitIds: [],
+        nextRoomUnitOrdinal: 1,
         roomUnitsRevision: 1,
         mediaObjectIds: [],
         roomMediaRevision: 1,
@@ -342,7 +368,7 @@ async function mockRoomOwnerApis(page: Page) {
   });
 
   await page.route(
-    /\/api\/pms\/properties\/[^/]+\/room-type-bindings\/([^/?]+)$/,
+    /\/api\/pms\/setup\/properties\/[^/]+\/room-type-bindings\/([^/?]+)$/,
     async (route) => {
       if (route.request().method() === "OPTIONS") return fulfillCorsPreflight(route);
       const draftId = decodeURIComponent(
@@ -362,7 +388,7 @@ async function mockRoomOwnerApis(page: Page) {
   );
 
   await page.route(
-    /\/api\/pms\/properties\/[^/]+\/room-types\/([^/]+)\/capacity$/,
+    /\/api\/pms\/setup\/properties\/[^/]+\/room-types\/([^/]+)\/capacity$/,
     async (route) => {
       if (route.request().method() === "OPTIONS") return fulfillCorsPreflight(route);
       const room = roomByType(rooms, route.request().url());
@@ -375,13 +401,26 @@ async function mockRoomOwnerApis(page: Page) {
   );
 
   await page.route(
-    /\/api\/pms\/properties\/[^/]+\/room-types\/([^/]+)\/physical-units\/reconcile$/,
+    /\/api\/pms\/setup\/properties\/[^/]+\/room-types\/([^/]+)\/physical-units\/reconcile$/,
     async (route) => {
       if (route.request().method() === "OPTIONS") return fulfillCorsPreflight(route);
       const room = roomByType(rooms, route.request().url(), 2);
       const body = route.request().postDataJSON() as { targetActiveUnitCount: number };
       const previous = room.activeUnitCount;
-      room.activeUnitCount = body.targetActiveUnitCount;
+      const retiredUnitIds =
+        body.targetActiveUnitCount < previous
+          ? room.roomUnitIds.splice(body.targetActiveUnitCount)
+          : [];
+      const addedUnitIds = Array.from(
+        { length: Math.max(0, body.targetActiveUnitCount - previous) },
+        (_, index) =>
+          `eeeeeeee-eeee-4eee-8eee-${String(
+            roomTypeIds.indexOf(room.roomTypeId) * 100 + room.nextRoomUnitOrdinal + index,
+          ).padStart(12, "0")}`,
+      );
+      room.roomUnitIds.push(...addedUnitIds);
+      room.nextRoomUnitOrdinal += addedUnitIds.length;
+      room.activeUnitCount = room.roomUnitIds.length;
       room.roomUnitsRevision += 1;
       events.push("units:reconcile");
       await route.fulfill({
@@ -394,16 +433,69 @@ async function mockRoomOwnerApis(page: Page) {
           roomTypeId: room.roomTypeId,
           previousActiveUnitCount: previous,
           capacity: capacitySnapshot(room),
-          addedUnits: Array.from({ length: room.activeUnitCount - previous }, (_, index) => ({
+          addedUnits: addedUnitIds.map((roomUnitId) => ({
             contractVersion: "pms-room-facts.v1",
             propertyId,
             roomTypeId: room.roomTypeId,
-            roomUnitId: `eeeeeeee-eeee-4eee-8eee-${String(rooms.size * 100 + index).padStart(12, "0")}`,
+            roomUnitId,
             lifecycle: "active",
             operationalLabel: null,
             operationalLabelStatus: "unverified",
           })),
-          retiredUnitIds: [],
+          retiredUnitIds,
+          acceptedAt: now,
+        },
+      });
+    },
+  );
+
+  await page.route(
+    /\/api\/pms\/setup\/properties\/[^/]+\/room-types\/([^/]+)\/units$/,
+    async (route) => {
+      if (route.request().method() === "OPTIONS") return fulfillCorsPreflight(route);
+      const room = roomByType(rooms, route.request().url());
+      await route.fulfill({
+        status: 200,
+        headers: corsHeaders(route),
+        json: {
+          items: room.roomUnitIds.map((roomUnitId) => ({
+            contractVersion: "pms-room-facts.v1",
+            propertyId,
+            roomTypeId: room.roomTypeId,
+            roomUnitId,
+            lifecycle: "active",
+            operationalLabel: null,
+            operationalLabelStatus: "unverified",
+          })),
+        },
+      });
+    },
+  );
+
+  await page.route(
+    /\/api\/pms\/properties\/[^/]+\/room-types\/([^/]+)\/physical-units\/([^/]+)\/operational-label$/,
+    async (route) => {
+      if (route.request().method() === "OPTIONS") return fulfillCorsPreflight(route);
+      const room = roomByType(rooms, route.request().url(), 3);
+      const roomUnitId = new URL(route.request().url()).pathname.split("/").at(-2)!;
+      const body = route.request().postDataJSON() as {
+        expectedRevision: number;
+        operationalLabel: string;
+      };
+      room.roomUnitsRevision = body.expectedRevision + 1;
+      events.push("units:label");
+      await route.fulfill({
+        status: 200,
+        headers: corsHeaders(route),
+        json: {
+          contractVersion: "pms-room-facts.v1",
+          outcome: "updated",
+          propertyId,
+          roomTypeId: room.roomTypeId,
+          roomUnitId,
+          roomUnitsRevision: room.roomUnitsRevision,
+          operationalLabel: body.operationalLabel,
+          operationalLabelStatus: "verified",
           acceptedAt: now,
         },
       });
@@ -464,7 +556,7 @@ async function mockRoomOwnerApis(page: Page) {
     },
   );
 
-  await page.route(/\/api\/pms\/properties\/[^/]+\/room-types\/([^/?]+)$/, async (route) => {
+  await page.route(/\/api\/pms\/setup\/properties\/[^/]+\/room-types\/([^/?]+)$/, async (route) => {
     if (route.request().method() === "OPTIONS") return fulfillCorsPreflight(route);
     const room = roomByType(rooms, route.request().url(), 0);
     if (route.request().method() === "GET") {
@@ -580,6 +672,8 @@ function ownerRoomShape() {
     facts: {} as Record<string, unknown>,
     roomFactsRevision: 1,
     activeUnitCount: 0,
+    roomUnitIds: [] as string[],
+    nextRoomUnitOrdinal: 1,
     roomUnitsRevision: 1,
     mediaObjectIds: [] as string[],
     roomMediaRevision: 1,

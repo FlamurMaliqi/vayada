@@ -604,6 +604,7 @@ export async function mockPmsWebTargetRoutes(page: Page): Promise<void> {
               },
             ]
           : [],
+        setupError: null,
         ...(isUpdate ? { outcome: "updated", enqueueIntentId: "calendar-auto-open-intent-1" } : {}),
       },
     });

@@ -3,6 +3,8 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
 import { createTargetPmsOperationsCommandRepository } from "./domains/pmsOperationsCommandRepository.js";
 import { createTargetPmsOperationsReadRepository } from "./domains/pmsOperationsReadModel.js";
+import { createPgPmsPhysicalRoomOperationalLabelRepository } from "./domains/pmsPhysicalRoomOperationalLabelRepository.js";
+import { createPgPmsPhysicalRoomUnitReconcileRepository } from "./domains/pmsPhysicalRoomUnitReconcileRepository.js";
 import { pmsRoomOrderVersion } from "./domains/pmsRoomOrder.js";
 import { createPgPmsRoomFactsReadModel } from "./domains/pmsRoomFactsReadModel.js";
 import type { PmsRoomOrderCommand, PmsRoomTypeCreateCommand } from "./routes/pmsOperations.js";
@@ -25,6 +27,14 @@ describe.skipIf(!TEST_DATABASE_URL)("first-run PMS room setup concurrency", () =
     readRepository: lifecycleReadRepository,
     now: () => new Date("2026-07-27T13:00:00.000Z"),
   });
+  const reconcileRepository = createPgPmsPhysicalRoomUnitReconcileRepository({
+    connectionString: TEST_DATABASE_URL ?? "postgresql://integration-test-disabled",
+    now: () => new Date("2026-07-27T13:00:00.000Z"),
+  });
+  const labelRepository = createPgPmsPhysicalRoomOperationalLabelRepository({
+    connectionString: TEST_DATABASE_URL ?? "postgresql://integration-test-disabled",
+    now: () => new Date("2026-07-27T13:00:00.000Z"),
+  });
 
   beforeAll(async () => {
     assertSafeTestDatabase(TEST_DATABASE_URL!);
@@ -45,6 +55,27 @@ describe.skipIf(!TEST_DATABASE_URL)("first-run PMS room setup concurrency", () =
        VALUES ($1::uuid, 'pms-room-race', 'PMS Room Race')`,
       [propertyId],
     );
+    await control.query(
+      `INSERT INTO identity.organization_resource_links (
+         organization_id, product, resource_type, resource_id, relationship, status
+       ) VALUES ($1::uuid, 'pms', 'pms_property', $2, 'owner', 'active')`,
+      [organizationId, propertyId],
+    );
+    await control.query(
+      `INSERT INTO identity.organization_memberships (
+         organization_id, user_id, status, role_key, access_origin
+       ) VALUES ($1::uuid, $2::uuid, 'active', 'hotel_owner', 'agency')`,
+      [organizationId, actorUserId],
+    );
+    await control.query(
+      `INSERT INTO identity.product_entitlements (
+         organization_id, product, entitlement_key, status,
+         resource_product, resource_type, resource_id
+       ) VALUES (
+         $1::uuid, 'pms', 'property-management', 'active', 'pms', 'pms_property', $2
+       )`,
+      [organizationId, propertyId],
+    );
   });
 
   beforeEach(async () => {
@@ -53,6 +84,8 @@ describe.skipIf(!TEST_DATABASE_URL)("first-run PMS room setup concurrency", () =
 
   afterAll(async () => {
     await repository.close?.();
+    await reconcileRepository.close();
+    await labelRepository.close();
     await lifecycleReadRepository.close?.();
     await cleanup();
     await control.end();
@@ -142,6 +175,125 @@ describe.skipIf(!TEST_DATABASE_URL)("first-run PMS room setup concurrency", () =
         [propertyId],
       ),
     ).resolves.toMatchObject({ rows: [{ roomCount: "2", distinctOrderCount: "2" }] });
+  });
+
+  it("creates, verifies, reduces, and re-expands across a retired case-only label collision", async () => {
+    const legacy = await repository.createRoomType(
+      roomCommand("generated-cycle-legacy", "Legacy Suite", false),
+    );
+    if (!legacy.ok) throw new Error("Expected legacy room type to be created");
+    await control.query(
+      `UPDATE pms.rooms
+       SET room_number='CYCLE SUITE 1', operational_label_status='verified', status='retired'
+       WHERE property_id=$1::uuid AND room_type_id=$2::uuid`,
+      [propertyId, legacy.roomType.roomTypeId],
+    );
+
+    const created = await repository.createRoomType(
+      roomCommand("generated-cycle", "Cycle Suite", false, 3),
+    );
+    if (!created.ok) throw new Error("Expected generated room type to be created");
+    const roomTypeId = created.roomType.roomTypeId;
+    const initialUnits = await control.query<{
+      roomUnitId: string;
+      operationalLabel: string | null;
+      setupGenerated: boolean;
+    }>(
+      `SELECT id::text AS "roomUnitId", room_number AS "operationalLabel",
+              COALESCE(room_metadata ->> 'setupGenerated', 'false') = 'true' AS "setupGenerated"
+       FROM pms.rooms
+       WHERE property_id=$1::uuid AND room_type_id=$2::uuid AND status<>'retired'
+       ORDER BY sort_order, id`,
+      [propertyId, roomTypeId],
+    );
+    expect(initialUnits.rows).toMatchObject([
+      { operationalLabel: null, setupGenerated: true },
+      { operationalLabel: null, setupGenerated: true },
+      { operationalLabel: null, setupGenerated: true },
+    ]);
+
+    let revision = 1;
+    await expect(
+      labelRepository.setPhysicalRoomOperationalLabel({
+        organizationId,
+        propertyId,
+        roomTypeId,
+        roomUnitId: initialUnits.rows[0]!.roomUnitId,
+        expectedRevision: revision,
+        operationalLabel: "Cycle Suite 1",
+        idempotencyKey: "pms-room-cycle-label-conflict",
+        audit: roomFactsAudit("label-conflict"),
+      }),
+    ).resolves.toEqual({ ok: false, error: { code: "operational_label_conflict" } });
+    for (const [index, unit] of initialUnits.rows.entries()) {
+      const operationalLabel = `Cycle Suite ${index + 2}`;
+      const result = await labelRepository.setPhysicalRoomOperationalLabel({
+        organizationId,
+        propertyId,
+        roomTypeId,
+        roomUnitId: unit.roomUnitId,
+        expectedRevision: revision,
+        operationalLabel,
+        idempotencyKey: `pms-room-cycle-label-${index}`,
+        audit: roomFactsAudit(`label-${index}`),
+      });
+      if (!result.ok) throw new Error("Expected generated room label to be verified");
+      revision = result.response.roomUnitsRevision;
+    }
+
+    const reduced = await reconcileRepository.reconcilePhysicalRoomUnits({
+      organizationId,
+      propertyId,
+      roomTypeId,
+      expectedRevision: revision,
+      targetActiveUnitCount: 2,
+      idempotencyKey: "pms-room-cycle-reduce",
+      audit: roomFactsAudit("reduce"),
+    });
+    if (!reduced.ok) throw new Error("Expected generated room count to be reduced");
+    expect(reduced.response.retiredUnitIds).toEqual([initialUnits.rows[2]!.roomUnitId]);
+    revision = reduced.response.capacity.roomUnitsRevision;
+
+    const expanded = await reconcileRepository.reconcilePhysicalRoomUnits({
+      organizationId,
+      propertyId,
+      roomTypeId,
+      expectedRevision: revision,
+      targetActiveUnitCount: 3,
+      idempotencyKey: "pms-room-cycle-expand",
+      audit: roomFactsAudit("expand"),
+    });
+    if (!expanded.ok) throw new Error("Expected generated room count to be re-expanded");
+    revision = expanded.response.capacity.roomUnitsRevision;
+    const addedUnit = expanded.response.addedUnits[0];
+    if (!addedUnit) throw new Error("Expected a replacement generated room");
+    const labeled = await labelRepository.setPhysicalRoomOperationalLabel({
+      organizationId,
+      propertyId,
+      roomTypeId,
+      roomUnitId: addedUnit.roomUnitId,
+      expectedRevision: revision,
+      operationalLabel: "Cycle Suite 5",
+      idempotencyKey: "pms-room-cycle-label-replacement",
+      audit: roomFactsAudit("label-replacement"),
+    });
+    if (!labeled.ok) throw new Error("Expected replacement room label to remain unique");
+
+    await expect(
+      control.query<{ operationalLabel: string }>(
+        `SELECT room_number AS "operationalLabel"
+         FROM pms.rooms
+         WHERE property_id=$1::uuid AND room_type_id=$2::uuid AND status<>'retired'
+         ORDER BY sort_order, id`,
+        [propertyId, roomTypeId],
+      ),
+    ).resolves.toMatchObject({
+      rows: [
+        { operationalLabel: "Cycle Suite 2" },
+        { operationalLabel: "Cycle Suite 3" },
+        { operationalLabel: "Cycle Suite 5" },
+      ],
+    });
   });
 
   it("persists reorder across connections and rejects a stale session without duplicate audit", async () => {
@@ -324,6 +476,18 @@ describe.skipIf(!TEST_DATABASE_URL)("first-run PMS room setup concurrency", () =
         [organizationId, propertyId],
       );
       await control.query("DELETE FROM pms.room_types WHERE property_id = $1::uuid", [propertyId]);
+      await control.query(
+        "DELETE FROM identity.product_entitlements WHERE organization_id = $1::uuid",
+        [organizationId],
+      );
+      await control.query(
+        "DELETE FROM identity.organization_resource_links WHERE organization_id = $1::uuid",
+        [organizationId],
+      );
+      await control.query(
+        "DELETE FROM identity.organization_memberships WHERE organization_id = $1::uuid",
+        [organizationId],
+      );
       await control.query("DELETE FROM hotel_catalog.properties WHERE id = $1::uuid", [propertyId]);
       await control.query("DELETE FROM identity.organizations WHERE id = $1::uuid", [
         organizationId,
@@ -365,6 +529,7 @@ function roomCommand(
   suffix: string,
   name: string,
   initialSetupOnly = true,
+  roomCount = 1,
 ): PmsRoomTypeCreateCommand {
   const commandId = `pms-room-race-${suffix}`;
   return {
@@ -401,7 +566,7 @@ function roomCommand(
     ],
     active: true,
     sortOrder: 0,
-    roomCount: 1,
+    roomCount,
     audit: {
       actor: { kind: "user", userId: actorUserId, organizationId },
       requestId: commandId,
@@ -409,6 +574,15 @@ function roomCommand(
       reason: "Create first room during hotel setup",
       requestedAt: "2026-07-27T13:00:00.000Z",
     },
+  };
+}
+
+function roomFactsAudit(suffix: string) {
+  return {
+    actor: { kind: "user" as const, userId: actorUserId },
+    requestId: `pms-room-cycle-${suffix}`,
+    correlationId: "pms-room-cycle",
+    requestedAt: "2026-07-27T13:00:00.000Z",
   };
 }
 

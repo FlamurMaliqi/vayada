@@ -29,6 +29,7 @@ const response = (revision = 3, enabled = false) => ({
     targetOpenThrough: enabled ? "2028-03-31" : null,
   },
   warnings: [],
+  setupError: null,
 });
 
 describe("calendar auto-open editor", () => {
@@ -145,5 +146,52 @@ describe("calendar auto-open editor", () => {
     expect(view.root.findByProps({ role: "alert" }).findByType("span").children.join("")).toContain(
       "changed in another session",
     );
+  });
+
+  it("explains the setup action required before auto-open can run", async () => {
+    mocks.load.mockResolvedValue({
+      ...response(3, true),
+      horizon: { ...response(3, true).horizon, targetOpenThrough: null },
+      setupError: { code: "operating_calendar_room_bindings_stale" },
+    });
+    mocks.save.mockRejectedValueOnce(
+      new ApiErrorResponse(409, { code: "physical_room_labels_unverified" }),
+    );
+    let view!: ReturnType<typeof create>;
+    await act(async () => {
+      view = create(createElement(CalendarAutoOpenEditor));
+    });
+
+    expect(view.root.findByProps({ role: "alert" }).children.join(" ")).toContain(
+      "Reopen Calendar setup",
+    );
+    expect(view.root.findByProps({ id: "auto-open-state" }).children.join("")).toContain("paused");
+    act(() => view.root.findByProps({ "aria-label": "Auto-open future calendar" }).props.onClick());
+    await act(async () => view.root.findByProps({ children: "Save auto-open" }).props.onClick());
+    expect(
+      view.root.findAllByProps({ role: "alert" }).at(-1)?.findByType("span").children.join(""),
+    ).toContain("Verify every physical room label");
+  });
+
+  it("does not report success when a replay returns paused setup readiness", async () => {
+    mocks.save.mockResolvedValueOnce({
+      ...response(4, true),
+      horizon: { ...response(4, true).horizon, targetOpenThrough: null },
+      setupError: { code: "operating_calendar_room_bindings_stale" },
+      outcome: "created",
+      enqueueIntentId: null,
+    });
+    let view!: ReturnType<typeof create>;
+    await act(async () => {
+      view = create(createElement(CalendarAutoOpenEditor));
+    });
+    act(() => view.root.findByProps({ "aria-label": "Auto-open future calendar" }).props.onClick());
+    await act(async () => view.root.findByProps({ children: "Save auto-open" }).props.onClick());
+
+    expect(view.root.findByProps({ id: "auto-open-state" }).children.join("")).toContain("paused");
+    expect(view.root.findAllByProps({ role: "status" })).toHaveLength(0);
+    expect(
+      view.root.findAllByProps({ role: "alert" }).at(-1)?.findByType("span").children.join(""),
+    ).toContain("Reopen Calendar setup");
   });
 });

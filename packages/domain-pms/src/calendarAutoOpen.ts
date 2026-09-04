@@ -26,6 +26,7 @@ export type PmsCalendarAutoOpenSettingContext = Readonly<{
   setting: PmsCalendarAutoOpenSetting;
   propertyTimeZone: string;
   warnings: readonly PmsCalendarAutoOpenWarning[];
+  setupError: PmsCalendarAutoOpenSetupError | null;
 }>;
 
 export type PmsCalendarAutoOpenHorizon = Readonly<{
@@ -38,6 +39,14 @@ export type PmsCalendarAutoOpenRead = Readonly<{
   setting: PmsCalendarAutoOpenSetting;
   horizon: PmsCalendarAutoOpenHorizon;
   warnings: readonly PmsCalendarAutoOpenWarning[];
+  setupError: PmsCalendarAutoOpenSetupError | null;
+}>;
+
+export type PmsCalendarAutoOpenSetupError = Readonly<{
+  code:
+    | "operating_calendar_not_configured"
+    | "operating_calendar_room_bindings_stale"
+    | "physical_room_labels_unverified";
 }>;
 
 export type PmsCalendarAutoOpenWarning = Readonly<{
@@ -105,6 +114,7 @@ export type PmsCalendarAutoOpenUpdateResult =
               | "invalid_setting"
               | "property_not_found"
               | "property_time_zone_invalid"
+              | PmsCalendarAutoOpenSetupError["code"]
               | "idempotency_key_conflict"
               | "command_in_progress";
           }>

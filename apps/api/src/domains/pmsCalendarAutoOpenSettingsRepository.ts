@@ -7,6 +7,7 @@ import {
   isPmsCalendarAutoOpenFixedTargetWithinLimit,
   isPmsCalendarAutoOpenSetting,
   type PmsCalendarAutoOpenSetting,
+  type PmsCalendarAutoOpenSetupError,
   type PmsCalendarAutoOpenSettingsPort,
   type PmsCalendarAutoOpenWarning,
   type PmsCalendarAutoOpenUpdateResult,
@@ -84,6 +85,7 @@ export function createPgPmsCalendarAutoOpenSettingsRepository(config: {
         setting: current,
         propertyTimeZone: row.propertyTimeZone!,
         warnings: parseWarnings(row.warnings),
+        setupError: current.enabled ? await readSetupError(pool, propertyId) : null,
       };
     },
     async update(command) {
@@ -117,6 +119,10 @@ export function createPgPmsCalendarAutoOpenSettingsRepository(config: {
               currentRevision: current.revision,
             }),
           );
+        const setupError = command.enabled
+          ? await readSetupError(client, command.propertyId)
+          : null;
+        if (setupError) return rollback(client, failure(setupError));
         const fixedMonthError = validateSelectedFixedMonth(current, command, acceptedAt);
         if (fixedMonthError) return rollback(client, failure(fixedMonthError));
         const reservationId = await reserveIdempotency(
@@ -227,6 +233,64 @@ async function read(client: Pick<Client, "query">, propertyId: string, lock: boo
      WHERE property.id = $1::uuid`,
     [propertyId],
   );
+}
+
+async function readSetupError(
+  client: Pick<Client, "query">,
+  propertyId: string,
+): Promise<PmsCalendarAutoOpenSetupError | null> {
+  const row = (
+    await client.query<{
+      calendarRevision: number | string | null;
+      roomBindingsStale: boolean;
+      labelsUnverified: boolean;
+    }>(
+      `WITH current_calendar AS (
+         SELECT calendar_revision
+         FROM pms.operating_calendar_revisions
+         WHERE property_id=$1::uuid
+         ORDER BY calendar_revision DESC
+         LIMIT 1
+       )
+       SELECT
+         (SELECT calendar_revision FROM current_calendar) AS "calendarRevision",
+         EXISTS (
+           SELECT 1
+           FROM pms.room_types room
+           LEFT JOIN pms.operating_calendar_room_bindings binding
+             ON binding.property_id=room.property_id
+            AND binding.room_type_id=room.id
+            AND binding.calendar_revision=(SELECT calendar_revision FROM current_calendar)
+           WHERE room.property_id=$1::uuid AND room.active IS TRUE
+             AND (binding.room_type_id IS NULL
+               OR binding.source_room_facts_revision IS DISTINCT FROM room.room_facts_revision
+               OR binding.source_room_units_revision IS DISTINCT FROM room.room_units_revision)
+         ) OR EXISTS (
+           SELECT 1
+           FROM pms.operating_calendar_room_bindings binding
+           LEFT JOIN pms.room_types room
+             ON room.property_id=binding.property_id
+            AND room.id=binding.room_type_id
+            AND room.active IS TRUE
+           WHERE binding.property_id=$1::uuid
+             AND binding.calendar_revision=(SELECT calendar_revision FROM current_calendar)
+             AND room.id IS NULL
+         ) AS "roomBindingsStale",
+         EXISTS (
+           SELECT 1 FROM pms.rooms room
+           JOIN pms.room_types room_type
+             ON room_type.property_id=room.property_id AND room_type.id=room.room_type_id
+           WHERE room.property_id=$1::uuid AND room_type.active IS TRUE
+             AND room.status<>'retired' AND room.operational_label_status<>'verified'
+         ) AS "labelsUnverified"`,
+      [propertyId],
+    )
+  ).rows[0];
+  if (!row || row.calendarRevision === null) {
+    return { code: "operating_calendar_not_configured" };
+  }
+  if (row.labelsUnverified) return { code: "physical_room_labels_unverified" };
+  return row.roomBindingsStale ? { code: "operating_calendar_room_bindings_stale" } : null;
 }
 
 async function findReplay(

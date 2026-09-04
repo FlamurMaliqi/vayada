@@ -838,10 +838,19 @@ test.describe("pms-web smoke", () => {
     await expect(page.getByRole("heading", { level: 2, name: "Ada Lovelace" })).toHaveCount(0);
   });
 
-  test("creates a room type without updating payment settings", async ({ page }, testInfo) => {
+  test("creates a verified room type without updating payment settings", async ({
+    page,
+  }, testInfo) => {
     const assertHealthy = watchPageHealth(page, testInfo);
+    const assertNoLegacyCalls = watchNoLegacyCalls(page, testInfo, "pms-web-operations");
+    const createdRoomTypeId = "99999999-9999-4999-8999-000000000001";
+    const unitIds = [
+      "99999999-9999-4999-8999-000000000002",
+      "99999999-9999-4999-8999-000000000003",
+    ];
     let paymentSettingsWrites = 0;
     let roomTypeCreates = 0;
+    const labelWrites: Record<string, unknown>[] = [];
     let notePaymentSettingsRequested!: () => void;
     let releasePaymentSettings!: () => void;
     const paymentSettingsRequested = new Promise<void>((resolve) => {
@@ -877,11 +886,67 @@ test.describe("pms-web smoke", () => {
         json: {
           contractVersion: "pms-operations.v1",
           propertyId: PMS_WEB_PROPERTY_ID,
-          item: pmsWebRoomType,
+          item: {
+            ...pmsWebRoomType,
+            roomTypeId: createdRoomTypeId,
+            name: "Castrop Suite",
+            roomCount: 2,
+          },
           commandMeta: { replayed: false },
         },
       });
     });
+    await page.route(
+      `**/api/pms/setup/properties/${PMS_WEB_PROPERTY_ID}/room-types/${createdRoomTypeId}/capacity`,
+      (route) =>
+        route.fulfill({
+          json: {
+            contractVersion: "pms-room-facts.v1",
+            propertyId: PMS_WEB_PROPERTY_ID,
+            roomTypeId: createdRoomTypeId,
+            roomUnitsRevision: 1,
+            activeUnitCount: 2,
+            capturedAt: "2026-09-04T00:00:00.000Z",
+          },
+        }),
+    );
+    await page.route(
+      `**/api/pms/setup/properties/${PMS_WEB_PROPERTY_ID}/room-types/${createdRoomTypeId}/units`,
+      (route) =>
+        route.fulfill({
+          json: {
+            items: unitIds.map((roomUnitId) => ({
+              contractVersion: "pms-room-facts.v1",
+              propertyId: PMS_WEB_PROPERTY_ID,
+              roomTypeId: createdRoomTypeId,
+              roomUnitId,
+              lifecycle: "active",
+              operationalLabel: null,
+              operationalLabelStatus: "unverified",
+            })),
+          },
+        }),
+    );
+    await page.route(
+      `**/api/pms/properties/${PMS_WEB_PROPERTY_ID}/room-types/${createdRoomTypeId}/physical-units/*/operational-label`,
+      (route) => {
+        const body = route.request().postDataJSON() as Record<string, unknown>;
+        labelWrites.push(body);
+        return route.fulfill({
+          json: {
+            contractVersion: "pms-room-facts.v1",
+            outcome: "updated",
+            propertyId: PMS_WEB_PROPERTY_ID,
+            roomTypeId: createdRoomTypeId,
+            roomUnitId: new URL(route.request().url()).pathname.split("/").at(-2),
+            roomUnitsRevision: Number(body.expectedRevision) + 1,
+            operationalLabel: body.operationalLabel,
+            operationalLabelStatus: "verified",
+            acceptedAt: "2026-09-04T00:00:00.000Z",
+          },
+        });
+      },
+    );
 
     await page.goto("/rooms/new");
     await page.getByPlaceholder("e.g. Two-Bedroom Villa").fill("Castrop Suite");
@@ -912,10 +977,15 @@ test.describe("pms-web smoke", () => {
 
     await expect(page).toHaveURL(/\/rooms$/);
     expect(roomTypeCreates).toBe(1);
+    expect(labelWrites).toEqual([
+      { expectedRevision: 1, operationalLabel: "Castrop Suite 1" },
+      { expectedRevision: 2, operationalLabel: "Castrop Suite 2" },
+    ]);
     expect(paymentSettingsWrites).toBe(0);
     await expect(
       page.getByText("Payment settings updates is not available on PMS next-stack yet."),
     ).toHaveCount(0);
+    await assertNoLegacyCalls();
     await assertHealthy();
   });
 
