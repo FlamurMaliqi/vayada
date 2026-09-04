@@ -1,9 +1,7 @@
 import type { FinanceCommandAudit, FinanceUtcDateTime } from "./index.js";
 
 export const FINANCE_FIXED_PLAN_CURRENCY = "EUR" as const;
-export const FINANCE_FIXED_PLAN_INTERVAL_DAYS = 30 as const;
-export const FINANCE_FIXED_PLAN_BASE_AMOUNT_MINOR = 3_000 as const;
-export const FINANCE_FIXED_PLAN_EXTRA_ROOM_AMOUNT_MINOR = 500 as const;
+export const FINANCE_FIXED_PLAN_INTERVAL_MONTHS = 1 as const;
 
 export type FinanceSubscriptionPlan = "commission" | "fixed";
 
@@ -18,9 +16,10 @@ export type FinancePlanStatusReadModel = {
   propertyId: string;
   plan: FinanceSubscriptionPlan;
   status: FinanceSubscriptionLifecycleStatus;
-  currency: typeof FINANCE_FIXED_PLAN_CURRENCY;
+  currency: string;
   activeRoomCount: number;
   amountMinor: number;
+  fixedPlanAvailable: boolean;
   currentPeriodStart: FinanceUtcDateTime | null;
   currentPeriodEnd: FinanceUtcDateTime | null;
   nextBillingDate: FinanceUtcDateTime | null;
@@ -47,15 +46,18 @@ export type FinanceSubscriptionCommandContext = {
 
 export type CreateFixedPlanCheckoutCommand = FinanceSubscriptionCommandContext & {
   customerEmail: string;
+  returnSurface?: "booking-admin" | "pms";
 };
 
 export type CreateFixedPlanCheckoutResult = {
   checkoutSessionId: string;
   checkoutUrl: string;
-  currency: typeof FINANCE_FIXED_PLAN_CURRENCY;
+  currency: string;
   amountMinor: number;
   activeRoomCount: number;
 };
+
+export type ActivateFixedPlanByInvoiceCommand = FinanceSubscriptionCommandContext;
 
 export type OpenFinanceCustomerPortalCommand = FinanceSubscriptionCommandContext;
 
@@ -67,6 +69,48 @@ export type ScheduleCommissionPlanCommand = FinanceSubscriptionCommandContext;
 
 export type ScheduleCommissionPlanResult = {
   planStatus: FinancePlanStatusReadModel;
+};
+
+export type FinancePaymentCollectionMethod = "card" | "bank_transfer";
+
+export type FinanceBillingDetails = {
+  companyName: string;
+  billingEmail: string;
+  taxId: string | null;
+};
+
+export type FinanceSavedCard = {
+  brand: string;
+  last4: string;
+  expiryMonth: number;
+  expiryYear: number;
+};
+
+export type FinanceBillingInvoice = {
+  id: string;
+  number: string;
+  issuedAt: FinanceUtcDateTime;
+  amountMinor: number;
+  currency: string;
+  status: "paid" | "pending" | "failed";
+  pdfUrl: string | null;
+};
+
+export type FinanceBillingOverview = {
+  propertyId: string;
+  planStatus: FinancePlanStatusReadModel;
+  paymentMethod: FinancePaymentCollectionMethod;
+  savedCard: FinanceSavedCard | null;
+  billingDetails: FinanceBillingDetails;
+  invoices: FinanceBillingInvoice[];
+};
+
+export type UpdateFinanceBillingDetailsCommand = FinanceSubscriptionCommandContext & {
+  billingDetails: FinanceBillingDetails;
+};
+
+export type UpdateFinancePaymentMethodCommand = FinanceSubscriptionCommandContext & {
+  paymentMethod: FinancePaymentCollectionMethod;
 };
 
 export type SelectCommissionPlanCommand = FinanceSubscriptionCommandContext;
@@ -95,18 +139,34 @@ export type FinanceSubscriptionCommandResult<T> =
 
 export type FinanceSubscriptionService = {
   getPlanStatus(propertyId: string): Promise<FinancePlanStatusReadModel>;
+  getBillingOverview(propertyId: string): Promise<FinanceBillingOverview>;
   createFixedPlanCheckout(
     command: CreateFixedPlanCheckoutCommand,
   ): Promise<FinanceSubscriptionCommandResult<CreateFixedPlanCheckoutResult>>;
+  activateFixedPlanByInvoice(
+    command: ActivateFixedPlanByInvoiceCommand,
+  ): Promise<FinanceSubscriptionCommandResult<FinanceBillingOverview>>;
+  activateFixedPlanByCard(
+    command: ActivateFixedPlanByInvoiceCommand,
+  ): Promise<FinanceSubscriptionCommandResult<FinanceBillingOverview>>;
   selectCommissionPlan(
     command: SelectCommissionPlanCommand,
   ): Promise<FinanceSubscriptionCommandResult<SelectCommissionPlanResult>>;
   openCustomerPortal(
-    command: OpenFinanceCustomerPortalCommand,
+    command: OpenFinanceCustomerPortalCommand & { returnSurface?: "booking-admin" | "pms" },
   ): Promise<FinanceSubscriptionCommandResult<OpenFinanceCustomerPortalResult>>;
   scheduleCommissionPlan(
     command: ScheduleCommissionPlanCommand,
   ): Promise<FinanceSubscriptionCommandResult<ScheduleCommissionPlanResult>>;
+  switchToCommissionNow(
+    command: ScheduleCommissionPlanCommand,
+  ): Promise<FinanceSubscriptionCommandResult<ScheduleCommissionPlanResult>>;
+  updateBillingDetails(
+    command: UpdateFinanceBillingDetailsCommand,
+  ): Promise<FinanceSubscriptionCommandResult<FinanceBillingOverview>>;
+  updatePaymentMethod(
+    command: UpdateFinancePaymentMethodCommand,
+  ): Promise<FinanceSubscriptionCommandResult<FinanceBillingOverview>>;
   close?(): Promise<void>;
 };
 
@@ -116,6 +176,8 @@ export type StripeFixedPlanCheckoutInput = {
   customerEmail: string;
   existingCustomerId: string | null;
   activeRoomCount: number;
+  currency: string;
+  billingCycleAnchor: FinanceUtcDateTime;
   successUrl: string;
   cancelUrl: string;
   idempotencyKey: string;
@@ -132,6 +194,7 @@ export type StripeSubscriptionSnapshot = {
   currentPeriodEnd: FinanceUtcDateTime | null;
   cancelAtPeriodEnd: boolean;
   subscriptionItemId: string | null;
+  currency: string;
 };
 
 export type StripeFinanceSubscriptionProvider = {
@@ -139,6 +202,24 @@ export type StripeFinanceSubscriptionProvider = {
     checkoutSessionId: string;
     checkoutUrl: string;
   }>;
+  createFixedPlanInvoiceSubscription(input: {
+    propertyId: string;
+    organizationId: string;
+    customerId: string;
+    activeRoomCount: number;
+    currency: string;
+    billingCycleAnchor: FinanceUtcDateTime;
+    idempotencyKey: string;
+  }): Promise<StripeSubscriptionSnapshot>;
+  createFixedPlanCardSubscription(input: {
+    propertyId: string;
+    organizationId: string;
+    customerId: string;
+    activeRoomCount: number;
+    currency: string;
+    billingCycleAnchor: FinanceUtcDateTime;
+    idempotencyKey: string;
+  }): Promise<StripeSubscriptionSnapshot>;
   expireFixedPlanCheckout(input: {
     checkoutSessionId: string;
     idempotencyKey: string;
@@ -152,6 +233,24 @@ export type StripeFinanceSubscriptionProvider = {
     subscriptionId: string;
     idempotencyKey: string;
   }): Promise<StripeSubscriptionSnapshot>;
+  cancelImmediately(input: {
+    subscriptionId: string;
+    idempotencyKey: string;
+  }): Promise<StripeSubscriptionSnapshot>;
+  getCustomerBilling(customerId: string): Promise<{ savedCard: FinanceSavedCard | null }>;
+  upsertCustomer(input: {
+    customerId: string | null;
+    propertyId: string;
+    organizationId: string;
+    billingDetails: FinanceBillingDetails;
+    idempotencyKey: string;
+  }): Promise<{ customerId: string }>;
+  listInvoices(customerId: string): Promise<FinanceBillingInvoice[]>;
+  updateCollectionMethod(input: {
+    subscriptionId: string;
+    paymentMethod: FinancePaymentCollectionMethod;
+    idempotencyKey: string;
+  }): Promise<StripeSubscriptionSnapshot>;
   retrieveSubscription(subscriptionId: string): Promise<StripeSubscriptionSnapshot>;
   updateRoomQuantity(input: {
     subscriptionId: string;
@@ -161,15 +260,51 @@ export type StripeFinanceSubscriptionProvider = {
   }): Promise<StripeSubscriptionSnapshot>;
 };
 
-export function fixedPlanAmountMinor(activeRoomCount: number): number {
+export function fixedPlanAmountMinor(
+  activeRoomCount: number,
+  currency: string = FINANCE_FIXED_PLAN_CURRENCY,
+): number {
   if (!Number.isInteger(activeRoomCount) || activeRoomCount < 0) {
     throw new TypeError("activeRoomCount must be a non-negative integer");
   }
-  return (
-    FINANCE_FIXED_PLAN_BASE_AMOUNT_MINOR +
-    Math.max(activeRoomCount - 1, 0) * FINANCE_FIXED_PLAN_EXTRA_ROOM_AMOUNT_MINOR
-  );
+  const normalizedCurrency = currency.trim().toUpperCase();
+  const price = FIXED_PLAN_PRICE_CATALOG[normalizedCurrency];
+  if (!price) {
+    throw new RangeError(`Fixed Plan pricing is not configured for ${normalizedCurrency}.`);
+  }
+  return price.baseAmountMinor + Math.max(activeRoomCount - 1, 0) * price.extraRoomAmountMinor;
 }
+
+const FIXED_PLAN_PRICE_CATALOG: Readonly<
+  Record<string, { baseAmountMinor: number; extraRoomAmountMinor: number }>
+> = Object.freeze({
+  EUR: { baseAmountMinor: 3_000, extraRoomAmountMinor: 500 },
+  USD: { baseAmountMinor: 3_000, extraRoomAmountMinor: 500 },
+  IDR: { baseAmountMinor: 50_000_000, extraRoomAmountMinor: 8_000_000 },
+});
+
+export function stripeCurrencyHasZeroDecimals(currency: string): boolean {
+  return ZERO_DECIMAL_CURRENCIES.has(currency.trim().toUpperCase());
+}
+
+const ZERO_DECIMAL_CURRENCIES = new Set([
+  "BIF",
+  "CLP",
+  "DJF",
+  "GNF",
+  "JPY",
+  "KMF",
+  "KRW",
+  "MGA",
+  "PYG",
+  "RWF",
+  "UGX",
+  "VND",
+  "VUV",
+  "XAF",
+  "XOF",
+  "XPF",
+]);
 
 export function toFinancePlanStatusResponse(
   planStatus: FinancePlanStatusReadModel,

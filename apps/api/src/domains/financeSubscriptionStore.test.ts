@@ -198,6 +198,7 @@ function commissionResult() {
       currency: "EUR" as const,
       activeRoomCount: 1,
       amountMinor: 3_000,
+      fixedPlanAvailable: true,
       currentPeriodStart: null,
       currentPeriodEnd: null,
       nextBillingDate: null,
