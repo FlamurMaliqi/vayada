@@ -93,6 +93,7 @@ test.describe("booking-admin Feature Hub", () => {
     await activate.click();
 
     await expect.poll(() => activationWrites).toBe(1);
+    await expect(page.getByText("Affiliates activated.")).toBeVisible();
     releaseStaleRead();
     await expect(page.getByText("Syncing")).toHaveCount(0);
     await expect(page.getByRole("switch", { name: "Deactivate Affiliates" })).toBeChecked();
