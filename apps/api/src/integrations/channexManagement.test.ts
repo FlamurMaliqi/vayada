@@ -80,6 +80,7 @@ describe("Channex management provider", () => {
       plans: {
         plan: async () => ({
           externalPropertyId: "external-property",
+          googleSourceFingerprint: "google-source-1",
           requests: [
             channexRequests.createRoomType({
               roomTypeId: "room-1",
@@ -103,6 +104,7 @@ describe("Channex management provider", () => {
 
     await expect(provider.execute(job("provision"))).resolves.toMatchObject({
       ok: true,
+      googleSourceFingerprint: "google-source-1",
       roomTypeMappings: [{ roomTypeId: "room-1", externalRoomTypeId: "external-room" }],
       ratePlanMappings: [
         {
@@ -168,6 +170,10 @@ describe("Channex management provider", () => {
               id: "channel-1",
               attributes: { application: "BookingCom", title: "Booking.com", is_active: true },
             },
+            {
+              id: "channel-2",
+              attributes: { application: "GHA", title: "Google Hotel", is_active: true },
+            },
           ],
         }),
       ),
@@ -176,8 +182,66 @@ describe("Channex management provider", () => {
       ok: true,
       channels: [
         { key: "booking_com", application: "BookingCom", title: "Booking.com", isActive: true },
+        { key: "google_hotel", application: "GHA", title: "Google Hotel", isActive: true },
       ],
     });
+  });
+
+  it("marks mappings disabled only after provider deletion acknowledgement", async () => {
+    const checkpoint = vi.fn();
+    const roomMapping = {
+      mappingId: "room-mapping-1",
+      roomTypeId: "room-1",
+      roomTypeName: "Old room",
+      externalRoomTypeId: "external-room",
+      status: "active" as const,
+    };
+    const rateMapping = {
+      mappingId: "rate-mapping-1",
+      roomTypeId: "room-1",
+      ratePlanId: "rate-1",
+      ratePlanName: "Old rate",
+      channel: "google_hotel",
+      externalRoomTypeId: "external-room",
+      externalRatePlanId: "external-rate",
+      sellMode: "per_room" as const,
+      markupPercent: 0,
+      status: "active" as const,
+    };
+    const fetcher = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(response(200, { meta: { message: "Success" } }))
+      .mockResolvedValueOnce(response(404));
+    const provider = createChannexManagementProvider({
+      apiBaseUrl: "https://staging.channex.io",
+      apiKey: "secret",
+      plans: {
+        plan: async () => ({
+          requests: [
+            channexRequests.deleteRatePlan(rateMapping),
+            channexRequests.deleteRoomType(roomMapping),
+          ],
+          checkpoint,
+        }),
+      },
+      fetch: fetcher,
+    });
+
+    await expect(provider.execute(job("setup_google"))).resolves.toMatchObject({
+      ok: true,
+      roomTypeMappings: [{ roomTypeId: "room-1", status: "disabled" }],
+      ratePlanMappings: [{ ratePlanId: "rate-1", status: "disabled" }],
+    });
+    expect(checkpoint).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({
+        ratePlanMappings: expect.arrayContaining([expect.objectContaining({ status: "disabled" })]),
+      }),
+    );
+    expect(fetcher.mock.calls.map(([url]) => String(url))).toEqual([
+      "https://staging.channex.io/api/v1/rate_plans/external-rate?force=true",
+      "https://staging.channex.io/api/v1/room_types/external-room?force=true",
+    ]);
   });
 
   it("reconciles provider state and checkpoints it before skipping duplicate creates", async () => {

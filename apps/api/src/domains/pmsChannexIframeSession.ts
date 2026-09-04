@@ -22,6 +22,7 @@ export type PmsChannexIframeSessionPort = {
   createSession(
     context: RequestContext,
     propertyId: string,
+    options?: { channel?: "google_hotel" },
   ): Promise<PmsChannexIframeSessionResult>;
   close?(): Promise<void>;
 };
@@ -41,7 +42,7 @@ export function createPgPmsChannexIframeSessionPort(config: {
   const fetcher = config.fetch ?? fetch;
   const now = config.now ?? (() => new Date());
   return {
-    async createSession(context, propertyId) {
+    async createSession(context, propertyId, options) {
       const connection = await pool.query<{ externalPropertyId: string | null }>(
         `SELECT external_property_id AS "externalPropertyId"
          FROM pms.channel_connections
@@ -93,19 +94,22 @@ export function createPgPmsChannexIframeSessionPort(config: {
            target_resource_id, correlation_id, redacted_payload, audit_metadata
          ) VALUES ($1, 'pms', 'pms.channex.iframe_session.created', $2::timestamptz,
            'property', $3::uuid, 'user', $4::uuid, 'pms', 'channex_connection', $3::text,
-           $5, '{}'::jsonb, jsonb_build_object('expiresInSeconds', 900))`,
+           $5, '{}'::jsonb, jsonb_build_object(
+             'expiresInSeconds', 900, 'channelScope', $6::text
+           ))`,
         [
           `channex.iframe-session:${context.audit.requestId}`,
           createdAt.toISOString(),
           propertyId,
           context.actor.internalUserId,
           context.audit.correlationId ?? context.audit.requestId,
+          options?.channel ?? null,
         ],
       );
       return {
         ok: true,
         contractVersion: "pms-channex-management.v1",
-        iframeUrl: iframeUrl(baseUrl, token, externalPropertyId, context.locale),
+        iframeUrl: iframeUrl(baseUrl, token, externalPropertyId, context.locale, options?.channel),
         expiresAt: new Date(createdAt.getTime() + 15 * 60_000).toISOString(),
       };
     },
@@ -115,11 +119,22 @@ export function createPgPmsChannexIframeSessionPort(config: {
   };
 }
 
-function iframeUrl(baseUrl: string, token: string, propertyId: string, locale: string): string {
+function iframeUrl(
+  baseUrl: string,
+  token: string,
+  propertyId: string,
+  locale: string,
+  channel?: "google_hotel",
+): string {
   const url = new URL("/auth/exchange", baseUrl);
   url.searchParams.set("oauth_session_key", token);
   url.searchParams.set("app_mode", "headless");
-  url.searchParams.set("redirect_to", "/channels");
+  url.searchParams.set(
+    "redirect_to",
+    channel === "google_hotel"
+      ? "/channels?channels=GHA&available_channels=GHA&channels_filter=GHA"
+      : "/channels",
+  );
   url.searchParams.set("property_id", propertyId);
   url.searchParams.set("lng", locale || "en");
   return url.toString();

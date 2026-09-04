@@ -105,6 +105,7 @@ describe("target Channex management plans", () => {
     });
     const plan = await port.plan(job("provision"));
     expect(plan.requests.map(({ path }) => path)).toEqual([
+      "/api/v1/properties/external-1",
       "/api/v1/room_types",
       "/api/v1/room_types",
       "/api/v1/rate_plans",
@@ -115,27 +116,61 @@ describe("target Channex management plans", () => {
       "/api/v1/rate_plans",
       "/api/v1/channels",
     ]);
-    expect(plan.requests[1]?.body).toMatchObject({
+    expect(plan.requests[0]?.body).toMatchObject({ property: { title: "Hotel" } });
+    expect(plan.requests[2]?.body).toMatchObject({
       room_type: { occ_infants: 0, default_occupancy: 1 },
     });
-    expect(plan.requests[0]?.query).toMatchObject({
+    expect(plan.requests[1]?.query).toMatchObject({
       "filter[title]": "Deluxe [Vayada:room-1]",
     });
-    expect(plan.requests[2]?.query).toMatchObject({
+    expect(plan.requests[3]?.query).toMatchObject({
       "filter[title]": "Deluxe - Flexible - Standard [Vayada:room-1:direct:rate-1]",
     });
-    expect(plan.requests[4]?.query).toMatchObject({
+    expect(plan.requests[5]?.query).toMatchObject({
       "filter[title]": "Deluxe - Flexible - BDC Standard [Vayada:room-1:booking_com:rate-1]",
     });
-    expect(plan.requests[6]?.query).toMatchObject({
+    expect(plan.requests[7]?.query).toMatchObject({
       "filter[title]": "Deluxe - Flexible - Airbnb Standard [Vayada:room-1:airbnb:rate-1]",
     });
+    expect(plan.requests.some((request) => JSON.stringify(request).includes("google_hotel"))).toBe(
+      false,
+    );
     expect(plan.checkpoint).toEqual(expect.any(Function));
     expect(db.sql()).toContain("pms.channel_room_type_mappings");
     expect(db.sql()).toContain("pms.channel_rate_plan_mappings");
     expect(db.sql()).toContain("mapping.connection_id = connection.id");
     expect(db.sql()).toContain("connection.provider = 'channex'");
     expect(db.sql()).toContain("mapping.status <> 'active'");
+    expect(db.sql()).toContain("profile.default_currency");
+    expect(db.sql()).toContain("ISOLATION LEVEL REPEATABLE READ READ ONLY");
+    expect(db.sql()).toContain("$2::text = 'non_google'");
+
+    const googlePlan = await port.plan({
+      ...job("setup_google"),
+      input: { ...job("setup_google").input, businessProfileConfirmed: true },
+    });
+    expect(
+      googlePlan.requests.some((request) => JSON.stringify(request).includes("google_hotel")),
+    ).toBe(true);
+    expect(
+      googlePlan.requests.find((request) => request.capture?.kind === "rate_plan")?.resolveBody,
+    ).toEqual(expect.any(Function));
+    expect(googlePlan.googleSourceFingerprint).toBe("google-source-1");
+  });
+
+  it("rejects Google rates whose amounts use another currency", async () => {
+    const port = createPgChannexManagementPlanPort({
+      connectionString: "postgresql://target",
+      pool: new FakePool("currency_mismatch"),
+      bookingRevisionHandoff: vi.fn(),
+    });
+
+    await expect(
+      port.plan({
+        ...job("setup_google"),
+        input: { ...job("setup_google").input, businessProfileConfirmed: true },
+      }),
+    ).rejects.toThrow("Google rate plan currency must match the booking engine currency");
   });
 
   it("builds ARI from target inventory/mappings and delegates booking intake", async () => {
@@ -205,6 +240,29 @@ describe("target Channex management plans", () => {
     expect(db.sql()).not.toMatch(/external_webhook_events|legacy/i);
   });
 
+  it("removes provider mappings for deactivated inventory before provisioning", async () => {
+    const port = createPgChannexManagementPlanPort({
+      connectionString: "postgresql://target",
+      pool: new FakePool("deactivated"),
+      bookingRevisionHandoff: vi.fn(),
+    });
+
+    const plan = await port.plan(job("provision"));
+
+    expect(plan.requests.slice(0, 2)).toMatchObject([
+      {
+        method: "DELETE",
+        path: "/api/v1/rate_plans/external-rate-old",
+        query: { force: "true" },
+      },
+      {
+        method: "DELETE",
+        path: "/api/v1/room_types/external-room-old",
+        query: { force: "true" },
+      },
+    ]);
+  });
+
   it.each([
     ["historical", "sync_bookings", "Channex binding claim is not active"],
     ["retained", "enable", "A retained Channex binding claim requires audited repair"],
@@ -230,7 +288,9 @@ type Mode =
   | "multi_room"
   | "ari"
   | "ari_rate_gated"
-  | "ari_disabled";
+  | "ari_disabled"
+  | "currency_mismatch"
+  | "deactivated";
 class FakePool {
   private calls: string[] = [];
   constructor(private readonly mode: Mode) {}
@@ -241,7 +301,7 @@ class FakePool {
   async connect() {
     return { query: this.query.bind(this), release() {} };
   }
-  async query<T>(text: string) {
+  async query<T>(text: string, values?: unknown[]) {
     this.calls.push(text);
     let rows: unknown[] = [];
     if (text.includes("pms.channel_binding_claims")) {
@@ -279,7 +339,14 @@ class FakePool {
               cutoffLocalTime: "18:00",
             },
           ]
-        : [{ title: this.mode === "unicode" ? "😀".repeat(300) : "Hotel", currency: "EUR" }];
+        : [
+            {
+              title: this.mode === "unicode" ? "😀".repeat(300) : "Hotel",
+              currency: "EUR",
+              googleCurrencyCompatible: this.mode !== "currency_mismatch",
+              googleSourceFingerprint: "google-source-1",
+            },
+          ];
     else if (text.includes("count(unit.id)")) {
       rows = [
         {
@@ -295,8 +362,11 @@ class FakePool {
         rows.push({ ...rows[0]!, roomTypeId: "room-2" });
       }
     } else if (
-      text.includes("FROM pms.rate_plans plan") &&
-      (this.mode === "provision" || this.mode === "multi_room")
+      text.includes("CROSS JOIN") &&
+      (this.mode === "provision" ||
+        this.mode === "multi_room" ||
+        this.mode === "currency_mismatch" ||
+        this.mode === "deactivated")
     ) {
       const rooms =
         this.mode === "multi_room"
@@ -310,19 +380,51 @@ class FakePool {
           ["direct", "Standard"],
           ["booking_com", "BDC Standard"],
           ["airbnb", "Airbnb Standard"],
-        ].map(([channel, channelLabel]) => ({
-          ...room,
-          name: "Flexible",
-          currency: "EUR",
-          sellMode: "per_room",
-          baseRate: 100,
-          channel,
-          channelLabel,
-          markupPercent: 0,
-          defaultOccupancy: 1,
-          externalRoomTypeId: null,
-        })),
+          ["google_hotel", "Google Standard"],
+        ]
+          .filter(([channel]) =>
+            values?.[1] === "google_only"
+              ? channel === "google_hotel"
+              : values?.[1] === "all" || channel !== "google_hotel",
+          )
+          .map(([channel, channelLabel]) => ({
+            ...room,
+            name: "Flexible",
+            currency: this.mode === "currency_mismatch" ? "USD" : "EUR",
+            sellMode: "per_room",
+            baseRate: 100,
+            channel,
+            channelLabel,
+            markupPercent: 0,
+            defaultOccupancy: 1,
+            externalRoomTypeId: null,
+          })),
       );
+    } else if (text.includes('AS "ratePlanName"') && this.mode === "deactivated") {
+      rows = [
+        {
+          mappingId: "rate-mapping-old",
+          roomTypeId: "room-old",
+          ratePlanId: "rate-old",
+          ratePlanName: "Old rate",
+          channel: "airbnb",
+          externalRoomTypeId: "external-room-old",
+          externalRatePlanId: "external-rate-old",
+          sellMode: "per_room",
+          markupPercent: 0,
+          status: "active",
+        },
+      ];
+    } else if (text.includes('AS "roomTypeName"') && this.mode === "deactivated") {
+      rows = [
+        {
+          mappingId: "room-mapping-old",
+          roomTypeId: "room-old",
+          roomTypeName: "Old room",
+          externalRoomTypeId: "external-room-old",
+          status: "active",
+        },
+      ];
     } else if (text.includes("FROM pms.inventory_days"))
       rows = [
         {

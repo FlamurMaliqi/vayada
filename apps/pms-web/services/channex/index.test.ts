@@ -34,6 +34,7 @@ describe("target PMS Channex client", () => {
     ["enable", channexService.enable],
     ["disable", channexService.disable],
     ["provision", channexService.provision],
+    ["setup_google", channexService.setupGoogle],
     ["sync_ari", channexService.syncAri],
     ["sync_bookings", channexService.syncBookings],
     ["install_messaging", channexService.installMessagingApp],
@@ -53,6 +54,19 @@ describe("target PMS Channex client", () => {
     expect(mocks.put).toHaveBeenCalledWith(
       "/api/pms/properties/property-1/channex/markups",
       expect.objectContaining({ markups: [{ channel: "airbnb", markupPercent: 12.5 }] }),
+      expect.anything(),
+    );
+  });
+
+  it("opens a provider session scoped to Google Hotel", async () => {
+    mocks.post.mockResolvedValue({ iframeUrl: "https://channex.test/session", expiresAt: "later" });
+
+    await expect(channexService.getIframeUrl("google_hotel", true)).resolves.toMatchObject({
+      iframe_url: "https://channex.test/session",
+    });
+    expect(mocks.post).toHaveBeenCalledWith(
+      "/api/pms/properties/property-1/channex/iframe-session",
+      { channel: "google_hotel", businessProfileConfirmed: true },
       expect.anything(),
     );
   });

@@ -72,6 +72,44 @@ test.describe("booking-web tenant smoke", () => {
     await assertHealthy();
   });
 
+  test("prefills Google Hotel dates, searches availability, and records the traffic source", async ({
+    page,
+  }, testInfo) => {
+    const assertHealthy = watchPageHealth(page, testInfo);
+    await mockBookingApis(page);
+    const offerRequests: URL[] = [];
+    let telemetry: Record<string, unknown> | null = null;
+    page.on("request", (request) => {
+      if (request.url().includes("/api/booking-web/hotels/") && request.url().includes("/offers")) {
+        offerRequests.push(new URL(request.url()));
+      }
+      if (request.url().includes("/api/booking-web/events") && request.method() === "POST") {
+        telemetry = request.postDataJSON() as Record<string, unknown>;
+      }
+    });
+
+    await page.goto("/?checkin=2027-09-12&nights=3", {
+      referer: "https://www.google.com/travel/hotels/entity/CgsI",
+    });
+
+    await expect
+      .poll(() =>
+        offerRequests.some(
+          (url) =>
+            url.searchParams.get("check_in") === "2027-09-12" &&
+            url.searchParams.get("check_out") === "2027-09-15",
+        ),
+      )
+      .toBe(true);
+    await expect
+      .poll(() => telemetry?.["metadata"])
+      .toEqual({
+        trafficSource: "Google Free Booking Links",
+      });
+    await expect(page.getByText("Alpine Suite")).toBeVisible();
+    await assertHealthy();
+  });
+
   test("shows WhatsApp only when the hotel publishes a WhatsApp number", async ({ page }) => {
     await mockBookingApis(page, {
       publicContacts: [

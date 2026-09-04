@@ -216,6 +216,7 @@ function requiresConnection(type: PmsChannexManagementCommandInput["operationTyp
 function fingerprintPayload(input: PmsChannexManagementCommandInput) {
   return {
     operationType: input.operationType,
+    businessProfileConfirmed: input.businessProfileConfirmed === true,
     markups: input.markups
       ? [...input.markups].sort((a, b) => a.channel.localeCompare(b.channel))
       : [],

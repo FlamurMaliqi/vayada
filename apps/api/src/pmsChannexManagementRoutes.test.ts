@@ -164,11 +164,79 @@ describe("PMS Channex management command routes", () => {
     });
     expect(disabled).toMatchObject({ statusCode: 409 });
   });
+
+  it("accepts only the supported Google iframe scope", async () => {
+    const iframeSessionPort = { createSession: vi.fn() };
+    iframeSessionPort.createSession.mockResolvedValue({
+      ok: true,
+      contractVersion: "pms-channex-management.v1",
+      iframeUrl: "https://channex.test/session",
+      expiresAt: "2026-08-13T10:15:00.000Z",
+    });
+    const harness = await testApp({}, { ...mutating, iframe: "mutating" }, iframeSessionPort);
+    app = harness.app;
+
+    const response = await app.inject({
+      method: "POST",
+      url: `/properties/${propertyId}/channex/iframe-session`,
+      headers: { authorization: "Bearer valid" },
+      payload: { channel: "google_hotel", businessProfileConfirmed: true },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(iframeSessionPort.createSession).toHaveBeenCalledWith(expect.anything(), propertyId, {
+      channel: "google_hotel",
+    });
+    expect(
+      (
+        await app.inject({
+          method: "POST",
+          url: `/properties/${propertyId}/channex/iframe-session`,
+          headers: { authorization: "Bearer valid" },
+          payload: { channel: "unsupported" },
+        })
+      ).statusCode,
+    ).toBe(400);
+  });
+
+  it("enforces Google readiness and Business Profile confirmation before enqueueing setup", async () => {
+    let harness = await testApp({}, mutating, undefined, false);
+    app = harness.app;
+    const notReady = await googleSetup(app, true);
+    expect(notReady.statusCode).toBe(409);
+    expect(notReady.json()).toEqual({ code: "google_free_booking_links_not_ready" });
+    expect(harness.enqueue).not.toHaveBeenCalled();
+    await app.close();
+
+    harness = await testApp();
+    app = harness.app;
+    const unconfirmed = await googleSetup(app, false);
+    expect(unconfirmed.statusCode).toBe(409);
+    expect(unconfirmed.json()).toEqual({ code: "google_business_profile_confirmation_required" });
+    expect(harness.enqueue).not.toHaveBeenCalled();
+
+    const accepted = await googleSetup(app, true);
+    expect(accepted.statusCode).toBe(202);
+    expect(harness.enqueue).toHaveBeenCalledWith(expect.anything(), propertyId, {
+      commandId: "google-command",
+      idempotencyKey: "google-key",
+      operationType: "setup_google",
+      businessProfileConfirmed: true,
+    });
+
+    await app.close();
+    harness = await testApp({}, mutating, undefined, true, "2026-08-13T10:00:00.000Z");
+    app = harness.app;
+    expect((await googleSetup(app, false)).statusCode).toBe(202);
+  });
 });
 
 async function testApp(
   access: Access = {},
   capabilityModes: ChannexManagementCapabilityModes = mutating,
+  iframeSessionPort?: Parameters<typeof registerPmsChannexManagementRoutes>[1]["iframeSessionPort"],
+  googleReady = true,
+  businessProfileConfirmedAt: string | null = null,
 ) {
   const app = Fastify({ logger: false });
   const enqueue = vi.fn<PmsChannexManagementCommandPort["enqueue"]>();
@@ -179,9 +247,10 @@ async function testApp(
     request.authContext = context(access);
   });
   await app.register(registerPmsChannexManagementRoutes, {
-    repository: repository(),
+    repository: repository(googleReady, businessProfileConfirmedAt),
     capabilityModes,
     commandPort: { enqueue },
+    iframeSessionPort,
   });
   return { app, enqueue };
 }
@@ -221,15 +290,75 @@ function context(access: Access): RequestContext {
   } as RequestContext;
 }
 
-function repository(): PmsChannexManagementReadRepository {
+function repository(
+  googleReady = true,
+  businessProfileConfirmedAt: string | null = null,
+): PmsChannexManagementReadRepository {
   return {
     async getSnapshot() {
-      throw new Error("not used");
+      return {
+        contractVersion: CHANNEX_MANAGEMENT_CONTRACT_VERSION,
+        propertyId,
+        connection: {
+          status: "connected",
+          externalPropertyId: "external-1",
+          messagingAppInstalled: false,
+        },
+        mappings: { roomTypes: [], ratePlans: [] },
+        channels: [],
+        googleFreeBookingLinks: {
+          status: "manual_confirmation_required",
+          bookingUrlTemplate: "https://book.test?checkin=(CHECKIN_DATE)&nights=(LENGTH)",
+          currency: "EUR",
+          businessProfileConfirmedAt,
+          preflight: {
+            propertyName: googleReady,
+            address: googleReady,
+            phone: googleReady,
+            bookingEngine: googleReady,
+            activeRatesAndAvailability: googleReady,
+          },
+        },
+        markups: [],
+        sync: {
+          booking: idleSync(),
+          ari: idleSync(),
+          message: idleSync(),
+          mapping: idleSync(),
+        },
+        capabilityModes: mutating,
+        activeOperation: null,
+      } as Awaited<ReturnType<PmsChannexManagementReadRepository["getSnapshot"]>>;
     },
     async getOperation() {
       return null;
     },
   };
+}
+
+function idleSync() {
+  return {
+    status: "idle" as const,
+    lastAttemptAt: null,
+    lastSuccessAt: null,
+    lastErrorCode: null,
+    lastErrorMessage: null,
+    retryAfter: null,
+  };
+}
+
+function googleSetup(app: ReturnType<typeof Fastify>, businessProfileConfirmed: boolean) {
+  return app.inject({
+    method: "POST",
+    url: `/properties/${propertyId}/channex/commands`,
+    headers: { authorization: "Bearer valid" },
+    payload: {
+      commandId: "google-command",
+      idempotencyKey: "google-key",
+      operationType: "setup_google",
+      businessProfileConfirmed,
+    },
+  });
 }
 
 function operation(): ChannexManagementOperation {

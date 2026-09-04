@@ -17,6 +17,11 @@ import PublicStructuredData from "@/components/booking/PublicStructuredData";
 import PropertyGallery from "@/components/booking/PropertyGallery";
 import { useHotel, useRooms, useAddons, useSlug } from "@/contexts/HotelContext";
 import { calculateNights, formatDateShort, formatDate, ensureMinOneNight } from "@/lib/utils";
+import {
+  googleHotelStay,
+  googleHotelTrafficSource,
+  rememberGoogleHotelTrafficSource,
+} from "@/lib/googleHotel";
 import { useCurrency } from "@/contexts/CurrencyContext";
 import { trackEvent } from "@/services/api/tracking";
 import { hotelService } from "@/services/api/hotel";
@@ -108,13 +113,16 @@ function HomePageContent() {
   const searchParams = useSearchParams();
 
   useEffect(() => {
-    trackEvent(slug, "page_visit");
-  }, [slug]);
+    const trafficSource = googleHotelTrafficSource(searchParams, document.referrer);
+    rememberGoogleHotelTrafficSource(trafficSource);
+    trackEvent(slug, "page_visit", trafficSource ? { trafficSource } : undefined);
+  }, [searchParams, slug]);
 
   // Initialize from URL params so back-navigation from /book or /addons
   // preserves the user's selected dates and guests. Sanitize so a same-day
   // or invalid range from the URL never lands the page on "0 nights".
   const initialDates = (() => {
+    const googleStay = googleHotelStay(searchParams);
     const ciQ = searchParams.get("checkIn");
     const coQ = searchParams.get("checkOut");
     const today = new Date();
@@ -128,7 +136,7 @@ function HomePageContent() {
       d.setDate(d.getDate() + 2);
       return d.toISOString().split("T")[0];
     })();
-    return ensureMinOneNight(ciQ || defaultCheckIn, coQ || defaultCheckOut);
+    return googleStay ?? ensureMinOneNight(ciQ || defaultCheckIn, coQ || defaultCheckOut);
   })();
   const [checkIn, setCheckIn] = useState(initialDates.checkIn);
   const [checkOut, setCheckOut] = useState(initialDates.checkOut);

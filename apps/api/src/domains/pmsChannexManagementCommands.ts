@@ -9,6 +9,8 @@ export type PmsChannexManagementCommandInput = {
   idempotencyKey: string;
   operationType: ChannexManagementOperationType;
   markups?: Array<{ channel: string; markupPercent: number }>;
+  businessProfileConfirmed?: boolean;
+  actorUserId?: string | null;
 };
 
 export type PmsChannexManagementCommandResult =

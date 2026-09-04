@@ -79,6 +79,8 @@ describe("PMS Channex management target state", () => {
     );
     expect(client.sql()).toContain("pms.channel_room_type_mappings");
     expect(client.sql()).toContain("pms.channel_rate_plan_mappings");
+    expect(client.sql()).not.toContain("NOT plan.active OR NOT room.active");
+    expect(client.sql()).toContain("status = EXCLUDED.status");
     expect(client.sql()).toContain("AND connection_id = (");
     expect(client.sql()).toMatch(/channel_rate_plan_mappings[\s\S]*provider = 'channex'/);
     expect(client.sql()).toContain("last_error_code");
@@ -95,6 +97,54 @@ describe("PMS Channex management target state", () => {
     );
 
     expect(client.sql()).not.toContain("connectedChannels");
+  });
+
+  it("persists Google setup failures for an honest property status", async () => {
+    const client = fakeClient();
+
+    await createPmsChannexManagementTargetState().fail(
+      client,
+      job("setup_google"),
+      { ok: false, code: "provider_rejected", message: "Google setup was rejected" },
+      { now, retryAt: null },
+    );
+
+    expect(client.sql()).toContain("'googleFreeBookingLinks'");
+    expect(client.sql()).toContain("'lastError'");
+    expect(client.sql()).toContain("pms.channel_sync_status");
+  });
+
+  it("records Google Business Profile confirmation as durable actor evidence", async () => {
+    const client = fakeClient();
+    const setupJob = job("setup_google");
+    setupJob.input.businessProfileConfirmed = true;
+    setupJob.input.actorUserId = "actor-1";
+
+    await createPmsChannexManagementTargetState().succeed(
+      client,
+      setupJob,
+      { ok: true, googleSourceFingerprint: "google-source-1" },
+      now,
+    );
+
+    expect(client.sql()).toContain("'businessProfileConfirmedAt'");
+    expect(client.sql()).toContain("'businessProfileConfirmedBy'");
+    expect(client.sql()).toContain("'sourceFingerprint'");
+    expect(client.sql()).toContain("connection_metadata -> 'googleFreeBookingLinks'");
+  });
+
+  it("clears stale Google errors after a successful Google-aware provision", async () => {
+    const client = fakeClient();
+
+    await createPmsChannexManagementTargetState().succeed(
+      client,
+      job("provision"),
+      { ok: true, googleSourceFingerprint: "google-source-2" },
+      now,
+    );
+
+    expect(client.sql()).toContain("'lastError', NULL");
+    expect(client.sql()).toContain("'sourceFingerprint'");
   });
 
   it("clears channel state and disables mappings after provider disconnect", async () => {

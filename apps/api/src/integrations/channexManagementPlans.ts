@@ -8,8 +8,10 @@ import {
   CHANNEX_ARI_ACTIVE_ROOM_SQL,
   CHANNEX_ARI_MAPPING_MISSING_SQL,
 } from "../domains/pmsChannexAriMapping.js";
+import { GOOGLE_FREE_BOOKING_LINKS_SOURCE_FINGERPRINT_SQL } from "../domains/pmsGoogleFreeBookingLinks.js";
 
 import type { ChannexManagementJob } from "../jobs/pmsChannexManagementWorker.js";
+import type { ChannexRatePlanMapping, ChannexRoomTypeMapping } from "@vayada/domain-pms-channex";
 import { applyPmsChannexManagementProgress } from "../jobs/pmsChannexManagementTargetState.js";
 import {
   ChannexAriMappingMissingError,
@@ -29,6 +31,8 @@ type Pool = {
 type PropertyRow = {
   title: string;
   currency: string;
+  googleCurrencyCompatible?: boolean;
+  googleSourceFingerprint?: string;
   propertyType: string | null;
   country: string | null;
   city: string | null;
@@ -37,6 +41,7 @@ type PropertyRow = {
   latitude: number | null;
   longitude: number | null;
   timezone: string | null;
+  phone: string | null;
 };
 type RoomRow = {
   roomTypeId: string;
@@ -62,6 +67,7 @@ type RateRow = {
 };
 type AriRow = {
   mappingMissing: boolean;
+  currencyMismatch: boolean;
   stayDate: string;
   available: number;
   externalRoomTypeId: string;
@@ -79,7 +85,10 @@ type BindingRow = {
   externalPropertyId: string | null;
   claimExternalPropertyId: string | null;
   claimState: string | null;
+  googleBusinessProfileConfirmed: boolean;
 };
+
+type ProvisioningScope = "non_google" | "google_only" | "all";
 
 export type ChannexBookingRevisionHandoff = (input: {
   propertyId: string;
@@ -127,7 +136,18 @@ async function plan(
   }
   if (!externalPropertyId) throw new Error("Channex connection is not enabled");
   if (job.input.operationType === "provision") {
-    return provisioningPlan(pool, job, externalPropertyId);
+    return provisioningPlan(
+      pool,
+      job,
+      externalPropertyId,
+      binding?.googleBusinessProfileConfirmed ? "all" : "non_google",
+    );
+  }
+  if (job.input.operationType === "setup_google") {
+    if (!binding?.googleBusinessProfileConfirmed && !job.input.businessProfileConfirmed) {
+      throw new Error("A Google Business Profile confirmation is required");
+    }
+    return provisioningPlan(pool, job, externalPropertyId, "google_only");
   }
   if (job.input.operationType === "sync_ari" || job.input.operationType === "update_markups") {
     return ariPlan(pool, job, externalPropertyId, now);
@@ -155,13 +175,21 @@ async function enablePlan(
   job: ChannexManagementJob,
 ): Promise<ChannexManagementActionPlan> {
   const result = await pool.query<PropertyRow>(
-    `SELECT property.display_name AS title, COALESCE(room.currency, 'EUR') AS currency,
+    `SELECT property.display_name AS title,
+       COALESCE(profile.default_currency::text, room.currency, 'EUR') AS currency,
        property.property_type AS "propertyType", location.country_code AS country,
        location.city, location.street_address AS address, location.postal_code AS "zipCode",
        location.latitude::float8 AS latitude, location.longitude::float8 AS longitude,
-       location.timezone
+       location.timezone, contact.phone
      FROM hotel_catalog.properties property
      LEFT JOIN hotel_catalog.property_locations location ON location.property_id = property.id
+     LEFT JOIN distribution.public_hotel_bookability_profiles profile
+       ON profile.property_id = property.id
+     LEFT JOIN LATERAL (
+       SELECT value AS phone FROM hotel_catalog.property_contact_channels
+       WHERE property_id = property.id AND channel_type = 'phone' AND is_public
+       ORDER BY created_at LIMIT 1
+     ) contact ON TRUE
      LEFT JOIN LATERAL (
        SELECT currency FROM pms.room_types WHERE property_id = property.id AND active LIMIT 1
      ) room ON TRUE WHERE property.id = $1::uuid`,
@@ -185,6 +213,7 @@ async function enablePlan(
           latitude: property.latitude,
           longitude: property.longitude,
           timezone: property.timezone,
+          phone: property.phone,
         }),
       ),
     ],
@@ -196,10 +225,42 @@ async function provisioningPlan(
   pool: Pool,
   job: ChannexManagementJob,
   externalPropertyId: string,
+  scope: ProvisioningScope,
 ): Promise<ChannexManagementActionPlan> {
-  const [rooms, rates] = await Promise.all([
-    pool.query<RoomRow>(
-      `SELECT room.id::text AS "roomTypeId", room.name, room.currency,
+  const [propertyResult, rooms, rates, deactivatedRooms, deactivatedRates] = await repeatableRead(
+    pool,
+    (client) =>
+      Promise.all([
+        client.query<PropertyRow>(
+          `SELECT property.display_name AS title,
+         COALESCE(profile.default_currency::text, room.currency, 'EUR') AS currency,
+         profile.default_currency IS NOT NULL AND NOT EXISTS (
+           SELECT 1 FROM pms.rate_plans active_plan
+           JOIN pms.room_types active_room ON active_room.id = active_plan.room_type_id
+           WHERE active_plan.property_id = property.id AND active_plan.active AND active_room.active
+             AND active_plan.currency IS DISTINCT FROM profile.default_currency::text
+         ) AS "googleCurrencyCompatible",
+         ${GOOGLE_FREE_BOOKING_LINKS_SOURCE_FINGERPRINT_SQL} AS "googleSourceFingerprint",
+         property.property_type AS "propertyType", location.country_code AS country,
+         location.city, location.street_address AS address, location.postal_code AS "zipCode",
+         location.latitude::float8 AS latitude, location.longitude::float8 AS longitude,
+         location.timezone, contact.phone
+       FROM hotel_catalog.properties property
+       LEFT JOIN hotel_catalog.property_locations location ON location.property_id = property.id
+       LEFT JOIN distribution.public_hotel_bookability_profiles profile
+         ON profile.property_id = property.id
+       LEFT JOIN LATERAL (
+         SELECT value AS phone FROM hotel_catalog.property_contact_channels
+         WHERE property_id = property.id AND channel_type = 'phone' AND is_public
+         ORDER BY created_at LIMIT 1
+       ) contact ON TRUE
+       LEFT JOIN LATERAL (
+         SELECT currency FROM pms.room_types WHERE property_id = property.id AND active LIMIT 1
+       ) room ON TRUE WHERE property.id = $1::uuid`,
+          [job.propertyId],
+        ),
+        client.query<RoomRow>(
+          `SELECT room.id::text AS "roomTypeId", room.name, room.currency,
          count(unit.id)::integer AS "countOfRooms",
          COALESCE((room.occupancy_limits ->> 'maxAdults')::integer, 2) AS adults,
          COALESCE((room.occupancy_limits ->> 'maxChildren')::integer, 0) AS children
@@ -212,10 +273,10 @@ async function provisioningPlan(
        WHERE room.property_id = $1::uuid AND room.active
          AND (mapping.id IS NULL OR mapping.status <> 'active')
        GROUP BY room.id ORDER BY room.sort_order, room.name`,
-      [job.propertyId],
-    ),
-    pool.query<RateRow>(
-      `SELECT plan.room_type_id::text AS "roomTypeId", room.name AS "roomTypeName",
+          [job.propertyId],
+        ),
+        client.query<RateRow>(
+          `SELECT plan.room_type_id::text AS "roomTypeId", room.name AS "roomTypeName",
          plan.id::text AS "ratePlanId",
          plan.name, plan.currency, 'per_room' AS "sellMode", plan.base_rate_amount::float8 AS "baseRate",
          channel.key AS channel, channel.label AS "channelLabel", 0::float8 AS "markupPercent",
@@ -224,7 +285,7 @@ async function provisioningPlan(
        FROM pms.rate_plans plan
        JOIN pms.room_types room ON room.id = plan.room_type_id
        CROSS JOIN (VALUES ('direct', 'Standard'), ('booking_com', 'BDC Standard'),
-         ('airbnb', 'Airbnb Standard')) AS channel(key, label)
+         ('airbnb', 'Airbnb Standard'), ('google_hotel', 'Google Standard')) AS channel(key, label)
        LEFT JOIN pms.channel_connections connection
          ON connection.property_id = plan.property_id AND connection.provider = 'channex'
        LEFT JOIN pms.channel_rate_plan_mappings mapping
@@ -234,11 +295,57 @@ async function provisioningPlan(
          ON room_mapping.connection_id = connection.id AND room_mapping.room_type_id = plan.room_type_id
            AND room_mapping.status = 'active'
        WHERE plan.property_id = $1::uuid AND plan.active
+         AND ($2::text = 'all'
+           OR ($2::text = 'google_only' AND channel.key = 'google_hotel')
+           OR ($2::text = 'non_google' AND channel.key <> 'google_hotel'))
          AND (mapping.id IS NULL OR mapping.status <> 'active')
        ORDER BY plan.name, channel.key`,
-      [job.propertyId],
-    ),
-  ]);
+          [job.propertyId, scope],
+        ),
+        client.query<ChannexRoomTypeMapping>(
+          `SELECT mapping.id::text AS "mappingId", mapping.room_type_id::text AS "roomTypeId",
+         room.name AS "roomTypeName", mapping.external_room_type_id AS "externalRoomTypeId",
+         mapping.status
+       FROM pms.channel_room_type_mappings mapping
+       JOIN pms.room_types room ON room.id = mapping.room_type_id
+       JOIN pms.channel_connections connection ON connection.id = mapping.connection_id
+         AND connection.property_id = mapping.property_id AND connection.provider = 'channex'
+       WHERE mapping.property_id = $1::uuid AND mapping.status = 'active' AND NOT room.active
+       ORDER BY mapping.id`,
+          [job.propertyId],
+        ),
+        client.query<ChannexRatePlanMapping>(
+          `SELECT mapping.id::text AS "mappingId", mapping.room_type_id::text AS "roomTypeId",
+         mapping.rate_plan_id::text AS "ratePlanId", plan.name AS "ratePlanName",
+         mapping.channel, mapping.external_room_type_id AS "externalRoomTypeId",
+         mapping.external_rate_plan_id AS "externalRatePlanId", mapping.sell_mode AS "sellMode",
+         mapping.markup_percent::float8 AS "markupPercent", mapping.status
+       FROM pms.channel_rate_plan_mappings mapping
+       JOIN pms.rate_plans plan ON plan.id = mapping.rate_plan_id
+       JOIN pms.room_types room ON room.id = mapping.room_type_id
+       JOIN pms.channel_connections connection ON connection.id = mapping.connection_id
+         AND connection.property_id = mapping.property_id AND connection.provider = 'channex'
+       WHERE mapping.property_id = $1::uuid AND mapping.status = 'active'
+         AND (NOT room.active OR (NOT plan.active AND
+           ($2::text = 'all'
+             OR ($2::text = 'google_only' AND mapping.channel = 'google_hotel')
+             OR ($2::text = 'non_google' AND mapping.channel <> 'google_hotel'))))
+       ORDER BY mapping.id`,
+          [job.propertyId, scope],
+        ),
+      ]),
+  );
+  const property = propertyResult.rows[0];
+  if (!property) throw new Error("Target property was not found");
+  if (
+    scope !== "non_google" &&
+    (property.googleCurrencyCompatible !== true ||
+      rates.rows.some(
+        (rate) => rate.channel === "google_hotel" && rate.currency !== property.currency,
+      ))
+  ) {
+    throw new Error("Google rate plan currency must match the booking engine currency");
+  }
   const roomIds = new Set(rooms.rows.map(({ roomTypeId }) => roomTypeId));
   const plannedRates = rates.rows.map((rate) => ({
     ...rate,
@@ -246,7 +353,26 @@ async function provisioningPlan(
   }));
   return {
     externalPropertyId,
+    googleSourceFingerprint: scope === "non_google" ? undefined : property.googleSourceFingerprint,
     requests: [
+      ...deactivatedRates.rows.map(channexRequests.deleteRatePlan),
+      ...deactivatedRooms.rows.map(channexRequests.deleteRoomType),
+      channexRequests.updateProperty(
+        externalPropertyId,
+        compact({
+          title: property.title,
+          currency: property.currency,
+          property_type: property.propertyType,
+          country: property.country,
+          city: property.city,
+          address: property.address,
+          zip_code: property.zipCode,
+          latitude: property.latitude,
+          longitude: property.longitude,
+          timezone: property.timezone,
+          phone: property.phone,
+        }),
+      ),
       ...rooms.rows.flatMap((room) => {
         const title = providerTitle(room.name, room.roomTypeId);
         return [
@@ -296,7 +422,7 @@ async function provisioningPlan(
               title: rate.providerTitle,
               sell_mode: rate.sellMode,
               rate_mode: "manual",
-              currency: rate.currency,
+              currency: rate.channel === "google_hotel" ? property.currency : rate.currency,
               options: [
                 { occupancy: rate.defaultOccupancy, is_primary: true, rate: rate.baseRate },
               ],
@@ -342,6 +468,8 @@ async function ariPlan(
        room_mapping.external_room_type_id AS "externalRoomTypeId",
        rate_mapping.external_rate_plan_id AS "externalRatePlanId",
        plan.base_rate_amount::float8 AS rate, rate_mapping.channel,
+       (rate_mapping.channel = 'google_hotel'
+         AND plan.currency IS DISTINCT FROM profile.default_currency::text) AS "currencyMismatch",
        rate_mapping.markup_percent::float8 AS "markupPercent"
      FROM pms.inventory_days inventory
      JOIN pms.channel_connections connection
@@ -353,6 +481,8 @@ async function ariPlan(
        ON rate_mapping.connection_id = connection.id AND rate_mapping.room_type_id = inventory.room_type_id
        AND rate_mapping.status = 'active'
      LEFT JOIN pms.rate_plans plan ON plan.id = rate_mapping.rate_plan_id
+     LEFT JOIN distribution.public_hotel_bookability_profiles profile
+       ON profile.property_id = inventory.property_id
      LEFT JOIN pms.inventory_materialization_coverage coverage
        ON coverage.property_id = inventory.property_id
      WHERE inventory.property_id = $1::uuid
@@ -363,6 +493,9 @@ async function ariPlan(
     [job.propertyId, from, fallbackThrough],
   );
   if (result.rows.some((row) => row.mappingMissing)) throw new ChannexAriMappingMissingError();
+  if (result.rows.some((row) => row.currencyMismatch)) {
+    throw new Error("Google rate plan currency no longer matches the booking engine currency");
+  }
   const overrides = new Map(
     (job.input.markups ?? []).map((item) => [item.channel, item.markupPercent]),
   );
@@ -435,6 +568,24 @@ function checkpoint(pool: Pool, job: ChannexManagementJob) {
   };
 }
 
+async function repeatableRead<T>(
+  pool: Pool,
+  work: (client: Pick<Pool, "query">) => Promise<T>,
+): Promise<T> {
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY");
+    const result = await work(client);
+    await client.query("COMMIT");
+    return result;
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
 function providerTitle(title: string, identity: string) {
   const marker = ` [Vayada:${identity}]`;
   return `${Array.from(title)
@@ -452,7 +603,11 @@ function providerRateTitle(rate: RateRow) {
 async function connectionBinding(pool: Pool, propertyId: string): Promise<BindingRow | null> {
   const result = await pool.query<BindingRow>(
     `SELECT connection.external_property_id AS "externalPropertyId",
-       claim.external_property_id AS "claimExternalPropertyId", claim.claim_state AS "claimState"
+       claim.external_property_id AS "claimExternalPropertyId", claim.claim_state AS "claimState",
+       COALESCE(
+         connection.connection_metadata #>> '{googleFreeBookingLinks,businessProfileConfirmedAt}',
+         ''
+       ) <> '' AS "googleBusinessProfileConfirmed"
      FROM hotel_catalog.properties property
      LEFT JOIN pms.channel_connections connection
        ON connection.property_id = property.id AND connection.provider = 'channex'

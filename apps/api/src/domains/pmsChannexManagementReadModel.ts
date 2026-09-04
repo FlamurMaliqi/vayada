@@ -23,6 +23,17 @@ type ConnectionRow = {
   ariMappingMissing: boolean;
 };
 
+type GoogleReadinessRow = {
+  propertyName: boolean;
+  address: boolean;
+  phone: boolean;
+  bookingEngine: boolean;
+  activeRatesAndAvailability: boolean;
+  bookingBaseUrl: string | null;
+  customDomainUrl: string | null;
+  currency: string | null;
+};
+
 export type PmsChannexManagementJobRow = {
   operationId: string;
   propertyId: string;
@@ -54,8 +65,8 @@ export function createPgPmsChannexManagementReadRepository(config: {
 
   return {
     async getSnapshot(propertyId, capabilityModes) {
-      const [connection, roomMappings, rateMappings, syncRows, activeOperation] = await Promise.all(
-        [
+      const [connection, roomMappings, rateMappings, syncRows, activeOperation, googleReadiness] =
+        await Promise.all([
           pool.query<ConnectionRow>(
             `SELECT connection_status AS status,
                     external_property_id AS "externalPropertyId",
@@ -123,8 +134,47 @@ export function createPgPmsChannexManagementReadRepository(config: {
               " LIMIT 1",
             [propertyId],
           ),
-        ],
-      );
+          pool.query<GoogleReadinessRow>(
+            `SELECT
+               length(btrim(property.display_name)) > 0 AS "propertyName",
+               location.country_code IS NOT NULL
+                 AND length(btrim(COALESCE(location.city, ''))) > 0
+                 AND length(btrim(COALESCE(location.street_address, ''))) > 0 AS address,
+               EXISTS (
+                 SELECT 1 FROM hotel_catalog.property_contact_channels contact
+                 WHERE contact.property_id = property.id AND contact.channel_type = 'phone'
+                   AND contact.is_public AND length(btrim(contact.value)) > 0
+               ) AS phone,
+               profile.profile_status = 'public' AND profile.freshness_status = 'fresh'
+                 AND length(btrim(profile.booking_base_url)) > 0
+                 AND profile.default_currency IS NOT NULL AS "bookingEngine",
+               profile.default_currency IS NOT NULL AND EXISTS (
+                 SELECT 1 FROM pms.rate_plans plan
+                 JOIN pms.room_types room ON room.id = plan.room_type_id
+                 JOIN pms.inventory_days inventory
+                   ON inventory.property_id = plan.property_id
+                  AND inventory.room_type_id = plan.room_type_id
+                 WHERE plan.property_id = property.id AND plan.active AND room.active
+                   AND plan.currency = profile.default_currency::text
+                   AND inventory.stay_date >= ($2::timestamptz AT TIME ZONE COALESCE(location.timezone, 'UTC'))::date
+                   AND inventory.available_count > 0 AND COALESCE(inventory.rate_gate_open, TRUE)
+               ) AND NOT EXISTS (
+                 SELECT 1 FROM pms.rate_plans plan
+                 JOIN pms.room_types room ON room.id = plan.room_type_id
+                 WHERE plan.property_id = property.id AND plan.active AND room.active
+                   AND plan.currency IS DISTINCT FROM profile.default_currency::text
+               ) AS "activeRatesAndAvailability",
+               profile.booking_base_url AS "bookingBaseUrl",
+               profile.custom_domain_url AS "customDomainUrl",
+               profile.default_currency::text AS currency
+             FROM hotel_catalog.properties property
+             LEFT JOIN hotel_catalog.property_locations location ON location.property_id = property.id
+             LEFT JOIN distribution.public_hotel_bookability_profiles profile
+               ON profile.property_id = property.id
+             WHERE property.id = $1::uuid`,
+            [propertyId, (config.now?.() ?? new Date()).toISOString()],
+          ),
+        ]);
 
       const row = connection.rows[0];
       const sync = emptySyncState();
@@ -140,6 +190,7 @@ export function createPgPmsChannexManagementReadRepository(config: {
         };
       }
 
+      const channels = connectedChannels(row?.metadata);
       return {
         contractVersion: CHANNEX_MANAGEMENT_CONTRACT_VERSION,
         propertyId,
@@ -158,7 +209,13 @@ export function createPgPmsChannexManagementReadRepository(config: {
           roomTypes: roomMappings.rows as ChannexManagementSnapshot["mappings"]["roomTypes"],
           ratePlans: rateMappings.rows as ChannexManagementSnapshot["mappings"]["ratePlans"],
         },
-        channels: connectedChannels(row?.metadata),
+        channels,
+        googleFreeBookingLinks: googleFreeBookingLinks(
+          googleReadiness.rows[0],
+          channels,
+          row?.status,
+          row?.metadata,
+        ),
         markups:
           row && (row.status === "connected" || row.status === "degraded")
             ? uniqueMarkups(
@@ -260,6 +317,52 @@ function isConnectedChannel(value: unknown): value is ChannexConnectedChannel {
     (typeof channel.title === "string" || channel.title === null) &&
     typeof channel.isActive === "boolean"
   );
+}
+
+function googleFreeBookingLinks(
+  readiness: GoogleReadinessRow | undefined,
+  channels: ChannexConnectedChannel[],
+  connectionStatus: ConnectionRow["status"] | undefined,
+  metadata: Record<string, unknown> | undefined,
+): ChannexManagementSnapshot["googleFreeBookingLinks"] {
+  const preflight = {
+    propertyName: readiness?.propertyName === true,
+    address: readiness?.address === true,
+    phone: readiness?.phone === true,
+    bookingEngine: readiness?.bookingEngine === true,
+    activeRatesAndAvailability: readiness?.activeRatesAndAvailability === true,
+  };
+  const google = channels.find((channel) => channel.key === "google_hotel");
+  const googleMetadata =
+    metadata?.googleFreeBookingLinks && typeof metadata.googleFreeBookingLinks === "object"
+      ? (metadata.googleFreeBookingLinks as Record<string, unknown>)
+      : undefined;
+  const hasSetupError = Boolean(googleMetadata?.lastError);
+  const connected = connectionStatus === "connected" || connectionStatus === "degraded";
+  const status = !connected
+    ? "disabled"
+    : hasSetupError
+      ? "error"
+      : google?.isActive
+        ? "active"
+        : google
+          ? "pending"
+          : Object.values(preflight).every(Boolean)
+            ? "manual_confirmation_required"
+            : "disabled";
+  const baseUrl = readiness?.customDomainUrl || readiness?.bookingBaseUrl;
+  return {
+    status,
+    bookingUrlTemplate: baseUrl
+      ? `${baseUrl}${baseUrl.includes("?") ? "&" : "?"}checkin=(CHECKIN_DATE)&nights=(LENGTH)`
+      : null,
+    currency: readiness?.currency ?? null,
+    businessProfileConfirmedAt:
+      typeof googleMetadata?.businessProfileConfirmedAt === "string"
+        ? googleMetadata.businessProfileConfirmedAt
+        : null,
+    preflight,
+  };
 }
 
 function uniqueMarkups(rows: Array<{ channel: string; markupPercent: number; status: string }>) {

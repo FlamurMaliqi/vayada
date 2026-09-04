@@ -77,7 +77,12 @@ export async function applyPmsChannexManagementProgress(
       );
     }
   }
-  if (result.roomTypeMappings?.length || result.ratePlanMappings?.length) {
+  if (
+    job.input.operationType === "provision" ||
+    job.input.operationType === "setup_google" ||
+    result.roomTypeMappings?.length ||
+    result.ratePlanMappings?.length
+  ) {
     await applyMappings(client, job, result);
   }
   if (result.messagingAppInstalled) {
@@ -151,9 +156,19 @@ async function applyConnectedSuccess(
        messaging_app_installed = CASE WHEN $3 THEN TRUE ELSE messaging_app_installed END,
        last_booking_sync_at = CASE WHEN $4 = 'booking' THEN $5::timestamptz ELSE last_booking_sync_at END,
        last_ari_sync_at = CASE WHEN $4 = 'ari' THEN $5::timestamptz ELSE last_ari_sync_at END,
-       connection_metadata = CASE WHEN $6::boolean THEN
-         connection_metadata || jsonb_build_object('connectedChannels', $7::jsonb)
-         ELSE connection_metadata END,
+       connection_metadata = connection_metadata
+         || CASE WHEN $6::boolean THEN jsonb_build_object('connectedChannels', $7::jsonb)
+              ELSE '{}'::jsonb END
+         || CASE WHEN $8::boolean THEN jsonb_build_object(
+              'googleFreeBookingLinks',
+              COALESCE(connection_metadata -> 'googleFreeBookingLinks', '{}'::jsonb)
+                || jsonb_build_object('lastPreparedAt', $5::text, 'lastError', NULL)
+                || jsonb_build_object('sourceFingerprint', $11::text)
+                || CASE WHEN $9::boolean THEN jsonb_build_object(
+                    'businessProfileConfirmedAt', $5::text,
+                    'businessProfileConfirmedBy', $10::text
+                  ) ELSE '{}'::jsonb END
+            ) ELSE '{}'::jsonb END,
        updated_at = $5::timestamptz
      WHERE property_id = $1::uuid AND provider = 'channex'`,
     [
@@ -164,6 +179,10 @@ async function applyConnectedSuccess(
       now.toISOString(),
       result.channels !== undefined,
       JSON.stringify(result.channels ?? []),
+      result.googleSourceFingerprint !== undefined,
+      job.input.businessProfileConfirmed === true,
+      job.input.actorUserId ?? null,
+      result.googleSourceFingerprint ?? null,
     ],
   );
   if (domain) await upsertSyncSuccess(client, job.propertyId, domain, now);
@@ -223,6 +242,30 @@ async function applyFailure(
 ) {
   const domain = syncDomain(job.input.operationType);
   if (!domain) return;
+  if (job.input.operationType === "setup_google" || job.input.operationType === "provision") {
+    await client.query(
+      `UPDATE pms.channel_connections SET
+         connection_metadata = connection_metadata || jsonb_build_object(
+           'googleFreeBookingLinks',
+           COALESCE(connection_metadata -> 'googleFreeBookingLinks', '{}'::jsonb)
+             || jsonb_build_object(
+               'lastError', jsonb_build_object('code', $2::text, 'message', $3::text),
+               'lastAttemptAt', $4::text
+             )
+         ), updated_at = $4::timestamptz
+       WHERE property_id = $1::uuid AND provider = 'channex'
+         AND ($5::boolean OR COALESCE(
+           connection_metadata #>> '{googleFreeBookingLinks,businessProfileConfirmedAt}', ''
+         ) <> '')`,
+      [
+        job.propertyId,
+        failure.code,
+        failure.message.slice(0, 500),
+        input.now.toISOString(),
+        job.input.operationType === "setup_google",
+      ],
+    );
+  }
   await client.query(
     `INSERT INTO pms.channel_sync_status (
        property_id, connection_id, sync_domain, status, last_attempt_at,
@@ -269,7 +312,7 @@ async function upsertSyncSuccess(
 function syncDomain(type: PmsChannexManagementCommandInput["operationType"]) {
   if (type === "sync_ari" || type === "update_markups") return "ari";
   if (type === "sync_bookings") return "booking";
-  if (type === "provision") return "mapping";
+  if (type === "provision" || type === "setup_google") return "mapping";
   if (type === "install_messaging") return "message";
   return null;
 }

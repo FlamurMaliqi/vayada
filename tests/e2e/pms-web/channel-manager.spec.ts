@@ -54,6 +54,65 @@ test("does not allow stale markup edits while disconnected", async ({ page }, te
   await assertHealthy();
 });
 
+test("gates Google setup on canonical readiness and host confirmation", async ({
+  page,
+}, testInfo) => {
+  const assertHealthy = watchPageHealth(page, testInfo);
+  await mockPmsWebAuthenticatedSession(page);
+  await mockPmsWebTargetRoutes(page);
+  let iframeBody: Record<string, unknown> | null = null;
+
+  await page.unroute(routeBase);
+  await page.route(routeBase, (route) =>
+    route.fulfill({
+      json: {
+        ...pmsWebChannexSnapshot,
+        connection: {
+          status: "connected",
+          externalPropertyId: "channex-property-1",
+          messagingAppInstalled: false,
+        },
+        googleFreeBookingLinks: {
+          status: "manual_confirmation_required",
+          bookingUrlTemplate: "https://book.alpine.test?checkin=(CHECKIN_DATE)&nights=(LENGTH)",
+          currency: "EUR",
+          preflight: {
+            propertyName: true,
+            address: true,
+            phone: true,
+            bookingEngine: true,
+            activeRatesAndAvailability: true,
+          },
+        },
+        capabilityModes: {
+          ...pmsWebChannexSnapshot.capabilityModes,
+          iframe: "mutating",
+          provisioning: "mutating",
+        },
+      },
+    }),
+  );
+  await page.route(`${routeBase}/iframe-session`, (route) => {
+    iframeBody = route.request().postDataJSON() as Record<string, unknown>;
+    return route.fulfill({
+      json: { iframeUrl: "about:blank", expiresAt: "2026-09-05T00:15:00.000Z" },
+    });
+  });
+  await page.route(`${routeBase}/commands`, (route) =>
+    route.fulfill({ json: operation("succeeded", "setup_google") }),
+  );
+
+  await page.goto("/channel-manager");
+
+  const setup = page.getByRole("button", { name: "Continue to Google setup" });
+  await expect(setup).toBeDisabled();
+  await page.getByLabel(/Google Business Profile/i).check();
+  await expect(setup).toBeEnabled();
+  await setup.click();
+  await expect.poll(() => iframeBody?.["channel"]).toBe("google_hotel");
+  await assertHealthy();
+});
+
 test("runs a durable sync and shows connected channel management", async ({ page }, testInfo) => {
   const assertHealthy = watchPageHealth(page, testInfo);
   await mockPmsWebAuthenticatedSession(page);
@@ -136,7 +195,7 @@ test("runs a durable sync and shows connected channel management", async ({ page
 
 function operation(
   status: "queued" | "running" | "succeeded",
-  operationType: "sync_ari" | "update_markups" = "sync_ari",
+  operationType: "provision" | "setup_google" | "sync_ari" | "update_markups" = "sync_ari",
 ) {
   return {
     contractVersion: "pms-channex-management.v1",

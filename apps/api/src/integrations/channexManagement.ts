@@ -26,6 +26,8 @@ type ChannexRequest = {
     | { kind: "property" }
     | { kind: "property_list"; title: string }
     | { kind: "property_deleted" }
+    | { kind: "room_type_deleted"; mapping: ChannexRoomTypeMapping }
+    | { kind: "rate_plan_deleted"; mapping: ChannexRatePlanMapping }
     | { kind: "channels" }
     | {
         kind: "room_type_list";
@@ -62,6 +64,7 @@ type ChannexRequest = {
 export type ChannexManagementActionPlan = {
   requests: ChannexRequest[];
   externalPropertyId?: string;
+  googleSourceFingerprint?: string;
   roomTypeMappings?: ChannexRoomTypeMapping[];
   ratePlanMappings?: ChannexRatePlanMapping[];
   bookingRevisionHandoff?: (revisions: unknown[]) => Promise<void>;
@@ -140,10 +143,7 @@ export function createChannexManagementProvider(config: {
             signal: AbortSignal.timeout(30_000),
           });
           lastRequestId = response.headers.get("x-request-id") ?? lastRequestId;
-          if (
-            !response.ok &&
-            !(response.status === 404 && request.capture?.kind === "property_deleted")
-          ) {
+          if (!response.ok && !(response.status === 404 && isDeleteCapture(request.capture))) {
             return await responseFailure(response, lastRequestId);
           }
           if (response.status !== 204) {
@@ -219,6 +219,15 @@ export function createChannexManagementProvider(config: {
             externalPropertyId = undefined;
             connectionStatus = "disconnected";
           }
+          if (request.capture?.kind === "room_type_deleted") {
+            const mapping = { ...request.capture.mapping, status: "disabled" as const };
+            roomTypeMappings.set(mapping.roomTypeId, mapping);
+            externalRoomTypeIds.delete(mapping.roomTypeId);
+          }
+          if (request.capture?.kind === "rate_plan_deleted") {
+            const mapping = { ...request.capture.mapping, status: "disabled" as const };
+            ratePlanMappings.set(rateKey(mapping), mapping);
+          }
           if (request.capture?.kind === "messaging_installed") messagingAppInstalled = true;
           await plan.checkpoint?.(
             progress({
@@ -229,6 +238,7 @@ export function createChannexManagementProvider(config: {
               roomTypeMappings,
               ratePlanMappings,
               channels,
+              googleSourceFingerprint: plan.googleSourceFingerprint,
             }),
           );
         } catch (error) {
@@ -250,6 +260,7 @@ export function createChannexManagementProvider(config: {
         roomTypeMappings,
         ratePlanMappings,
         channels,
+        googleSourceFingerprint: plan.googleSourceFingerprint,
       });
     },
   };
@@ -315,6 +326,14 @@ function dataId(value: unknown): string {
 function capturesSingleId(capture: ChannexRequest["capture"]): boolean {
   return (
     capture?.kind === "property" || capture?.kind === "room_type" || capture?.kind === "rate_plan"
+  );
+}
+
+function isDeleteCapture(capture: ChannexRequest["capture"]): boolean {
+  return (
+    capture?.kind === "property_deleted" ||
+    capture?.kind === "room_type_deleted" ||
+    capture?.kind === "rate_plan_deleted"
   );
 }
 
@@ -442,6 +461,7 @@ function progress(input: {
   roomTypeMappings: ReadonlyMap<string, ChannexRoomTypeMapping>;
   ratePlanMappings: ReadonlyMap<string, ChannexRatePlanMapping>;
   channels?: ChannexConnectedChannel[];
+  googleSourceFingerprint?: string;
 }): ChannexManagementProviderSuccess {
   return {
     ok: true,
@@ -452,6 +472,7 @@ function progress(input: {
     roomTypeMappings: [...input.roomTypeMappings.values()],
     ratePlanMappings: [...input.ratePlanMappings.values()],
     channels: input.channels,
+    googleSourceFingerprint: input.googleSourceFingerprint,
   };
 }
 
@@ -475,6 +496,7 @@ function canonicalChannel(application: string) {
   const key = application.toLowerCase().replaceAll(/[^a-z0-9]/g, "");
   if (key.includes("booking")) return "booking_com";
   if (key.includes("airbnb") || key.includes("abnb")) return "airbnb";
+  if (key === "gha" || (key.includes("google") && key.includes("hotel"))) return "google_hotel";
   return key || "other";
 }
 
@@ -551,6 +573,12 @@ export const channexRequests = {
     skipIf: { kind: "room_type", roomTypeId: input.roomTypeId },
     capture: { kind: "room_type", roomTypeId: input.roomTypeId, roomTypeName: input.roomTypeName },
   }),
+  deleteRoomType: (mapping: ChannexRoomTypeMapping): ChannexRequest => ({
+    method: "DELETE",
+    path: `/api/v1/room_types/${encodeURIComponent(mapping.externalRoomTypeId)}`,
+    query: { force: "true" },
+    capture: { kind: "room_type_deleted", mapping },
+  }),
   createRatePlan: (input: {
     roomTypeId: string;
     ratePlanId: string;
@@ -583,6 +611,12 @@ export const channexRequests = {
       markupPercent: input.markupPercent,
       externalRoomTypeId: input.externalRoomTypeId,
     },
+  }),
+  deleteRatePlan: (mapping: ChannexRatePlanMapping): ChannexRequest => ({
+    method: "DELETE",
+    path: `/api/v1/rate_plans/${encodeURIComponent(mapping.externalRatePlanId)}`,
+    query: { force: "true" },
+    capture: { kind: "rate_plan_deleted", mapping },
   }),
   listRatePlans: (
     externalPropertyId: string,

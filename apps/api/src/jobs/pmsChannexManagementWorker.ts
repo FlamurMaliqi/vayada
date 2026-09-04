@@ -23,6 +23,7 @@ export type ChannexManagementProviderSuccess = {
   connectionStatus?: "connected" | "disconnected";
   messagingAppInstalled?: boolean;
   channels?: ChannexConnectedChannel[];
+  googleSourceFingerprint?: string;
   roomTypeMappings?: ChannexRoomTypeMapping[];
   ratePlanMappings?: ChannexRatePlanMapping[];
 };

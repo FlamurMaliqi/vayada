@@ -1,4 +1,5 @@
 import { Booking } from "@/lib/types";
+import type { GoogleHotelTrafficSource } from "@/lib/googleHotel";
 import { bookingWebPublic } from "./client";
 
 export interface BookingRequestResponse {
@@ -50,6 +51,7 @@ export type BookingCreateRequest = {
   quoteId?: string;
   expectedTotalAmount?: number;
   balanceAmount?: number;
+  trafficSource?: GoogleHotelTrafficSource;
 };
 
 export interface BookingQuote {
