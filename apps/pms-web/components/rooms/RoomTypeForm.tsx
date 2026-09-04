@@ -2294,27 +2294,34 @@ export default function RoomTypeForm({
                       <span className="text-[11px] font-semibold text-gray-700">
                         Set rates per season
                       </span>
-                      <div className="flex items-center gap-1.5">
-                        <span className="text-[10px] text-gray-500">Currency</span>
-                        <select
-                          value={form.currency || "EUR"}
-                          disabled={mode === "edit"}
-                          title={
-                            mode === "edit"
-                              ? "Change currency from property pricing settings."
-                              : undefined
-                          }
-                          onChange={(e) =>
-                            onChange((prev: any) => ({ ...prev, currency: e.target.value }))
-                          }
-                          className="text-[11px] px-2 py-1 border border-gray-200 rounded-lg bg-white text-gray-700 focus:outline-none focus:ring-2 focus:ring-primary-500 cursor-pointer disabled:cursor-not-allowed disabled:bg-gray-100 disabled:text-gray-500"
-                        >
-                          {Object.entries(CURRENCY_SYMBOLS).map(([code, symbol]) => (
-                            <option key={code} value={code}>
-                              {code} ({symbol})
-                            </option>
-                          ))}
-                        </select>
+                      <div className="text-right">
+                        <div className="flex items-center justify-end gap-1.5">
+                          <span className="text-[10px] text-gray-500">Currency</span>
+                          <select
+                            value={form.currency || "EUR"}
+                            disabled={mode === "edit"}
+                            title={
+                              mode === "edit"
+                                ? "Change currency from property pricing settings."
+                                : undefined
+                            }
+                            onChange={(e) =>
+                              onChange((prev: any) => ({ ...prev, currency: e.target.value }))
+                            }
+                            className="text-[11px] px-2 py-1 border border-gray-200 rounded-lg bg-white text-gray-700 focus:outline-none focus:ring-2 focus:ring-primary-500 cursor-pointer disabled:cursor-not-allowed disabled:bg-gray-100 disabled:text-gray-500"
+                          >
+                            {Object.entries(CURRENCY_SYMBOLS).map(([code, symbol]) => (
+                              <option key={code} value={code}>
+                                {code} ({symbol})
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+                        {mode === "edit" && (
+                          <p className="mt-1 text-[10px] text-gray-500">
+                            Currency is managed in property pricing settings.
+                          </p>
+                        )}
                       </div>
                     </div>
                     <div className="overflow-x-auto">

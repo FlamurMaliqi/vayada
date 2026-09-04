@@ -423,6 +423,7 @@ function toRoomType(
   );
   const baseRateMoney = sourcePlan?.baseAmount ?? canonicalPlan?.baseRate ?? roomType.baseRate;
   const baseRate = asNumber(baseRateMoney.amountDecimal);
+  const currency = pricingSource?.pricingCurrency.currency ?? baseRateMoney.currency;
   const maxAdults = roomType.occupancyLimits.adults ?? null;
   const maxChildren = roomType.occupancyLimits.children ?? null;
   const derivedOccupancy = (maxAdults ?? 0) + (maxChildren ?? 0);
@@ -455,7 +456,7 @@ function toRoomType(
     size: asNumber(roomType.attributes.size),
     baseRate,
     nonRefundableRate,
-    currency: baseRateMoney.currency,
+    currency,
     locationAddress: asString(roomType.attributes.locationAddress),
     latitude: asNullableNumber(roomType.attributes.latitude),
     longitude: asNullableNumber(roomType.attributes.longitude),
@@ -518,7 +519,7 @@ function toRoomType(
       expectedRoomFactsRevision: roomTypeRevision(roomType.version),
       expectedPricingCurrencyRevision: pricingSource?.pricingCurrency.pricingCurrencyRevision ?? 0,
       expectedFlexibleRatePlanRevision: sourcePlan?.flexibleRatePlanRevision ?? 0,
-      currency: pricingSource?.pricingCurrency.currency ?? baseRateMoney.currency,
+      currency,
       baseAmountDecimal: baseRate.toFixed(2),
       cancellationPolicy: flexibleCancellation.cancellationPolicy,
       freeCancellationDeadlineDays: flexibleCancellation.freeCancellationDeadlineDays,

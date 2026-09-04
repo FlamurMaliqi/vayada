@@ -549,6 +549,35 @@ describe("roomsService.update", () => {
     });
   });
 
+  it("uses the property currency when a room has no canonical plan yet", async () => {
+    mocks.get.mockImplementation(async (endpoint: string) =>
+      endpoint.endsWith("/pricing-source")
+        ? {
+            pricingCurrency: { currency: "EUR", pricingCurrencyRevision: 4 },
+            flexibleRatePlans: [],
+          }
+        : {
+            propertyId: "pms-property-1",
+            item: pmsRoomTypeItem({ baseRate: { amountDecimal: "180.00", currency: "USD" } }),
+          },
+    );
+    mocks.put.mockResolvedValue({ flexibleRatePlan: { roomTypeId: "room-type-1" } });
+
+    const form = roomTypeUpdateForm(await roomsService.get("room-type-1"));
+    expect(form).toMatchObject({
+      currency: "EUR",
+      canonicalPricingSnapshot: { currency: "EUR", expectedFlexibleRatePlanRevision: 0 },
+    });
+    await expect(roomsService.update("room-type-1", form)).resolves.toMatchObject({
+      currency: "EUR",
+    });
+    expect(mocks.put.mock.calls[0]?.[1]).toMatchObject({
+      expectedPricingCurrencyRevision: 4,
+      expectedFlexibleRatePlanRevision: 0,
+      baseAmountDecimal: "180.00",
+    });
+  });
+
   it("distinguishes a pricing-load failure from a missing room", async () => {
     mocks.get.mockImplementation(async (endpoint: string) => {
       if (endpoint.endsWith("/pricing-source")) {

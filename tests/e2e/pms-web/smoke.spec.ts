@@ -542,6 +542,7 @@ test.describe("pms-web smoke", () => {
     const assertNoLegacyCalls = watchNoLegacyCalls(page, testInfo, "pms-web-operations");
     let savedRate = "180.00";
     let canonicalPlanRevision = 0;
+    let savedPlanBody: Record<string, unknown> | undefined;
     const roomType = () => ({
       ...pmsWebRoomType,
       version: "room-type-facts-v3",
@@ -592,13 +593,7 @@ test.describe("pms-web smoke", () => {
     await page.route(
       `**/api/pms/properties/${PMS_WEB_PROPERTY_ID}/room-types/${PMS_WEB_ROOM_TYPE_ID}/flexible-rate-plan`,
       (route) => {
-        const body = route.request().postDataJSON() as Record<string, unknown>;
-        expect(body).toMatchObject({
-          expectedRoomFactsRevision: 3,
-          expectedPricingCurrencyRevision: 4,
-          expectedFlexibleRatePlanRevision: 0,
-          baseAmountDecimal: "125.00",
-        });
+        savedPlanBody = route.request().postDataJSON() as Record<string, unknown>;
         savedRate = "125.00";
         canonicalPlanRevision = 1;
         return route.fulfill({
@@ -622,10 +617,17 @@ test.describe("pms-web smoke", () => {
     await expect(
       page.getByRole("combobox").filter({ has: page.locator('option[value="EUR"]') }),
     ).toBeDisabled();
+    await expect(page.getByText("Currency is managed in property pricing settings.")).toBeVisible();
     const rateTable = page.getByText("Set rates per season").locator("xpath=../..");
     await rateTable.getByRole("spinbutton").first().fill("125");
     await page.getByRole("button", { name: "Save Changes" }).click();
     await expect(page.getByText("Room type changes saved.")).toBeVisible();
+    expect(savedPlanBody).toMatchObject({
+      expectedRoomFactsRevision: 3,
+      expectedPricingCurrencyRevision: 4,
+      expectedFlexibleRatePlanRevision: 0,
+      baseAmountDecimal: "125.00",
+    });
     await page.getByRole("button", { name: "Pricing & Rates" }).click();
     await expect(rateTable.getByRole("spinbutton").first()).toHaveValue("125");
     await assertNoLegacyCalls();
