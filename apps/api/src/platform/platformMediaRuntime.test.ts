@@ -102,6 +102,7 @@ describe("platform media runtime composition", () => {
       reader: adapter,
       serving: platformMediaServing,
     });
+    expect(runtime.inboundAttachments).toBe(adapter);
     expect(runtime.routes.repository).toBe(repository);
     expect(runtime.routes.signer).toBe(adapter);
     expect(runtime.routes.finalizer).toBe(adapter);
