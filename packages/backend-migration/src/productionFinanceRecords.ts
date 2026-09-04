@@ -13,6 +13,7 @@ import {
 import {
   block,
   blockRow,
+  disposition,
   organizationFor,
   propertyFor,
   resourceStatusFor,
@@ -33,15 +34,17 @@ import {
 
 export function buildFinanceRecords(context: FinanceBuildContext): FinanceTargetRecord[] {
   const records: FinanceTargetRecord[] = [];
+  quarantineInvalidRelatedRows(context);
   for (const row of sourceRows(context, "pms", "bookings")) validateBookingAllocation(context, row);
   for (const row of sourceRows(context, "pms", "hotel_payment_settings"))
     validatePmsPaymentSettingsCoverage(context, row);
   collect(context, records, "booking", "booking_hotels", propertyPaymentRecords);
   collect(context, records, "pms", "affiliates", affiliateProviderRecords);
   collect(context, records, "pms", "affiliate_payout_settings", affiliatePayoutSettingRecords);
+  collect(context, records, "booking", "booking_hotels", bookingHotelFinanceRecords);
+  finalizeBookingHotelProjectionQuarantines(context, records);
   collect(context, records, "pms", "payments", paymentRecords);
   collect(context, records, "pms", "payouts", payoutRecords);
-  collect(context, records, "booking", "booking_hotels", bookingHotelFinanceRecords);
   collect(context, records, "booking", "commission_rate_changes", commissionChangeRecords);
   for (const row of sourceRows(context, "pms", "booking_checkout_records"))
     block(
@@ -67,6 +70,7 @@ export function buildFinanceRecords(context: FinanceBuildContext): FinanceTarget
       safeId(row, "event_id"),
       "Legacy billing webhook has no property or subscription owner and cannot be attributed safely",
     );
+  validateFinanceReferentialClosure(context, records);
   return records;
 }
 
@@ -78,12 +82,211 @@ function collect(
   transform: (context: FinanceBuildContext, row: IdentitySourceRow) => FinanceTargetRecord[],
 ): void {
   for (const row of sourceRows(context, database, table)) {
+    if (context.quarantinedSourceRows.has(row)) continue;
+    const blockerStart = context.blockers.length;
     try {
-      records.push(...transform(context, row));
+      const transformed = transform(context, row);
+      records.push(...transformed);
+      for (const record of transformed) registerPlannedTarget(context, record);
     } catch (error) {
+      // Quarantine only this projection when another target projection from the
+      // same source row already survived; keep unrelated blockers from earlier rows.
+      context.blockers.splice(blockerStart);
+      const id = safeId(row, row.sourceTable === "affiliate_payout_settings" ? "user_id" : "id");
+      const otherProjectionSurvives = records.some(
+        (record) =>
+          record.sourceDatabase === row.sourceDatabase &&
+          record.sourceTable === row.sourceTable &&
+          record.sourceId === id,
+      );
+      const projectionScoped = database === "booking" && table === "booking_hotels";
+      if (projectionScoped || otherProjectionSurvives)
+        disposition(context, row, {
+          sourceId: id,
+          sourceField: `${transform.name || table}_projection`,
+          sourceValue: row.data,
+          reasonCode: "INVALID_FINANCE_SOURCE_ROW",
+          disposition: "omitted_field",
+        });
+      else blockRow(context, row, error);
+    }
+  }
+}
+
+function finalizeBookingHotelProjectionQuarantines(
+  context: FinanceBuildContext,
+  records: FinanceTargetRecord[],
+): void {
+  for (const row of sourceRows(context, "booking", "booking_hotels")) {
+    if (context.quarantinedSourceRows.has(row)) continue;
+    const id = safeId(row);
+    const hasSurvivingProjection = records.some(
+      (record) =>
+        record.sourceDatabase === "booking" &&
+        record.sourceTable === "booking_hotels" &&
+        record.sourceId === id,
+    );
+    if (hasSurvivingProjection) continue;
+    const projectionDispositions = context.dispositions.filter(
+      (entry) =>
+        entry.sourceDatabase === "booking" &&
+        entry.sourceTable === "booking_hotels" &&
+        entry.sourceId === id &&
+        entry.reasonCode === "INVALID_FINANCE_SOURCE_ROW" &&
+        entry.disposition === "omitted_field" &&
+        entry.sourceField.endsWith("_projection"),
+    );
+    if (!projectionDispositions.length) continue;
+    context.dispositions = context.dispositions.filter(
+      (entry) => !projectionDispositions.includes(entry),
+    );
+    blockRow(context, row, new Error("All Booking hotel Finance projections were invalid"));
+  }
+}
+
+function quarantineInvalidRelatedRows(context: FinanceBuildContext): void {
+  for (const row of sourceRows(context, "booking", "booking_hotels")) {
+    try {
+      validateBookingHotelFinanceRow(row);
+    } catch (error) {
+      context.quarantinedSourceRows.add(row);
       blockRow(context, row, error);
     }
   }
+  for (const row of sourceRows(context, "pms", "hotel_payment_settings")) {
+    try {
+      validatePmsPaymentSettingsRow(row);
+    } catch (error) {
+      context.quarantinedSourceRows.add(row);
+      blockRow(context, row, error);
+      for (const [propertyId, indexed] of context.pmsSettingsByProperty)
+        if (indexed === row) context.pmsSettingsByProperty.delete(propertyId);
+    }
+  }
+  for (const row of sourceRows(context, "pms", "affiliates")) {
+    try {
+      validateAffiliateProviderRow(row);
+    } catch (error) {
+      context.quarantinedSourceRows.add(row);
+      blockRow(context, row, error);
+    }
+  }
+}
+
+function validateBookingHotelFinanceRow(row: IdentitySourceRow): void {
+  sourceId(row);
+  currency(row.data["currency"]);
+  const plan = requiredText(row.data["billing_active_plan"], "billing_active_plan").toLowerCase();
+  if (plan !== "commission" && plan !== "fixed")
+    throw new Error(`billing_active_plan ${plan} is unsupported`);
+  for (const field of [
+    "booking_engine_fee_pct",
+    "channel_manager_fee_pct",
+    "affiliate_platform_fee_pct",
+    "billing_commission_rate",
+  ])
+    exactRate(row.data[field], field);
+  exactMoney(row.data["fixed_base_fee"], "fixed_base_fee");
+  integer(row.data["fixed_rooms_included"], "fixed_rooms_included");
+  exactMoney(row.data["fixed_per_extra_room_fee"], "fixed_per_extra_room_fee");
+  for (const field of [
+    "online_card_payment",
+    "pay_at_property_enabled",
+    "bank_transfer",
+    "paypal_enabled",
+  ])
+    bool(row.data[field], field, false);
+  payAtHotelMethods(row.data["pay_at_hotel_methods"]);
+  iso(row.data["created_at"], "created_at");
+  iso(row.data["updated_at"], "updated_at");
+}
+
+function validatePmsPaymentSettingsRow(row: IdentitySourceRow): void {
+  sourceId(row);
+  uuid(row.data["hotel_id"], "hotel_id");
+  normalizeProvider(row.data["payment_provider"]);
+  optionalText(row.data["stripe_connect_account_id"], "stripe_connect_account_id");
+  optionalText(row.data["stripe_billing_customer_id"], "stripe_billing_customer_id");
+  optionalText(row.data["stripe_billing_subscription_id"], "stripe_billing_subscription_id");
+  optionalText(
+    row.data["stripe_billing_checkout_session_id"],
+    "stripe_billing_checkout_session_id",
+  );
+  optionalText(row.data["stripe_billing_status"], "stripe_billing_status");
+  for (const field of [
+    "stripe_connect_onboarded",
+    "online_card_payment",
+    "pay_at_property_enabled",
+    "bank_transfer",
+    "xendit_payments_enabled",
+    "stripe_billing_price_dirty",
+  ])
+    bool(row.data[field], field, false);
+  for (const field of ["stripe_billing_amount_cents", "stripe_billing_room_count"])
+    if (row.data[field] != null) integer(row.data[field], field);
+  iso(row.data["created_at"], "created_at");
+  iso(row.data["updated_at"], "updated_at");
+}
+
+function validateAffiliateProviderRow(row: IdentitySourceRow): void {
+  sourceId(row);
+  if (row.data["user_id"]) uuid(row.data["user_id"], "user_id");
+  if (row.data["hotel_id"]) uuid(row.data["hotel_id"], "hotel_id");
+  const reference = optionalText(
+    row.data["stripe_connect_account_id"],
+    "stripe_connect_account_id",
+  );
+  if (!reference) return;
+  bool(row.data["stripe_connect_onboarded"], "stripe_connect_onboarded", false);
+  iso(row.data["created_at"], "created_at");
+  iso(row.data["updated_at"], "updated_at");
+}
+
+function registerPlannedTarget(context: FinanceBuildContext, record: FinanceTargetRecord): void {
+  const ids = context.plannedTargetIdsByTable.get(record.targetTable);
+  if (ids) ids.add(record.targetId);
+  else context.plannedTargetIdsByTable.set(record.targetTable, new Set([record.targetId]));
+}
+
+function isPlannedTarget(context: FinanceBuildContext, table: string, id: string): boolean {
+  return context.plannedTargetIdsByTable.get(table)?.has(id) ?? false;
+}
+
+function validateFinanceReferentialClosure(
+  context: FinanceBuildContext,
+  records: FinanceTargetRecord[],
+): void {
+  const dependencyFields: Record<string, Array<[field: string, parentTable: string]>> = {
+    payment_settings: [["providerAccountId", "payment_provider_accounts"]],
+    payments: [["providerAccountId", "payment_provider_accounts"]],
+    payout_settings: [
+      ["propertyProviderAccountId", "payment_provider_accounts"],
+      ["organizationProviderAccountId", "payment_provider_accounts"],
+    ],
+    payouts: [
+      ["payoutSettingId", "payout_settings"],
+      ["propertyProviderAccountId", "payment_provider_accounts"],
+      ["organizationProviderAccountId", "payment_provider_accounts"],
+      ["paymentId", "payments"],
+    ],
+    commission_rate_changes: [["commissionRuleId", "commission_rules"]],
+  };
+  for (const record of records)
+    for (const [field, parentTable] of dependencyFields[record.targetTable] ?? []) {
+      const parentId = record.row[field];
+      if (!parentId || isPlannedTarget(context, parentTable, String(parentId))) continue;
+      block(
+        context,
+        "FINANCE_REFERENTIAL_CLOSURE_FAILED",
+        `finance.${record.targetTable}`,
+        `source_${sha256({
+          sourceDatabase: record.sourceDatabase,
+          sourceTable: record.sourceTable,
+          sourceId: record.sourceId,
+        }).slice(0, 16)}`,
+        `Planned ${record.targetTable} row has an unresolved ${field} dependency`,
+      );
+    }
 }
 
 function validatePmsPaymentSettingsCoverage(
@@ -159,25 +362,30 @@ function propertyPaymentRecords(
       "Booking enables online card payments but no PMS provider settings row exists",
     );
   if (onlineCard && !configuredProviderId)
-    block(
-      context,
-      "MISSING_PROVIDER_ACCOUNT_ID",
-      "pms.hotel_payment_settings",
-      sourceId(pms!),
-      `${provider} online-card settings have no durable external provider account identity`,
-    );
+    disposition(context, pms!, {
+      sourceField: "payment_provider",
+      sourceValue: {
+        paymentProvider: pms!.data["payment_provider"] ?? null,
+        onlineCardPayment: pms!.data["online_card_payment"] ?? null,
+      },
+      reasonCode: "MISSING_PROVIDER_ACCOUNT_ID",
+      disposition: "disabled_configuration",
+      targetTable: "payment_settings",
+      targetId: propertyId,
+    });
   if (
     pms &&
     provider === "xendit" &&
     bool(pms.data["xendit_payments_enabled"], "xendit_payments_enabled", false)
   )
-    block(
-      context,
-      "MISSING_PROVIDER_ACCOUNT_ID",
-      "pms.hotel_payment_settings",
-      sourceId(pms),
-      "Xendit is enabled but the legacy row contains destination details, not a provider account identifier",
-    );
+    disposition(context, pms, {
+      sourceField: "xendit_payments_enabled",
+      sourceValue: pms.data["xendit_payments_enabled"],
+      reasonCode: "MISSING_PROVIDER_ACCOUNT_ID",
+      disposition: "disabled_configuration",
+      targetTable: "payment_settings",
+      targetId: propertyId,
+    });
   const createdAt = iso(bookingHotel.data["created_at"], "created_at");
   const updatedAt = iso(bookingHotel.data["updated_at"], "updated_at");
   const providerCreatedAt = pms ? iso(pms.data["created_at"], "created_at") : createdAt;
@@ -191,23 +399,26 @@ function propertyPaymentRecords(
       "Pay at property is enabled without a usable cash or manual-card method",
     );
   if (bankTransfer)
-    block(
-      context,
-      "BANK_TRANSFER_DESTINATION_REENTRY_REQUIRED",
-      "booking.booking_hotels",
-      hotelId,
-      "Bank transfer cannot be enabled until its destination is re-entered in approved Finance storage",
-    );
+    disposition(context, bookingHotel, {
+      sourceField: "bank_transfer",
+      sourceValue: bookingHotel.data["bank_transfer"],
+      reasonCode: "BANK_TRANSFER_DESTINATION_REENTRY_REQUIRED",
+      disposition: "target_reentry_required",
+      targetTable: "payment_settings",
+      targetId: propertyId,
+    });
   if (paypal)
-    block(
-      context,
-      "PAYPAL_DESTINATION_REENTRY_REQUIRED",
-      "booking.booking_hotels",
-      hotelId,
-      "PayPal cannot be enabled until its destination is re-entered in approved Finance storage",
-    );
+    disposition(context, bookingHotel, {
+      sourceField: "paypal_email",
+      sourceValue: bookingHotel.data["paypal_email"] ?? null,
+      reasonCode: "PAYPAL_DESTINATION_REENTRY_REQUIRED",
+      disposition: "target_reentry_required",
+      targetTable: "payment_settings",
+      targetId: propertyId,
+    });
+  const safeOnlineCard = onlineCard && configuredProviderId !== null;
   const acceptedMethods = [
-    ...(onlineCard ? ["card"] : []),
+    ...(safeOnlineCard ? ["card"] : []),
     ...(payAtProperty ? ["pay_at_property", ...payAtMethods] : []),
   ];
   const result: FinanceTargetRecord[] = [];
@@ -227,7 +438,7 @@ function propertyPaymentRecords(
         providerAccountId: stripeReference,
         status: !ownerActive ? "disabled" : onboarded ? "active" : "setup_incomplete",
         onboardingStatus: onboarded ? "completed" : "not_started",
-        chargesEnabled: ownerActive && onboarded && onlineCard && provider === "stripe",
+        chargesEnabled: ownerActive && onboarded && safeOnlineCard && provider === "stripe",
         payoutsEnabled: ownerActive && onboarded,
         defaultCurrency: currency(bookingHotel.data["currency"]),
         capabilities: onboarded ? ["card_payments", "transfers"] : [],
@@ -252,7 +463,7 @@ function propertyPaymentRecords(
         providerAccountId: null,
         status: ownerActive ? "active" : "disabled",
         onboardingStatus: "completed",
-        chargesEnabled: ownerActive && onlineCard,
+        chargesEnabled: ownerActive && safeOnlineCard,
         payoutsEnabled: ownerActive,
         defaultCurrency: currency(bookingHotel.data["currency"]),
         capabilities: onlineCard ? ["card_payments"] : [],
@@ -350,23 +561,40 @@ function affiliatePayoutSettingRecords(
     affiliate.data["stripe_connect_account_id"],
     "stripe_connect_account_id",
   );
-  const providerAccountId =
+  const candidateProviderAccountId =
     method === "stripe" && providerReference
       ? affiliateProviderId(organizationId, providerReference)
+      : null;
+  const providerAccountId =
+    candidateProviderAccountId &&
+    isPlannedTarget(context, "payment_provider_accounts", candidateProviderAccountId)
+      ? candidateProviderAccountId
       : null;
   const affiliateHotelId = uuid(affiliate.data["hotel_id"], "hotel_id");
   const affiliatePropertyId = propertyFor(context, "pms", "hotels", affiliateHotelId);
   const affiliateCurrency = bookingHotelForProperty(context, affiliatePropertyId).currency;
   const sensitive = sensitivePayoutFields(row);
   if (sensitive.length)
-    block(
-      context,
-      "SENSITIVE_PAYOUT_DESTINATION_REENTRY_REQUIRED",
-      "pms.affiliate_payout_settings",
-      userId,
-      "Legacy payout destination cannot be copied into Finance without an approved secrets-store reference",
-    );
+    disposition(context, row, {
+      sourceId: userId,
+      sourceField: "payout_destination",
+      sourceValue: sensitive,
+      reasonCode: "SENSITIVE_PAYOUT_DESTINATION_REENTRY_REQUIRED",
+      disposition: "target_reentry_required",
+      targetTable: "payout_settings",
+      targetId: deterministicUuid("production-finance", "affiliate-payout-setting", userId),
+    });
   const id = deterministicUuid("production-finance", "affiliate-payout-setting", userId);
+  if (candidateProviderAccountId && !providerAccountId)
+    disposition(context, row, {
+      sourceId: userId,
+      sourceField: "organization_provider_account_dependency",
+      sourceValue: providerReference,
+      reasonCode: "FINANCE_PARENT_RECORD_QUARANTINED",
+      disposition: "disabled_configuration",
+      targetTable: "payout_settings",
+      targetId: id,
+    });
   return [
     record(row, "payout_settings", id, {
       id,
@@ -378,7 +606,13 @@ function affiliatePayoutSettingRecords(
       payoutMethod: method,
       destinationCountryCode: country(row.data["bank_country"]),
       defaultCurrency: affiliateCurrency,
-      status: !ownerActive ? "disabled" : providerAccountId ? "active" : "setup_incomplete",
+      status: !ownerActive
+        ? "disabled"
+        : sensitive.length
+          ? "setup_incomplete"
+          : providerAccountId
+            ? "active"
+            : "setup_incomplete",
       schedule: {},
       payoutPreferences: {
         legacyDestinationFingerprint: sensitive.length ? sha256(sensitive) : null,
@@ -459,14 +693,15 @@ function paymentRecords(
     row.data["stripe_refund_target_status"],
     "stripe_refund_target_status",
   )?.toLowerCase();
-  if (["paid", "partially_refunded", "refunded"].includes(status) && !capturedAt)
-    block(
-      context,
-      "PAYMENT_CAPTURE_EVIDENCE_REQUIRED",
-      "pms.payments",
-      id,
-      "Paid or refunded payment has no captured_at evidence",
-    );
+  if (["paid", "partially_refunded", "refunded"].includes(status) && !capturedAt) {
+    disposition(context, row, {
+      sourceField: "*",
+      sourceValue: row.data,
+      reasonCode: "PAYMENT_CAPTURE_EVIDENCE_REQUIRED",
+      disposition: "omitted_row",
+    });
+    return [];
+  }
   if (
     (status === "refunded" && compareMoney(refundedAmount, amount) !== 0) ||
     (status === "partially_refunded" &&
@@ -576,18 +811,32 @@ function paymentRecords(
   const xenditInvoice = optionalText(row.data["xendit_invoice_id"], "xendit_invoice_id");
   if (xenditInvoice && (stripeReference || stripeIntent))
     throw new Error("payment has both Stripe and Xendit provider identities");
+  if (stripeIntent || xenditInvoice)
+    disposition(context, row, {
+      sourceField: "provider_transaction_reference",
+      sourceValue: { stripePaymentIntentId: stripeIntent, xenditInvoiceId: xenditInvoice },
+      reasonCode: "LEGACY_PAYMENT_PROVIDER_REFERENCE_QUARANTINED",
+      disposition: "omitted_field",
+      targetTable: "payments",
+      targetId: id,
+    });
   if (
     (stripeIntent && !stripeReference) ||
     xenditInvoice ||
     (method === "card" && !stripeReference)
   )
-    block(
-      context,
-      "MISSING_PAYMENT_PROVIDER_ACCOUNT_ID",
-      "pms.payments",
-      id,
-      "Historical provider transaction has no immutable provider account identity and cannot be bound to current settings",
-    );
+    disposition(context, row, {
+      sourceField: "provider_account_id",
+      sourceValue: {
+        stripeAccountId: row.data["stripe_account_id"] ?? null,
+        stripePaymentIntentId: row.data["stripe_payment_intent_id"] ?? null,
+        xenditInvoiceId: row.data["xendit_invoice_id"] ?? null,
+      },
+      reasonCode: "MISSING_PAYMENT_PROVIDER_ACCOUNT_ID",
+      disposition: "unbound_history",
+      targetTable: "payments",
+      targetId: id,
+    });
   const sharedStripeReference = stripeReference
     ? stripeReferenceIsSharedAcrossProperties(context, stripeReference)
     : false;
@@ -599,7 +848,7 @@ function paymentRecords(
       id,
       "Stripe account reference appears on payments owned by multiple properties and cannot be mapped to a property-scoped provider account",
     );
-  const providerAccountId =
+  const candidateProviderAccountId =
     stripeReference && !sharedStripeReference
       ? propertyProviderAccountId(propertyId, "stripe", stripeReference)
       : null;
@@ -608,11 +857,11 @@ function paymentRecords(
     : null;
   const historicalAccount =
     stripeReference &&
-    providerAccountId &&
+    candidateProviderAccountId &&
     stripeReference !== configuredStripeReference &&
     firstPaymentForStripeAccount(context, stripeReference) === id
-      ? record(row, "payment_provider_accounts", providerAccountId!, {
-          id: providerAccountId,
+      ? record(row, "payment_provider_accounts", candidateProviderAccountId, {
+          id: candidateProviderAccountId,
           propertyId,
           organizationId: null,
           accountScope: "property",
@@ -633,6 +882,21 @@ function paymentRecords(
           updatedAt,
         })
       : null;
+  const providerAccountId =
+    candidateProviderAccountId &&
+    (historicalAccount ||
+      isPlannedTarget(context, "payment_provider_accounts", candidateProviderAccountId))
+      ? candidateProviderAccountId
+      : null;
+  if (candidateProviderAccountId && !providerAccountId)
+    disposition(context, row, {
+      sourceField: "provider_account_dependency",
+      sourceValue: stripeReference,
+      reasonCode: "FINANCE_PARENT_RECORD_QUARANTINED",
+      disposition: "unbound_history",
+      targetTable: "payments",
+      targetId: id,
+    });
   return [
     ...(historicalAccount ? [historicalAccount] : []),
     record(row, "payments", id, {
@@ -652,8 +916,8 @@ function paymentRecords(
       netAmount: subtractMoney(amount, feeAmount, "stripe_application_fee_amount"),
       refundedAmount,
       currency: paymentCurrency,
-      providerTransactionId: xenditInvoice,
-      providerPaymentIntentId: stripeIntent,
+      providerTransactionId: null,
+      providerPaymentIntentId: null,
       processorFeeBreakdown:
         feeAmount === "0.00" && platformFeeAmount === "0.00" && affiliateCommissionAmount === "0.00"
           ? {}
@@ -663,12 +927,19 @@ function paymentRecords(
               stripeAffiliateCommissionAmount: affiliateCommissionAmount,
             },
       riskReview: {},
-      paymentMetadata: paymentMetadata(row, {
-        refundedAt,
-        refundCompletedAt,
-        refundAmountMinor,
-        refundCurrency,
-      }),
+      paymentMetadata: {
+        ...paymentMetadata(row, {
+          refundedAt,
+          refundCompletedAt,
+          refundAmountMinor,
+          refundCurrency,
+        }),
+        migrationDisposition: providerAccountId ? "historical_bound" : "historical_unbound",
+        legacyProviderReferenceSha256:
+          stripeIntent || xenditInvoice
+            ? sha256({ stripePaymentIntentId: stripeIntent, xenditInvoiceId: xenditInvoice })
+            : null,
+      },
       visibilityClass: "pms_finance",
       authorizedAt: status === "authorized" ? updatedAt : null,
       paidAt: ["paid", "partially_refunded", "refunded"].includes(status) ? capturedAt : null,
@@ -701,6 +972,7 @@ function payoutRecords(
   let propertyId: string | null = null;
   let organizationId: string | null = null;
   let payoutSettingId: string | null = null;
+  let payoutSettingExpected = false;
   let propertyProviderAccountId: string | null = null;
   let organizationProviderAccountId: string | null = null;
   if (recipientType === "hotel") {
@@ -709,8 +981,10 @@ function payoutRecords(
     ownerScope = "property";
     propertyId = relatedPropertyId;
     organizationId = null;
-    payoutSettingId = hasPropertyPayoutSetting(context, propertyId)
-      ? bookingPayoutSettingId(propertyId)
+    const candidatePayoutSettingId = bookingPayoutSettingId(propertyId);
+    payoutSettingExpected = hasPropertyPayoutSetting(context, propertyId);
+    payoutSettingId = isPlannedTarget(context, "payout_settings", candidatePayoutSettingId)
+      ? candidatePayoutSettingId
       : null;
   } else if (recipientType === "affiliate") {
     ownerScope = "organization";
@@ -718,12 +992,19 @@ function payoutRecords(
     const affiliate = context.pmsAffiliateById.get(recipientId);
     if (!affiliate) throw new Error(`affiliate ${recipientId} is missing`);
     const userId = affiliate.data["user_id"] ? uuid(affiliate.data["user_id"], "user_id") : null;
-    payoutSettingId =
+    const candidatePayoutSettingId = userId
+      ? deterministicUuid("production-finance", "affiliate-payout-setting", userId)
+      : null;
+    payoutSettingExpected = Boolean(
       userId &&
       sourceRows(context, "pms", "affiliate_payout_settings").some(
         (settings) => settings.data["user_id"] === userId,
-      )
-        ? deterministicUuid("production-finance", "affiliate-payout-setting", userId)
+      ),
+    );
+    payoutSettingId =
+      candidatePayoutSettingId &&
+      isPlannedTarget(context, "payout_settings", candidatePayoutSettingId)
+        ? candidatePayoutSettingId
         : null;
   } else throw new Error(`recipient_type ${recipientType} is unsupported`);
   const providerIds = [
@@ -732,24 +1013,35 @@ function payoutRecords(
   ].filter(Boolean);
   if (providerIds.length > 1) throw new Error("payout has multiple provider payout identities");
   if (providerIds.length === 1)
-    block(
-      context,
-      "MISSING_PAYOUT_PROVIDER_ACCOUNT_ID",
-      "pms.payouts",
-      id,
-      "Provider payout identity has no immutable row-level provider account and cannot use current settings",
-    );
+    disposition(context, row, {
+      sourceField: "provider_account_id",
+      sourceValue: providerIds[0],
+      reasonCode: "MISSING_PAYOUT_PROVIDER_ACCOUNT_ID",
+      disposition: "unbound_history",
+      targetTable: "payouts",
+      targetId: id,
+    });
+  if (payoutSettingExpected && !payoutSettingId)
+    disposition(context, row, {
+      sourceField: "payout_setting_dependency",
+      sourceValue: { recipientType, recipientId },
+      reasonCode: "FINANCE_PARENT_RECORD_QUARANTINED",
+      disposition: "unbound_history",
+      targetTable: "payouts",
+      targetId: id,
+    });
   const relatedPayments = sourceRows(context, "pms", "payments").filter(
     (payment) => payment.data["booking_id"] === bookingId,
   );
   if (relatedPayments.length > 0)
-    block(
-      context,
-      "PAYOUT_PAYMENT_ALLOCATION_EVIDENCE_REQUIRED",
-      "pms.payouts",
-      id,
-      `Booking ${bookingId} has ${relatedPayments.length} payments but the legacy payout identifies none of them`,
-    );
+    disposition(context, row, {
+      sourceField: "payment_id",
+      sourceValue: null,
+      reasonCode: "PAYOUT_PAYMENT_ALLOCATION_EVIDENCE_REQUIRED",
+      disposition: "omitted_field",
+      targetTable: "payouts",
+      targetId: id,
+    });
   const amount = exactMoney(row.data["amount"], "amount");
   const payoutCurrency = currency(row.data["currency"]);
   if (guestBooking.currency !== payoutCurrency)
@@ -798,7 +1090,7 @@ function payoutRecords(
       currency: payoutCurrency,
       periodStart: null,
       periodEnd: null,
-      providerPayoutId: providerIds[0] ?? null,
+      providerPayoutId: null,
       scheduledAt: iso(row.data["scheduled_for"], "scheduled_for"),
       paidAt: status === "paid" ? completedAt : null,
       failedAt: status === "failed" ? updatedAt : null,
@@ -809,6 +1101,10 @@ function payoutRecords(
         externalReference: optionalText(row.data["external_reference"], "external_reference"),
         notes: optionalText(row.data["notes"], "notes"),
         paidByUserId: row.data["paid_by_user_id"] ?? null,
+        migrationDisposition: "historical_unbound",
+        providerBindingRequiresReview: providerIds.length > 0,
+        paymentAllocationRequiresReview: relatedPayments.length > 0,
+        legacyProviderPayoutReferenceSha256: providerIds[0] ? sha256(providerIds[0]) : null,
       },
       createdAt: iso(row.data["created_at"], "created_at"),
       updatedAt,
@@ -821,8 +1117,17 @@ function validateBookingAllocation(context: FinanceBuildContext, row: IdentitySo
   const present = fields.filter(
     (field) => row.data[field] !== null && row.data[field] !== undefined && row.data[field] !== "",
   );
-  if (present.length === 0) return;
   const id = safeId(row);
+  if (present.length === 0) {
+    disposition(context, row, {
+      sourceId: id,
+      sourceField: "finance_allocation",
+      sourceValue: null,
+      reasonCode: "BOOKING_FINANCE_ALLOCATION_EVIDENCE_REQUIRED",
+      disposition: "omitted_field",
+    });
+    return;
+  }
   try {
     if (present.length !== fields.length)
       throw new Error("allocation is partial; all three components are required");
@@ -834,13 +1139,13 @@ function validateBookingAllocation(context: FinanceBuildContext, row: IdentitySo
     if (compareMoney(amounts[1]!, "0.00") > 0 && !row.data["affiliate_id"])
       throw new Error("affiliate commission allocation has no affiliate_id");
   } catch (error) {
-    block(
-      context,
-      "INVALID_BOOKING_FINANCE_ALLOCATION",
-      "pms.bookings",
-      id,
-      error instanceof Error ? error.message : "Invalid booking allocation",
-    );
+    disposition(context, row, {
+      sourceId: id,
+      sourceField: "finance_allocation",
+      sourceValue: Object.fromEntries(fields.map((field) => [field, row.data[field] ?? null])),
+      reasonCode: "INVALID_BOOKING_FINANCE_ALLOCATION",
+      disposition: "omitted_field",
+    });
   }
 }
 
@@ -866,24 +1171,24 @@ function bookingHotelFinanceRecords(
     "fixed_per_extra_room_fee",
   );
   if (bookingEngineFee !== "5")
-    block(
-      context,
-      "NONCANONICAL_BOOKING_ENGINE_FEE",
-      "booking.booking_hotels",
-      hotelId,
-      `Target runtime requires 5%; legacy value is ${bookingEngineFee}%`,
-    );
+    disposition(context, row, {
+      sourceField: "booking_engine_fee_pct",
+      sourceValue: row.data["booking_engine_fee_pct"],
+      reasonCode: "NONCANONICAL_BOOKING_ENGINE_FEE",
+      disposition: "disabled_configuration",
+      targetTable: "commission_rules",
+      targetId: ruleId,
+    });
   if (
     plan === "fixed" &&
     (fixedBaseFee !== "30.00" || fixedRoomsIncluded !== 1 || fixedPerExtraRoomFee !== "5.00")
   )
-    block(
-      context,
-      "NONCANONICAL_FIXED_PLAN_PRICING",
-      "booking.booking_hotels",
-      hotelId,
-      "Target runtime supports only EUR 30.00 for one room plus EUR 5.00 per extra room",
-    );
+    disposition(context, row, {
+      sourceField: "fixed_plan_pricing",
+      sourceValue: { fixedBaseFee, fixedRoomsIncluded, fixedPerExtraRoomFee },
+      reasonCode: "NONCANONICAL_FIXED_PLAN_PRICING",
+      disposition: "disabled_configuration",
+    });
   const records: FinanceTargetRecord[] = [
     record(row, "commission_rules", ruleId, {
       id: ruleId,
@@ -895,7 +1200,7 @@ function bookingHotelFinanceRecords(
       percentageRate: "5",
       fixedAmount: null,
       currency: null,
-      status: ownerActive ? "active" : "inactive",
+      status: ownerActive && bookingEngineFee === "5" ? "active" : "inactive",
       startsAt: createdAt,
       endsAt: null,
       sourceSystem: "finance",
@@ -946,6 +1251,12 @@ function bookingHotelFinanceRecords(
   const billingSubscriptionRef = hps
     ? optionalText(hps.data["stripe_billing_subscription_id"], "stripe_billing_subscription_id")
     : null;
+  const billingCheckoutRef = hps
+    ? optionalText(
+        hps.data["stripe_billing_checkout_session_id"],
+        "stripe_billing_checkout_session_id",
+      )
+    : null;
   const billingPriceDirty = hps
     ? bool(hps.data["stripe_billing_price_dirty"], "stripe_billing_price_dirty", false)
     : false;
@@ -963,66 +1274,97 @@ function bookingHotelFinanceRecords(
     providerStatus &&
     ["trialing", "active"].includes(providerStatus),
   );
-  if (activeSubscriptionEvidence)
-    block(
-      context,
-      "FIXED_PLAN_PROVIDER_REBIND_REQUIRED",
-      "pms.hotel_payment_settings",
-      hps ? sourceId(hps) : hotelId,
-      "Legacy flat-price Stripe subscription lacks the target canonical price and ownership metadata and must be rebound before activation",
-    );
+  const legacyBillingReferenceSha256 =
+    billingCustomerRef || billingSubscriptionRef || billingCheckoutRef || providerStatus
+      ? sha256({ billingCustomerRef, billingSubscriptionRef, billingCheckoutRef, providerStatus })
+      : null;
+  if (legacyBillingReferenceSha256)
+    disposition(context, hps!, {
+      sourceField: "stripe_billing_provider_reference",
+      sourceValue: {
+        billingCustomerRef,
+        billingSubscriptionRef,
+        billingCheckoutRef,
+        providerStatus,
+      },
+      reasonCode: "LEGACY_BILLING_PROVIDER_REFERENCE_QUARANTINED",
+      disposition: "omitted_field",
+      targetTable: "billing_entitlements",
+      targetId: entitlementId,
+    });
+  if (legacyBillingReferenceSha256)
+    disposition(context, hps!, {
+      sourceField: "stripe_billing_subscription_id",
+      sourceValue: {
+        billingCustomerRef,
+        billingSubscriptionRef,
+        billingCheckoutRef,
+        providerStatus,
+      },
+      reasonCode: "FIXED_PLAN_PROVIDER_REBIND_REQUIRED",
+      disposition: "disabled_configuration",
+      targetTable: "billing_entitlements",
+      targetId: entitlementId,
+    });
   if (plan === "commission" && activeSubscriptionEvidence)
-    block(
-      context,
-      "BILLING_PLAN_PROVIDER_STATE_DISAGREEMENT",
-      "pms.hotel_payment_settings",
-      hps ? sourceId(hps) : hotelId,
-      "Booking selects commission pricing while a legacy fixed-plan Stripe subscription remains active",
-    );
-  const entitlementActivationReady = plan === "commission" && !activeSubscriptionEvidence;
+    disposition(context, hps!, {
+      sourceField: "stripe_billing_status",
+      sourceValue: hps!.data["stripe_billing_status"],
+      reasonCode: "BILLING_PLAN_PROVIDER_STATE_DISAGREEMENT",
+      disposition: "disabled_configuration",
+      targetTable: "billing_entitlements",
+      targetId: entitlementId,
+    });
+  const entitlementActivationReady =
+    plan === "commission" && !legacyBillingReferenceSha256 && bookingEngineFee === "5";
   if (plan === "fixed") {
     if (!activeSubscriptionEvidence)
-      block(
-        context,
-        "FIXED_PLAN_SUBSCRIPTION_EVIDENCE_REQUIRED",
-        "booking.booking_hotels",
-        hotelId,
-        "Fixed plan requires an active or trialing Stripe customer and subscription",
-      );
+      disposition(context, row, {
+        sourceField: "billing_active_plan",
+        sourceValue: row.data["billing_active_plan"],
+        reasonCode: "FIXED_PLAN_SUBSCRIPTION_EVIDENCE_REQUIRED",
+        disposition: "disabled_configuration",
+        targetTable: "billing_entitlements",
+        targetId: entitlementId,
+      });
     if (billingPriceDirty)
-      block(
-        context,
-        "FIXED_PLAN_BILLING_PRICE_DIRTY",
-        "pms.hotel_payment_settings",
-        hps ? sourceId(hps) : hotelId,
-        "Fixed-plan subscription price is marked stale and must be synchronized before migration",
-      );
+      disposition(context, hps!, {
+        sourceField: "stripe_billing_price_dirty",
+        sourceValue: hps!.data["stripe_billing_price_dirty"],
+        reasonCode: "FIXED_PLAN_BILLING_PRICE_DIRTY",
+        disposition: "disabled_configuration",
+        targetTable: "billing_entitlements",
+        targetId: entitlementId,
+      });
     if (billingAmountMinor === null || activeRoomCount === null)
-      block(
-        context,
-        "FIXED_PLAN_BILLING_PRICE_EVIDENCE_REQUIRED",
-        "pms.hotel_payment_settings",
-        hps ? sourceId(hps) : hotelId,
-        "Fixed-plan subscription lacks its billed amount or active room count",
-      );
+      disposition(context, hps ?? row, {
+        sourceField: "fixed_plan_billing_price",
+        sourceValue: { billingAmountMinor, activeRoomCount },
+        reasonCode: "FIXED_PLAN_BILLING_PRICE_EVIDENCE_REQUIRED",
+        disposition: "disabled_configuration",
+        targetTable: "billing_entitlements",
+        targetId: entitlementId,
+      });
     else if (billingAmountMinor < 0 || activeRoomCount < 0)
-      block(
-        context,
-        "INVALID_FIXED_PLAN_BILLING_EVIDENCE",
-        "pms.hotel_payment_settings",
-        hps ? sourceId(hps) : hotelId,
-        "Fixed-plan billed amount and active room count must be non-negative",
-      );
+      disposition(context, hps ?? row, {
+        sourceField: "fixed_plan_billing_price",
+        sourceValue: { billingAmountMinor, activeRoomCount },
+        reasonCode: "INVALID_FIXED_PLAN_BILLING_EVIDENCE",
+        disposition: "disabled_configuration",
+        targetTable: "billing_entitlements",
+        targetId: entitlementId,
+      });
     else {
       const expectedAmountMinor = 3_000n + BigInt(Math.max(0, activeRoomCount - 1)) * 500n;
       if (BigInt(billingAmountMinor) !== expectedAmountMinor)
-        block(
-          context,
-          "FIXED_PLAN_BILLING_AMOUNT_MISMATCH",
-          "pms.hotel_payment_settings",
-          hps ? sourceId(hps) : hotelId,
-          `Fixed-plan billed amount ${billingAmountMinor} does not equal canonical amount ${expectedAmountMinor}`,
-        );
+        disposition(context, hps ?? row, {
+          sourceField: "stripe_billing_amount_cents",
+          sourceValue: billingAmountMinor,
+          reasonCode: "FIXED_PLAN_BILLING_AMOUNT_MISMATCH",
+          disposition: "disabled_configuration",
+          targetTable: "billing_entitlements",
+          targetId: entitlementId,
+        });
     }
   }
   records.push(
@@ -1037,13 +1379,15 @@ function bookingHotelFinanceRecords(
         identityEntitlementId: identityEntitlement?.id ?? null,
         product: "booking",
         entitlementKey: "direct-booking-finance",
-        billingStatus:
-          ownerActive && entitlementActivationReady ? billingStatus(providerStatus) : "suspended",
-        planKey: plan,
+        billingStatus: ownerActive && entitlementActivationReady ? "active" : "suspended",
+        // A legacy Fixed plan has no trusted live provider binding after migration.
+        // Keep the runtime baseline on Commission so the user can explicitly
+        // re-select Commission or start a fresh Fixed checkout.
+        planKey: "commission",
         seatCount: null,
-        billingProvider: billingCustomerRef ? "stripe" : "manual",
-        billingCustomerRef,
-        billingSubscriptionRef,
+        billingProvider: "manual",
+        billingCustomerRef: null,
+        billingSubscriptionRef: null,
         billingPeriodStart: null,
         billingPeriodEnd: null,
         startsAt: createdAt,
@@ -1057,30 +1401,16 @@ function bookingHotelFinanceRecords(
           fixedBaseFee,
           fixedRoomsIncluded,
           fixedPerExtraRoomFee,
+          legacyBillingReferenceSha256,
+          providerReentryRequired: legacyBillingReferenceSha256 !== null,
         },
         createdAt,
         updatedAt: hps ? latest(updatedAt, iso(hps.data["updated_at"], "updated_at")) : updatedAt,
-        checkoutSessionRef: hps
-          ? optionalText(
-              hps.data["stripe_billing_checkout_session_id"],
-              "stripe_billing_checkout_session_id",
-            )
-          : null,
-        providerSubscriptionStatus: providerSubscriptionStatus(providerStatus),
+        checkoutSessionRef: null,
+        providerSubscriptionStatus: null,
         billingPeriodStartAt: null,
-        billingPeriodEndAt: hps
-          ? optionalIso(
-              hps.data["stripe_billing_current_period_end"],
-              "stripe_billing_current_period_end",
-            )
-          : null,
-        cancelAtPeriodEnd: hps
-          ? bool(
-              hps.data["stripe_billing_cancel_at_period_end"],
-              "stripe_billing_cancel_at_period_end",
-              false,
-            )
-          : false,
+        billingPeriodEndAt: null,
+        cancelAtPeriodEnd: false,
         billingAmountMinor,
         billingCurrency: billingAmountMinor === null ? null : "EUR",
         activeRoomCount,
@@ -1096,20 +1426,36 @@ function bookingHotelFinanceRecords(
     ),
   );
   if (hasBookingPayoutDestination(row)) {
-    block(
-      context,
-      "SENSITIVE_PAYOUT_DESTINATION_REENTRY_REQUIRED",
-      "booking.booking_hotels",
-      hotelId,
-      "Legacy hotel payout destination cannot be copied into Finance without an approved secrets-store reference",
-    );
     const payoutId = bookingPayoutSettingId(propertyId);
+    const candidateProviderAccountId = hps ? configuredPropertyProviderId(hps, propertyId) : null;
+    const plannedProviderAccountId =
+      candidateProviderAccountId &&
+      isPlannedTarget(context, "payment_provider_accounts", candidateProviderAccountId)
+        ? candidateProviderAccountId
+        : null;
+    disposition(context, row, {
+      sourceField: "payout_destination",
+      sourceValue: sensitiveBookingPayoutFields(row),
+      reasonCode: "SENSITIVE_PAYOUT_DESTINATION_REENTRY_REQUIRED",
+      disposition: "target_reentry_required",
+      targetTable: "payout_settings",
+      targetId: payoutId,
+    });
+    if (candidateProviderAccountId && !plannedProviderAccountId)
+      disposition(context, row, {
+        sourceField: "property_provider_account_dependency",
+        sourceValue: hps?.data["stripe_connect_account_id"] ?? null,
+        reasonCode: "FINANCE_PARENT_RECORD_QUARANTINED",
+        disposition: "disabled_configuration",
+        targetTable: "payout_settings",
+        targetId: payoutId,
+      });
     records.push(
       record(row, "payout_settings", payoutId, {
         id: payoutId,
         propertyId,
         organizationId: null,
-        propertyProviderAccountId: hps ? configuredPropertyProviderId(hps, propertyId) : null,
+        propertyProviderAccountId: plannedProviderAccountId,
         organizationProviderAccountId: null,
         ownerScope: "property",
         payoutMethod: "bank_account",
@@ -1143,12 +1489,24 @@ function commissionChangeRecords(
   )
     throw new Error(`booking hotel ${hotelId} is missing from the immutable source`);
   propertyFor(context, "booking", "booking_hotels", hotelId);
+  const parentRuleId = commissionRuleId(hotelId);
+  if (!isPlannedTarget(context, "commission_rules", parentRuleId)) {
+    disposition(context, row, {
+      sourceField: "*",
+      sourceValue: row.data,
+      reasonCode: "FINANCE_PARENT_RECORD_QUARANTINED",
+      disposition: "omitted_row",
+      targetTable: "commission_rate_changes",
+      targetId: id,
+    });
+    return [];
+  }
   const adminId = uuid(row.data["admin_user_id"], "admin_user_id");
   const changedAt = iso(row.data["changed_at"], "changed_at");
   return [
     record(row, "commission_rate_changes", id, {
       id,
-      commissionRuleId: commissionRuleId(hotelId),
+      commissionRuleId: parentRuleId,
       changedByUserId: context.target.userIds.includes(adminId) ? adminId : null,
       previousPercentageRate: exactRate(row.data["old_value"], "old_value"),
       newPercentageRate: exactRate(row.data["new_value"], "new_value"),
@@ -1221,13 +1579,12 @@ function agreedPaymentFlag(
   const pmsValue = bool(pms.data[field], field, false);
   const bookingValue = bool(booking.data[field], field, false);
   if (pmsValue !== bookingValue)
-    block(
-      context,
-      "PAYMENT_SETTINGS_SOURCE_DISAGREEMENT",
-      "pms.hotel_payment_settings",
-      sourceId(pms),
-      `${field} disagrees between Booking and PMS`,
-    );
+    disposition(context, pms, {
+      sourceField: field,
+      sourceValue: { pms: pmsValue, booking: bookingValue },
+      reasonCode: "PAYMENT_SETTINGS_SOURCE_DISAGREEMENT",
+      disposition: "disabled_configuration",
+    });
   return pmsValue && bookingValue;
 }
 
@@ -1393,41 +1750,12 @@ function paymentKind(value: unknown): string {
 
 function payoutMethod(value: unknown): string {
   const method = requiredText(value, "payment_method").toLowerCase();
-  return method === "bank" ? "bank_account" : method;
-}
-
-function billingStatus(value: string | null): string {
-  if (!value) return "active";
-  const mapped: Record<string, string> = {
-    trialing: "trialing",
-    active: "active",
-    past_due: "past_due",
-    canceled: "canceled",
-    unpaid: "suspended",
-    paused: "suspended",
-    incomplete: "suspended",
-    incomplete_expired: "expired",
-  };
-  if (!mapped[value]) throw new Error(`stripe_billing_status ${value} is unsupported`);
-  return mapped[value];
-}
-
-function providerSubscriptionStatus(value: string | null): string | null {
-  if (!value) return null;
+  const normalized = method === "bank" ? "bank_account" : method;
   if (
-    ![
-      "incomplete",
-      "incomplete_expired",
-      "trialing",
-      "active",
-      "past_due",
-      "canceled",
-      "unpaid",
-      "paused",
-    ].includes(value)
+    !["paypal", "stripe", "xendit", "bank_account", "wallet", "manual", "none"].includes(normalized)
   )
-    throw new Error(`stripe_billing_status ${value} is unsupported`);
-  return value;
+    throw new Error(`payment_method ${method} is unsupported`);
+  return normalized;
 }
 
 function paymentMetadata(
