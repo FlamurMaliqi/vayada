@@ -34,26 +34,28 @@ describe("production Finance plan", () => {
       "payment_settings",
       "payments",
     ]);
+    const paymentDimension = Object.keys(plan.parity.sourcePaymentAmountsByCurrencyStatusOwner)[0]!;
+    expect(paymentDimension).toMatch(/^EUR:stripe:paid:owner_[0-9a-f]{16}$/);
     expect(plan.parity.sourcePaymentAmountsByCurrencyStatusOwner).toEqual({
-      [`EUR:stripe:paid:${ORGANIZATION}`]: "123.45",
+      [paymentDimension]: "123.45",
     });
     expect(plan.parity.targetPaymentAmountsByCurrencyStatusOwner).toEqual(
       plan.parity.sourcePaymentAmountsByCurrencyStatusOwner,
     );
     expect(plan.parity.sourcePaymentCountsByCurrencyStatusOwner).toEqual({
-      [`EUR:stripe:paid:${ORGANIZATION}`]: 1,
+      [paymentDimension]: 1,
     });
     expect(plan.parity.targetPaymentCountsByCurrencyStatusOwner).toEqual(
       plan.parity.sourcePaymentCountsByCurrencyStatusOwner,
     );
     expect(plan.parity.sourcePaymentFeesByCurrencyStatusOwner).toEqual({
-      [`EUR:stripe:paid:${ORGANIZATION}`]: "3.45",
+      [paymentDimension]: "3.45",
     });
     expect(plan.parity.targetPaymentFeesByCurrencyStatusOwner).toEqual(
       plan.parity.sourcePaymentFeesByCurrencyStatusOwner,
     );
     expect(plan.parity.sourcePaymentNetByCurrencyStatusOwner).toEqual({
-      [`EUR:stripe:paid:${ORGANIZATION}`]: "120.00",
+      [paymentDimension]: "120.00",
     });
     expect(plan.parity.targetPaymentNetByCurrencyStatusOwner).toEqual(
       plan.parity.sourcePaymentNetByCurrencyStatusOwner,
@@ -72,7 +74,14 @@ describe("production Finance plan", () => {
       feeAmount: "3.45",
       netAmount: "120.00",
       refundedAmount: "0.00",
+      providerPaymentIntentId: null,
+      providerTransactionId: null,
+      paymentMetadata: {
+        migrationDisposition: "historical_bound",
+        legacyProviderReferenceSha256: expect.stringMatching(/^[0-9a-f]{64}$/),
+      },
     });
+    expect(JSON.stringify(plan)).not.toContain("pi_exact");
   });
 
   it("blocks folio fabrication and unsafe payout secret copying", () => {
@@ -99,10 +108,12 @@ describe("production Finance plan", () => {
       target: target(),
     });
     expect(plan.blockers.map((row) => row.code)).toContain("FOLIO_RECIPIENT_EVIDENCE_REQUIRED");
-    expect(plan.blockers.map((row) => row.code)).toContain(
+    expect(plan.dispositions.map((row) => row.reasonCode)).toContain(
       "SENSITIVE_PAYOUT_DESTINATION_REENTRY_REQUIRED",
     );
-    expect(plan.blockers.map((row) => row.code)).toContain("PAYPAL_DESTINATION_REENTRY_REQUIRED");
+    expect(plan.dispositions.map((row) => row.reasonCode)).toContain(
+      "PAYPAL_DESTINATION_REENTRY_REQUIRED",
+    );
     expect(JSON.stringify(plan)).not.toContain("DE02120300000000202051");
     expect(JSON.stringify(plan)).not.toContain("finance-secret@example.com");
   });
@@ -146,6 +157,33 @@ describe("production Finance plan", () => {
     });
     expect(plan.blockers.map((row) => row.code)).toContain("FINANCE_ECONOMIC_TARGET_NEWER");
     expect(plan.writes.some((row) => row.targetId === PAYMENT)).toBe(false);
+  });
+
+  it("blocks a new child write when its previously migrated parent was deleted", () => {
+    const rows = sourceRows().filter((row) => row.sourceTable !== "payouts");
+    const first = buildProductionFinancePlan({
+      sourceRunId: RUN,
+      completedAt: "2026-08-30T00:00:00.000Z",
+      rows,
+      target: target(),
+    });
+    const provider = first.records.find((row) => row.targetTable === "payment_provider_accounts")!;
+    const providerLink = first.provenance.find(
+      (row) =>
+        row.targetTable === "payment_provider_accounts" && row.targetId === provider.targetId,
+    )!;
+    const state = target();
+    state.provenance = [providerLink];
+
+    const plan = buildProductionFinancePlan({
+      sourceRunId: RUN,
+      completedAt: "2026-08-31T00:00:00.000Z",
+      rows,
+      target: state,
+    });
+
+    expect(plan.counts.preservedTargetDeletions).toBe(1);
+    expect(plan.blockers.map((row) => row.code)).toContain("FINANCE_REFERENTIAL_CLOSURE_FAILED");
   });
 
   it("binds historical transactions to their provider and never re-enables suspended owners", () => {
@@ -264,7 +302,7 @@ describe("production Finance plan", () => {
       rows,
       target: target(),
     });
-    expect(plan.blockers.map((row) => row.code)).toContain(
+    expect(plan.dispositions.map((row) => row.reasonCode)).toContain(
       "PAYOUT_PAYMENT_ALLOCATION_EVIDENCE_REQUIRED",
     );
   });
@@ -283,7 +321,7 @@ describe("production Finance plan", () => {
       target: state,
     });
     expect(plan.blockers.map((row) => row.code)).toContain("FINANCE_PROPERTY_LINK_INVALID");
-    expect(plan.blockers.map((row) => row.code)).toContain("INVALID_FINANCE_SOURCE_ROW");
+    expect(plan.dispositions.map((row) => row.reasonCode)).toContain("INVALID_FINANCE_SOURCE_ROW");
   });
 
   it("reports malformed affiliate user identities as source blockers", () => {
@@ -303,7 +341,7 @@ describe("production Finance plan", () => {
       target: target(),
     });
 
-    expect(plan.blockers.map((row) => row.code)).toContain("INVALID_FINANCE_SOURCE_ROW");
+    expect(plan.dispositions.map((row) => row.reasonCode)).toContain("INVALID_FINANCE_SOURCE_ROW");
   });
 
   it("never infers a Stripe payment account from current settings", () => {
@@ -315,9 +353,377 @@ describe("production Finance plan", () => {
       rows,
       target: target(),
     });
-    expect(plan.blockers.map((row) => row.code)).toContain("MISSING_PAYMENT_PROVIDER_ACCOUNT_ID");
+    expect(plan.dispositions.map((row) => row.reasonCode)).toContain(
+      "MISSING_PAYMENT_PROVIDER_ACCOUNT_ID",
+    );
+    expect(plan.blockers).toEqual([]);
+    expect(plan.records.find((row) => row.targetTable === "payments")!.row).toMatchObject({
+      providerAccountId: null,
+      paymentMetadata: { migrationDisposition: "historical_unbound" },
+    });
+  });
+
+  it("omits capture-incomplete payments with exact hash-only evidence", () => {
+    const rows = sourceRows().filter((row) => row.sourceTable !== "payouts");
+    const payment = rows.find((row) => row.sourceTable === "payments")!;
+    payment.data["captured_at"] = null;
+    const plan = buildProductionFinancePlan({
+      sourceRunId: RUN,
+      completedAt: "2026-08-30T00:00:00.000Z",
+      rows,
+      target: target(),
+    });
+
+    expect(plan.blockers).toEqual([]);
+    expect(plan.records.some((row) => row.targetTable === "payments")).toBe(false);
+    expect(plan.dispositions).toContainEqual(
+      expect.objectContaining({
+        reasonCode: "PAYMENT_CAPTURE_EVIDENCE_REQUIRED",
+        disposition: "omitted_row",
+        sourceValueSha256: expect.stringMatching(/^[0-9a-f]{64}$/),
+      }),
+    );
+    expect(plan.parity.sourcePaymentAmountsByCurrencyStatusOwner).toEqual(
+      plan.parity.omittedPaymentAmountsByCurrencyStatusOwner,
+    );
+    expect(Object.values(plan.parity.omittedPaymentAmountsByCurrencyStatusOwner)).toEqual([
+      "123.45",
+    ]);
+    expect(plan.parity.targetPaymentAmountsByCurrencyStatusOwner).toEqual({});
+  });
+
+  it("keeps an omitted payment with missing ownership in the raw money ledger", () => {
+    const rows = sourceRows().filter((row) => row.sourceTable !== "payouts");
+    rows.find((row) => row.sourceTable === "payments")!.data["booking_id"] =
+      "41000000-0000-4000-8000-000000000099";
+
+    const plan = buildProductionFinancePlan({
+      sourceRunId: RUN,
+      completedAt: "2026-08-30T00:00:00.000Z",
+      rows,
+      target: target(),
+    });
+
+    expect(plan.blockers).toEqual([]);
+    expect(Object.keys(plan.parity.sourcePaymentAmountsByCurrencyStatusOwner)[0]).toMatch(
+      /^invalid_[0-9a-f]{16}$/,
+    );
+    expect(Object.values(plan.parity.sourcePaymentAmountsByCurrencyStatusOwner)).toEqual([
+      "123.45",
+    ]);
+    expect(plan.parity.omittedPaymentAmountsByCurrencyStatusOwner).toEqual(
+      plan.parity.sourcePaymentAmountsByCurrencyStatusOwner,
+    );
+    expect(plan.parity.targetPaymentAmountsByCurrencyStatusOwner).toEqual({});
+    expect(plan.parity.omittedPaymentCountsByCurrencyStatusOwner).toEqual(
+      plan.parity.sourcePaymentCountsByCurrencyStatusOwner,
+    );
+  });
+
+  it("keeps an omitted payout with missing ownership in the raw money ledger", () => {
+    const rows = sourceRows();
+    const payout = rows.find((row) => row.sourceTable === "payouts")!;
+    payout.data["recipient_type"] = "affiliate";
+    payout.data["recipient_id"] = "a2000000-0000-4000-8000-000000000099";
+
+    const plan = buildProductionFinancePlan({
+      sourceRunId: RUN,
+      completedAt: "2026-08-30T00:00:00.000Z",
+      rows,
+      target: target(),
+    });
+
+    expect(plan.blockers).toEqual([]);
+    expect(Object.keys(plan.parity.sourcePayoutAmountsByCurrencyStatusOwner)[0]).toMatch(
+      /^invalid_[0-9a-f]{16}$/,
+    );
+    expect(Object.values(plan.parity.sourcePayoutAmountsByCurrencyStatusOwner)).toEqual(["100.00"]);
+    expect(plan.parity.omittedPayoutAmountsByCurrencyStatusOwner).toEqual(
+      plan.parity.sourcePayoutAmountsByCurrencyStatusOwner,
+    );
+    expect(plan.parity.targetPayoutAmountsByCurrencyStatusOwner).toEqual({});
+    expect(plan.parity.omittedPayoutCountsByCurrencyStatusOwner).toEqual(
+      plan.parity.sourcePayoutCountsByCurrencyStatusOwner,
+    );
+  });
+
+  it("blocks when an omitted economic amount cannot enter the raw ledger", () => {
+    const rows = sourceRows().filter((row) => row.sourceTable !== "payouts");
+    const payment = rows.find((row) => row.sourceTable === "payments")!;
+    payment.data["booking_id"] = "41000000-0000-4000-8000-000000000099";
+    payment.data["amount"] = "not-money";
+
+    const plan = buildProductionFinancePlan({
+      sourceRunId: RUN,
+      completedAt: "2026-08-30T00:00:00.000Z",
+      rows,
+      target: target(),
+    });
+
     expect(plan.blockers.map((row) => row.code)).toContain(
-      "FINANCE_PAYMENT_MONETARY_PARITY_MISMATCH",
+      "FINANCE_SOURCE_MONETARY_VALUE_UNREADABLE",
+    );
+  });
+
+  it("keeps sensitive affiliate payout settings inactive until target re-entry", () => {
+    const affiliateId = "a2000000-0000-4000-8000-000000000001";
+    const affiliateUserId = "a3000000-0000-4000-8000-000000000001";
+    const rows = sourceRows().filter((row) => row.sourceTable !== "payouts");
+    rows.push(
+      source("pms", "affiliates", {
+        id: affiliateId,
+        user_id: affiliateUserId,
+        hotel_id: HOTEL,
+        stripe_connect_account_id: "acct_affiliate",
+        stripe_connect_onboarded: true,
+        created_at: AT,
+        updated_at: AT,
+      }),
+      source("pms", "affiliate_payout_settings", {
+        user_id: affiliateUserId,
+        payment_method: "stripe",
+        bank_country: "DE",
+        bank_iban: "sensitive-destination",
+        created_at: AT,
+        updated_at: AT,
+      }),
+    );
+    const state = target();
+    state.resourceLinks.push({
+      organizationId: OTHER_ORGANIZATION,
+      product: "affiliate",
+      resourceType: "affiliate",
+      resourceId: affiliateId,
+      relationship: "owner",
+      status: "active",
+    });
+
+    const plan = buildProductionFinancePlan({
+      sourceRunId: RUN,
+      completedAt: "2026-08-30T00:00:00.000Z",
+      rows,
+      target: state,
+    });
+
+    expect(plan.blockers).toEqual([]);
+    expect(plan.records.find((row) => row.targetTable === "payout_settings")!.row).toMatchObject({
+      status: "setup_incomplete",
+      sensitiveDestinationRef: null,
+      payoutPreferences: { destinationRequiresReentry: true },
+    });
+    expect(JSON.stringify(plan)).not.toContain("sensitive-destination");
+  });
+
+  it("does not bind an affiliate payout setting to a quarantined provider account", () => {
+    const affiliateId = "a2000000-0000-4000-8000-000000000002";
+    const affiliateUserId = "a3000000-0000-4000-8000-000000000002";
+    const rows = sourceRows().filter((row) => row.sourceTable !== "payouts");
+    rows.push(
+      source("pms", "affiliates", {
+        id: affiliateId,
+        user_id: affiliateUserId,
+        hotel_id: HOTEL,
+        stripe_connect_account_id: "acct_invalid_affiliate",
+        stripe_connect_onboarded: "not-a-boolean",
+        created_at: AT,
+        updated_at: AT,
+      }),
+      source("pms", "affiliate_payout_settings", {
+        user_id: affiliateUserId,
+        payment_method: "stripe",
+        bank_country: "DE",
+        created_at: AT,
+        updated_at: AT,
+      }),
+    );
+    const state = target();
+    state.resourceLinks.push({
+      organizationId: OTHER_ORGANIZATION,
+      product: "affiliate",
+      resourceType: "affiliate",
+      resourceId: affiliateId,
+      relationship: "owner",
+      status: "active",
+    });
+
+    const plan = buildProductionFinancePlan({
+      sourceRunId: RUN,
+      completedAt: "2026-08-30T00:00:00.000Z",
+      rows,
+      target: state,
+    });
+    const affiliateSetting = plan.records.find(
+      (row) =>
+        row.targetTable === "payout_settings" && row.row["organizationId"] === OTHER_ORGANIZATION,
+    )!;
+
+    expect(plan.blockers).toEqual([]);
+    expect(affiliateSetting.row).toMatchObject({
+      organizationProviderAccountId: null,
+      status: "setup_incomplete",
+    });
+    expect(plan.dispositions).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          sourceTable: "affiliates",
+          reasonCode: "INVALID_FINANCE_SOURCE_ROW",
+          disposition: "omitted_row",
+        }),
+        expect.objectContaining({
+          sourceTable: "affiliate_payout_settings",
+          reasonCode: "FINANCE_PARENT_RECORD_QUARANTINED",
+        }),
+      ]),
+    );
+  });
+
+  it("quarantines an affiliate payout method outside the target enum", () => {
+    const affiliateId = "a2000000-0000-4000-8000-000000000003";
+    const affiliateUserId = "a3000000-0000-4000-8000-000000000003";
+    const rows = sourceRows().filter((row) => row.sourceTable !== "payouts");
+    rows.push(
+      source("pms", "affiliates", {
+        id: affiliateId,
+        user_id: affiliateUserId,
+        hotel_id: HOTEL,
+        stripe_connect_account_id: null,
+      }),
+      source("pms", "affiliate_payout_settings", {
+        user_id: affiliateUserId,
+        payment_method: "crypto",
+        bank_country: "DE",
+        created_at: AT,
+        updated_at: AT,
+      }),
+    );
+    const state = target();
+    state.resourceLinks.push({
+      organizationId: OTHER_ORGANIZATION,
+      product: "affiliate",
+      resourceType: "affiliate",
+      resourceId: affiliateId,
+      relationship: "owner",
+      status: "active",
+    });
+
+    const plan = buildProductionFinancePlan({
+      sourceRunId: RUN,
+      completedAt: "2026-08-30T00:00:00.000Z",
+      rows,
+      target: state,
+    });
+
+    expect(
+      plan.records.some(
+        (row) =>
+          row.targetTable === "payout_settings" && row.row["organizationId"] === OTHER_ORGANIZATION,
+      ),
+    ).toBe(false);
+    expect(plan.dispositions).toContainEqual(
+      expect.objectContaining({
+        sourceTable: "affiliate_payout_settings",
+        sourceField: "*",
+        reasonCode: "INVALID_FINANCE_SOURCE_ROW",
+        disposition: "omitted_row",
+      }),
+    );
+  });
+
+  it("never binds a property payout setting to a provider row that failed validation", () => {
+    const rows = sourceRows().filter((row) => row.sourceTable !== "payouts");
+    rows.find((row) => row.sourceTable === "hotel_payment_settings")!.data[
+      "stripe_connect_onboarded"
+    ] = "not-a-boolean";
+    rows.find((row) => row.sourceTable === "booking_hotels")!.data["payout_iban"] =
+      "sensitive-destination";
+
+    const plan = buildProductionFinancePlan({
+      sourceRunId: RUN,
+      completedAt: "2026-08-30T00:00:00.000Z",
+      rows,
+      target: target(),
+    });
+    const propertySetting = plan.records.find(
+      (row) => row.targetTable === "payout_settings" && row.row["propertyId"] === PROPERTY,
+    )!;
+
+    expect(propertySetting.row).toMatchObject({
+      propertyProviderAccountId: null,
+      status: "setup_incomplete",
+    });
+    expect(plan.blockers.map((row) => row.code)).not.toContain(
+      "FINANCE_REFERENTIAL_CLOSURE_FAILED",
+    );
+    expect(plan.dispositions).toContainEqual(
+      expect.objectContaining({
+        sourceTable: "hotel_payment_settings",
+        reasonCode: "INVALID_FINANCE_SOURCE_ROW",
+        disposition: "omitted_row",
+      }),
+    );
+    expect(JSON.stringify(plan)).not.toContain("sensitive-destination");
+  });
+
+  it("omits commission history whose current rule projection was quarantined", () => {
+    const rows = sourceRows().filter((row) => row.sourceTable !== "payouts");
+    rows.find((row) => row.sourceTable === "booking_hotels")!.data["billing_active_plan"] =
+      "unsupported";
+
+    const plan = buildProductionFinancePlan({
+      sourceRunId: RUN,
+      completedAt: "2026-08-30T00:00:00.000Z",
+      rows,
+      target: target(),
+    });
+
+    expect(plan.blockers).toEqual([]);
+    expect(plan.records.some((row) => row.targetTable === "commission_rules")).toBe(false);
+    expect(plan.records.some((row) => row.targetTable === "commission_rate_changes")).toBe(false);
+    expect(plan.dispositions).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          sourceTable: "booking_hotels",
+          reasonCode: "INVALID_FINANCE_SOURCE_ROW",
+          disposition: "omitted_row",
+        }),
+        expect.objectContaining({
+          sourceTable: "commission_rate_changes",
+          reasonCode: "FINANCE_PARENT_RECORD_QUARANTINED",
+          disposition: "omitted_row",
+        }),
+      ]),
+    );
+  });
+
+  it("quarantines all Booking hotel projections when an early projection field is invalid", () => {
+    const rows = sourceRows().filter((row) => row.sourceTable !== "payouts");
+    rows.find((row) => row.sourceTable === "booking_hotels")!.data["pay_at_hotel_methods"] = [
+      "unsupported",
+    ];
+
+    const plan = buildProductionFinancePlan({
+      sourceRunId: RUN,
+      completedAt: "2026-08-30T00:00:00.000Z",
+      rows,
+      target: target(),
+    });
+
+    expect(plan.blockers).toEqual([]);
+    expect(
+      plan.records.some(
+        (row) => row.sourceDatabase === "booking" && row.sourceTable === "booking_hotels",
+      ),
+    ).toBe(false);
+    expect(plan.dispositions).toContainEqual(
+      expect.objectContaining({
+        sourceTable: "booking_hotels",
+        sourceField: "*",
+        reasonCode: "INVALID_FINANCE_SOURCE_ROW",
+        disposition: "omitted_row",
+      }),
+    );
+    expect(plan.blockers.map((row) => row.code)).not.toContain(
+      "FINANCE_REFERENTIAL_CLOSURE_FAILED",
     );
   });
 
@@ -342,7 +748,7 @@ describe("production Finance plan", () => {
     ).toBe(historical.targetId);
   });
 
-  it("blocks unsupported currencies and invalid fee allocations", () => {
+  it("quarantines invalid rows but still blocks unexplained fee allocations", () => {
     const rows = sourceRows();
     const payment = rows.find((row) => row.sourceTable === "payments")!;
     payment.data["currency"] = "ZZZ";
@@ -353,8 +759,20 @@ describe("production Finance plan", () => {
       rows,
       target: target(),
     });
-    expect(plan.blockers.map((row) => row.code)).toContain("INVALID_FINANCE_SOURCE_ROW");
-    expect(plan.blockers.map((row) => row.code)).toContain("INVALID_PAYMENT_FEE_ALLOCATION");
+    expect(plan.dispositions.map((row) => row.reasonCode)).toContain("INVALID_FINANCE_SOURCE_ROW");
+    expect(plan.blockers).toEqual([]);
+    expect(plan.records.some((row) => row.targetId === PAYMENT)).toBe(false);
+
+    payment.data["currency"] = "EUR";
+    const invalidAllocation = buildProductionFinancePlan({
+      sourceRunId: RUN,
+      completedAt: "2026-08-30T00:00:00.000Z",
+      rows,
+      target: target(),
+    });
+    expect(invalidAllocation.blockers.map((row) => row.code)).toContain(
+      "INVALID_PAYMENT_FEE_ALLOCATION",
+    );
   });
 
   it("blocks booking allocations that do not reconcile exactly", () => {
@@ -372,7 +790,10 @@ describe("production Finance plan", () => {
       rows,
       target: target(),
     });
-    expect(plan.blockers.map((row) => row.code)).toContain("INVALID_BOOKING_FINANCE_ALLOCATION");
+    expect(plan.dispositions.map((row) => row.reasonCode)).toContain(
+      "INVALID_BOOKING_FINANCE_ALLOCATION",
+    );
+    expect(plan.blockers).toEqual([]);
   });
 
   it("blocks commission pricing while a legacy fixed subscription is active", () => {
@@ -392,7 +813,7 @@ describe("production Finance plan", () => {
       target: target(),
     });
 
-    expect(plan.blockers.map((row) => row.code)).toEqual(
+    expect(plan.dispositions.map((row) => row.reasonCode)).toEqual(
       expect.arrayContaining([
         "FIXED_PLAN_PROVIDER_REBIND_REQUIRED",
         "BILLING_PLAN_PROVIDER_STATE_DISAGREEMENT",
@@ -403,6 +824,40 @@ describe("production Finance plan", () => {
     ).toBe("suspended");
   });
 
+  it("suspends and quarantines partial legacy billing provider state", () => {
+    const rows = sourceRows().filter((row) => row.sourceTable !== "payouts");
+    const settings = rows.find((row) => row.sourceTable === "hotel_payment_settings")!;
+    Object.assign(settings.data, {
+      stripe_billing_customer_id: null,
+      stripe_billing_subscription_id: "sub_partial",
+      stripe_billing_status: "active",
+    });
+    const plan = buildProductionFinancePlan({
+      sourceRunId: RUN,
+      completedAt: "2026-08-30T00:00:00.000Z",
+      rows,
+      target: target(),
+    });
+    const entitlement = plan.records.find((row) => row.targetTable === "billing_entitlements")!;
+
+    expect(plan.dispositions.map((row) => row.reasonCode)).toEqual(
+      expect.arrayContaining([
+        "LEGACY_BILLING_PROVIDER_REFERENCE_QUARANTINED",
+        "FIXED_PLAN_PROVIDER_REBIND_REQUIRED",
+      ]),
+    );
+    expect(entitlement.row).toMatchObject({
+      billingStatus: "suspended",
+      planKey: "commission",
+      billingProvider: "manual",
+      billingCustomerRef: null,
+      billingSubscriptionRef: null,
+      checkoutSessionRef: null,
+      providerSubscriptionStatus: null,
+    });
+    expect(JSON.stringify(plan)).not.toContain("sub_partial");
+  });
+
   it("maps only the runtime-supported fixed plan contract", () => {
     const rows = sourceRows().filter((row) => row.sourceTable !== "payouts");
     const hotel = rows.find((row) => row.sourceTable === "booking_hotels")!;
@@ -411,6 +866,7 @@ describe("production Finance plan", () => {
     Object.assign(settings.data, {
       stripe_billing_customer_id: "cus_exact",
       stripe_billing_subscription_id: "sub_exact",
+      stripe_billing_checkout_session_id: "cs_exact",
       stripe_billing_status: "active",
       stripe_billing_amount_cents: 3000,
       stripe_billing_room_count: 1,
@@ -421,19 +877,31 @@ describe("production Finance plan", () => {
       rows,
       target: target(),
     });
-    expect(plan.blockers.map((row) => row.code)).toContain("FIXED_PLAN_PROVIDER_REBIND_REQUIRED");
+    expect(plan.dispositions.map((row) => row.reasonCode)).toContain(
+      "FIXED_PLAN_PROVIDER_REBIND_REQUIRED",
+    );
     expect(plan.records.find((row) => row.targetTable === "commission_rules")!.row).toMatchObject({
       percentageRate: "5",
       status: "active",
     });
-    expect(
-      plan.records.find((row) => row.targetTable === "billing_entitlements")!.row[
-        "billingCurrency"
-      ],
-    ).toBe("EUR");
-    expect(
-      plan.records.find((row) => row.targetTable === "billing_entitlements")!.row["billingStatus"],
-    ).toBe("suspended");
+    const entitlement = plan.records.find((row) => row.targetTable === "billing_entitlements")!;
+    expect(entitlement.row).toMatchObject({
+      billingStatus: "suspended",
+      planKey: "commission",
+      billingProvider: "manual",
+      billingCustomerRef: null,
+      billingSubscriptionRef: null,
+      checkoutSessionRef: null,
+      providerSubscriptionStatus: null,
+      billingCurrency: "EUR",
+      entitlementMetadata: {
+        legacyBillingReferenceSha256: expect.stringMatching(/^[0-9a-f]{64}$/),
+        providerReentryRequired: true,
+      },
+    });
+    expect(JSON.stringify(plan)).not.toContain("cus_exact");
+    expect(JSON.stringify(plan)).not.toContain("sub_exact");
+    expect(JSON.stringify(plan)).not.toContain("cs_exact");
 
     settings.data["stripe_billing_price_dirty"] = true;
     const dirty = buildProductionFinancePlan({
@@ -442,7 +910,9 @@ describe("production Finance plan", () => {
       rows,
       target: target(),
     });
-    expect(dirty.blockers.map((row) => row.code)).toContain("FIXED_PLAN_BILLING_PRICE_DIRTY");
+    expect(dirty.dispositions.map((row) => row.reasonCode)).toContain(
+      "FIXED_PLAN_BILLING_PRICE_DIRTY",
+    );
     expect(
       dirty.records.find((row) => row.targetTable === "billing_entitlements")!.row["billingStatus"],
     ).toBe("suspended");
@@ -456,7 +926,7 @@ describe("production Finance plan", () => {
       rows,
       target: target(),
     });
-    expect(negative.blockers.map((row) => row.code)).toContain(
+    expect(negative.dispositions.map((row) => row.reasonCode)).toContain(
       "INVALID_FIXED_PLAN_BILLING_EVIDENCE",
     );
 
@@ -468,7 +938,7 @@ describe("production Finance plan", () => {
       rows,
       target: target(),
     });
-    expect(mismatched.blockers.map((row) => row.code)).toContain(
+    expect(mismatched.dispositions.map((row) => row.reasonCode)).toContain(
       "FIXED_PLAN_BILLING_AMOUNT_MISMATCH",
     );
 
@@ -480,7 +950,33 @@ describe("production Finance plan", () => {
       rows,
       target: target(),
     });
-    expect(blocked.blockers.map((row) => row.code)).toContain("NONCANONICAL_FIXED_PLAN_PRICING");
+    expect(blocked.dispositions.map((row) => row.reasonCode)).toContain(
+      "NONCANONICAL_FIXED_PLAN_PRICING",
+    );
+  });
+
+  it("never activates a canonicalized commission rule when the legacy fee differs", () => {
+    const rows = sourceRows().filter((row) => row.sourceTable !== "payouts");
+    rows.find((row) => row.sourceTable === "booking_hotels")!.data["booking_engine_fee_pct"] =
+      "7.00";
+    const plan = buildProductionFinancePlan({
+      sourceRunId: RUN,
+      completedAt: "2026-08-30T00:00:00.000Z",
+      rows,
+      target: target(),
+    });
+
+    expect(plan.blockers).toEqual([]);
+    expect(plan.dispositions.map((row) => row.reasonCode)).toContain(
+      "NONCANONICAL_BOOKING_ENGINE_FEE",
+    );
+    expect(plan.records.find((row) => row.targetTable === "commission_rules")!.row).toMatchObject({
+      percentageRate: "5",
+      status: "inactive",
+    });
+    expect(
+      plan.records.find((row) => row.targetTable === "billing_entitlements")!.row["billingStatus"],
+    ).toBe("suspended");
   });
 
   it("fails closed when Booking and PMS payment settings disagree", () => {
@@ -492,7 +988,9 @@ describe("production Finance plan", () => {
       rows,
       target: target(),
     });
-    expect(plan.blockers.map((row) => row.code)).toContain("PAYMENT_SETTINGS_SOURCE_DISAGREEMENT");
+    expect(plan.dispositions.map((row) => row.reasonCode)).toContain(
+      "PAYMENT_SETTINGS_SOURCE_DISAGREEMENT",
+    );
     expect(
       plan.records.find((row) => row.targetTable === "payment_settings")!.row["acceptedMethods"],
     ).not.toContain("card");
@@ -622,11 +1120,19 @@ describe("production Finance plan", () => {
       target: target(),
     });
     expect(plan.blockers.map((row) => row.code)).toContain("DUPLICATE_PROVIDER_PAYMENT_INTENT_ID");
-    expect(plan.blockers.map((row) => row.code)).toContain("MISSING_PAYOUT_PROVIDER_ACCOUNT_ID");
+    expect(plan.dispositions.map((row) => row.reasonCode)).toContain(
+      "MISSING_PAYOUT_PROVIDER_ACCOUNT_ID",
+    );
     expect(plan.records.find((row) => row.targetTable === "payouts")!.row).toMatchObject({
       propertyProviderAccountId: null,
       organizationProviderAccountId: null,
+      providerPayoutId: null,
+      payoutMetadata: {
+        migrationDisposition: "historical_unbound",
+        legacyProviderPayoutReferenceSha256: expect.stringMatching(/^[0-9a-f]{64}$/),
+      },
     });
+    expect(JSON.stringify(plan)).not.toContain("tr_exact");
   });
 
   it("blocks a Stripe account reference shared across properties", () => {

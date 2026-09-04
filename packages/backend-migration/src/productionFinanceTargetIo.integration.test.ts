@@ -6,11 +6,15 @@ import type {
   FinanceTargetRecord,
   ProductionFinancePrerequisites,
 } from "./productionFinanceTypes.js";
-import { writeProductionFinanceRecords } from "./productionFinanceWriter.js";
+import {
+  writeProductionFinanceDispositions,
+  writeProductionFinanceRecords,
+} from "./productionFinanceWriter.js";
 import { assertSafeTestDatabase } from "./testUtils.js";
 
 const URL = process.env["TEST_DATABASE_URL"];
 const ID = "fa000000-0000-4000-8000-000000000001";
+const RUN = "vay1351-0123456789abcdef01234567";
 
 describe.skipIf(!URL)("production Finance target IO (PostgreSQL)", () => {
   let client: pg.Client;
@@ -81,6 +85,57 @@ describe.skipIf(!URL)("production Finance target IO (PostgreSQL)", () => {
         sourceId: providerAccountId,
         message: "Stripe provider account has a compensation claim and cannot be migrated",
       });
+    } finally {
+      await client.query("ROLLBACK");
+    }
+  });
+
+  it("retries immutable hash-only Finance dispositions and rejects mutation", async () => {
+    await client.query("BEGIN");
+    try {
+      await client.query(
+        `INSERT INTO platform.source_extraction_runs
+           (run_id, environment, source_schema_revision, status, finished_at, duration_ms)
+         VALUES ($1, 'local', $2, 'completed', now(), 1)
+         ON CONFLICT (run_id) DO NOTHING`,
+        [RUN, "a".repeat(40)],
+      );
+      const dispositions = [
+        {
+          sourceDatabase: "booking" as const,
+          sourceTable: "booking_hotels",
+          sourceId: ID,
+          sourceField: "payout_destination",
+          sourceValueSha256: "b".repeat(64),
+          reasonCode: "SENSITIVE_PAYOUT_DESTINATION_REENTRY_REQUIRED" as const,
+          disposition: "target_reentry_required" as const,
+          targetTable: "payout_settings",
+          targetId: ID,
+        },
+      ];
+
+      expect(await writeProductionFinanceDispositions(client, dispositions, RUN)).toBe(1);
+      expect(await writeProductionFinanceDispositions(client, dispositions, RUN)).toBe(1);
+      await expect(writeProductionFinanceDispositions(client, [], RUN)).rejects.toThrow(
+        "Finance disposition replay mismatch",
+      );
+
+      await client.query("SAVEPOINT immutable_finance_disposition");
+      await expect(
+        client.query(
+          `UPDATE platform.production_finance_migration_dispositions
+              SET source_value_sha256 = $1
+            WHERE source_run_id = $2`,
+          ["c".repeat(64), RUN],
+        ),
+      ).rejects.toThrow("immutable");
+      await client.query("ROLLBACK TO SAVEPOINT immutable_finance_disposition");
+
+      await client.query("SAVEPOINT untruncatable_finance_disposition");
+      await expect(
+        client.query("TRUNCATE platform.production_finance_migration_dispositions"),
+      ).rejects.toThrow("immutable");
+      await client.query("ROLLBACK TO SAVEPOINT untruncatable_finance_disposition");
     } finally {
       await client.query("ROLLBACK");
     }

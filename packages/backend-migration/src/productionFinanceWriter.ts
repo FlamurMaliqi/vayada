@@ -4,7 +4,10 @@ import {
   PRODUCTION_FINANCE_TABLES,
   PRODUCTION_FINANCE_WRITE_ORDER,
 } from "./productionFinanceTables.js";
-import type { FinanceTargetRecord } from "./productionFinanceTypes.js";
+import type {
+  FinanceTargetRecord,
+  ProductionFinanceDisposition,
+} from "./productionFinanceTypes.js";
 
 type QueryClient = Pick<pg.ClientBase, "query">;
 
@@ -45,6 +48,66 @@ export async function writeProductionFinanceRecords(
     counts[targetTable] = result.rowCount ?? 0;
   }
   return counts;
+}
+
+export async function writeProductionFinanceDispositions(
+  client: QueryClient,
+  dispositions: ProductionFinanceDisposition[],
+  sourceRunId: string,
+): Promise<number> {
+  const values = [JSON.stringify(dispositions), sourceRunId];
+  if (dispositions.length)
+    await client.query(
+      `INSERT INTO platform.production_finance_migration_dispositions
+         (source_run_id, source_database, source_table, source_id, source_field,
+          source_value_sha256, reason_code, disposition, target_table, target_id)
+       SELECT $2, "sourceDatabase", "sourceTable", "sourceId", "sourceField",
+              "sourceValueSha256", "reasonCode", "disposition", "targetTable", "targetId"
+       FROM jsonb_to_recordset($1::jsonb) AS source(
+         "sourceDatabase" text, "sourceTable" text, "sourceId" text,
+         "sourceField" text, "sourceValueSha256" text, "reasonCode" text,
+         "disposition" text, "targetTable" text, "targetId" uuid
+       )
+       ON CONFLICT DO NOTHING`,
+      values,
+    );
+  const result = await client.query<{ matched_count: number; total_count: number }>(
+    `WITH planned AS (
+       SELECT *
+       FROM jsonb_to_recordset($1::jsonb) AS source(
+       "sourceDatabase" text, "sourceTable" text, "sourceId" text,
+       "sourceField" text, "sourceValueSha256" text, "reasonCode" text,
+       "disposition" text, "targetTable" text, "targetId" uuid
+       )
+     ), matched AS (
+       SELECT count(*)::int AS count
+       FROM platform.production_finance_migration_dispositions disposition
+       JOIN planned source ON disposition.source_run_id = $2
+         AND disposition.source_database = source."sourceDatabase"
+         AND disposition.source_table = source."sourceTable"
+         AND disposition.source_id = source."sourceId"
+         AND disposition.source_field = source."sourceField"
+         AND disposition.reason_code = source."reasonCode"
+         AND disposition.source_value_sha256 = source."sourceValueSha256"
+         AND disposition.disposition = source."disposition"
+         AND disposition.target_table IS NOT DISTINCT FROM source."targetTable"
+         AND disposition.target_id IS NOT DISTINCT FROM source."targetId"
+     )
+     SELECT matched.count AS matched_count,
+            count(disposition.*)::int AS total_count
+     FROM matched
+     LEFT JOIN platform.production_finance_migration_dispositions disposition
+       ON disposition.source_run_id = $2
+     GROUP BY matched.count`,
+    values,
+  );
+  const matchedCount = result.rows[0]?.matched_count ?? 0;
+  const totalCount = result.rows[0]?.total_count ?? 0;
+  if (matchedCount !== dispositions.length || totalCount !== dispositions.length)
+    throw new Error(
+      `Finance disposition replay mismatch: ${matchedCount} planned rows matched and ${totalCount} total rows persisted for ${dispositions.length} planned rows`,
+    );
+  return matchedCount;
 }
 
 function order(table: string): number {

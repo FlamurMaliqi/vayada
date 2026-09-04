@@ -61,6 +61,7 @@ describe("production Finance migration transaction", () => {
     expect(client.sql[2]).toContain("identity.organization_resource_links");
     expect(client.sql[3]).toContain("LOCK TABLE finance.payment_provider_accounts");
     expect(client.sql[3]).toContain("finance.stripe_provider_account_compensation_claims");
+    expect(client.sql[3]).toContain("production_finance_migration_dispositions");
     expect(client.sql.at(-1)).toBe("COMMIT");
   });
 
@@ -114,6 +115,7 @@ function serviceFixture(): ProductionFinanceMigrationServices {
     readTarget: vi.fn(async () => ({ ...prerequisites, records: [], provenance: [] })),
     buildPlan: vi.fn(() => plan(true)),
     writeRecords: vi.fn(async () => ({ payments: 1 })),
+    writeDispositions: vi.fn(async (_client, dispositions) => dispositions.length),
     writeProvenance: vi.fn(async () => 1),
   } as ProductionFinanceMigrationServices;
 }
@@ -149,25 +151,36 @@ function plan(withWrite: boolean): ProductionFinancePlan {
         lastMigratedAt: "2026-08-30T00:00:00.000Z",
       },
     ],
+    dispositions: [],
     blockers: [],
     parity: {
       sourceTableCounts: { "pms.payments": 1 },
       targetTableCounts: { "finance.payments": 1 },
+      dispositionCountsByReason: {},
+      omittedSourceRowCounts: {},
       sourcePaymentAmountsByCurrencyStatusOwner: {},
+      omittedPaymentAmountsByCurrencyStatusOwner: {},
       targetPaymentAmountsByCurrencyStatusOwner: {},
       sourcePaymentCountsByCurrencyStatusOwner: {},
+      omittedPaymentCountsByCurrencyStatusOwner: {},
       targetPaymentCountsByCurrencyStatusOwner: {},
       sourcePaymentFeesByCurrencyStatusOwner: {},
+      omittedPaymentFeesByCurrencyStatusOwner: {},
       targetPaymentFeesByCurrencyStatusOwner: {},
       sourcePaymentNetByCurrencyStatusOwner: {},
+      omittedPaymentNetByCurrencyStatusOwner: {},
       targetPaymentNetByCurrencyStatusOwner: {},
       sourcePaymentRefundsByCurrencyStatusOwner: {},
+      omittedPaymentRefundsByCurrencyStatusOwner: {},
       targetPaymentRefundsByCurrencyStatusOwner: {},
       sourcePayoutAmountsByCurrencyStatusOwner: {},
+      omittedPayoutAmountsByCurrencyStatusOwner: {},
       targetPayoutAmountsByCurrencyStatusOwner: {},
       sourcePayoutCountsByCurrencyStatusOwner: {},
+      omittedPayoutCountsByCurrencyStatusOwner: {},
       targetPayoutCountsByCurrencyStatusOwner: {},
       sourcePayoutNetByCurrencyStatusOwner: {},
+      omittedPayoutNetByCurrencyStatusOwner: {},
       targetPayoutNetByCurrencyStatusOwner: {},
       sourcePayoutAllocationsByBookingOwner: {},
       targetPayoutAllocationsByBookingOwner: {},
@@ -180,6 +193,8 @@ function plan(withWrite: boolean): ProductionFinancePlan {
       unchanged: withWrite ? 0 : 1,
       preservedNewerTarget: 0,
       preservedTargetDeletions: 0,
+      dispositions: 0,
+      omittedSourceRows: 0,
     },
   };
 }

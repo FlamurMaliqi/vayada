@@ -255,6 +255,29 @@ describe("Finance subscription service", () => {
     });
   });
 
+  it("keeps quarantined legacy Fixed state inert until explicit re-entry", async () => {
+    const fixture = setup({ billingStatus: "suspended" });
+    fixture.store.entitlement.metadata = {
+      legacyPlan: "fixed",
+      legacyBillingReferenceSha256: "a".repeat(64),
+      providerReentryRequired: true,
+    };
+
+    await expect(fixture.service.getPlanStatus("property-1")).resolves.toMatchObject({
+      plan: "commission",
+      status: "commission",
+      customerPortalAvailable: false,
+    });
+    expect(fixture.stripe.createFixedPlanCheckout).not.toHaveBeenCalled();
+    expect(fixture.stripe.expireFixedPlanCheckout).not.toHaveBeenCalled();
+    expect(fixture.stripe.cancelAtPeriodEnd).not.toHaveBeenCalled();
+
+    await expect(
+      fixture.service.createFixedPlanCheckout(command("migrated-fixed-reentry")),
+    ).resolves.toMatchObject({ ok: true, status: "created" });
+    expect(fixture.stripe.createFixedPlanCheckout).toHaveBeenCalledTimes(1);
+  });
+
   it("returns a typed service-unavailable error when Stripe is not configured", async () => {
     const fixture = setup({ stripeConfigured: false });
     await expect(fixture.service.createFixedPlanCheckout(command())).resolves.toMatchObject({
@@ -271,9 +294,14 @@ function setup(
     planKey?: "commission" | "fixed";
     subscriptionRef?: string | null;
     stripeConfigured?: boolean;
+    billingStatus?: string;
   } = {},
 ) {
-  const store = new MemoryStore(options.planKey ?? "commission", options.subscriptionRef ?? null);
+  const store = new MemoryStore(
+    options.planKey ?? "commission",
+    options.subscriptionRef ?? null,
+    options.billingStatus ?? "active",
+  );
   const stripe = {
     createFixedPlanCheckout: vi.fn(
       async (
@@ -312,12 +340,16 @@ class MemoryStore implements FinanceSubscriptionStore {
   private replay = new Map<string, unknown>();
   private checkoutLock = Promise.resolve();
 
-  constructor(planKey: "commission" | "fixed", subscriptionRef: string | null) {
+  constructor(
+    planKey: "commission" | "fixed",
+    subscriptionRef: string | null,
+    billingStatus: string,
+  ) {
     this.entitlement = {
       organizationId: "organization-1",
       propertyId: "property-1",
       planKey,
-      billingStatus: "active",
+      billingStatus,
       customerRef: planKey === "fixed" ? "cus_fixed" : null,
       subscriptionRef,
       checkoutSessionRef: null,

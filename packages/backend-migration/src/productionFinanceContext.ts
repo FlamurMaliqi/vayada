@@ -1,9 +1,11 @@
 import type { IdentitySourceRow } from "./productionIdentityDisposition.js";
 import type {
   FinanceBuildContext,
+  ProductionFinanceDisposition,
+  ProductionFinanceDispositionReasonCode,
   ProductionFinanceTargetState,
 } from "./productionFinanceTypes.js";
-import { requiredText, uuid } from "./productionBookingValues.js";
+import { requiredText, sha256, uuid } from "./productionBookingValues.js";
 
 export function createProductionFinanceContext(input: {
   sourceRunId: string;
@@ -14,6 +16,7 @@ export function createProductionFinanceContext(input: {
   const context: FinanceBuildContext = {
     ...input,
     blockers: [...(input.target.blockers ?? [])],
+    dispositions: [],
     rowsBySource: groupBy(input.rows, (row) => `${row.sourceDatabase}:${row.sourceTable}`),
     propertyBySource: new Map(),
     organizationByResource: new Map(),
@@ -22,6 +25,8 @@ export function createProductionFinanceContext(input: {
     pmsAffiliateById: new Map(),
     pmsAffiliatesByUserId: new Map(),
     pmsSettingsByProperty: new Map(),
+    plannedTargetIdsByTable: new Map(),
+    quarantinedSourceRows: new Set(),
   };
   indexPropertyLinks(context);
   indexResourceLinks(context);
@@ -40,8 +45,13 @@ export function createProductionFinanceContext(input: {
       const affiliates = context.pmsAffiliatesByUserId.get(userId);
       if (affiliates) affiliates.push(row);
       else context.pmsAffiliatesByUserId.set(userId, [row]);
-    } catch (error) {
-      blockRow(context, row, error);
+    } catch {
+      disposition(context, row, {
+        sourceField: "user_id",
+        sourceValue: row.data["user_id"] ?? null,
+        reasonCode: "INVALID_FINANCE_SOURCE_ROW",
+        disposition: "omitted_field",
+      });
     }
   }
   for (const row of context.rowsBySource.get("pms:hotel_payment_settings") ?? []) {
@@ -221,13 +231,47 @@ export function blockRow(
   } catch {
     id = String(row.rowOrdinal);
   }
-  block(
-    context,
-    "INVALID_FINANCE_SOURCE_ROW",
-    `${row.sourceDatabase}.${row.sourceTable}`,
-    id,
-    error instanceof Error ? error.message : "Invalid Finance source row",
-  );
+  disposition(context, row, {
+    sourceId: id,
+    sourceField: "*",
+    sourceValue: row.data,
+    reasonCode: "INVALID_FINANCE_SOURCE_ROW",
+    disposition: "omitted_row",
+  });
+}
+
+export function disposition(
+  context: FinanceBuildContext,
+  row: IdentitySourceRow,
+  input: {
+    sourceId?: string;
+    sourceField: string;
+    sourceValue: unknown;
+    reasonCode: ProductionFinanceDispositionReasonCode;
+    disposition: ProductionFinanceDisposition["disposition"];
+    targetTable?: string | null;
+    targetId?: string | null;
+  },
+): void {
+  const sourceIdValue = input.sourceId ?? sourceId(row);
+  const candidate: ProductionFinanceDisposition = {
+    sourceDatabase: row.sourceDatabase as "booking" | "pms",
+    sourceTable: row.sourceTable,
+    sourceId: sourceIdValue,
+    sourceField: input.sourceField,
+    sourceValueSha256: sha256(input.sourceValue),
+    reasonCode: input.reasonCode,
+    disposition: input.disposition,
+    targetTable: input.targetTable ?? null,
+    targetId: input.targetId ?? null,
+  };
+  const key = dispositionKey(candidate);
+  if (!context.dispositions.some((value) => dispositionKey(value) === key))
+    context.dispositions.push(candidate);
+}
+
+function dispositionKey(value: ProductionFinanceDisposition): string {
+  return `${value.sourceDatabase}:${value.sourceTable}:${value.sourceId}:${value.sourceField}:${value.reasonCode}`;
 }
 
 function indexRows(
@@ -236,7 +280,28 @@ function indexRows(
   table: string,
 ): Map<string, IdentitySourceRow> {
   const rows = sourceRows(context, database, table);
-  return uniqueIndex(context, rows, (row) => sourceId(row), `${database}.${table}`);
+  const result = new Map<string, IdentitySourceRow>();
+  const duplicates = new Set<string>();
+  for (const row of rows) {
+    try {
+      const id = sourceId(row);
+      if (result.has(id)) duplicates.add(id);
+      else result.set(id, row);
+    } catch (error) {
+      blockRow(context, row, error);
+    }
+  }
+  for (const id of duplicates) {
+    result.delete(id);
+    block(
+      context,
+      "DUPLICATE_FINANCE_SOURCE_ID",
+      `${database}.${table}`,
+      id,
+      "More than one source row has this identity",
+    );
+  }
+  return result;
 }
 
 function uniqueIndex<T>(
