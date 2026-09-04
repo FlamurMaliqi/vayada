@@ -38,7 +38,7 @@ export function CookieBanner() {
                 id="cookie-banner-description"
                 className="mt-1.5 text-sm leading-6 text-muted-dark"
               >
-                We use necessary cookies to keep Vayada working and optional cookies to improve your
+                We use necessary cookies to keep vayada working and optional cookies to improve your
                 experience.{" "}
                 <Link
                   href={ROUTES.PRIVACY}

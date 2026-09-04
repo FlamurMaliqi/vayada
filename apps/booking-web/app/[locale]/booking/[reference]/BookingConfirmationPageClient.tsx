@@ -630,16 +630,18 @@ export default function BookingConfirmationPageClient({
                 </span>
               </div>
               {booking?.addonIds && booking.addonIds.length > 0 && (
-                <div className="py-3">
-                  <p className="text-gray-600 mb-2">{t("addons") || "Add-ons"}</p>
-                  <div className="space-y-1.5">
+                <div className="flex justify-between gap-4 py-3">
+                  <span className="text-gray-600">{t("addons") || "Add-ons"}</span>
+                  <div className="space-y-1.5 text-right">
                     {booking.addonIds.map((addonId, idx) => {
                       const qty = booking.addonQuantities?.[addonId];
                       const name = booking.addonNames?.[idx] || addonId;
                       return (
-                        <div key={addonId} className="flex justify-between text-sm">
-                          <span className="font-medium text-gray-900">{name}</span>
-                          {qty && qty > 1 ? <span className="text-gray-500">× {qty}</span> : null}
+                        <div key={addonId} className="font-medium text-gray-900">
+                          {name}
+                          {qty && qty > 1 ? (
+                            <span className="ml-2 font-normal text-gray-500">× {qty}</span>
+                          ) : null}
                         </div>
                       );
                     })}

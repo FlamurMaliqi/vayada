@@ -103,6 +103,7 @@ import { createPmsManualBookingProductionCommandConfig } from "./domains/pmsManu
 import { createPmsRoomAssignmentOptimizationTriggerPort } from "./domains/pmsRoomAssignmentOptimizationTriggers.js";
 import { createPgPmsRoomAssignmentSettingsPort } from "./domains/pmsRoomAssignmentSettings.js";
 import { createPgPmsRoomAssignmentOptimizationHistoryPort } from "./domains/pmsRoomAssignmentOptimizationHistory.js";
+import { createPgPmsCalendarAutoOpenSettingsRepository } from "./domains/pmsCalendarAutoOpenSettingsRepository.js";
 import { createPgPmsRecurringPricingReadModel } from "./domains/pmsRecurringPricingReadModel.js";
 import { createPgPmsRecurringPricingCommandRepository } from "./domains/pmsRecurringPricingCommandRepository.js";
 import { createPgPmsMandatoryChargeConfirmationReadModel } from "./domains/pmsMandatoryChargeConfirmationReadModel.js";
@@ -160,6 +161,10 @@ import { createResendPmsInboxDelivery } from "./integrations/resendPmsInboxDeliv
 import { createPgChannexManagementPlanPort } from "./integrations/channexManagementPlans.js";
 import { runPmsChannexManagementWorkerOnce } from "./jobs/pmsChannexManagementWorker.js";
 import { createPgPmsChannexManagementWorkerStore } from "./jobs/pmsChannexManagementWorkerStore.js";
+import {
+  createPgPmsCalendarAutoOpenWorkerStore,
+  runPmsCalendarAutoOpenWorkerOnce,
+} from "./jobs/pmsCalendarAutoOpenWorker.js";
 import { createPmsChannexManagementTargetState } from "./jobs/pmsChannexManagementTargetState.js";
 import {
   runFinanceSubscriptionNotificationJobs,
@@ -411,6 +416,10 @@ const pmsRoomAssignmentSettings = pmsOperationsRepository
 const pmsRoomAssignmentHistory = pmsOperationsRepository
   ? createPgPmsRoomAssignmentOptimizationHistoryPort({ connectionString: targetDatabaseUrl })
   : undefined;
+const pmsCalendarAutoOpenSettings =
+  pmsOperationsRepository && config.auth
+    ? createPgPmsCalendarAutoOpenSettingsRepository({ connectionString: targetDatabaseUrl })
+    : undefined;
 
 const pmsModuleActivationRepository = config.auth
   ? createPgPmsModuleActivationRepository({
@@ -806,6 +815,12 @@ const pmsOperatingCalendarRuntime = createPmsOperatingCalendarProductionRuntime(
   },
   operatingCalendar: propertySetupPmsRuntime.operatingCalendar,
 });
+const pmsCalendarAutoOpenWorkerStore = pmsOperatingCalendarRuntime
+  ? createPgPmsCalendarAutoOpenWorkerStore({
+      connectionString: targetDatabaseUrl,
+      propertyProfileEvidence: propertySetupPmsRuntime.propertyProfileEvidence,
+    })
+  : undefined;
 const pmsGuestPolicySetupCommands =
   config.pmsOperationsSource === "target"
     ? {
@@ -1238,6 +1253,7 @@ const app = buildApp({
   sameDayBookingSettings,
   pmsRoomAssignmentSettings,
   pmsRoomAssignmentHistory,
+  pmsCalendarAutoOpenSettings,
   pmsRoomPublication: pmsRoomPublicationRuntime
     ? {
         mediaCommandPort: pmsRoomPublicationRuntime.commandRepository,
@@ -1308,6 +1324,10 @@ const app = buildApp({
   bookingSettingsWriteRepository: bookingSettingsRepository,
   propertyLaunchSettingsRepository,
   publicBookabilityPublisher: routePublicBookabilityPublisher,
+  bookingPublicationRefresh:
+    config.publicHotelProfileSource === "active_publication" && bookingPublicationRuntime
+      ? { refresh: bookingPublicationRuntime.refresh.bind(bookingPublicationRuntime) }
+      : undefined,
   bookingCustomDomainRepository,
   marketplaceDiscoveryRepository,
   marketplaceCollaborationRepository: createPgMarketplaceCollaborationReadRepository({
@@ -1597,6 +1617,34 @@ app.addHook("onClose", async () => {
     channexManagementPlans?.close(),
     channexBookingRevisionStore?.close?.(),
   ]);
+});
+
+let activeCalendarAutoOpenRun: Promise<void> | undefined;
+const runCalendarAutoOpen = () => {
+  if (!pmsCalendarAutoOpenWorkerStore || activeCalendarAutoOpenRun) return;
+  activeCalendarAutoOpenRun = runPmsCalendarAutoOpenWorkerOnce({
+    store: pmsCalendarAutoOpenWorkerStore,
+    workerId: `pms-calendar-auto-open:${process.pid}`,
+  })
+    .then((result) => {
+      if (result.outcome === "dead_lettered") {
+        app.log.error(result, "PMS calendar auto-open job was dead-lettered");
+      }
+    })
+    .catch((error: unknown) => app.log.warn({ err: error }, "PMS calendar auto-open worker failed"))
+    .finally(() => {
+      activeCalendarAutoOpenRun = undefined;
+    });
+};
+const calendarAutoOpenTimer = pmsCalendarAutoOpenWorkerStore
+  ? setInterval(runCalendarAutoOpen, 2_000)
+  : undefined;
+calendarAutoOpenTimer?.unref();
+if (pmsCalendarAutoOpenWorkerStore) runCalendarAutoOpen();
+app.addHook("onClose", async () => {
+  if (calendarAutoOpenTimer) clearInterval(calendarAutoOpenTimer);
+  await activeCalendarAutoOpenRun;
+  await pmsCalendarAutoOpenWorkerStore?.close?.();
 });
 
 let activeFinanceSubscriptionBatch: Promise<void> | undefined;

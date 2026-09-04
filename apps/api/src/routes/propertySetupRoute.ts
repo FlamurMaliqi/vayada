@@ -193,7 +193,7 @@ export async function registerPropertySetupRouteRoutes(
       if (selectedTracks.length === 0) {
         return reply.status(409).send({
           code: "setup_track_selection_required",
-          detail: "Select at least one Vayada service before loading property setup.",
+          detail: "Select at least one vayada service before loading property setup.",
         });
       }
       try {

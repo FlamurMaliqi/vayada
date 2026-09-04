@@ -314,7 +314,7 @@ export function YearlyCalendar({
             <button
               type="button"
               disabled
-              title="Adding creators outside Vayada isn’t available yet."
+              title="Adding creators outside vayada isn’t available yet."
               className="flex cursor-not-allowed items-center gap-2 rounded-md border border-gray-200 bg-gray-100 px-3 py-2 text-sm font-medium text-gray-500"
             >
               <svg

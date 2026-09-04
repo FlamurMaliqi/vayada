@@ -167,11 +167,18 @@ export interface UserDetailResponse {
   createdAt: string;
   updatedAt: string;
   profile: CreatorProfileDetail | HotelProfileDetail | null;
+  creatorModeration?: CreatorModerationCapabilities;
+}
+
+export interface CreatorModerationCapabilities {
+  allowed: boolean;
+  allowedTransitions: Array<"active" | "rejected" | "suspended" | "archived">;
 }
 
 export interface CreatorProfileDetail {
   id: string;
   userId: string;
+  profileStatus: "pending" | "active" | "rejected" | "suspended" | "archived";
   location: string | null;
   shortDescription: string | null;
   portfolioLink: string | null;

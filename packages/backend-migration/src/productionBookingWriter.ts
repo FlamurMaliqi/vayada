@@ -2,10 +2,13 @@ import type pg from "pg";
 
 import type {
   BookingTargetRecord,
+  ProductionBookingInference,
+  ProductionBookingQuarantine,
   ProductionMigrationSourceLink,
 } from "./productionBookingTypes.js";
 
 type QueryClient = Pick<pg.ClientBase, "query">;
+const PROVENANCE_WRITE_BATCH_SIZE = 500;
 type Column = readonly [jsonKey: string, sqlName: string, type: string];
 type WriterDefinition = {
   table: string;
@@ -389,8 +392,7 @@ export async function writeProductionMigrationProvenance(
   sourceRunId: string,
 ): Promise<number> {
   if (!links.length) return 0;
-  const result = await client.query(
-    `INSERT INTO platform.production_migration_source_links
+  const sql = `INSERT INTO platform.production_migration_source_links
        (source_database, source_table, source_id, target_product, target_table, target_id,
         first_run_id, last_run_id, source_checksum, source_updated_at)
      SELECT source."sourceDatabase", source."sourceTable", source."sourceId",
@@ -405,8 +407,98 @@ export async function writeProductionMigrationProvenance(
      DO UPDATE SET last_run_id = EXCLUDED.last_run_id,
                    source_checksum = EXCLUDED.source_checksum,
                    source_updated_at = EXCLUDED.source_updated_at,
-                   last_migrated_at = now()`,
-    [JSON.stringify(links), sourceRunId],
+                   last_migrated_at = now()`;
+  let count = 0;
+  // PMS inventory produces a large provenance cohort; all batches stay in the caller's transaction.
+  for (let offset = 0; offset < links.length; offset += PROVENANCE_WRITE_BATCH_SIZE) {
+    const result = await client.query(sql, [
+      JSON.stringify(links.slice(offset, offset + PROVENANCE_WRITE_BATCH_SIZE)),
+      sourceRunId,
+    ]);
+    count += result.rowCount ?? 0;
+  }
+  return count;
+}
+
+export async function writeProductionBookingQuarantines(
+  client: QueryClient,
+  quarantines: ProductionBookingQuarantine[],
+  sourceRunId: string,
+): Promise<number> {
+  if (!quarantines.length) return 0;
+  const values = [JSON.stringify(quarantines), sourceRunId];
+  await client.query(
+    `INSERT INTO platform.production_booking_migration_quarantines
+       (source_run_id, source_database, source_table, source_id, source_field,
+        source_value_sha256, reason_code, retention_until)
+     SELECT $2, "sourceDatabase", "sourceTable", "sourceId", "sourceField",
+            "sourceValueSha256", "reasonCode", "retentionUntil"
+     FROM jsonb_to_recordset($1::jsonb) AS source(
+         "sourceDatabase" text, "sourceTable" text, "sourceId" text,
+         "sourceField" text, "sourceValueSha256" text, "reasonCode" text,
+         "retentionUntil" date
+     )
+     ON CONFLICT DO NOTHING`,
+    values,
   );
-  return result.rowCount ?? 0;
+  const result = await client.query<{ count: number }>(
+    `SELECT count(*)::int AS count
+     FROM platform.production_booking_migration_quarantines quarantine
+     JOIN jsonb_to_recordset($1::jsonb) AS source(
+       "sourceDatabase" text, "sourceTable" text, "sourceId" text,
+       "sourceField" text, "sourceValueSha256" text, "reasonCode" text,
+       "retentionUntil" date
+     ) ON quarantine.source_run_id = $2
+                AND quarantine.source_database = source."sourceDatabase"
+                AND quarantine.source_table = source."sourceTable"
+                AND quarantine.source_id = source."sourceId"
+                AND quarantine.source_field = source."sourceField"
+                AND quarantine.reason_code = source."reasonCode"
+                AND quarantine.source_value_sha256 = source."sourceValueSha256"
+                AND quarantine.retention_until IS NOT DISTINCT FROM source."retentionUntil"`,
+    values,
+  );
+  return result.rows[0]?.count ?? 0;
+}
+
+export async function writeProductionBookingInferences(
+  client: QueryClient,
+  inferences: ProductionBookingInference[],
+  sourceRunId: string,
+): Promise<number> {
+  if (!inferences.length) return 0;
+  const values = [JSON.stringify(inferences), sourceRunId];
+  await client.query(
+    `INSERT INTO platform.production_booking_migration_inferences
+       (source_run_id, source_database, source_table, source_id, source_field,
+        source_value_sha256, source_row_sha256, inferred_value, reason_code)
+     SELECT $2, "sourceDatabase", "sourceTable", "sourceId", "sourceField",
+            "sourceValueSha256", "sourceRowSha256", "inferredValue", "reasonCode"
+     FROM jsonb_to_recordset($1::jsonb) AS source(
+       "sourceDatabase" text, "sourceTable" text, "sourceId" text,
+       "sourceField" text, "sourceValueSha256" text, "sourceRowSha256" text,
+       "inferredValue" text, "reasonCode" text
+     )
+     ON CONFLICT DO NOTHING`,
+    values,
+  );
+  const result = await client.query<{ count: number }>(
+    `SELECT count(*)::int AS count
+     FROM platform.production_booking_migration_inferences inference
+     JOIN jsonb_to_recordset($1::jsonb) AS source(
+       "sourceDatabase" text, "sourceTable" text, "sourceId" text,
+       "sourceField" text, "sourceValueSha256" text, "sourceRowSha256" text,
+       "inferredValue" text, "reasonCode" text
+     ) ON inference.source_run_id = $2
+                AND inference.source_database = source."sourceDatabase"
+                AND inference.source_table = source."sourceTable"
+                AND inference.source_id = source."sourceId"
+                AND inference.source_field = source."sourceField"
+                AND inference.source_value_sha256 = source."sourceValueSha256"
+                AND inference.source_row_sha256 = source."sourceRowSha256"
+                AND inference.inferred_value = source."inferredValue"
+                AND inference.reason_code = source."reasonCode"`,
+    values,
+  );
+  return result.rows[0]?.count ?? 0;
 }

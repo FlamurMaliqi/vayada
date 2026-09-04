@@ -266,6 +266,7 @@ describe("@vayada/domain-marketplace", () => {
       ],
       audienceSize: 24000,
       rating: { averageRating: 4.5, totalReviews: 2 },
+      matchingPreferences: null,
       createdAt: "2026-05-01T08:00:00.000Z",
       updatedAt: "2026-06-12T08:00:00.000Z",
     };
@@ -431,6 +432,7 @@ describe("@vayada/domain-marketplace", () => {
             targetAgeGroups: ["25-34", "35-44"],
             creatorTypes: ["travel", "lifestyle"],
           },
+          matchingCriteria: null,
           createdAt: "2026-06-12T08:02:00.000Z",
           updatedAt: "2026-06-12T08:03:00.000Z",
         },

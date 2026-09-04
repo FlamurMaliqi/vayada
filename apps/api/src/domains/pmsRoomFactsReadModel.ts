@@ -250,6 +250,7 @@ export function pmsRoomFactsSnapshotFromRow(row: PmsRoomFactsRow): RoomTypeFacts
   }
   const occupancy = dataRecord(row.occupancyLimits);
   const attributes = dataRecord(row.roomAttributes);
+  const maxGuests = occupancy?.["total"];
   const parsed = parseRoomTypeFactsSnapshot({
     contractVersion: PMS_ROOM_FACTS_CONTRACT_VERSION,
     propertyId: row.propertyId,
@@ -261,9 +262,9 @@ export function pmsRoomFactsSnapshotFromRow(row: PmsRoomFactsRow): RoomTypeFacts
       description: row.description,
       category: row.category,
       occupancy: {
-        maxGuests: occupancy?.["total"],
-        maxAdults: occupancy?.["adults"],
-        maxChildren: occupancy?.["children"],
+        maxGuests,
+        maxAdults: occupancy?.["adults"] ?? maxGuests,
+        maxChildren: occupancy?.["children"] ?? maxGuests,
       },
       beds: attributes?.["beds"] ?? legacyBeds(attributes?.["bedType"]),
       bedrooms: attributes?.["bedrooms"],

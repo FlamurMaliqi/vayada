@@ -25,7 +25,7 @@ test.describe("target PMS room blocks", () => {
 
     await page.goto("/calendar");
     await expect(page.getByRole("button", { name: "Block Room" })).toBeEnabled();
-    await expect(page.getByRole("button", { name: "New Booking" })).toBeDisabled();
+    await expect(page.getByRole("button", { name: "New Booking" })).toBeEnabled();
 
     await page.getByRole("button", { name: "Block Room" }).click();
     await page.locator('input[type="date"]').nth(0).fill("2026-08-20");

@@ -14,5 +14,8 @@
     "./api/platformMedia": "./src/api/platformMedia.ts",
     "./api/privacy": "./src/api/privacy.ts",
     "./api/trips": "./src/api/trips.ts"
+  },
+  "dependencies": {
+    "@vayada/domain-marketplace": "0.0.0"
   }
 }

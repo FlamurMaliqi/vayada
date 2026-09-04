@@ -9,6 +9,7 @@ import {
   type ChannexSyncDomainState,
 } from "@vayada/domain-pms-channex";
 import pg from "pg";
+import { CHANNEX_ARI_MAPPING_MISSING_SQL } from "./pmsChannexAriMapping.js";
 
 export const PMS_CHANNEX_MANAGEMENT_QUEUE = "pms.channex.management";
 
@@ -19,6 +20,7 @@ type ConnectionRow = {
   externalPropertyId: string | null;
   messagingAppInstalled: boolean;
   metadata: Record<string, unknown>;
+  ariMappingMissing: boolean;
 };
 
 export type PmsChannexManagementJobRow = {
@@ -45,6 +47,7 @@ export type PmsChannexManagementReadRepository = {
 export function createPgPmsChannexManagementReadRepository(config: {
   connectionString: string;
   pool?: Pool;
+  now?: () => Date;
 }): PmsChannexManagementReadRepository {
   const pool =
     config.pool ?? new pg.Pool({ connectionString: required(config.connectionString), max: 5 });
@@ -57,10 +60,17 @@ export function createPgPmsChannexManagementReadRepository(config: {
             `SELECT connection_status AS status,
                     external_property_id AS "externalPropertyId",
                     messaging_app_installed AS "messagingAppInstalled",
-                    connection_metadata AS metadata
-             FROM pms.channel_connections
-             WHERE property_id = $1::uuid AND provider = 'channex'`,
-            [propertyId],
+                    connection_metadata AS metadata,
+                    EXISTS (
+                      SELECT 1 FROM pms.inventory_days inventory
+                      WHERE inventory.property_id = connection.property_id
+                        AND inventory.stay_date >= ($2::timestamptz AT TIME ZONE COALESCE(location.timezone, 'UTC'))::date
+                        AND ${CHANNEX_ARI_MAPPING_MISSING_SQL}
+                    ) AS "ariMappingMissing"
+             FROM pms.channel_connections connection
+             LEFT JOIN hotel_catalog.property_locations location ON location.property_id = connection.property_id
+             WHERE connection.property_id = $1::uuid AND connection.provider = 'channex'`,
+            [propertyId, (config.now?.() ?? new Date()).toISOString()],
           ),
           pool.query(
             `SELECT mapping.id::text AS "mappingId", mapping.room_type_id::text AS "roomTypeId",
@@ -119,6 +129,16 @@ export function createPgPmsChannexManagementReadRepository(config: {
       const row = connection.rows[0];
       const sync = emptySyncState();
       for (const item of syncRows.rows) sync[item.domain] = item.state;
+      if (row?.ariMappingMissing && (row.status === "connected" || row.status === "degraded")) {
+        sync.ari = {
+          ...sync.ari,
+          status: "failed",
+          lastErrorCode: "mapping_missing",
+          lastErrorMessage:
+            "Future availability cannot sync: an active Channex room or rate mapping is missing.",
+          retryAfter: null,
+        };
+      }
 
       return {
         contractVersion: CHANNEX_MANAGEMENT_CONTRACT_VERSION,

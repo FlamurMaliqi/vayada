@@ -157,6 +157,16 @@ describe("PMS room-facts read model", () => {
     ).toThrow("row failed contract validation");
   });
 
+  it("maps omitted optional guest limits to total occupancy", () => {
+    const snapshot = pmsRoomFactsSnapshotFromRow(roomFactsRow({ occupancyLimits: { total: 2 } }));
+
+    expect(snapshot.facts.occupancy).toEqual({
+      maxGuests: 2,
+      maxAdults: 2,
+      maxChildren: 2,
+    });
+  });
+
   it("lists active and inactive facts in creation order within one property", async () => {
     const target = targetPool([
       [roomFactsRow(), roomFactsRow({ roomTypeId: otherRoomTypeId, active: false })],

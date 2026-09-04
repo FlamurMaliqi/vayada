@@ -1,3 +1,5 @@
+-- Migration: 0145_pms_inbox_assistance_results
+
 BEGIN;
 
 CREATE TABLE pms.message_assistance_results (

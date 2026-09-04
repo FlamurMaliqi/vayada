@@ -1072,21 +1072,14 @@ LEFT JOIN LATERAL (
 LEFT JOIN LATERAL (
   SELECT jsonb_agg(
            jsonb_build_object(
-             'addonId', COALESCE(selection.addon_definition_id, selection.id)::text,
-             'name', COALESCE(
-               NULLIF(selection.addon_snapshot ->> 'name', ''),
-               definition.name,
-               'Unavailable add-on'
-             ),
-             'quantity', selection.quantity
-           ) ORDER BY selection.created_at, selection.id
+             'addonId', item.addon_key,
+             'name', item.addon_name,
+             'quantity', item.quantity
+           ) ORDER BY item.created_at, item.selection_id, item.item_ordinality
          ) AS items
-  FROM booking.booking_addon_selections selection
-  LEFT JOIN booking.addon_definitions definition
-    ON definition.id = selection.addon_definition_id
-   AND definition.property_id = selection.property_id
-  WHERE selection.guest_booking_id = booking.id
-    AND selection.property_id = booking.property_id
+  FROM booking.booking_addon_selection_items item
+  WHERE item.guest_booking_id = booking.id
+    AND item.property_id = booking.property_id
 ) addons ON TRUE
 LEFT JOIN LATERAL (
   SELECT record.completed_at, record.pending_flags

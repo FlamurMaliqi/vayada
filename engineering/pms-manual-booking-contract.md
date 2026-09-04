@@ -161,7 +161,7 @@ Both endpoints return `{ code, message, field?, stayPosition? }` on failure:
 | ----- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `400` | `invalid_body`, `unknown_field`                                                                                                                         |
 | `403` | `forbidden`, `entitlement_required`; create also uses `paid_forbidden`                                                                                  |
-| `404` | `property_not_found`, `room_not_found`, `rate_plan_not_found`, `addon_not_found`                                                                        |
+| `404` | `property_not_found`, `room_not_found`, `rate_plan_not_found`, `rate_not_found`, `addon_not_found`                                                      |
 | `409` | `room_unavailable`; create also uses `idempotency_conflict`                                                                                             |
 | `422` | `invalid_dates`, `occupancy_exceeded`, `currency_mismatch`, `inactive_rate_plan`, `invalid_addon_selection`, `invalid_source`, `invalid_payment_method` |
 
@@ -199,6 +199,10 @@ the target manual writer can be accepted.
 - `rate_plan` pricing is resolved server-side for every service night from the
   selected plan and then snapshotted. A manual override replaces each nightly
   plan amount but preserves the chosen plan ID and comparison evidence.
+- Additional-guest pricing uses a matching current Booking guest-policy
+  projection to decide whether children count. If that optional projection is
+  absent or its pricing fingerprint, selected rate, or additional-guest source
+  does not match current PMS evidence, all selected occupants count.
 - `custom` pricing requires an explicit nightly amount and has no rate-plan ID.
   There is no silent fallback to the current flexible/base rate.
 - Per-night evidence is `exact` for resolved plans and uniform manual amounts.

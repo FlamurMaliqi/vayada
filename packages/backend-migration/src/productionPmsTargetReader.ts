@@ -5,6 +5,7 @@ import type { ProductionMigrationSourceLink } from "./productionBookingTypes.js"
 import type {
   ExistingPmsTargetRecord,
   PmsPropertyLink,
+  PmsMediaQuarantine,
   PmsMediaReference,
   PmsTargetRecord,
   ProductionPmsTargetState,
@@ -79,6 +80,16 @@ export async function readProductionPmsPrerequisites(
       ORDER BY media.source_table, media.source_row_id, media.purpose, media.id`,
     [sourceRunId],
   );
+  const mediaQuarantines = await client.query<PmsMediaQuarantine>(
+    `SELECT source_table AS "sourceTable", source_row_id AS "sourceRowId",
+            source_field AS "sourceField", source_value_sha256 AS "sourceValueSha256",
+            purpose, reason_code AS "reasonCode"
+       FROM platform.production_media_migration_quarantines
+      WHERE source_run_id = $1 AND source_system = 'pms'
+        AND purpose IN ('pms.room_type.media', 'pms.messaging.attachment')
+      ORDER BY source_table, source_row_id, purpose`,
+    [sourceRunId],
+  );
   return {
     propertyLinks: links.rows,
     bookings: bookings.rows.map((booking) => ({
@@ -87,6 +98,7 @@ export async function readProductionPmsPrerequisites(
     })),
     userIds: users.rows.map((row) => row.id),
     media: mediaReferences.rows,
+    mediaQuarantines: mediaQuarantines.rows,
     mediaIds: media.rows.map((row) => row.id),
   };
 }
@@ -119,14 +131,12 @@ export async function readProductionPmsTargetState(
        ORDER BY ${targetId}`,
       [[...new Set(ids)]],
     );
-    records.push(
-      ...result.rows.map((row) => ({
-        targetProduct: definition.product,
-        targetTable,
-        targetId: row.targetId,
-        updatedAt: normalizeTimestamp(row.updatedAt, `${definition.table}.${definition.freshness}`),
-        row: camelize(JSON.parse(row.rowData) as Record<string, unknown>),
-      })),
+    appendProductionPmsTargetRows(
+      records,
+      definition.product,
+      targetTable,
+      `${definition.table}.${definition.freshness}`,
+      result.rows,
     );
   }
   const roomTypeCohort = await client.query<{
@@ -215,17 +225,30 @@ function appendMissingRecords(
   const existing = new Set(
     records.filter((record) => record.targetTable === targetTable).map((record) => record.targetId),
   );
-  records.push(
-    ...rows
-      .filter((row) => !existing.has(row.targetId))
-      .map((row) => ({
-        targetProduct: "pms",
-        targetTable,
-        targetId: row.targetId,
-        updatedAt: normalizeTimestamp(row.updatedAt, `pms.${targetTable}.updated_at`),
-        row: camelize(JSON.parse(row.rowData) as Record<string, unknown>),
-      })),
+  appendProductionPmsTargetRows(
+    records,
+    "pms",
+    targetTable,
+    `pms.${targetTable}.updated_at`,
+    rows.filter((row) => !existing.has(row.targetId)),
   );
+}
+
+export function appendProductionPmsTargetRows(
+  records: ExistingPmsTargetRecord[],
+  targetProduct: string,
+  targetTable: string,
+  freshnessField: string,
+  rows: Array<{ targetId: string; updatedAt: string | null; rowData: string }>,
+): void {
+  for (const row of rows)
+    records.push({
+      targetProduct,
+      targetTable,
+      targetId: row.targetId,
+      updatedAt: normalizeTimestamp(row.updatedAt, freshnessField),
+      row: camelize(JSON.parse(row.rowData) as Record<string, unknown>),
+    });
 }
 
 async function readStaleTargetBlockers(
@@ -286,7 +309,36 @@ async function readCollisions(
   client: QueryClient,
   candidates: PmsTargetRecord[],
 ): Promise<IdentityMigrationBlocker[]> {
-  if (!candidates.length) return [];
+  // Only these tables participate in the secondary-unique checks below. In particular,
+  // inventory days must not inflate the JSON recordset for every collision query.
+  const collisionTables = new Set([
+    "room_types",
+    "rooms",
+    "rate_plans",
+    "operational_booking_assignments",
+    "message_threads",
+    "messages",
+    "channel_connections",
+    "channel_binding_claims",
+    "channel_room_type_mappings",
+    "channel_rate_plan_mappings",
+    "channel_booking_mappings",
+    "channel_sync_status",
+    "product_audit_events",
+    "external_webhook_events",
+  ]);
+  const relevant = candidates.filter((candidate) => collisionTables.has(candidate.targetTable));
+  const blockers: IdentityMigrationBlocker[] = [];
+  for (let offset = 0; offset < relevant.length; offset += 500)
+    for (const blocker of await readCollisionBatch(client, relevant.slice(offset, offset + 500)))
+      blockers.push(blocker);
+  return blockers;
+}
+
+async function readCollisionBatch(
+  client: QueryClient,
+  candidates: PmsTargetRecord[],
+): Promise<IdentityMigrationBlocker[]> {
   const rows = candidates.map((candidate) => ({
     targetTable: candidate.targetTable,
     targetId: candidate.targetId,
@@ -297,7 +349,7 @@ async function readCollisions(
        SELECT * FROM jsonb_to_recordset($1::jsonb) AS source(
          "targetTable" text, "targetId" text, "propertyId" uuid,
          "sourceSystem" text, "sourceRoomTypeId" text, "sourceRoomId" text,
-         "roomNumber" text, "roomTypeId" uuid, code text,
+         name text, active boolean, "roomNumber" text, "roomTypeId" uuid, code text,
          "guestBookingId" uuid, position integer, source text, "sourceThreadId" text,
          "threadId" uuid, "sourceMessageId" text, provider text, "connectionId" uuid,
          "externalPropertyId" text, "claimState" text,
@@ -312,6 +364,12 @@ async function readCollisions(
       AND target.id::text <> requested."targetId" AND target.property_id = requested."propertyId"
       AND target.source_system = requested."sourceSystem"
       AND target.source_room_type_id = requested."sourceRoomTypeId"
+     UNION ALL
+     SELECT 'TARGET_UNIQUE_CONFLICT', 'pms.room_types', target.id::text,
+            'Another active room type owns this case-insensitive property name'
+     FROM requested JOIN pms.room_types target ON requested."targetTable" = 'room_types'
+      AND target.id::text <> requested."targetId" AND target.property_id = requested."propertyId"
+      AND target.active AND requested.active AND lower(target.name) = lower(requested.name)
      UNION ALL
      SELECT 'TARGET_UNIQUE_CONFLICT', 'pms.rooms', target.id::text,
             'Another room owns this legacy identity or property room number'

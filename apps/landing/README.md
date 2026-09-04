@@ -1,6 +1,6 @@
 # vayada-landing
 
-The public **marketing / landing site** for vayada (Next.js 14, App Router).
+The target-stack **marketing / landing site** for vayada (Next.js App Router).
 
 Split out of `vayada-creator-marketplace-frontend` so the marketing surface and
 the authenticated creator marketplace app evolve as independent projects. This
@@ -16,9 +16,9 @@ repo contains only public website pages — no authenticated app code.
 | `/imprint`, `/privacy`, `/terms`                                                    | Legal                                     |
 | `/api/health`                                                                       | Health check (for the container platform) |
 
-`/hotel-creator-network` pulls live creators/hotels from the marketplace
-backend API, and `/contact` submits to the target platform intake route —
-see `NEXT_PUBLIC_API_URL`.
+`/hotel-creator-network` pulls live creators/hotels from the TypeScript API via
+`NEXT_PUBLIC_VAYADA_API_URL`. `/contact` submits to the public contact endpoint
+via `NEXT_PUBLIC_API_URL`.
 
 The marketing chrome (`Navigation`, `Footer`, `LandingFooter`) is intentionally
 duplicated in both repos because app pages (`/hotels/[id]`, `/creators`,
@@ -33,13 +33,18 @@ npm run build    # always run before declaring a change done
 npm run lint
 ```
 
-`NEXT_PUBLIC_API_URL` points the contact form and HCN data fetch at the public
-API host. The current portless local default is the marketplace FastAPI API; use
-`http://localhost:8003` only when testing a target `apps/api` cutover. See
-`.env.example`.
+The two API variables stay separate: `NEXT_PUBLIC_API_URL` is the contact API,
+while `NEXT_PUBLIC_VAYADA_API_URL` is the TypeScript marketplace discovery API.
+See `.env.example` for local targets.
 
 ## Deploy
 
-`Dockerfile` builds a Next.js `standalone` image. `.github/workflows/deploy.yml`
-pushes to ECR repo **`vayada-landing`** on push to `main`; the container
-platform auto-deploys. ECR repo + service + DNS are provisioned in [`vayada-platform`](https://github.com/vayada-marketplace/vayada-platform) — pending the domain cutover.
+[`deploy-landing.yml`](../../.github/workflows/deploy-landing.yml) builds the
+Next.js `standalone` image and pushes `latest` plus an immutable commit-SHA tag
+to the `vayada-landing` ECR repository after landing changes merge to `main`.
+The existing `vayada-landing` App Runner service watches `latest` and publishes
+it at `vayada.com`.
+
+`vayada.com` is the shared public landing surface. Deploying it does not change
+the separate application or API hostnames. No DNS change is required for a
+normal landing deployment.

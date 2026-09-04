@@ -461,7 +461,7 @@ export function AdaptiveHotelSetupController({
       brandMark={
         <Image
           src="/vayada-logo.png"
-          alt="Vayada"
+          alt="vayada"
           width={36}
           height={32}
           priority

@@ -28,9 +28,6 @@ test.describe("landing smoke", () => {
   for (const route of routes) {
     test(`${route.path} renders the public shell`, async ({ page }, testInfo) => {
       const assertHealthy = watchPageHealth(page, testInfo);
-      await page.route("**/consent/cookies**", async (requestRoute) => {
-        await requestRoute.fulfill({ status: 204, body: "" });
-      });
 
       await page.goto(route.path);
 

@@ -24,6 +24,7 @@ const hotelIdentityUser = {
 };
 const creatorIdentityUser = { ...hotelIdentityUser, id: "user-creator", type: "creator" };
 const creatorReview = {
+  moderation: { allowed: true, allowedTransitions: ["active", "rejected", "archived"] },
   profile: {
     creatorProfileId: "creator-profile-801",
     locationText: "Vienna",
@@ -34,6 +35,7 @@ const creatorReview = {
     profilePictureMediaObjectId: "media-creator-801",
     profileComplete: true,
     profileCompletedAt: "2026-06-13T10:00:00.000Z",
+    profileStatus: "pending",
     createdAt: "2026-06-12T10:00:00.000Z",
     updatedAt: "2026-06-13T10:00:00.000Z",
     platforms: [
@@ -118,8 +120,13 @@ describe("usersService media writes", () => {
     mocks.getCreatorReview.mockResolvedValue(creatorReview);
 
     await expect(usersService.getUserById("user-creator")).resolves.toMatchObject({
+      creatorModeration: {
+        allowed: true,
+        allowedTransitions: ["active", "rejected", "archived"],
+      },
       profile: {
         id: "creator-profile-801",
+        profileStatus: "pending",
         profilePictureMediaObjectId: "media-creator-801",
         platforms: [
           { id: "platform-instagram", name: "Instagram", handle: "lina" },

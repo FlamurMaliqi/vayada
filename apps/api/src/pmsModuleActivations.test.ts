@@ -11,6 +11,7 @@ import { injectJson } from "@vayada/backend-test";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { buildApp } from "./app.js";
+import type { BookingPublicationRefreshPort } from "./domains/bookingPublicationProductionRuntime.js";
 import { agencyPropertyAccessRepository } from "./testAuthorization.js";
 import {
   createPgPmsModuleActivationRepository,
@@ -24,6 +25,7 @@ import type { PmsReviewRepository } from "./routes/pmsReviews.js";
 const futureExpiry = Math.floor(Date.now() / 1000) + 3600;
 const propertyId = "f6853000-0000-0000-0000-000000000001";
 const organizationId = "11111111-1111-1111-1111-111111111111";
+const actorUserId = "22222222-2222-2222-2222-222222222222";
 
 const session: VerifiedSession = {
   workosUserId: "workos-user-1",
@@ -35,7 +37,7 @@ const session: VerifiedSession = {
 const identityRepository: IdentityRepository = {
   async findUserByProviderUserId() {
     return {
-      userId: "22222222-2222-2222-2222-222222222222",
+      userId: actorUserId,
       email: "owner@example.com",
       status: "active",
     };
@@ -160,6 +162,7 @@ function buildAuthenticatedApp(
     linkedRelationship?: ResourceRelationship;
     allowedOrigins?: string[];
     reviewRepository?: PmsReviewRepository;
+    bookingPublicationRefresh?: BookingPublicationRefreshPort;
   } = {},
 ) {
   const linkedPropertyId =
@@ -185,6 +188,7 @@ function buildAuthenticatedApp(
     logger: false,
     pmsModuleActivationRepository: options.repository ?? createActivationRepository(),
     pmsReviewRepository: options.reviewRepository,
+    bookingPublicationRefresh: options.bookingPublicationRefresh,
     pmsOperationsAllowedOrigins: options.allowedOrigins,
     auth: {
       verifier: createFakeVerifier(new Map([["valid-token", session]])),
@@ -264,7 +268,26 @@ describe("PMS module activation routes", () => {
 
   it("updates the supported property module activation through the next-api route", async () => {
     const repository = createActivationRepository();
-    app = buildAuthenticatedApp({ repository });
+    const refreshes: Parameters<BookingPublicationRefreshPort["refresh"]>[0][] = [];
+    app = buildAuthenticatedApp({
+      repository,
+      bookingPublicationRefresh: {
+        async refresh(input) {
+          refreshes.push(input);
+          return {
+            operationId: "a1000000-0000-4000-8000-000000001299",
+            propertyId: input.propertyId,
+            status: "succeeded",
+            expectedActiveContentRevisionId: null,
+            resultContentRevisionId: "a1000000-0000-4000-8000-000000001300",
+            failureCode: null,
+            requestedAt: "2026-09-03T01:00:00.000Z",
+            updatedAt: "2026-09-03T01:00:01.000Z",
+            completedAt: "2026-09-03T01:00:01.000Z",
+          };
+        },
+      },
+    });
 
     const response = await injectJson<PmsModuleActivation>(app, {
       method: "PATCH",
@@ -275,9 +298,12 @@ describe("PMS module activation routes", () => {
 
     expect(response.statusCode).toBe(200);
     expect(response.body).toMatchObject({ moduleId: "affiliates", isActive: false });
+    expect(response.body).toMatchObject({ publicationRefresh: { status: "succeeded" } });
     expect(repository.updates).toMatchObject([
       { propertyId, moduleId: "affiliates", isActive: false },
     ]);
+    expect(refreshes).toHaveLength(1);
+    expect(refreshes[0]).toMatchObject({ propertyId, organizationId, actorUserId });
     expect(repository.updates[0].context.selectedOrganization.organizationId).toBe(organizationId);
   });
 

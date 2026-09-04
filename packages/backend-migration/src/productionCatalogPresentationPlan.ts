@@ -5,7 +5,13 @@ import type {
   IdentitySourceRow,
 } from "./productionIdentityDisposition.js";
 import { sortedBy } from "./productionIdentityOwnershipPolicy.js";
-import { addBlocker, optionalText, stableJson } from "./productionIdentitySourceValidation.js";
+import {
+  addBlocker,
+  canonicalTimestamp,
+  optionalCanonicalTimestamp,
+  optionalText,
+  stableJson,
+} from "./productionIdentitySourceValidation.js";
 import type { ProductionCatalogContentPlan } from "./productionCatalogContentPlan.js";
 import { stableCatalogId } from "./productionCatalogCorePlan.js";
 import type { CatalogOwnershipPlan, CatalogSourceSystem } from "./productionCatalogOwnership.js";
@@ -134,15 +140,17 @@ export function planProductionCatalogPresentation(
             );
           else
             domains.push(
-              current ?? {
-                id: stableCatalogId("domain", hostname),
-                propertyId: group.propertyId,
-                hostname,
-                verificationStatus: "pending",
-                canonicalWhenVerified: false,
-                verifiedAt: null,
-                updatedAt: booking!.updatedAt,
-              },
+              current
+                ? canonicalDomain(current)
+                : {
+                    id: stableCatalogId("domain", hostname),
+                    propertyId: group.propertyId,
+                    hostname,
+                    verificationStatus: "pending",
+                    canonicalWhenVerified: false,
+                    verifiedAt: null,
+                    updatedAt: booking!.updatedAt,
+                  },
             );
         }
       }
@@ -237,6 +245,14 @@ export function planProductionCatalogPresentation(
     blockers: sortedBy(blockers, (row) => `${row.code}:${row.source}:${row.sourceId}`),
   };
   return { ...result, checksum: createHash("sha256").update(stableJson(result)).digest("hex") };
+}
+
+function canonicalDomain(row: ExistingCatalogDomain): ExistingCatalogDomain {
+  return {
+    ...row,
+    verifiedAt: optionalCanonicalTimestamp(row.verifiedAt, "existing domain verifiedAt"),
+    updatedAt: canonicalTimestamp(row.updatedAt, "existing domain updatedAt"),
+  };
 }
 
 type MediaReference = {

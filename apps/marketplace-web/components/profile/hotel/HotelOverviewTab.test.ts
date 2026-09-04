@@ -38,8 +38,8 @@ describe("HotelOverviewTab locality controls", () => {
       }),
     );
 
-    expect(html).toContain("Show city and country on public Vayada surfaces");
-    expect(html).toContain("hides your locality across Vayada’s public surfaces");
+    expect(html).toContain("Show city and country on public vayada surfaces");
+    expect(html).toContain("hides your locality across vayada’s public surfaces");
     expect(html).toContain("makes your Marketplace offer private");
     expect(html).toContain("street address and coordinates stay private");
     expect(html).toContain('type="checkbox"');

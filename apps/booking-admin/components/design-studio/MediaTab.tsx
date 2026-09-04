@@ -10,6 +10,7 @@ import {
   ArrowPathIcon,
 } from "@heroicons/react/24/outline";
 import { MAX_PROPERTY_GALLERY_PHOTOS } from "@/lib/utils/uploadImage";
+import { ToggleSwitch } from "@/components/ui";
 
 export type PropertyGalleryImage = {
   mediaObjectId: string;
@@ -28,10 +29,22 @@ interface MediaTabProps {
   handleImageUpload: (e: React.ChangeEvent<HTMLInputElement>) => void;
   removeHeroImage: () => void;
   headerLogo: string;
+  headerLogoUrl: string;
   logoInputRef: RefObject<HTMLInputElement>;
   handleLogoUpload: (file: File) => void;
+  addHeaderLogoUrl: () => void;
+  setHeaderLogoUrl: (value: string) => void;
   removeHeaderLogo: () => void;
   uploadingLogo: boolean;
+  showContactButton: boolean;
+  setShowContactButton: (value: boolean) => void;
+  showReferAGuestButton: boolean;
+  setShowReferAGuestButton: (value: boolean) => void;
+  referAGuestModuleEnabled: boolean | null;
+  showLanguageSelector: boolean;
+  setShowLanguageSelector: (value: boolean) => void;
+  showCurrencySelector: boolean;
+  setShowCurrencySelector: (value: boolean) => void;
   resetContent: () => void;
   galleryImages: PropertyGalleryImage[];
   galleryAtCapacity: boolean;
@@ -58,10 +71,22 @@ export default function MediaTab({
   handleImageUpload,
   removeHeroImage,
   headerLogo,
+  headerLogoUrl,
   logoInputRef,
   handleLogoUpload,
+  addHeaderLogoUrl,
+  setHeaderLogoUrl,
   removeHeaderLogo,
   uploadingLogo,
+  showContactButton,
+  setShowContactButton,
+  showReferAGuestButton,
+  setShowReferAGuestButton,
+  referAGuestModuleEnabled,
+  showLanguageSelector,
+  setShowLanguageSelector,
+  showCurrencySelector,
+  setShowCurrencySelector,
   resetContent,
   galleryImages,
   galleryAtCapacity,
@@ -76,6 +101,7 @@ export default function MediaTab({
   const galleryInputRef = useRef<HTMLInputElement>(null);
   const [draggingPhoto, setDraggingPhoto] = useState<number | null>(null);
   const [draggingFiles, setDraggingFiles] = useState(false);
+  const [logoActionsOpen, setLogoActionsOpen] = useState(false);
   const canAddGalleryImages =
     !galleryAtCapacity && galleryImages.length < MAX_PROPERTY_GALLERY_PHOTOS && !galleryBusy;
 
@@ -305,19 +331,17 @@ export default function MediaTab({
         )}
       </div>
 
-      {/* Header Logo */}
+      {/* Header */}
       <div className="bg-white rounded-lg border border-gray-200 p-4">
-        <h2 className="text-[13px] font-semibold text-gray-900">Header Logo</h2>
-        <p className="text-[12px] text-gray-500 mt-0.5">
-          Recommended height: 80px (renders at 40px for retina). Max width: 300px.
-        </p>
-        <p className="text-[11px] text-gray-400 mt-1 mb-2.5">
-          PNG, SVG, or JPEG up to 500 KB. Transparent background recommended.
-        </p>
+        <h2 className="text-[13px] font-semibold text-gray-900">Header</h2>
+        <h3 className="mt-3 text-[12px] font-medium text-gray-800">Header logo</h3>
 
         {headerLogo ? (
-          <div
+          <button
+            type="button"
             data-testid="header-logo-dropzone"
+            aria-label="Manage header logo"
+            onClick={() => setLogoActionsOpen((open) => !open)}
             onDragOver={(event) => event.preventDefault()}
             onDrop={(event) => {
               event.preventDefault();
@@ -325,14 +349,14 @@ export default function MediaTab({
               const file = event.dataTransfer.files[0];
               if (file) handleLogoUpload(file);
             }}
-            className="flex h-24 items-center justify-center rounded-lg border border-dashed border-gray-300 bg-gray-100 p-3"
+            className="flex h-24 w-full items-center justify-center rounded-lg border border-dashed border-gray-300 bg-gray-100 p-3"
           >
             <img
               src={headerLogo}
               alt="Header logo preview"
               className="max-h-10 max-w-full object-contain"
             />
-          </div>
+          </button>
         ) : (
           <button
             type="button"
@@ -364,7 +388,30 @@ export default function MediaTab({
           className="hidden"
         />
 
-        {headerLogo && (
+        <div className="mt-2 flex gap-2">
+          <input
+            type="url"
+            aria-label="Header logo URL"
+            value={headerLogoUrl}
+            onChange={(event) => setHeaderLogoUrl(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") addHeaderLogoUrl();
+            }}
+            placeholder="https://…"
+            disabled={uploadingLogo}
+            className="min-w-0 flex-1 rounded-lg border border-gray-300 px-2.5 py-1.5 text-[12px] focus:border-transparent focus:outline-none focus:ring-2 focus:ring-primary-500 disabled:bg-gray-50"
+          />
+          <button
+            type="button"
+            onClick={addHeaderLogoUrl}
+            disabled={uploadingLogo || !headerLogoUrl.trim()}
+            className="rounded-lg bg-primary-600 px-3 py-1.5 text-[12px] font-medium text-white hover:bg-primary-700 disabled:opacity-50"
+          >
+            Add
+          </button>
+        </div>
+
+        {headerLogo && logoActionsOpen && (
           <div className="mt-2 grid grid-cols-2 gap-2">
             <button
               type="button"
@@ -385,9 +432,47 @@ export default function MediaTab({
           </div>
         )}
 
-        <p className="text-[11px] text-gray-400 mt-2">
-          Make sure your logo is visible on your header background color.
+        <p className="mt-2 text-[11px] leading-4 text-gray-400">
+          PNG, SVG, or JPEG up to 500KB. 80px tall, max 300px wide, transparent background
+          recommended. Make sure it&apos;s visible on your header background color.
         </p>
+
+        <div className="mt-3 divide-y divide-gray-100 border-t border-gray-100">
+          <ToggleSwitch
+            enabled={showContactButton}
+            onChange={() => setShowContactButton(!showContactButton)}
+            label="Contact button"
+          />
+          <div
+            title={
+              referAGuestModuleEnabled
+                ? undefined
+                : referAGuestModuleEnabled === false
+                  ? "Enable Refer a Guest in Feature Hub first."
+                  : "Feature Hub status is unavailable."
+            }
+          >
+            <ToggleSwitch
+              enabled={Boolean(referAGuestModuleEnabled && showReferAGuestButton)}
+              onChange={() => setShowReferAGuestButton(!showReferAGuestButton)}
+              label="Refer a Guest button"
+              description="Tied to Feature Hub activation."
+              disabled={!referAGuestModuleEnabled}
+            />
+          </div>
+          <ToggleSwitch
+            enabled={showLanguageSelector}
+            onChange={() => setShowLanguageSelector(!showLanguageSelector)}
+            label="Language selector"
+            description="Hidden automatically when only one language is configured."
+          />
+          <ToggleSwitch
+            enabled={showCurrencySelector}
+            onChange={() => setShowCurrencySelector(!showCurrencySelector)}
+            label="Currency selector"
+            description="Hidden automatically when only one currency is configured."
+          />
+        </div>
       </div>
 
       {/* Text Overrides */}

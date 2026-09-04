@@ -57,7 +57,8 @@ function sameDayPolicy(
   const data = source.data;
   const propertyId = propertyFor(context, "pms", "hotels", data["id"]);
   const ownerStatus = ownerStatusFor(context, "pms", "hotels", data["id"]);
-  const updatedAt = iso(data["updated_at"], "updated_at");
+  const timestampBasis = data["updated_at"] ? "updated_at" : "created_at";
+  const updatedAt = iso(data[timestampBasis], timestampBasis);
   const sourceCutoff = data["same_day_booking_cutoff_time"];
   const cutoffLocalTime =
     sourceCutoff === null || sourceCutoff === ""
@@ -75,6 +76,7 @@ function sameDayPolicy(
     sourceFreshness: {
       migrationRunId: context.sourceRunId,
       sourceUpdatedAt: updatedAt,
+      timestampBasis,
       ownerStatus,
     },
     updatedAt,
@@ -202,7 +204,6 @@ function auditEvent(context: BookingBuildContext, source: IdentitySourceRow): Bo
   const id = uuid(data["id"], "id");
   const slug = requiredText(data["hotel_slug"], "hotel_slug").toLowerCase();
   const propertyId = context.propertyBySlug.get(slug);
-  if (!propertyId) throw new Error("hotel_slug has no unique active target property");
   const metadata = optionalObject(data["metadata"]);
   const occurredAt = iso(data["created_at"], "created_at");
   const sessionId = optionalText(data["session_id"], "session_id");
@@ -212,8 +213,8 @@ function auditEvent(context: BookingBuildContext, source: IdentitySourceRow): Bo
     product: "booking",
     action: `booking.funnel.${requiredText(data["event_type"], "event_type")}`,
     occurredAt,
-    tenantScope: "property",
-    propertyId,
+    tenantScope: propertyId ? "property" : "migration",
+    propertyId: propertyId ?? null,
     actorType: "migration",
     targetResourceProduct: "booking",
     targetResourceType: "booking_funnel_session",
@@ -221,7 +222,12 @@ function auditEvent(context: BookingBuildContext, source: IdentitySourceRow): Bo
     correlationId: sessionId,
     redactedPayload: redactPrivate(metadata),
     privatePayload: metadata,
-    auditMetadata: { migrationRunId: context.sourceRunId, sourceTable: "booking_events" },
+    auditMetadata: {
+      migrationRunId: context.sourceRunId,
+      sourceTable: "booking_events",
+      propertyResolution: propertyId ? "catalog_slug" : "unmapped_historical",
+      legacyHotelSlugSha256: sha256(slug),
+    },
     retentionClass: "guest_pii",
     privacyScope: "restricted",
     aiVisible: false,
@@ -264,6 +270,7 @@ function fontPairing(value: unknown): string {
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, "-");
   const mapped: Record<string, string> = {
+    "high-end-serif": "high-end-serif",
     "modern-minimalist": "modern-minimalist",
     "inter-inter": "modern-minimalist",
     "inter-merriweather": "modern-minimalist",

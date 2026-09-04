@@ -171,19 +171,20 @@
     },
     {
       "caseId": "pms-rolling-calendar-auto-open-window-idempotency",
-      "description": "The rolling calendar auto-open scheduler opens inventory through one semantic open-through date per property and reuses that key on duplicate runs.",
+      "description": "The calendar auto-open scheduler keys one property horizon by its owner-source fingerprint and reuses that key on an exact duplicate run.",
       "input": {
         "propertyId": "prop_alpenrose",
         "openFrom": "2027-09-01",
-        "openThrough": "2028-03-02",
+        "openThrough": "2028-03-31",
+        "sourceFingerprint": "613b3cff719ad4b744ecf0a049884f1115612a4b74de4ea44da07921b1e57ce5",
         "roomTypeIds": ["rt_deluxe", "rt_suite"]
       },
       "expected": {
-        "domainEventKey": "pms.calendar-auto-open:prop_alpenrose:2028-03-02:v1",
+        "domainEventKey": "pms.calendar-auto-open:prop_alpenrose:2028-03-31:source-613b3cff719ad4b744ecf0a049884f1115612a4b74de4ea44da07921b1e57ce5:v2",
         "job": {
           "jobType": "pms.calendar-auto-open",
-          "queueName": "pms.channex.scheduler",
-          "idempotencyKey": "pms.calendar-auto-open:property:prop_alpenrose:open-through-2028-03-02:v1"
+          "queueName": "pms.inventory.scheduler",
+          "idempotencyKey": "pms.calendar-auto-open:property:prop_alpenrose:open-through-2028-03-31:source-613b3cff719ad4b744ecf0a049884f1115612a4b74de4ea44da07921b1e57ce5:v2"
         },
         "duplicateRun": {
           "createdNewJob": false,

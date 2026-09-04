@@ -30,6 +30,49 @@ The signed-in hotel editor uses the selected canonical property:
 Profile writes accept only Marketplace-owned pitch and collaboration guidance.
 The shared hotel setup API owns canonical hotel facts and media.
 
+## Offer matching criteria
+
+Offer create/update accepts optional `matchingCriteria`; authenticated offer
+reads always return it. The versioned v1 document contains:
+
+- `primaryCampaignGoal`: `ugc_asset_creation`, `awareness`, `direct_bookings`,
+  `affiliate_conversion`, `seasonal_demand`, `other`, or `null`;
+- an exact or flexible inclusive availability range, its
+  `required`/`preferred` level, and ordered non-overlapping blackout ranges;
+- required/preferred content-category and content-style code selections;
+- usage channels and either a fixed 1–3650 day term or perpetual usage;
+- included revision rounds, expected effort range, and estimated compensation
+  value/currency;
+- whether applications are accepted and an optional active-application limit.
+
+Content and usage codes are stable lowercase `snake_case` product codes, not
+free-form copy. All keys are required inside a supplied document; unknown
+answers are represented by `null`, not an inferred default. `matchingCriteria:
+null` deletes the document. An absent field on the enclosing create/update
+request leaves legacy behavior unchanged.
+
+Offer deliverables expose optional `requirementLevel`, compensation options
+expose optional `followerRequirementLevel`, and creator requirements expose
+optional platform, country, and creator-type requirement levels. The only
+levels are `required` and `preferred`; `null` means legacy/unknown. A migration
+does not turn an existing value into a mandatory filter.
+
+The criteria document, requirement levels, contract version, revision, and
+update timestamp are owner-visible. Every create or matching-affecting update,
+including criteria deletion, writes a transactional internal product-audit
+event with actor and request metadata. Those audit details are never returned.
+Matching criteria are not added to the public discovery projection by this
+contract; VAY-1413 decides which public-safe facts or reason codes may be shown.
+
+Date ranges use valid `YYYY-MM-DD` dates. Blackouts must fall inside the main
+range and may not overlap. Required selections cannot be empty. Effort ranges,
+capacity, follower requirements, deliverable platforms, and compensation
+currency must be internally consistent. A follower requirement must identify at
+least one platform. Update validation merges omitted fields from the stored
+offer, so a partial request cannot bypass cross-field checks. Audience
+age/gender requirement levels remain unavailable in this MVP, as required by
+the matching contract.
+
 ## Offer ownership
 
 An offer belongs to one property and contains only:
@@ -38,6 +81,8 @@ An offer belongs to one property and contains only:
 - requested deliverables;
 - compensation options and limits;
 - creator requirements;
+- the optional versioned offer matching-criteria document and explicit
+  required/preferred flags;
 - Marketplace lifecycle state.
 
 Name, classification, address, public descriptions, contact channels, and hotel

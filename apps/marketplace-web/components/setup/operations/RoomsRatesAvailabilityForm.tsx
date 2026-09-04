@@ -170,7 +170,7 @@ export function RoomsRatesAvailabilityForm({
     } catch {
       setError(
         roomWasSaved
-          ? "Your room types were saved, but setup progress could not be refreshed. Choose Continue setup again. Vayada will not submit them twice."
+          ? "Your room types were saved, but setup progress could not be refreshed. Choose Continue setup again. vayada will not submit them twice."
           : "Setup progress could not be refreshed. Try again.",
       );
     }
@@ -249,7 +249,7 @@ export function RoomsRatesAvailabilityForm({
         >
           <p className="font-semibold">This room setup needs attention.</p>
           <p className="mt-1">
-            Vayada found existing room setup data, so it will not create another room type. Complete
+            vayada found existing room setup data, so it will not create another room type. Complete
             the missing items in the PMS, then check this step again.
           </p>
           <ul className="mt-3 list-disc space-y-1 pl-5">

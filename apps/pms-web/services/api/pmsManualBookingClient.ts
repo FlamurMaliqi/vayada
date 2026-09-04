@@ -98,7 +98,11 @@ export type PmsManualBookingCreateResult = {
 };
 
 export type PmsManualBookingErrorCategory =
-  "validation" | "authorization" | "not_found" | "conflict" | "unavailable";
+  | "validation"
+  | "authorization"
+  | "not_found"
+  | "conflict"
+  | "unavailable";
 export const PMS_MANUAL_BOOKING_ERROR_CODES = [
   "unauthenticated",
   "invalid_body",
@@ -109,6 +113,7 @@ export const PMS_MANUAL_BOOKING_ERROR_CODES = [
   "property_not_found",
   "room_not_found",
   "rate_plan_not_found",
+  "rate_not_found",
   "addon_not_found",
   "room_unavailable",
   "idempotency_conflict",

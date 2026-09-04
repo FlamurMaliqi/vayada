@@ -77,6 +77,16 @@ synthetic property. Recovery creates a fresh temporary admin, retires the proper
 recovery admin. It reuses the signed run identity, so rerunning the same recovery also cleans up an
 admin left by an interrupted recovery.
 
+The workflow restores the headless Chromium runtime used by this project from a
+runner OS, architecture, and exact Playwright-version cache key. It still
+installs the required Linux packages and launches the restored browser before
+the smoke starts. Cache restore and save are capped at 3 minutes each,
+installation and launch at 10 minutes, and setup failures report the install
+plan and disk usage. Cache-service failures produce warnings and fall back to
+the verified local download instead of blocking the product test. The browser
+is saved immediately after setup even if the product smoke later fails, and the
+smoke receives its own 25-minute timeout.
+
 Cleanup runs even after a failed assertion. It cancels or withdraws every
 synthetic booking, changes the synthetic property to the non-checkout `other`
 payment method and waits until public quotes disappear, then deletes the

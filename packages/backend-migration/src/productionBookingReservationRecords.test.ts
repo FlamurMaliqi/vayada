@@ -29,7 +29,7 @@ describe("production Booking reservation records", () => {
       balanceAmount: "0.00",
       bookingChannel: "direct",
       expectedPaymentMethod: "manual_card",
-      bookingMetadata: { sourcePaymentStatus: "captured" },
+      bookingMetadata: { sourceChannel: "direct", sourcePaymentStatus: "captured" },
     });
     expect(records[1]!.row).toMatchObject({
       guestRole: "booker",
@@ -66,6 +66,42 @@ describe("production Booking reservation records", () => {
     expect(buildBookingReservationRecords(context)).toEqual([]);
     expect(context.blockers[0]).toMatchObject({ code: "INVALID_SOURCE_ROW", sourceId: BOOKING });
   });
+
+  it("records the documented pre-switch commission inference", () => {
+    const source = booking();
+    source.data["billing_plan_at_creation"] = null;
+    const context = createProductionBookingContext(input([source]));
+    const record = buildBookingReservationRecords(context)[0]!;
+
+    expect(context.blockers).toEqual([]);
+    expect(record.row).toMatchObject({
+      billingPlanSnapshot: "commission",
+      bookingMetadata: {
+        billingPlanEvidence: {
+          sourceField: "billing_plan_at_creation",
+          sourceValue: null,
+          inferredPreSwitchCommission: true,
+        },
+      },
+    });
+  });
+
+  it.each(["beds24", "other"])(
+    "keeps legacy %s attribution explicit without inventing an OTA",
+    (channel) => {
+      const source = booking();
+      source.data["channel"] = channel;
+      const context = createProductionBookingContext(input([source]));
+      const record = buildBookingReservationRecords(context)[0]!;
+
+      expect(context.blockers).toEqual([]);
+      expect(record.row).toMatchObject({
+        bookingChannel: "unknown",
+        directBookingSource: null,
+        bookingMetadata: { sourceChannel: channel },
+      });
+    },
+  );
 
   it("blocks unknown channels and billing plans instead of guessing", () => {
     for (const [field, value] of [

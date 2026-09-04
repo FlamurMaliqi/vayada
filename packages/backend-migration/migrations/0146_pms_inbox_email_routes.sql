@@ -1,3 +1,5 @@
+-- Migration: 0146_pms_inbox_email_routes
+
 CREATE TABLE pms.inbox_email_routes (
   property_id UUID PRIMARY KEY REFERENCES hotel_catalog.properties(id),
   from_address TEXT NOT NULL CHECK (

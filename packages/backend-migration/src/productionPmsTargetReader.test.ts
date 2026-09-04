@@ -1,12 +1,71 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  appendProductionPmsTargetRows,
   readProductionPmsPrerequisites,
   readProductionPmsTargetState,
 } from "./productionPmsTargetReader.js";
 import type { PmsTargetRecord } from "./productionPmsTypes.js";
+import { PRODUCTION_PMS_TABLES } from "./productionPmsTables.js";
 
 describe("production PMS target reader", () => {
+  it("excludes inventory from bounded collision batches while covering every SQL predicate", async () => {
+    const [roomType, inventory] = candidates();
+    const cohort = [
+      ...Array.from({ length: 160_000 }, (_, index) => ({
+        ...inventory!,
+        targetId: `inventory-${index}`,
+      })),
+      ...Array.from({ length: 1_001 }, (_, index) => ({
+        ...roomType!,
+        targetId: `room-${index}`,
+      })),
+      ...Object.entries(PRODUCTION_PMS_TABLES).map(([table, definition]) => ({
+        ...roomType!,
+        targetProduct: definition.product,
+        targetTable: table,
+        targetId: table,
+      })),
+    ];
+    const batches: { targetTable: string; targetId: string }[][] = [];
+    let collisionSql = "";
+    const client = {
+      async query(sql: string, values?: unknown[]) {
+        if (!sql.includes("WITH requested AS")) return { rows: [] };
+        collisionSql = sql;
+        const rows = JSON.parse(String(values?.[0]));
+        batches.push(rows);
+        return {
+          rows: [
+            {
+              code: "TARGET_UNIQUE_CONFLICT",
+              source: "pms.rooms",
+              sourceId: `collision-${batches.length}`,
+              message: "collision",
+            },
+          ],
+        };
+      },
+    };
+    const target = await readProductionPmsTargetState(client as never, cohort, {
+      propertyLinks: [],
+      bookings: [],
+      userIds: [],
+      mediaIds: [],
+    });
+    expect(batches).toHaveLength(3);
+    expect(batches.every((batch) => batch.length <= 500)).toBe(true);
+    const sent = batches.flat();
+    const checkedTables = new Set(
+      [...collisionSql.matchAll(/requested\."targetTable" = '([^']+)'/g)].map((match) => match[1]),
+    );
+    expect(new Set(sent.map((row) => row.targetTable))).toEqual(checkedTables);
+    expect(sent.map((row) => row.targetId)).toEqual(
+      cohort.filter((row) => checkedTables.has(row.targetTable)).map((row) => row.targetId),
+    );
+    expect(target.blockers).toHaveLength(3);
+  }, 10_000);
+
   it("preserves missing booking freshness without throwing", async () => {
     const client = {
       async query(sql: string) {
@@ -38,6 +97,9 @@ describe("production PMS target reader", () => {
       ["vay1351-run"],
       ["vay1351-run"],
     ]);
+    expect(
+      calls.find((call) => call.sql.includes("production_media_migration_quarantines"))?.values,
+    ).toEqual(["vay1351-run"]);
   });
 
   it("loads UUID and composite target rows, provenance, and unique collisions", async () => {
@@ -163,6 +225,9 @@ describe("production PMS target reader", () => {
     expect(calls.find((sql) => sql.includes("WITH requested AS"))).toContain(
       "target.claim_state <> 'active'",
     );
+    expect(calls.find((sql) => sql.includes("WITH requested AS"))).toContain(
+      "lower(target.name) = lower(requested.name)",
+    );
   });
 
   it("blocks mutable migration-owned targets whose source row disappeared", async () => {
@@ -205,6 +270,27 @@ describe("production PMS target reader", () => {
       }),
     );
   });
+
+  it("loads a production-sized inventory cohort without a variadic stack overflow", () => {
+    const rowCount = 160_000;
+    const rows = Array.from({ length: rowCount }, (_, index) => ({
+      targetId: `inventory-${index}`,
+      updatedAt: "2026-08-30T00:00:00Z",
+      rowData: "{}",
+    }));
+    const records: Parameters<typeof appendProductionPmsTargetRows>[0] = [];
+
+    appendProductionPmsTargetRows(
+      records,
+      "pms",
+      "inventory_days",
+      "pms.inventory_days.updated_at",
+      rows,
+    );
+
+    expect(records).toHaveLength(rowCount);
+    expect(records.at(-1)?.targetId).toBe(`inventory-${rowCount - 1}`);
+  }, 10_000);
 });
 
 function candidates(): PmsTargetRecord[] {

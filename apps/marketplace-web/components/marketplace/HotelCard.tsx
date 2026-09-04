@@ -247,21 +247,13 @@ export function HotelCard({ hotel, creatorPlatforms = [], isPublic = false }: Ho
             <span className="truncate">{hotel.location}</span>
           </div>
 
-          <div className="mt-4 grid grid-cols-2 gap-2">
-            <div className="rounded-md border border-gray-200 bg-gray-50 p-3">
-              <p className="text-[11px] font-medium text-gray-500">Stay length</p>
-              <p className="mt-1 truncate text-sm font-semibold text-gray-950">
-                {hotel.minNumberOfNights || hotel.numberOfNights
-                  ? `${hotel.minNumberOfNights ?? 1}-${hotel.numberOfNights ?? hotel.minNumberOfNights} nights`
-                  : "Flexible"}
-              </p>
-            </div>
-            <div className="rounded-md border border-gray-200 bg-gray-50 p-3">
-              <p className="text-[11px] font-medium text-gray-500">Board</p>
-              <p className="mt-1 truncate text-sm font-semibold text-gray-950">
-                {hotel.boardType ?? "Not set"}
-              </p>
-            </div>
+          <div className="mt-4 rounded-md border border-gray-200 bg-gray-50 p-3">
+            <p className="text-[11px] font-medium text-gray-500">Stay length</p>
+            <p className="mt-1 truncate text-sm font-semibold text-gray-950">
+              {hotel.minNumberOfNights || hotel.numberOfNights
+                ? `${hotel.minNumberOfNights ?? 1}-${hotel.numberOfNights ?? hotel.minNumberOfNights} nights`
+                : "Flexible"}
+            </p>
           </div>
 
           {/* Availability */}

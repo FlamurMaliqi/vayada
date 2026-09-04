@@ -1,0 +1,74 @@
+name: Deploy Landing
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - "apps/landing/**"
+      - "packages/marketplace-shared/**"
+      - "package.json"
+      - "package-lock.json"
+      - ".github/workflows/deploy-landing.yml"
+
+permissions:
+  id-token: write
+  contents: read
+
+concurrency:
+  group: deploy-landing-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  AWS_REGION: eu-west-1
+  AWS_ACCOUNT_ID: 269416271598
+  ECR_REPOSITORY: vayada-landing
+  CONTACT_API_URL: https://api.vayada.com
+  MARKETPLACE_API_URL: https://next-api.vayada.com
+
+jobs:
+  build-and-push:
+    name: Build and Push to ECR
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Verify marketplace API contract
+        run: |
+          curl --fail --silent --show-error --retry 3 \
+            "${MARKETPLACE_API_URL}/api/marketplace/offers?limit=1&offset=0" \
+            | jq --exit-status '.items | type == "array"' >/dev/null
+          curl --fail --silent --show-error --retry 3 \
+            "${MARKETPLACE_API_URL}/api/marketplace/creators?limit=1&offset=0" \
+            | jq --exit-status '.items | type == "array"' >/dev/null
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::269416271598:role/vayada-github-actions-deploy
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: apps/landing/Dockerfile
+          platforms: linux/amd64
+          push: true
+          build-args: |
+            NEXT_PUBLIC_API_URL=${{ env.CONTACT_API_URL }}
+            NEXT_PUBLIC_VAYADA_API_URL=${{ env.MARKETPLACE_API_URL }}
+          tags: |
+            ${{ env.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ env.ECR_REPOSITORY }}:latest
+            ${{ env.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ env.ECR_REPOSITORY }}:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

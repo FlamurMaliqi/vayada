@@ -2,6 +2,7 @@ import { backendAuthPlugin, type BackendAuthPluginOptions } from "@vayada/backen
 import type { IdentityLifecycleCommandBus } from "@vayada/backend-auth";
 import type { BookingGuestPiiPort } from "@vayada/domain-booking";
 import type { FinanceSubscriptionService } from "@vayada/domain-finance";
+import type { PmsCalendarAutoOpenSettingsPort } from "@vayada/domain-pms";
 import type {
   PmsInventoryPublicOfferProjectionPort,
   PublicBookabilityPublicationCommandPort,
@@ -36,6 +37,7 @@ import type {
   BookingSettingsReadRepository,
   BookingSettingsWriteRepository,
 } from "./routes/bookingSettings.js";
+import type { BookingPublicationRefreshPort } from "./domains/bookingPublicationProductionRuntime.js";
 import { registerAiHotelQuoteRoutes } from "./routes/aiHotelQuotes.js";
 import { registerAiHotelRoutes } from "./routes/aiHotels.js";
 import { registerAuthSessionRoutes } from "./routes/authSession.js";
@@ -195,6 +197,7 @@ import {
   registerPmsInboxAttachmentMediaRoutes,
   type PmsInboxAttachmentMediaRoutesOptions,
 } from "./routes/pmsInboxAttachmentMedia.js";
+import { registerPmsCalendarAutoOpenRoutes } from "./routes/pmsCalendarAutoOpen.js";
 import type { PmsLinkedInventoryGroupCommandRepository } from "./domains/pmsLinkedInventoryGroupRepository.js";
 import {
   registerPmsManualBookingPreviewRoutes,
@@ -286,6 +289,7 @@ type BuildAppOptions = Pick<FastifyServerOptions, "logger" | "trustProxy"> & {
   sameDayBookingSettings?: SameDayBookingSettingsPort;
   pmsRoomAssignmentSettings?: PmsRoomAssignmentSettingsPort;
   pmsRoomAssignmentHistory?: PmsRoomAssignmentOptimizationHistoryPort;
+  pmsCalendarAutoOpenSettings?: PmsCalendarAutoOpenSettingsPort;
   pmsRoomPublication?: PmsRoomPublicationRoutesOptions;
   pmsPricing?: PmsPricingRoutesOptions;
   pmsRecurringPricing?: PmsRecurringPricingRoutesOptions;
@@ -299,6 +303,7 @@ type BuildAppOptions = Pick<FastifyServerOptions, "logger" | "trustProxy"> & {
   bookingSettingsRepository?: BookingSettingsReadRepository;
   bookingSettingsWriteRepository?: BookingSettingsWriteRepository;
   publicBookabilityPublisher?: PublicBookabilityPublicationCommandPort;
+  bookingPublicationRefresh?: BookingPublicationRefreshPort;
   bookingCustomDomainRepository?: BookingCustomDomainRepository;
   publicHotelProfileRepository?: PublicHotelProfileRepository;
   publicHotelQuoteRepository?: PublicHotelQuoteRepository;
@@ -654,6 +659,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     sameDayBookingSettings: options.sameDayBookingSettings,
     ownsSameDayBookingSettings: !options.pmsOperationsRepository,
     publicBookabilityPublisher: options.publicBookabilityPublisher,
+    bookingPublicationRefresh: options.bookingPublicationRefresh,
     inventoryPublicOfferProjector: options.pmsInventoryPublicOfferProjector,
     customDomainRepository: options.bookingCustomDomainRepository,
     changeRequestRepository: options.bookingChangeRequestRepository,
@@ -698,6 +704,14 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       inboxTriagePort: options.pmsInboxTriagePort,
       inboxStaffCommandPort: options.pmsInboxStaffCommandPort,
       publicBookabilityPublisher: options.publicBookabilityPublisher,
+    });
+  }
+  if (options.pmsCalendarAutoOpenSettings && options.auth) {
+    app.register(registerPmsCalendarAutoOpenRoutes, {
+      prefix: "/api/pms",
+      settings: options.pmsCalendarAutoOpenSettings,
+      propertyAccessRepository: options.auth.propertyAccessRepository,
+      allowedOrigins: options.pmsOperationsAllowedOrigins,
     });
   }
   if (options.pmsRoomPublication) {
@@ -754,6 +768,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     app.register(registerPmsModuleActivationRoutes, {
       prefix: "/api/pms",
       repository: options.pmsModuleActivationRepository,
+      bookingPublicationRefresh: options.bookingPublicationRefresh,
       allowedOrigins: options.pmsOperationsAllowedOrigins,
     });
   }

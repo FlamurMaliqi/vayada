@@ -14,6 +14,7 @@ import { PropertySection } from "@/components/settings/PropertySection";
 import { LocalizationSection } from "@/components/settings/LocalizationSection";
 import { BookingEngineSection } from "@/components/settings/BookingEngineSection";
 import { CalendarSection } from "@/components/settings/CalendarSection";
+import { CalendarAutoOpenEditor } from "@/components/settings/CalendarAutoOpenEditor";
 import { settingsService, type BookingAcceptanceMode } from "@/services/settings";
 import { OtaCommissionSettingsSection } from "@/components/settings/OtaCommissionSettingsSection";
 import { humanizeApiError } from "@/components/settings/constants";
@@ -49,6 +50,7 @@ const ANCHOR_TO_SECTION: Record<string, SectionId> = {
 };
 
 export default function SettingsPage() {
+  const [autoOpenReloadKey, setAutoOpenReloadKey] = useState(0);
   const { t } = useTranslation();
   const [loading, setLoading] = useState(true);
   const [success, setSuccess] = useState("");
@@ -275,6 +277,7 @@ export default function SettingsPage() {
       });
       setTimezone(normalizedTimezone);
       setCountry(normalizedCountry);
+      setAutoOpenReloadKey((key) => key + 1);
       setSuccess("Property details saved");
     } catch (err: any) {
       setError(
@@ -344,6 +347,7 @@ export default function SettingsPage() {
         loadError={calendarLoadError}
         onToggle={(next) => void saveAutoRearrange(next)}
         onRetry={() => void loadCalendarSettings()}
+        autoOpenEditor={<CalendarAutoOpenEditor key={autoOpenReloadKey} />}
         sameDayEnabled={sameDayEnabled}
         sameDayCutoffTime={sameDayCutoffTime}
         sameDayTimeZone={sameDayTimeZone}

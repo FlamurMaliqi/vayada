@@ -23,11 +23,13 @@ vi.mock("./pmsOperationsClient", () => ({
 }));
 
 import {
+  getPmsCalendarAutoOpen,
   getPmsPropertyProfile,
   getPmsCalendarSettings,
   listPmsRoomShuffleHistory,
   resolveSelectedPmsPropertyId,
   updatePmsCalendarSettings,
+  updatePmsCalendarAutoOpen,
   updatePmsPropertyProfile,
 } from "./pmsPropertyClient";
 
@@ -212,6 +214,62 @@ describe("PMS property profile", () => {
       { autoRearrangeEnabled: false },
       expect.any(Object),
     );
+  });
+
+  it("reads and updates the canonical calendar auto-open contract", async () => {
+    const response = {
+      contractVersion: "pms-calendar-auto-open.v1",
+      setting: {
+        contractVersion: "pms-calendar-auto-open.v1",
+        propertyId,
+        revision: 3,
+        enabled: true,
+        mode: "rolling",
+        rollingMonths: 18,
+        fixedEndMonth: null,
+        updatedAt: "2026-09-03T08:00:00.000Z",
+      },
+      horizon: {
+        propertyTimeZone: "Europe/Berlin",
+        propertyLocalDate: "2026-09-03",
+        targetOpenThrough: "2028-03-31",
+      },
+      warnings: [],
+      outcome: "updated",
+      enqueueIntentId: "calendar-auto-open-intent-1",
+    } as const;
+    mocks.operationsGet.mockResolvedValue(response);
+    mocks.operationsPatch.mockResolvedValue(response);
+
+    await expect(getPmsCalendarAutoOpen()).resolves.toBe(response);
+    await expect(updatePmsCalendarAutoOpen(response.setting)).resolves.toBe(response);
+    expect(mocks.operationsGet).toHaveBeenCalledWith(
+      `/api/pms/properties/${propertyId}/calendar-auto-open`,
+      expect.any(Object),
+    );
+    expect(mocks.operationsPatch).toHaveBeenCalledWith(
+      `/api/pms/properties/${propertyId}/calendar-auto-open`,
+      {
+        expectedRevision: 3,
+        enabled: true,
+        mode: "rolling",
+        rollingMonths: 18,
+        fixedEndMonth: null,
+      },
+      expect.objectContaining({
+        headers: expect.objectContaining({
+          "Idempotency-Key": expect.stringMatching(/^pms-calendar-auto-open:/),
+        }),
+      }),
+    );
+
+    mocks.operationsPatch.mockRejectedValueOnce(new TypeError("network lost"));
+    await expect(updatePmsCalendarAutoOpen(response.setting)).rejects.toThrow("network lost");
+    mocks.operationsPatch.mockResolvedValueOnce(response);
+    await updatePmsCalendarAutoOpen(response.setting);
+    const failedKey = mocks.operationsPatch.mock.calls.at(-2)?.[2]?.headers?.["Idempotency-Key"];
+    const retryKey = mocks.operationsPatch.mock.calls.at(-1)?.[2]?.headers?.["Idempotency-Key"];
+    expect(retryKey).toBe(failedKey);
   });
 
   it("forwards the opaque room-shuffle history cursor", async () => {

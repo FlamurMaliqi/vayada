@@ -93,6 +93,58 @@ describe("production PMS channels", () => {
     );
   });
 
+  it("retains an impossible historical provider slot without inventing an assignment", () => {
+    const sourceRows = rows();
+    sourceRows.find((entry) => entry.sourceTable === "channex_booking_mappings")!.data[
+      "channex_room_index"
+    ] = 1;
+    const context = createProductionPmsContext({
+      sourceRunId: "run",
+      completedAt: "2026-09-04T00:00:00Z",
+      rows: sourceRows,
+      target: target(),
+    });
+    const rooms = buildPmsRoomRecords(context);
+    const assignments = buildPmsAssignmentRecords(context, rooms);
+    const records = buildPmsChannelRecords(context, rooms, assignments);
+
+    expect(context.blockers).toEqual([]);
+    expect(
+      records.find((record) => record.targetTable === "channel_booking_mappings")?.row,
+    ).toMatchObject({
+      assignmentId: null,
+      channelRoomIndex: 1,
+      syncStatus: "ignored",
+      mappingMetadata: {
+        historicalReceipt: true,
+        migrationDisposition: "historical_unassigned_slot",
+      },
+    });
+  });
+
+  it("blocks an unassigned provider slot while the booking is still operational", () => {
+    const sourceRows = rows();
+    sourceRows.find((entry) => entry.sourceTable === "channex_booking_mappings")!.data[
+      "channex_room_index"
+    ] = 1;
+    const context = createProductionPmsContext({
+      sourceRunId: "run",
+      completedAt: "2026-08-30T00:00:00Z",
+      rows: sourceRows,
+      target: target(),
+    });
+    const rooms = buildPmsRoomRecords(context);
+    const assignments = buildPmsAssignmentRecords(context, rooms);
+    buildPmsChannelRecords(context, rooms, assignments);
+
+    expect(context.blockers).toContainEqual(
+      expect.objectContaining({
+        source: "pms.channex_booking_mappings",
+        message: "active channel booking slot has no exact operational booking assignment",
+      }),
+    );
+  });
+
   it("retains an archived owner's provider identity without reviving the connection", () => {
     const targetState = target();
     targetState.propertyLinks[0]!.ownerStatus = "archived";
@@ -197,6 +249,37 @@ describe("production PMS channels", () => {
     expect(
       records.find((record) => record.targetTable === "channel_room_type_mappings")?.row,
     ).toMatchObject({ status: "disabled" });
+  });
+
+  it("does not revive source-disabled provider mappings", () => {
+    const sourceRows = rows();
+    sourceRows.find((row) => row.sourceTable === "channex_room_type_mappings")!.data["is_active"] =
+      false;
+    sourceRows.find((row) => row.sourceTable === "channex_rate_plan_mappings")!.data["is_active"] =
+      false;
+    const context = createProductionPmsContext({
+      sourceRunId: "run",
+      completedAt: "2026-08-30T00:00:00Z",
+      rows: sourceRows,
+      target: target(),
+    });
+    const rooms = buildPmsRoomRecords(context);
+    const assignments = buildPmsAssignmentRecords(context, rooms);
+    const records = buildPmsChannelRecords(context, rooms, assignments);
+
+    expect(context.blockers).toEqual([]);
+    expect(
+      records.find((record) => record.targetTable === "channel_room_type_mappings")?.row,
+    ).toMatchObject({
+      status: "disabled",
+      mappingMetadata: { sourceActive: false, roomTypeActive: true },
+    });
+    expect(
+      records.find((record) => record.targetTable === "channel_rate_plan_mappings")?.row,
+    ).toMatchObject({
+      status: "disabled",
+      mappingMetadata: { sourceActive: false, roomTypeActive: true },
+    });
   });
 });
 
