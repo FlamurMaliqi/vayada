@@ -6,6 +6,7 @@ import {
   canSavePmsPropertyDetails,
   type PmsPropertyProfileLoadStatus,
 } from "@/lib/settings/propertyDetails";
+import { useTranslation } from "@/lib/i18n";
 
 const inputClass =
   "w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500 bg-white";
@@ -33,6 +34,7 @@ export function PropertySection({
   onRetry,
   onSave,
 }: PropertySectionProps) {
+  const { t } = useTranslation();
   const fieldsDisabled = saving || loadStatus !== "ready";
   const saveDisabled =
     saving || canSavePmsPropertyDetails({ loadStatus, timezone, country }) === false;
@@ -40,8 +42,8 @@ export function PropertySection({
   return (
     <SettingsSection
       id="property-details"
-      title="Property"
-      description="Only what the channel manager actually needs. Title, currency, and contact email are set elsewhere."
+      title={t("settings.property.title")}
+      description={t("settings.property.description")}
     >
       <SettingsCard
         footer={
@@ -52,14 +54,14 @@ export function PropertySection({
               disabled={saveDisabled}
               className="px-4 py-2 text-sm font-medium bg-primary-600 text-white rounded-lg hover:bg-primary-700 disabled:opacity-50 transition-colors"
             >
-              {saving ? "Saving…" : "Save"}
+              {saving ? t("common.saving") : t("common.save")}
             </button>
           </div>
         }
       >
         {loadStatus === "loading" && (
           <p className="mb-4 text-sm text-gray-600" role="status">
-            Loading canonical property details…
+            {t("settings.property.loading")}
           </p>
         )}
         {loadStatus === "error" && (
@@ -67,18 +69,18 @@ export function PropertySection({
             className="mb-4 flex items-center justify-between gap-3 rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700"
             role="alert"
           >
-            <span>{loadError || "We couldn’t load the canonical property profile."}</span>
+            <span>{loadError || t("settings.property.loadError")}</span>
             <button
               type="button"
               onClick={onRetry}
               className="shrink-0 rounded-md border border-red-300 bg-white px-3 py-1.5 font-medium text-red-700 hover:bg-red-100"
             >
-              Retry
+              {t("settings.retry")}
             </button>
           </div>
         )}
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          <FormRow label="Timezone" htmlFor="pms-property-timezone" required>
+          <FormRow label={t("settings.property.timezone")} htmlFor="pms-property-timezone" required>
             <select
               id="pms-property-timezone"
               value={timezone}
@@ -87,7 +89,7 @@ export function PropertySection({
               className={inputClass}
             >
               <option value="" disabled>
-                Select timezone
+                {t("settings.property.selectTimezone")}
               </option>
               {timezone && !TIMEZONE_OPTIONS.includes(timezone) && (
                 <option value={timezone}>{timezone}</option>
@@ -100,14 +102,14 @@ export function PropertySection({
             </select>
           </FormRow>
 
-          <FormRow label="Country (ISO code)" htmlFor="pms-property-country" required>
+          <FormRow label={t("settings.property.country")} htmlFor="pms-property-country" required>
             <input
               id="pms-property-country"
               type="text"
               value={country}
               onChange={(e) => setCountry(e.target.value.toUpperCase())}
               disabled={fieldsDisabled}
-              placeholder="e.g. DE"
+              placeholder={t("settings.property.countryPlaceholder")}
               maxLength={2}
               className={inputClass}
             />

@@ -14,6 +14,7 @@ import {
 } from "date-fns";
 import { CalendarRoom, CalendarBooking, CalendarBlock } from "@/services/calendar";
 import { getChannelBarColor } from "@/lib/constants/statusStyles";
+import { useTranslation } from "@/lib/i18n";
 
 const WEEKDAY_HEADERS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 
@@ -55,6 +56,7 @@ export default function MonthView({
   onSelectBlock,
   blockEditingAvailable = true,
 }: MonthViewProps) {
+  const { t } = useTranslation();
   const days = useMemo(() => {
     const gridStart = startOfWeek(startOfMonth(monthStart), { weekStartsOn: 0 });
     const gridEnd = endOfWeek(endOfMonth(monthStart), { weekStartsOn: 0 });
@@ -143,8 +145,8 @@ export default function MonthView({
                               onClick={() => onSelectBlock(bl)}
                               title={
                                 blockEditingAvailable || bl.protected
-                                  ? `${bl.protected ? "Linked" : "Blocked"}: ${bl.sourceSummary || bl.reason || "No reason"}\n${bl.startDate} → ${bl.endDate}`
-                                  : "Block editing is not available yet"
+                                  ? `${bl.protected ? t("rooms.linked") : t("calendar.blocked")}: ${bl.sourceSummary || bl.reason || t("calendar.blockDetail.noReason")}\n${bl.startDate} → ${bl.endDate}`
+                                  : t("calendar.blockEditingUnavailable")
                               }
                               className={`w-full flex items-center gap-1 px-1 py-0.5 rounded text-[10px] font-medium border border-dashed transition-colors truncate disabled:cursor-default ${
                                 bl.protected
@@ -166,7 +168,9 @@ export default function MonthView({
                                 />
                               </svg>
                               <span className="truncate">
-                                {bl.protected ? "Linked" : bl.reason || "Blocked"}
+                                {bl.protected
+                                  ? t("rooms.linked")
+                                  : bl.reason || t("calendar.blocked")}
                               </span>
                             </button>
                           ))}

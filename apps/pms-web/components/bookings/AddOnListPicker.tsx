@@ -3,6 +3,7 @@
 import { MinusIcon, PlusIcon, XMarkIcon } from "@heroicons/react/24/outline";
 import { formatCurrency } from "@/lib/formatCurrency";
 import { BookingAddon } from "@/services/bookings";
+import { useTranslation } from "@/lib/i18n";
 
 export type AddOnQuantities = Record<string, number>;
 
@@ -103,6 +104,7 @@ export function AddOnListPicker({
   onChange,
   onDone,
 }: AddOnListPickerProps) {
+  const { t } = useTranslation();
   const selectedSet = new Set(selectedIds);
 
   const setQuantity = (addon: BookingAddon, quantity: number) => {
@@ -172,7 +174,7 @@ export function AddOnListPicker({
             onClick={onDone}
             className="px-3 py-1.5 text-sm font-medium text-white bg-primary-600 hover:bg-primary-700 rounded-lg"
           >
-            Done
+            {t("common.done")}
           </button>
         </div>
       )}

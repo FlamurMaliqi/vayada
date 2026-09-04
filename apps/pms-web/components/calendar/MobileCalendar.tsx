@@ -16,6 +16,7 @@ import {
 } from "date-fns";
 import { CalendarBooking, CalendarBlock, CalendarRoomType } from "@/services/calendar";
 import { getChannelBarColor } from "@/lib/constants/statusStyles";
+import { useTranslation } from "@/lib/i18n";
 
 const WEEKDAYS = ["Mo", "Tu", "We", "Th", "Fr", "Sa", "Su"];
 export const calendarLaneTop = (index: number) => index * 36 + 6;
@@ -53,6 +54,7 @@ export default function MobileCalendar({
   writeActionsAvailable = true,
   manualBookingAvailable = writeActionsAvailable,
 }: MobileCalendarProps) {
+  const { t } = useTranslation();
   // Selection model: tap a day to single-select it (so the user can browse
   // that day's bookings/blocks); drag from one day onto another to form a
   // range. The drag mirrors desktop's pointer drag-to-select. While the
@@ -285,7 +287,7 @@ export default function MobileCalendar({
         <div className="flex items-center justify-between">
           <button
             type="button"
-            aria-label="Previous month"
+            aria-label={t("calendar.prevMonth")}
             onClick={() => onMonthChange(addMonths(currentMonth, -1))}
             className="p-1.5 text-gray-500 hover:text-gray-900 transition-colors"
           >
@@ -301,7 +303,7 @@ export default function MobileCalendar({
           <h2 className="text-[15px] font-bold text-gray-900">{format(currentMonth, "MMMM")}</h2>
           <button
             type="button"
-            aria-label="Next month"
+            aria-label={t("calendar.nextMonth")}
             onClick={() => onMonthChange(addMonths(currentMonth, 1))}
             className="p-1.5 text-gray-500 hover:text-gray-900 transition-colors"
           >
@@ -414,10 +416,10 @@ export default function MobileCalendar({
         </div>
         <p className="mt-1.5 text-center text-[10px] text-gray-400">
           {drag?.moved
-            ? "Release to confirm range"
+            ? t("calendar.mobile.releaseRange")
             : isRangeSelection
-              ? "Drag again or tap a day to change"
-              : "Tap a day, or drag across days for a range"}
+              ? t("calendar.mobile.changeRange")
+              : t("calendar.mobile.selectRange")}
         </p>
       </div>
 
@@ -428,7 +430,7 @@ export default function MobileCalendar({
             <div className="min-w-0 flex-1">
               <h3 className="text-[12px] font-semibold text-gray-700 truncate">
                 {!headerStart || !headerEnd
-                  ? "Select a day"
+                  ? t("calendar.selectDay")
                   : isRangeSelection
                     ? `${format(headerStart, "MMM d")} – ${format(headerEnd, "MMM d")} · ${nights} nights`
                     : format(headerStart, "EEEE, MMM d")}
@@ -438,7 +440,7 @@ export default function MobileCalendar({
                   onClick={clearRange}
                   className="text-[10px] text-gray-400 hover:text-gray-600 underline"
                 >
-                  Clear range
+                  {t("calendar.mobile.clearRange")}
                 </button>
               )}
             </div>
@@ -457,21 +459,17 @@ export default function MobileCalendar({
                       d="M18.364 18.364A9 9 0 005.636 5.636m12.728 12.728A9 9 0 015.636 5.636m12.728 12.728L5.636 5.636"
                     />
                   </svg>
-                  Block
+                  {t("calendar.mobile.block")}
                 </button>
               )}
               <button
                 type="button"
                 disabled={!manualBookingAvailable}
-                title={
-                  !manualBookingAvailable
-                    ? "Manual booking creation is not available yet"
-                    : undefined
-                }
+                title={!manualBookingAvailable ? t("calendar.manualBookingUnavailable") : undefined}
                 onClick={() => onNewBooking(rangeStartStr ?? undefined, rangeEndStr ?? undefined)}
                 className="px-2.5 py-1 text-[11px] font-medium text-white bg-primary-600 rounded-lg hover:bg-primary-700 transition-colors disabled:cursor-not-allowed disabled:bg-gray-300"
               >
-                + New
+                {t("calendar.newShort")}
               </button>
             </div>
           </div>
@@ -481,18 +479,16 @@ export default function MobileCalendar({
               className="bg-white rounded-lg border border-gray-200 p-6 text-center"
               aria-live="polite"
             >
-              <p className="text-[12px] text-gray-400">Loading bookings and blocks...</p>
+              <p className="text-[12px] text-gray-400">{t("calendar.mobile.loading")}</p>
             </div>
           ) : loadError ? (
             <div className="bg-white rounded-lg border border-red-200 p-6 text-center" role="alert">
-              <p className="text-[12px] text-red-600">Calendar data could not be loaded.</p>
+              <p className="text-[12px] text-red-600">{t("calendar.mobile.loadError")}</p>
             </div>
           ) : selectedBookings.length === 0 && selectedBlocks.length === 0 ? (
             <div className="bg-white rounded-lg border border-gray-200 p-6 text-center">
               <p className="text-[12px] text-gray-400">
-                {isRangeSelection
-                  ? "No bookings or blocks in this range"
-                  : "No bookings or blocks on this day"}
+                {isRangeSelection ? t("calendar.mobile.emptyRange") : t("calendar.mobile.emptyDay")}
               </p>
             </div>
           ) : (
@@ -534,7 +530,9 @@ export default function MobileCalendar({
                         <div
                           className={`text-[13px] font-semibold truncate ${bl.protected ? "text-amber-700" : "text-red-700"}`}
                         >
-                          {bl.protected ? "Linked inventory" : bl.reason || "Blocked"}
+                          {bl.protected
+                            ? t("rooms.linkedInventory")
+                            : bl.reason || t("calendar.blocked")}
                         </div>
                         <div className="text-[11px] text-red-500">
                           {bl.startDate} → {bl.endDate}
@@ -546,7 +544,7 @@ export default function MobileCalendar({
                             bl.protected ? "bg-amber-100 text-amber-700" : "bg-red-100 text-red-700"
                           }`}
                         >
-                          {bl.protected ? "Linked" : "Blocked"}
+                          {bl.protected ? t("rooms.linked") : t("calendar.blocked")}
                         </span>
                         <div className="text-[10px] text-red-400 mt-0.5 truncate max-w-[90px]">
                           {bl.sourceSummary ||

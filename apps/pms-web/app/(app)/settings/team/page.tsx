@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 import { SettingsCard, SettingsLayout, SettingsSection } from "@vayada/settings-ui";
 
 import { getPmsSettingsSections } from "@/lib/settings/navigation";
+import { useTranslation } from "@/lib/i18n";
 import { listPmsProperties, type PmsPropertySummary } from "@/services/api/pmsPropertyClient";
 import {
   getPmsStaffRoster,
@@ -11,15 +12,16 @@ import {
   type PmsStaffMember,
 } from "@/services/api/pmsStaffClient";
 
-const sections = getPmsSettingsSections(false);
-const roleLabels: Record<PmsStaffMember["roleKey"], string> = {
-  hotel_manager: "Manager",
-  front_desk: "Front Desk",
-  housekeeping: "Housekeeping",
-  hotel_custom: "Custom",
+const roleLabelKeys: Record<PmsStaffMember["roleKey"], string> = {
+  hotel_manager: "settings.team.roleManager",
+  front_desk: "settings.team.roleFrontDesk",
+  housekeeping: "settings.team.roleHousekeeping",
+  hotel_custom: "settings.team.roleCustom",
 };
 
 export default function TeamSettingsPage() {
+  const { t, locale } = useTranslation();
+  const sections = getPmsSettingsSections(false, t);
   const [members, setMembers] = useState<PmsStaffMember[]>([]);
   const [properties, setProperties] = useState<PmsPropertySummary[]>([]);
   const [loading, setLoading] = useState(true);
@@ -42,11 +44,11 @@ export default function TeamSettingsPage() {
       setMembers(nextMembers);
       setProperties(nextProperties);
     } catch {
-      setError("We couldn’t load your team. Retry to see the current access roster.");
+      setError(t("settings.team.loadError"));
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [t]);
 
   useEffect(() => {
     void loadRoster();
@@ -57,7 +59,7 @@ export default function TeamSettingsPage() {
     const label = member.name || member.email;
     if (
       nextStatus === "deactivated" &&
-      !window.confirm(`Deactivate ${label}? They will lose PMS access until reactivated.`)
+      !window.confirm(t("settings.team.deactivateConfirm", { name: label }))
     ) {
       return;
     }
@@ -74,13 +76,18 @@ export default function TeamSettingsPage() {
       setActionFeedback({
         memberId: member.id,
         type: "success",
-        message: `${label} ${updated.status === "active" ? "reactivated" : "deactivated"}.`,
+        message: t(
+          updated.status === "active"
+            ? "settings.team.reactivatedSuccess"
+            : "settings.team.deactivatedSuccess",
+          { name: label },
+        ),
       });
     } catch {
       setActionFeedback({
         memberId: member.id,
         type: "error",
-        message: `Couldn’t update ${label}. Try again.`,
+        message: t("settings.team.updateError", { name: label }),
       });
     } finally {
       setUpdatingMemberId(null);
@@ -90,16 +97,16 @@ export default function TeamSettingsPage() {
   const propertyNames = new Map(properties.map((property) => [property.id, property.name]));
 
   return (
-    <SettingsLayout title="Settings" sections={sections} activeId="team">
+    <SettingsLayout title={t("settings.title")} sections={sections} activeId="team">
       <SettingsSection
         id="team"
-        title="Team & Roles"
-        description="Review staff access across the properties in this workspace."
+        title={t("settings.navigation.team")}
+        description={t("settings.team.description")}
       >
         {loading ? (
           <SettingsCard>
             <p role="status" className="text-sm text-gray-500">
-              Loading team members…
+              {t("settings.team.loading")}
             </p>
           </SettingsCard>
         ) : error ? (
@@ -111,16 +118,14 @@ export default function TeamSettingsPage() {
                 onClick={() => void loadRoster()}
                 className="rounded-lg border border-gray-300 px-3 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-600 focus-visible:ring-offset-2"
               >
-                Retry
+                {t("settings.retry")}
               </button>
             </div>
           </SettingsCard>
         ) : members.length === 0 ? (
           <SettingsCard>
-            <p className="text-sm font-medium text-gray-900">No team members yet</p>
-            <p className="mt-1 text-sm text-gray-500">
-              Staff members and pending invitations will appear here.
-            </p>
+            <p className="text-sm font-medium text-gray-900">{t("settings.team.empty")}</p>
+            <p className="mt-1 text-sm text-gray-500">{t("settings.team.emptyDescription")}</p>
           </SettingsCard>
         ) : (
           <SettingsCard contentClassName="p-0 md:p-0">
@@ -129,22 +134,22 @@ export default function TeamSettingsPage() {
                 <thead className="border-b border-gray-100 bg-gray-50/60 text-xs font-medium text-gray-500">
                   <tr>
                     <th scope="col" className="px-4 py-3 md:px-5">
-                      Team member
+                      {t("settings.team.member")}
                     </th>
                     <th scope="col" className="px-4 py-3">
-                      Role
+                      {t("settings.team.role")}
                     </th>
                     <th scope="col" className="px-4 py-3">
-                      Properties
+                      {t("settings.team.properties")}
                     </th>
                     <th scope="col" className="px-4 py-3">
-                      Status
+                      {t("bookings.tableStatus")}
                     </th>
                     <th scope="col" className="px-4 py-3 md:px-5">
-                      Last active
+                      {t("settings.team.lastActive")}
                     </th>
                     <th scope="col" className="px-4 py-3 md:px-5">
-                      Actions
+                      {t("settings.team.actions")}
                     </th>
                   </tr>
                 </thead>
@@ -155,7 +160,9 @@ export default function TeamSettingsPage() {
                         <p className="font-medium text-gray-900">{member.name || member.email}</p>
                         {member.name && <p className="text-xs text-gray-500">{member.email}</p>}
                       </td>
-                      <td className="px-4 py-3 text-gray-700">{roleLabels[member.roleKey]}</td>
+                      <td className="px-4 py-3 text-gray-700">
+                        {t(roleLabelKeys[member.roleKey])}
+                      </td>
                       <td className="max-w-64 px-4 py-3 text-gray-700">
                         {member.propertyIds
                           .map((propertyId) => propertyNames.get(propertyId) ?? propertyId)
@@ -165,15 +172,17 @@ export default function TeamSettingsPage() {
                         <span
                           className={`inline-flex rounded-full px-2 py-0.5 text-xs font-medium ${statusClass(member.status)}`}
                         >
-                          {statusLabel(member.status)}
+                          {statusLabel(member.status, t)}
                         </span>
                       </td>
                       <td className="px-4 py-3 text-gray-500 md:px-5">
-                        {formatLastActive(member.lastActiveAt)}
+                        {formatLastActive(member.lastActiveAt, locale, t)}
                       </td>
                       <td className="px-4 py-3 md:px-5">
                         {member.status === "pending" ? (
-                          <span className="text-xs text-gray-500">Invitation pending</span>
+                          <span className="text-xs text-gray-500">
+                            {t("settings.team.invitationPending")}
+                          </span>
                         ) : (
                           <button
                             type="button"
@@ -182,16 +191,23 @@ export default function TeamSettingsPage() {
                             aria-busy={updatingMemberId === member.id}
                             aria-label={
                               updatingMemberId === member.id
-                                ? `Saving status for ${member.name || member.email}`
-                                : `${member.status === "active" ? "Deactivate" : "Reactivate"} ${member.name || member.email}`
+                                ? t("settings.team.savingStatus", {
+                                    name: member.name || member.email,
+                                  })
+                                : t(
+                                    member.status === "active"
+                                      ? "settings.team.deactivateNamed"
+                                      : "settings.team.reactivateNamed",
+                                    { name: member.name || member.email },
+                                  )
                             }
                             className="rounded-lg border border-gray-300 px-3 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-600 focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
                           >
                             {updatingMemberId === member.id
-                              ? "Saving…"
+                              ? t("common.saving")
                               : member.status === "active"
-                                ? "Deactivate"
-                                : "Reactivate"}
+                                ? t("settings.team.deactivate")
+                                : t("settings.team.reactivate")}
                           </button>
                         )}
                         {actionFeedback?.memberId === member.id && (
@@ -215,8 +231,8 @@ export default function TeamSettingsPage() {
   );
 }
 
-function statusLabel(status: PmsStaffMember["status"]): string {
-  return status === "deactivated" ? "Deactivated" : status[0]!.toUpperCase() + status.slice(1);
+function statusLabel(status: PmsStaffMember["status"], t: (key: string) => string): string {
+  return t(`settings.team.status${status[0]!.toUpperCase()}${status.slice(1)}`);
 }
 
 function statusClass(status: PmsStaffMember["status"]): string {
@@ -225,8 +241,12 @@ function statusClass(status: PmsStaffMember["status"]): string {
   return "bg-gray-100 text-gray-600";
 }
 
-function formatLastActive(value: string | null): string {
+function formatLastActive(
+  value: string | null,
+  locale: string,
+  t: (key: string) => string,
+): string {
   return value
-    ? new Intl.DateTimeFormat(undefined, { dateStyle: "medium" }).format(new Date(value))
-    : "Not yet";
+    ? new Intl.DateTimeFormat(locale, { dateStyle: "medium" }).format(new Date(value))
+    : t("settings.team.notYet");
 }

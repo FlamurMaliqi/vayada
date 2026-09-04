@@ -744,9 +744,7 @@ export default function CalendarPage() {
                 type="button"
                 disabled={!MANUAL_BOOKINGS_AVAILABLE}
                 title={
-                  !MANUAL_BOOKINGS_AVAILABLE
-                    ? "Manual booking creation is not available yet"
-                    : undefined
+                  !MANUAL_BOOKINGS_AVAILABLE ? t("calendar.manualBookingUnavailable") : undefined
                 }
                 onClick={() => {
                   setPrefill(null);
@@ -876,7 +874,7 @@ export default function CalendarPage() {
                 onClick={retryRoomOrderRefresh}
                 className="shrink-0 font-medium underline disabled:opacity-50"
               >
-                Refresh rooms
+                {t("calendar.refreshRooms")}
               </button>
             )}
           </div>
@@ -1111,10 +1109,10 @@ export default function CalendarPage() {
                                     : "bg-red-100 border-red-300 text-red-600 hover:bg-red-200"
                                 }`}
                                 style={style}
-                                title={`${bl.protected ? "Linked" : "Blocked"}: ${bl.sourceSummary || bl.reason || "No reason"}\n${bl.startDate} → ${bl.endDate}${
+                                title={`${bl.protected ? t("rooms.linked") : t("calendar.blocked")}: ${bl.sourceSummary || bl.reason || t("calendar.blockDetail.noReason")}\n${bl.startDate} → ${bl.endDate}${
                                   bl.roomId
-                                    ? `\nRoom #${bl.roomNumber ?? ""}`
-                                    : `\n${bl.blockedCount} room${bl.blockedCount !== 1 ? "s" : ""}`
+                                    ? `\n${t("calendar.roomNumber", { room: bl.roomNumber ?? "" })}`
+                                    : `\n${t("calendar.blockDetail.roomCount", { count: bl.blockedCount })}`
                                 }`}
                               >
                                 <svg
@@ -1131,7 +1129,9 @@ export default function CalendarPage() {
                                   />
                                 </svg>
                                 <span className="truncate">
-                                  {bl.protected ? "Linked" : bl.reason || "Blocked"}
+                                  {bl.protected
+                                    ? t("rooms.linked")
+                                    : bl.reason || t("calendar.blocked")}
                                 </span>
                               </button>
                             );
@@ -1144,7 +1144,11 @@ export default function CalendarPage() {
                             // VAY-403: multi-room reservation spans several rows.
                             const isMultiRoom = b.numberOfRooms > 1;
                             const multiRoomTitle = isMultiRoom
-                              ? `\n${b.bookingReference} · room ${b.roomPosition + 1} of ${b.numberOfRooms}`
+                              ? `\n${t("calendar.bookingRoomPosition", {
+                                  reference: b.bookingReference,
+                                  position: b.roomPosition + 1,
+                                  total: b.numberOfRooms,
+                                })}`
                               : "";
                             return (
                               <div
@@ -1185,8 +1189,7 @@ export default function CalendarPage() {
                         {t("calendar.unassigned")}
                       </div>
                       <div className="hidden md:block text-[10px] text-amber-500">
-                        {unassignedBookings.length} booking
-                        {unassignedBookings.length !== 1 ? "s" : ""}
+                        {t("calendar.bookingCount", { count: unassignedBookings.length })}
                       </div>
                     </td>
                     <td
@@ -1279,7 +1282,9 @@ export default function CalendarPage() {
                   {format(parseISO(prefill.endDate), "MMM d")}
                   <span className="text-gray-400">
                     {" "}
-                    · {nights} night{nights !== 1 ? "s" : ""}
+                    · {nights}
+                    {t("common.night")}
+                    {nights !== 1 ? "s" : ""}
                   </span>
                 </div>
               </div>

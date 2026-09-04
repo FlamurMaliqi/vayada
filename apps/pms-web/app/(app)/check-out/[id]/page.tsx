@@ -13,6 +13,8 @@ import {
 } from "@/services/bookings";
 import { CheckoutInspectionStep, settingsService } from "@/services/settings";
 import { formatCurrency } from "@/lib/formatCurrency";
+import { useTranslation } from "@/lib/i18n";
+import { localizeCheckoutInspectionStep } from "@/lib/settings/checklistCopy";
 
 type InspectionDraft = {
   status: CheckoutInspectionStatus;
@@ -20,6 +22,7 @@ type InspectionDraft = {
 };
 
 function NotCheckedInPage({ booking }: { booking: Booking }) {
+  const { t } = useTranslation();
   const router = useRouter();
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -33,7 +36,7 @@ function NotCheckedInPage({ booking }: { booking: Booking }) {
       await bookingsService.markNoShow(booking.id);
       router.push("/dashboard");
     } catch {
-      setError("Failed to mark as no-show. Please try again.");
+      setError(t("checkOut.noShowError"));
       setLoading(false);
     }
   }
@@ -42,8 +45,7 @@ function NotCheckedInPage({ booking }: { booking: Booking }) {
     <main className="p-4 md:p-6">
       <div className="mx-auto max-w-lg space-y-4">
         <div className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
-          This guest hasn&apos;t been checked in yet. Check them in to proceed with check-out, or
-          mark as a no-show if the guest didn&apos;t arrive.
+          {t("checkOut.notCheckedInDescription")}
         </div>
         {error && (
           <p className="rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700">
@@ -56,7 +58,7 @@ function NotCheckedInPage({ booking }: { booking: Booking }) {
               href={`/check-in/${booking.id}?next=checkout`}
               className="flex h-11 items-center justify-center rounded-lg bg-primary-600 px-5 text-sm font-semibold text-white hover:bg-primary-700"
             >
-              Check in now
+              {t("checkOut.checkInNow")}
             </Link>
           )}
           {isConfirmed && (
@@ -66,14 +68,14 @@ function NotCheckedInPage({ booking }: { booking: Booking }) {
               disabled={loading}
               className="flex h-11 items-center justify-center rounded-lg border border-red-200 px-5 text-sm font-semibold text-red-600 hover:bg-red-50 disabled:opacity-60"
             >
-              {loading ? "Marking…" : "Mark as no-show"}
+              {loading ? t("checkOut.markingNoShow") : t("checkOut.markNoShow")}
             </button>
           )}
           <Link
             href="/dashboard"
             className="flex h-11 items-center justify-center rounded-lg border border-gray-200 px-5 text-sm font-semibold text-gray-700 hover:bg-gray-50"
           >
-            Back to dashboard
+            {t("checkOut.backToDashboard")}
           </Link>
         </div>
       </div>
@@ -88,30 +90,45 @@ function guestName(b: Booking) {
   return `${b.guestFirstName} ${b.guestLastName}`.trim();
 }
 
-function roomLabel(b: Booking) {
+function roomLabel(
+  b: Booking,
+  t: (key: string, params?: Record<string, string | number>) => string,
+) {
   if (b.assignedRooms?.length) {
     return b.assignedRooms
-      .map((room) => (room.roomNumber ? `${b.roomName}\nUnit ${room.roomNumber}` : b.roomName))
+      .map((room) =>
+        room.roomNumber
+          ? `${b.roomName}\n${t("checkOut.unit", { number: room.roomNumber })}`
+          : b.roomName,
+      )
       .join("\n");
   }
-  return b.roomNumber ? `${b.roomName}\nUnit ${b.roomNumber}` : b.roomName;
+  return b.roomNumber
+    ? `${b.roomName}\n${t("checkOut.unit", { number: b.roomNumber })}`
+    : b.roomName;
 }
 
-function shortDateRange(checkIn: string, checkOut: string) {
+function shortDateRange(checkIn: string, checkOut: string, locale: string) {
   const ci = new Date(`${checkIn}T12:00:00`);
   const co = new Date(`${checkOut}T12:00:00`);
-  const mon = (d: Date) => d.toLocaleDateString("en-US", { month: "short" });
+  const mon = (d: Date) => d.toLocaleDateString(locale, { month: "short" });
   if (ci.getMonth() === co.getMonth() && ci.getFullYear() === co.getFullYear()) {
     return `${ci.getDate()}-${co.getDate()} ${mon(ci)}`;
   }
   return `${ci.getDate()} ${mon(ci)} - ${co.getDate()} ${mon(co)}`;
 }
 
-function guestsLabel(b: Booking) {
+function guestsLabel(
+  b: Booking,
+  t: (key: string, params?: Record<string, string | number>) => string,
+) {
   const parts: string[] = [];
-  if (b.adults > 0) parts.push(`${b.adults} adult${b.adults === 1 ? "" : "s"}`);
-  if (b.children > 0) parts.push(`${b.children} child${b.children === 1 ? "" : "ren"}`);
-  return parts.join(", ") || `${b.numberOfGuests || 1} guest`;
+  if (b.adults > 0)
+    parts.push(t(b.adults === 1 ? "checkOut.adult" : "checkOut.adults", { count: b.adults }));
+  if (b.children > 0)
+    parts.push(t(b.children === 1 ? "checkOut.child" : "checkOut.children", { count: b.children }));
+  const count = b.numberOfGuests || 1;
+  return parts.join(", ") || t(count === 1 ? "checkOut.guest" : "checkOut.guests", { count });
 }
 
 function formatDateTime(iso: string): string {
@@ -125,6 +142,7 @@ function formatDateTime(iso: string): string {
 }
 
 export default function CheckOutPage() {
+  const { locale, t } = useTranslation();
   const params = useParams<{ id: string }>();
   const id = params.id;
   const [booking, setBooking] = useState<Booking | null>(null);
@@ -155,13 +173,13 @@ export default function CheckOutPage() {
     ])
       .then(([bookingRes, templateRes, chargeRes, noteRes]) => {
         setBooking(bookingRes);
-        setSteps(templateRes.steps || []);
+        setSteps((templateRes.steps || []).map((step) => localizeCheckoutInspectionStep(step, t)));
         setCharges(chargeRes.charges || []);
         setNotes(noteRes.notes || []);
       })
-      .catch((err) => setError(err.message || "Could not load check-out"))
+      .catch((err) => setError(err.message || t("checkOut.loadError")))
       .finally(() => setLoading(false));
-  }, [id]);
+  }, [id, t]);
 
   const pendingTotal = useMemo(
     () =>
@@ -221,7 +239,7 @@ export default function CheckOutPage() {
       setNotes((prev) => [saved, ...prev]);
       setNoteDraft("");
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not save note");
+      setError(err instanceof Error ? err.message : t("checkOut.saveNoteError"));
     } finally {
       setSavingNote(false);
     }
@@ -239,7 +257,7 @@ export default function CheckOutPage() {
       setChargeLabel("");
       setChargeAmount("");
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not add charge");
+      setError(err instanceof Error ? err.message : t("checkOut.addChargeError"));
     } finally {
       setAddingCharge(false);
     }
@@ -256,7 +274,7 @@ export default function CheckOutPage() {
           : await bookingsService.waiveCheckoutCharge(booking.id, charge.id);
       setCharges((prev) => prev.map((item) => (item.id === saved.id ? saved : item)));
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not update charge");
+      setError(err instanceof Error ? err.message : t("checkOut.updateChargeError"));
     } finally {
       setActionLoading(null);
     }
@@ -268,7 +286,9 @@ export default function CheckOutPage() {
     const results = steps.map((step) => toInspectionResult(step, inspection[step.id]));
     if (incompleteRequired.length > 0 && !warning) {
       setWarning(
-        `Room inspection incomplete for: ${incompleteRequired.map((step) => step.label).join(", ")}`,
+        t("checkOut.inspectionIncomplete", {
+          items: incompleteRequired.map((step) => step.label).join(", "),
+        }),
       );
       return;
     }
@@ -291,20 +311,20 @@ export default function CheckOutPage() {
       setBooking(checkedOut);
       setConfirmationFlags(flaggedResults);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not complete check-out");
+      setError(err instanceof Error ? err.message : t("checkOut.completeError"));
     } finally {
       setActionLoading(null);
     }
   };
 
   if (loading) {
-    return <div className="p-4 md:p-6 text-sm text-gray-500">Loading check-out...</div>;
+    return <div className="p-4 md:p-6 text-sm text-gray-500">{t("checkOut.loading")}</div>;
   }
 
   if (!booking) {
     return (
       <div className="p-4 md:p-6">
-        <p className="text-sm text-red-600">{error || "Booking not found."}</p>
+        <p className="text-sm text-red-600">{error || t("checkOut.bookingNotFound")}</p>
       </div>
     );
   }
@@ -318,19 +338,19 @@ export default function CheckOutPage() {
       <main className="mx-auto max-w-3xl p-4 md:p-6">
         <div className="rounded-2xl border border-green-200 bg-white p-6 shadow-sm">
           <p className="text-sm font-semibold uppercase tracking-wide text-green-700">
-            Checked out
+            {t("checkOut.checkedOut")}
           </p>
           <h1 className="mt-2 text-2xl font-bold text-gray-950">{guestName(booking)}</h1>
-          <p className="mt-1 text-sm text-gray-500">This booking has already been checked out.</p>
+          <p className="mt-1 text-sm text-gray-500">{t("checkOut.alreadyCheckedOut")}</p>
           <div className="mt-6 flex flex-wrap gap-2">
             <Link href="/dashboard" className={primaryActionClass}>
-              Back to dashboard
+              {t("checkOut.backToDashboard")}
             </Link>
             <Link
               href={`/bookings/${booking.id}`}
               className="rounded-lg border border-gray-200 px-4 py-2 text-sm font-semibold text-gray-700"
             >
-              Open booking
+              {t("checkOut.openBooking")}
             </Link>
           </div>
         </div>
@@ -343,21 +363,25 @@ export default function CheckOutPage() {
       <main className="mx-auto max-w-3xl p-4 md:p-6">
         <div className="rounded-2xl border border-green-200 bg-white p-6 shadow-sm">
           <p className="text-sm font-semibold uppercase tracking-wide text-green-700">
-            Checked out
+            {t("checkOut.checkedOut")}
           </p>
           <h1 className="mt-2 text-2xl font-bold text-gray-950">{guestName(booking)}</h1>
           <p className="mt-1 text-sm text-gray-500">
-            {booking.bookingReference} is now marked Checked Out.
+            {t("checkOut.completedReference", { reference: booking.bookingReference })}
           </p>
           {confirmationFlags.length === 0 ? (
             <div className="mt-5 rounded-xl border border-green-200 bg-green-50 p-4 text-sm font-semibold text-green-800">
-              All complete
+              {t("checkOut.allComplete")}
             </div>
           ) : (
             <div className="mt-5 rounded-xl border border-amber-200 bg-amber-50 p-4">
               <p className="font-semibold text-amber-950">
-                {confirmationFlags.length} inspection item
-                {confirmationFlags.length === 1 ? "" : "s"} flagged
+                {t(
+                  confirmationFlags.length === 1
+                    ? "checkOut.flaggedInspectionItem"
+                    : "checkOut.flaggedInspectionItems",
+                  { count: confirmationFlags.length },
+                )}
               </p>
               <ul className="mt-2 list-disc pl-5 text-sm text-amber-900">
                 {confirmationFlags.map((flag) => (
@@ -371,13 +395,13 @@ export default function CheckOutPage() {
           )}
           <div className="mt-6 flex flex-wrap gap-2">
             <Link href="/dashboard" className={primaryActionClass}>
-              Back to dashboard
+              {t("checkOut.backToDashboard")}
             </Link>
             <Link
               href={`/bookings/${booking.id}`}
               className="rounded-lg border border-gray-200 px-4 py-2 text-sm font-semibold text-gray-700"
             >
-              Open booking
+              {t("checkOut.openBooking")}
             </Link>
           </div>
         </div>
@@ -392,16 +416,16 @@ export default function CheckOutPage() {
           <div>
             <p className="text-sm text-gray-500">
               <Link href="/dashboard" className="hover:text-gray-900">
-                Dashboard
+                {t("layout.sidebar.dashboard")}
               </Link>{" "}
-              / Check-out
+              / {t("checkOut.label")}
             </p>
             <div className="mt-2 flex flex-wrap items-center gap-2">
               <h1 className="text-2xl font-semibold text-gray-950">
-                Check out - {guestName(booking)}
+                {t("checkOut.title", { guest: guestName(booking) })}
               </h1>
               <span className="rounded-full bg-sky-100 px-2.5 py-1 text-xs font-semibold text-sky-700">
-                departing today
+                {t("checkOut.departingToday")}
               </span>
             </div>
           </div>
@@ -409,7 +433,7 @@ export default function CheckOutPage() {
             href="/dashboard"
             className="rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm font-semibold text-gray-700 hover:bg-gray-50"
           >
-            Back to dashboard
+            {t("checkOut.backToDashboard")}
           </Link>
         </header>
 
@@ -426,23 +450,26 @@ export default function CheckOutPage() {
 
         <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_340px]">
           <div className="space-y-5">
-            <Section title="Stay summary">
+            <Section title={t("checkOut.staySummary")}>
               <div className="grid gap-3 md:grid-cols-3">
-                <SummaryItem label="Room" value={roomLabel(booking)} multiline />
                 <SummaryItem
-                  label="Stayed"
-                  value={`${booking.nights} night${booking.nights === 1 ? "" : "s"} - ${shortDateRange(
-                    booking.checkIn,
-                    booking.checkOut,
-                  )}`}
+                  label={t("bookings.tableRoom")}
+                  value={roomLabel(booking, t)}
+                  multiline
                 />
-                <SummaryItem label="Guests" value={guestsLabel(booking)} />
+                <SummaryItem
+                  label={t("checkOut.stayed")}
+                  value={`${t(booking.nights === 1 ? "checkOut.night" : "checkOut.nights", {
+                    count: booking.nights,
+                  })} - ${shortDateRange(booking.checkIn, booking.checkOut, locale)}`}
+                />
+                <SummaryItem label={t("bookings.detail.guests")} value={guestsLabel(booking, t)} />
               </div>
             </Section>
 
             <Section
-              title="Room inspection"
-              description="Walk through the room before the guest leaves."
+              title={t("checkOut.roomInspection")}
+              description={t("checkOut.roomInspectionDescription")}
             >
               <div className="space-y-3">
                 {steps.map((step) => {
@@ -462,12 +489,12 @@ export default function CheckOutPage() {
                             }`}
                           >
                             {draft?.status === "issue"
-                              ? `${step.negativeLabel} selected`
+                              ? t("checkOut.inspectionSelected", { label: step.negativeLabel })
                               : draft?.status === "ok"
                                 ? step.okLabel
                                 : step.required
-                                  ? "Required"
-                                  : "Optional"}
+                                  ? t("common.required")
+                                  : t("checkOut.optional")}
                           </p>
                         </div>
                         <div className="flex gap-2">
@@ -480,7 +507,7 @@ export default function CheckOutPage() {
                                 : "border-gray-200 bg-white text-gray-700 hover:bg-gray-50"
                             }`}
                           >
-                            OK
+                            {t("checkOut.ok")}
                           </button>
                           <button
                             type="button"
@@ -510,13 +537,13 @@ export default function CheckOutPage() {
             </Section>
 
             <Section
-              title="Outstanding charges"
-              description="Settle all charges before confirming check-out."
+              title={t("checkOut.outstandingCharges")}
+              description={t("checkOut.outstandingChargesDescription")}
             >
               <div className="space-y-3">
                 {charges.length === 0 ? (
                   <p className="rounded-lg border border-dashed border-gray-300 p-4 text-sm text-gray-500">
-                    No outstanding charges.
+                    {t("checkOut.noOutstandingCharges")}
                   </p>
                 ) : (
                   charges.map((charge) => (
@@ -527,7 +554,7 @@ export default function CheckOutPage() {
                       <div>
                         <p className="text-sm font-semibold text-gray-950">{charge.label}</p>
                         <p className="text-xs text-gray-500">
-                          Added {formatDateTime(charge.createdAt)}
+                          {t("checkOut.addedAt", { date: formatDateTime(charge.createdAt) })}
                         </p>
                       </div>
                       <div className="flex flex-wrap items-center gap-2">
@@ -535,7 +562,9 @@ export default function CheckOutPage() {
                           {formatCurrency(charge.amount, booking.currency)}
                           {charge.status === "waived" && (
                             <span className="ml-1 text-xs text-gray-500">
-                              ({formatCurrency(charge.originalAmount, booking.currency)} waived)
+                              {t("checkOut.waivedAmount", {
+                                amount: formatCurrency(charge.originalAmount, booking.currency),
+                              })}
                             </span>
                           )}
                         </span>
@@ -546,7 +575,7 @@ export default function CheckOutPage() {
                               : "bg-green-100 text-green-700"
                           }`}
                         >
-                          {charge.status}
+                          {t(`checkOut.chargeStatus.${charge.status}`)}
                         </span>
                         {charge.status === "pending" && (
                           <>
@@ -556,7 +585,7 @@ export default function CheckOutPage() {
                               disabled={actionLoading === `paid-${charge.id}`}
                               className="rounded-lg border border-gray-200 px-3 py-1.5 text-xs font-semibold text-gray-700 hover:bg-gray-50 disabled:opacity-60"
                             >
-                              Mark as paid
+                              {t("checkOut.markAsPaid")}
                             </button>
                             <button
                               type="button"
@@ -564,7 +593,7 @@ export default function CheckOutPage() {
                               disabled={actionLoading === `waived-${charge.id}`}
                               className="rounded-lg border border-gray-200 px-3 py-1.5 text-xs font-semibold text-gray-700 hover:bg-gray-50 disabled:opacity-60"
                             >
-                              Waive
+                              {t("checkOut.waive")}
                             </button>
                           </>
                         )}
@@ -577,13 +606,13 @@ export default function CheckOutPage() {
                   <input
                     value={chargeLabel}
                     onChange={(event) => setChargeLabel(event.target.value)}
-                    placeholder="Charge label"
+                    placeholder={t("checkOut.chargeLabel")}
                     className="rounded-lg border border-gray-200 px-3 py-2 text-sm outline-none focus:border-gray-400"
                   />
                   <input
                     value={chargeAmount}
                     onChange={(event) => setChargeAmount(event.target.value)}
-                    placeholder="Amount"
+                    placeholder={t("checkOut.amount")}
                     inputMode="decimal"
                     className="rounded-lg border border-gray-200 px-3 py-2 text-sm outline-none focus:border-gray-400"
                   />
@@ -593,29 +622,29 @@ export default function CheckOutPage() {
                     disabled={addingCharge}
                     className="rounded-lg bg-gray-900 px-3 py-2 text-sm font-semibold text-white hover:bg-gray-800 disabled:opacity-60"
                   >
-                    Add charge
+                    {t("checkOut.addCharge")}
                   </button>
                 </div>
 
                 <div className="grid gap-2 rounded-lg border border-gray-200 bg-white p-4 text-sm">
                   <TotalRow
-                    label="Base booking (settled)"
+                    label={t("checkOut.baseBookingSettled")}
                     value={formatCurrency(
                       booking.totalAmount - additionalCharges,
                       booking.currency,
                     )}
                   />
                   <TotalRow
-                    label="Additional charges"
+                    label={t("checkOut.additionalCharges")}
                     value={formatCurrency(additionalCharges, booking.currency)}
                   />
                   <TotalRow
-                    label="Pending"
+                    label={t("bookings.statusPending")}
                     value={formatCurrency(pendingTotal, booking.currency)}
                     highlight={pendingTotal > 0}
                   />
                   <TotalRow
-                    label="Grand total"
+                    label={t("checkOut.grandTotal")}
                     value={formatCurrency(
                       booking.totalAmount + additionalCharges,
                       booking.currency,
@@ -626,12 +655,12 @@ export default function CheckOutPage() {
               </div>
             </Section>
 
-            <Section title="Notes">
+            <Section title={t("checkOut.notes")}>
               <div className="space-y-5">
                 {checkInNotes.length > 0 && (
                   <div>
                     <p className="text-xs font-semibold uppercase tracking-wide text-gray-500">
-                      From check-in
+                      {t("checkOut.fromCheckIn")}
                     </p>
                     <div className="mt-2 space-y-2">
                       {checkInNotes.map((note) => (
@@ -642,12 +671,12 @@ export default function CheckOutPage() {
                 )}
                 <div>
                   <p className="text-xs font-semibold uppercase tracking-wide text-gray-500">
-                    Check-out notes
+                    {t("checkOut.checkoutNotes")}
                   </p>
                   <textarea
                     value={noteDraft}
                     onChange={(event) => setNoteDraft(event.target.value)}
-                    placeholder="Add a note for the team or records..."
+                    placeholder={t("checkOut.notePlaceholder")}
                     rows={4}
                     className="mt-2 w-full rounded-lg border border-gray-200 px-3 py-2 text-sm outline-none focus:border-gray-400"
                   />
@@ -658,7 +687,7 @@ export default function CheckOutPage() {
                       disabled={savingNote || !noteDraft.trim()}
                       className="rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm font-semibold text-gray-700 hover:bg-gray-50 disabled:opacity-60"
                     >
-                      {savingNote ? "Saving..." : "Save note"}
+                      {savingNote ? t("common.saving") : t("checkOut.saveNote")}
                     </button>
                   </div>
                   {checkoutNotes.length > 0 && (
@@ -675,9 +704,9 @@ export default function CheckOutPage() {
 
           <aside className="lg:sticky lg:top-4 lg:self-start">
             <div className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm">
-              <p className="text-sm font-semibold text-gray-950">Checklist</p>
+              <p className="text-sm font-semibold text-gray-950">{t("checkOut.checklist")}</p>
               <div className="mt-4 space-y-2">
-                <ChecklistItem label="Stay reviewed" state="ok" />
+                <ChecklistItem label={t("checkOut.stayReviewed")} state="ok" />
                 {steps.map((step) => {
                   const draft = inspection[step.id];
                   return (
@@ -701,7 +730,7 @@ export default function CheckOutPage() {
                   );
                 })}
                 <ChecklistItem
-                  label="Payment settled"
+                  label={t("checkOut.paymentSettled")}
                   state={pendingTotal > 0 ? "issue" : "ok"}
                   detail={
                     pendingTotal > 0 ? formatCurrency(pendingTotal, booking.currency) : undefined
@@ -715,10 +744,10 @@ export default function CheckOutPage() {
                 className="mt-5 w-full rounded-lg bg-primary-600 px-4 py-3 text-sm font-semibold text-white hover:bg-primary-700 disabled:cursor-not-allowed disabled:bg-gray-300"
               >
                 {pendingTotal > 0
-                  ? "Settle all charges to complete check-out"
+                  ? t("checkOut.settleChargesFirst")
                   : actionLoading === "complete"
-                    ? "Completing..."
-                    : "Complete check-out"}
+                    ? t("checkOut.completing")
+                    : t("checkOut.complete")}
               </button>
             </div>
           </aside>

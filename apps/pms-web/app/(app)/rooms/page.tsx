@@ -270,15 +270,17 @@ function RoomTypeCard({
             </span>
             {linkedGroup && (
               <span
-                title={`Linked inventory: ${linkedGroup.name}`}
+                title={t("rooms.linkedInventoryNamed", { name: linkedGroup.name })}
                 className="shrink-0 rounded-full border border-amber-200 bg-amber-50 px-2 py-0.5 text-[10px] font-semibold text-amber-700"
               >
-                Linked
+                {t("rooms.linked")}
               </span>
             )}
           </div>
           <p className="text-[12px] text-gray-400 mt-0.5 truncate">
-            {typeRooms.length} room{typeRooms.length !== 1 ? "s" : ""}
+            {typeRooms.length}
+            {t("common.room")}
+            {typeRooms.length !== 1 ? "s" : ""}
             {room.maxOccupancy > 0 && (
               <>
                 {" "}
@@ -323,7 +325,7 @@ function RoomTypeCard({
         {/* Count badge */}
         <span
           className={`shrink-0 w-6 h-6 rounded-full text-white text-[11px] font-bold flex items-center justify-center ${typeRooms.length > 0 ? "bg-green-500" : "bg-gray-300"}`}
-          title={`${available} available`}
+          title={t("rooms.availableCount", { count: available })}
         >
           {typeRooms.length}
         </span>
@@ -336,8 +338,8 @@ function RoomTypeCard({
           }}
           disabled={duplicating}
           className="flex items-center justify-center w-8 h-8 md:w-auto md:h-auto md:px-3 md:py-1.5 text-[12px] font-medium text-gray-600 border border-gray-200 rounded-lg hover:bg-gray-50 transition-colors shrink-0 disabled:opacity-50 disabled:cursor-not-allowed"
-          title={duplicating ? "Duplicating room type" : "Duplicate room type"}
-          aria-label={duplicating ? "Duplicating room type" : "Duplicate room type"}
+          title={duplicating ? t("rooms.duplicatingRoomType") : t("rooms.duplicateRoomType")}
+          aria-label={duplicating ? t("rooms.duplicatingRoomType") : t("rooms.duplicateRoomType")}
         >
           <DocumentDuplicateIcon className="w-3.5 h-3.5" />
         </button>
@@ -416,14 +418,18 @@ function RoomTypeCard({
                           className="text-[13px] font-medium text-gray-800 px-2 py-1 border border-primary-300 rounded-md focus:outline-none focus:border-primary-500 min-w-0 w-40"
                         />
                         {r.floor && (
-                          <span className="text-gray-400 text-[11px]">Floor {r.floor}</span>
+                          <span className="text-gray-400 text-[11px]">
+                            {t("rooms.floorNumber", { floor: r.floor })}
+                          </span>
                         )}
                       </div>
                     ) : (
                       <p className="text-[13px] font-medium text-gray-800">
                         #{r.roomNumber}
                         {r.floor && (
-                          <span className="text-gray-400 ml-1.5 text-[11px]">Floor {r.floor}</span>
+                          <span className="text-gray-400 ml-1.5 text-[11px]">
+                            {t("rooms.floorNumber", { floor: r.floor })}
+                          </span>
                         )}
                       </p>
                     )}
@@ -629,7 +635,7 @@ export default function RoomsPage() {
           >
             <PlusIcon className="w-4 h-4" />
             <span className="hidden md:inline">{t("rooms.addRoomType")}</span>
-            <span className="md:hidden">Add</span>
+            <span className="md:hidden">{t("common.add")}</span>
           </Link>
         </div>
       </div>

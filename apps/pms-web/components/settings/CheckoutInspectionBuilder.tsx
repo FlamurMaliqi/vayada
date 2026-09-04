@@ -12,10 +12,12 @@ import {
 } from "@heroicons/react/24/outline";
 import { isPmsOperationsReadModelEnabled } from "@/services/api/pmsOperationsClient";
 import { CheckoutInspectionStep, settingsService } from "@/services/settings";
+import { useTranslation } from "@/lib/i18n";
+import { localizeCheckoutInspectionStep } from "@/lib/settings/checklistCopy";
 
 const DRAFT_STORAGE_KEY = "vayada:pms:checkout-inspection-preview";
 
-function newStep(position: number): CheckoutInspectionStep {
+function newStep(position: number, t: (key: string) => string): CheckoutInspectionStep {
   const id =
     typeof crypto !== "undefined" && "randomUUID" in crypto
       ? crypto.randomUUID()
@@ -23,20 +25,21 @@ function newStep(position: number): CheckoutInspectionStep {
   return {
     id,
     label: "",
-    okLabel: "OK",
-    negativeLabel: "Issue",
-    notePrompt: "Add details...",
+    okLabel: t("settings.inspection.defaults.okLabel"),
+    negativeLabel: t("settings.inspection.defaults.negativeLabel"),
+    notePrompt: t("settings.inspection.defaults.notePrompt"),
     required: true,
     position,
   };
 }
 
 export function CheckoutInspectionPreview({ steps }: { steps: CheckoutInspectionStep[] }) {
+  const { t } = useTranslation();
   return (
     <div className="rounded-xl border border-gray-200 bg-white shadow-sm">
       <div className="border-b border-gray-100 px-4 py-3">
         <p className="text-xs font-semibold uppercase tracking-wide text-gray-500">
-          Inspection preview
+          {t("settings.inspection.previewTitle")}
         </p>
       </div>
       <div className="max-h-[520px] space-y-2 overflow-y-auto p-4">
@@ -45,12 +48,12 @@ export function CheckoutInspectionPreview({ steps }: { steps: CheckoutInspection
             <div className="flex items-start justify-between gap-3">
               <div className="min-w-0">
                 <p className="break-words text-sm font-semibold text-gray-950">
-                  {step.label.trim() || "(unnamed step)"}
+                  {step.label.trim() || t("settings.inspection.unnamed")}
                 </p>
                 <p className="mt-1 text-xs text-gray-500">{step.notePrompt}</p>
               </div>
               <span className="rounded-full bg-white px-2 py-0.5 text-xs text-gray-500">
-                {step.required ? "Required" : "Optional"}
+                {step.required ? t("common.required") : t("settings.inspection.optional")}
               </span>
             </div>
             <div className="mt-3 flex flex-wrap gap-2">
@@ -69,6 +72,7 @@ export function CheckoutInspectionPreview({ steps }: { steps: CheckoutInspection
 }
 
 export function CheckoutInspectionBuilder() {
+  const { t } = useTranslation();
   const supportsCustomCopy = !isPmsOperationsReadModelEnabled();
   const [steps, setSteps] = useState<CheckoutInspectionStep[]>([]);
   const [loading, setLoading] = useState(true);
@@ -82,10 +86,12 @@ export function CheckoutInspectionBuilder() {
   useEffect(() => {
     settingsService
       .getCheckoutInspection()
-      .then((template) => setSteps(template.steps || []))
-      .catch((err) => setError(err.message || "Could not load inspection settings"))
+      .then((template) =>
+        setSteps((template.steps || []).map((step) => localizeCheckoutInspectionStep(step, t))),
+      )
+      .catch((err) => setError(err.message || t("settings.inspection.loadError")))
       .finally(() => setLoading(false));
-  }, []);
+  }, [t]);
 
   useEffect(() => {
     if (!nextFocusId.current) return;
@@ -109,7 +115,7 @@ export function CheckoutInspectionBuilder() {
   };
 
   const addStep = () => {
-    const step = newStep(steps.length);
+    const step = newStep(steps.length, t);
     nextFocusId.current = step.id;
     setSteps((prev) => [...prev, step]);
   };
@@ -134,11 +140,14 @@ export function CheckoutInspectionBuilder() {
   const save = async () => {
     const nextErrors: Record<string, string> = {};
     normalizedSteps.forEach((step) => {
-      if (!step.label.trim()) nextErrors[step.id] = "Add a label.";
+      if (!step.label.trim()) nextErrors[step.id] = t("settings.inspection.labelRequired");
       if (supportsCustomCopy) {
-        if (!step.okLabel.trim()) nextErrors[`${step.id}-ok`] = "Add an OK label.";
-        if (!step.negativeLabel.trim()) nextErrors[`${step.id}-negative`] = "Add a negative label.";
-        if (!step.notePrompt.trim()) nextErrors[`${step.id}-prompt`] = "Add a note prompt.";
+        if (!step.okLabel.trim())
+          nextErrors[`${step.id}-ok`] = t("settings.inspection.okLabelRequired");
+        if (!step.negativeLabel.trim())
+          nextErrors[`${step.id}-negative`] = t("settings.inspection.negativeLabelRequired");
+        if (!step.notePrompt.trim())
+          nextErrors[`${step.id}-prompt`] = t("settings.inspection.notePromptRequired");
       }
     });
     setErrors(nextErrors);
@@ -150,9 +159,9 @@ export function CheckoutInspectionBuilder() {
     try {
       const saved = await settingsService.updateCheckoutInspection(normalizedSteps);
       setSteps(saved.steps || []);
-      setSuccess("Inspection steps saved");
+      setSuccess(t("settings.inspection.saved"));
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not save inspection settings");
+      setError(err instanceof Error ? err.message : t("settings.inspection.saveError"));
     } finally {
       setSaving(false);
     }
@@ -163,7 +172,7 @@ export function CheckoutInspectionBuilder() {
   };
 
   if (loading) {
-    return <div className="p-4 text-sm text-gray-500">Loading inspection settings...</div>;
+    return <div className="p-4 text-sm text-gray-500">{t("settings.inspection.loading")}</div>;
   }
 
   return (
@@ -171,10 +180,14 @@ export function CheckoutInspectionBuilder() {
       <div className="mx-auto max-w-6xl space-y-5">
         <header className="flex flex-wrap items-start justify-between gap-3">
           <div>
-            <p className="text-sm text-gray-500">Settings / Check-out inspection</p>
-            <h1 className="mt-1 text-2xl font-semibold text-gray-950">Check-out inspection</h1>
+            <p className="text-sm text-gray-500">
+              {t("settings.title")} / {t("settings.navigation.checkoutInspection")}
+            </p>
+            <h1 className="mt-1 text-2xl font-semibold text-gray-950">
+              {t("settings.navigation.checkoutInspection")}
+            </h1>
             <p className="mt-1 max-w-2xl text-sm text-gray-600">
-              Customise the room inspection steps your team completes before a guest leaves.
+              {t("settings.inspection.description")}
             </p>
           </div>
           <Link
@@ -182,7 +195,7 @@ export function CheckoutInspectionBuilder() {
             className="inline-flex items-center gap-2 rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm font-semibold text-gray-700 hover:bg-gray-50"
           >
             <ArrowLeftIcon className="h-4 w-4" />
-            Settings
+            {t("settings.title")}
           </Link>
         </header>
 
@@ -201,10 +214,10 @@ export function CheckoutInspectionBuilder() {
           <div className="rounded-xl border border-gray-200 bg-white shadow-sm">
             <div className="border-b border-gray-100 px-4 py-3">
               <p className="text-xs font-semibold uppercase tracking-wide text-gray-500">
-                Custom inspection steps
+                {t("settings.inspection.stepsTitle")}
               </p>
               <p className="mt-1 text-xs text-gray-500">
-                Required steps warn staff if unresolved; pending charges are the only hard block.
+                {t("settings.inspection.stepsDescription")}
               </p>
             </div>
             <div className="space-y-3 p-4">
@@ -234,7 +247,7 @@ export function CheckoutInspectionBuilder() {
                         <button
                           type="button"
                           className="flex h-9 w-9 cursor-grab items-center justify-center rounded-lg text-gray-400 hover:bg-gray-50"
-                          aria-label="Drag to reorder"
+                          aria-label={t("settings.inspection.drag")}
                         >
                           <Bars3Icon className="h-5 w-5" />
                         </button>
@@ -244,7 +257,7 @@ export function CheckoutInspectionBuilder() {
                             onClick={() => previousStep && moveStep(step.id, previousStep.id)}
                             disabled={!previousStep}
                             className="flex h-4 w-7 items-center justify-center rounded text-xs text-gray-500 hover:bg-gray-50 disabled:opacity-30"
-                            aria-label="Move step up"
+                            aria-label={t("settings.inspection.moveUp")}
                           >
                             ↑
                           </button>
@@ -253,7 +266,7 @@ export function CheckoutInspectionBuilder() {
                             onClick={() => nextStep && moveStep(step.id, nextStep.id)}
                             disabled={!nextStep}
                             className="flex h-4 w-7 items-center justify-center rounded text-xs text-gray-500 hover:bg-gray-50 disabled:opacity-30"
-                            aria-label="Move step down"
+                            aria-label={t("settings.inspection.moveDown")}
                           >
                             ↓
                           </button>
@@ -261,7 +274,7 @@ export function CheckoutInspectionBuilder() {
                       </div>
                       <Field
                         value={step.label}
-                        placeholder="Label"
+                        placeholder={t("settings.inspection.labelPlaceholder")}
                         maxLength={120}
                         error={errors[step.id]}
                         dataStepLabel={step.id}
@@ -271,21 +284,21 @@ export function CheckoutInspectionBuilder() {
                         <>
                           <Field
                             value={step.okLabel}
-                            placeholder="OK label"
+                            placeholder={t("settings.inspection.okPlaceholder")}
                             maxLength={40}
                             error={errors[`${step.id}-ok`]}
                             onChange={(value) => updateStep(step.id, { okLabel: value })}
                           />
                           <Field
                             value={step.negativeLabel}
-                            placeholder="Negative"
+                            placeholder={t("settings.inspection.negativePlaceholder")}
                             maxLength={40}
                             error={errors[`${step.id}-negative`]}
                             onChange={(value) => updateStep(step.id, { negativeLabel: value })}
                           />
                           <Field
                             value={step.notePrompt}
-                            placeholder="Note prompt"
+                            placeholder={t("settings.inspection.notePlaceholder")}
                             error={errors[`${step.id}-prompt`]}
                             onChange={(value) => updateStep(step.id, { notePrompt: value })}
                           />
@@ -295,7 +308,7 @@ export function CheckoutInspectionBuilder() {
                         type="button"
                         onClick={() => removeStep(step.id)}
                         className="flex h-9 w-9 items-center justify-center rounded-lg text-gray-400 hover:bg-red-50 hover:text-red-600"
-                        aria-label="Delete step"
+                        aria-label={t("settings.inspection.delete")}
                       >
                         <TrashIcon className="h-4 w-4" />
                       </button>
@@ -309,7 +322,7 @@ export function CheckoutInspectionBuilder() {
                         }
                         className="h-4 w-4 rounded border-gray-300"
                       />
-                      Required
+                      {t("common.required")}
                     </label>
                   </div>
                 );
@@ -317,7 +330,7 @@ export function CheckoutInspectionBuilder() {
 
               {normalizedSteps.length === 0 && (
                 <div className="rounded-lg border border-dashed border-gray-300 p-4 text-sm text-gray-500">
-                  No inspection steps yet. Add the first room check below.
+                  {t("settings.inspection.empty")}
                 </div>
               )}
 
@@ -327,7 +340,7 @@ export function CheckoutInspectionBuilder() {
                 className="inline-flex items-center gap-2 rounded-lg border border-dashed border-gray-300 px-3 py-2 text-sm font-semibold text-gray-600 hover:border-gray-400 hover:text-gray-900"
               >
                 <PlusIcon className="h-4 w-4" />
-                Add step
+                {t("settings.inspection.add")}
               </button>
             </div>
             <div className="flex flex-wrap items-center justify-between gap-2 border-t border-gray-100 px-4 py-3">
@@ -337,7 +350,7 @@ export function CheckoutInspectionBuilder() {
                 className="inline-flex items-center gap-2 rounded-lg border border-gray-200 px-3 py-2 text-sm font-semibold text-gray-700 hover:bg-gray-50"
               >
                 <EyeIcon className="h-4 w-4" />
-                Preview
+                {t("settings.inspection.preview")}
               </Link>
               <button
                 type="button"
@@ -346,7 +359,7 @@ export function CheckoutInspectionBuilder() {
                 className="inline-flex items-center gap-2 rounded-lg bg-primary-600 px-4 py-2 text-sm font-semibold text-white hover:bg-primary-700 disabled:opacity-60"
               >
                 <CheckCircleIcon className="h-4 w-4" />
-                {saving ? "Saving..." : "Save"}
+                {saving ? t("common.saving") : t("common.save")}
               </button>
             </div>
           </div>

@@ -6,12 +6,16 @@ export type PmsPropertyDetailsState = {
   country: string;
 };
 
-export function pmsPropertyDetailsSaveError(state: PmsPropertyDetailsState): string | null {
+export type PmsPropertyDetailsSaveError = "profile_not_ready" | "invalid_location";
+
+export function pmsPropertyDetailsSaveError(
+  state: PmsPropertyDetailsState,
+): PmsPropertyDetailsSaveError | null {
   if (state.loadStatus !== "ready") {
-    return "Load the canonical property profile before saving.";
+    return "profile_not_ready";
   }
   if (!state.timezone.trim() || !/^[A-Za-z]{2}$/.test(state.country.trim())) {
-    return "Select a timezone and enter a two-letter ISO country code before saving.";
+    return "invalid_location";
   }
   return null;
 }

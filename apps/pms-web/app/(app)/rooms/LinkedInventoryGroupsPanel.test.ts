@@ -12,7 +12,23 @@ import {
 import LinkedInventoryGroupsPanel from "./LinkedInventoryGroupsPanel";
 import RoomsPage from "./page";
 
-vi.mock("@/lib/i18n", () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
+vi.mock("@/lib/i18n", () => ({
+  useTranslation: () => ({
+    t: (key: string, params?: Record<string, string>) => {
+      const messages: Record<string, string> = {
+        "rooms.linkedAddGroup": "Add group",
+        "rooms.linkedEditNamed": "Edit {name}",
+        "rooms.linkedDeleteNamed": "Delete {name}",
+        "rooms.linkedSaveGroup": "Save group",
+      };
+      let value = messages[key] ?? key;
+      for (const [name, replacement] of Object.entries(params ?? {})) {
+        value = value.replace(`{${name}}`, replacement);
+      }
+      return value;
+    },
+  }),
+}));
 vi.mock("next/link", () => ({ default: "a" }));
 
 const roomTypes = [

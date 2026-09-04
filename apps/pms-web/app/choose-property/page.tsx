@@ -153,7 +153,7 @@ export default function PmsChoosePropertyPage() {
         <div className="space-y-2">
           {hotels.length === 0 && (
             <p className="rounded-lg border border-amber-200 bg-amber-50 p-4 text-center text-sm leading-6 text-amber-950">
-              No property has been created yet. Start or resume setup when you&apos;re ready.
+              {t("auth.chooseProperty.empty")}
             </p>
           )}
           {hotels.map((hotel) => (

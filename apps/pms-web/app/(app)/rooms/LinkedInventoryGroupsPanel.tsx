@@ -7,6 +7,7 @@ import {
   type LinkedInventoryGroup,
   type RoomType,
 } from "@/services/rooms";
+import { useTranslation } from "@/lib/i18n";
 
 type Draft = {
   groupId?: string;
@@ -24,6 +25,7 @@ export default function LinkedInventoryGroupsPanel({
   roomTypes: RoomType[];
   onChange: (update: (groups: LinkedInventoryGroup[]) => LinkedInventoryGroup[]) => void;
 }) {
+  const { t } = useTranslation();
   const [draft, setDraft] = useState<Draft | null>(null);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
@@ -46,7 +48,7 @@ export default function LinkedInventoryGroupsPanel({
   const save = async () => {
     if (saving) return;
     if (!draft || !draft.name.trim() || draft.memberRoomTypeIds.length < 2) {
-      setError("Give the group a name and select at least two room types.");
+      setError(t("rooms.linkedValidation"));
       return;
     }
     setSaving(true);
@@ -73,7 +75,7 @@ export default function LinkedInventoryGroupsPanel({
           : [...current, saved],
       );
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "Could not save this linked group.");
+      setError(caught instanceof Error ? caught.message : t("rooms.linkedSaveError"));
     } finally {
       setSaving(false);
     }
@@ -81,14 +83,14 @@ export default function LinkedInventoryGroupsPanel({
 
   const remove = async (group: LinkedInventoryGroup) => {
     if (saving) return;
-    if (!window.confirm(`Delete “${group.name}”? Existing bookings and blocks are kept.`)) return;
+    if (!window.confirm(t("rooms.linkedDeleteConfirm", { name: group.name }))) return;
     setSaving(true);
     setError("");
     try {
       await linkedInventoryGroupsService.delete(group);
       onChange((current) => current.filter((candidate) => candidate.groupId !== group.groupId));
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "Could not delete this linked group.");
+      setError(caught instanceof Error ? caught.message : t("rooms.linkedDeleteError"));
     } finally {
       setSaving(false);
     }
@@ -98,10 +100,8 @@ export default function LinkedInventoryGroupsPanel({
     <section className="mb-5 rounded-xl border border-gray-200 bg-white p-4 md:p-5">
       <div className="flex items-start justify-between gap-3">
         <div>
-          <h2 className="text-sm font-semibold text-gray-900">Linked inventory</h2>
-          <p className="mt-1 text-xs text-gray-500">
-            Stop-sell every room type in a group when any member is booked or blocked.
-          </p>
+          <h2 className="text-sm font-semibold text-gray-900">{t("rooms.linkedInventory")}</h2>
+          <p className="mt-1 text-xs text-gray-500">{t("rooms.linkedInventoryDescription")}</p>
         </div>
         <button
           type="button"
@@ -109,7 +109,7 @@ export default function LinkedInventoryGroupsPanel({
           onClick={() => edit()}
           className="inline-flex shrink-0 items-center gap-1.5 rounded-lg border border-gray-200 px-3 py-2 text-xs font-semibold text-gray-700 hover:bg-gray-50"
         >
-          <PlusIcon className="h-4 w-4" /> Add group
+          <PlusIcon className="h-4 w-4" /> {t("rooms.linkedAddGroup")}
         </button>
       </div>
 
@@ -128,7 +128,7 @@ export default function LinkedInventoryGroupsPanel({
               <button
                 type="button"
                 disabled={saving}
-                aria-label={`Edit ${group.name}`}
+                aria-label={t("rooms.linkedEditNamed", { name: group.name })}
                 onClick={() => edit(group)}
                 className="rounded-lg p-2 text-gray-400 hover:bg-gray-50 hover:text-gray-700"
               >
@@ -137,7 +137,7 @@ export default function LinkedInventoryGroupsPanel({
               <button
                 type="button"
                 disabled={saving}
-                aria-label={`Delete ${group.name}`}
+                aria-label={t("rooms.linkedDeleteNamed", { name: group.name })}
                 onClick={() => remove(group)}
                 className="rounded-lg p-2 text-gray-400 hover:bg-red-50 hover:text-red-600"
               >
@@ -152,14 +152,14 @@ export default function LinkedInventoryGroupsPanel({
         <div className="mt-4 rounded-lg border border-primary-200 bg-primary-50/30 p-4">
           <div className="flex items-center justify-between">
             <h3 className="text-sm font-semibold text-gray-900">
-              {draft.groupId ? "Edit linked group" : "New linked group"}
+              {draft.groupId ? t("rooms.linkedEditGroup") : t("rooms.linkedNewGroup")}
             </h3>
-            <button type="button" aria-label="Close" onClick={() => setDraft(null)}>
+            <button type="button" aria-label={t("common.close")} onClick={() => setDraft(null)}>
               <XMarkIcon className="h-4 w-4 text-gray-500" />
             </button>
           </div>
           <label className="mt-3 block text-xs font-medium text-gray-700">
-            Group name
+            {t("rooms.linkedGroupName")}
             <input
               autoFocus
               value={draft.name}
@@ -168,7 +168,9 @@ export default function LinkedInventoryGroupsPanel({
             />
           </label>
           <fieldset className="mt-3 grid gap-2 sm:grid-cols-2">
-            <legend className="mb-2 text-xs font-medium text-gray-700">Room types</legend>
+            <legend className="mb-2 text-xs font-medium text-gray-700">
+              {t("rooms.roomTypes")}
+            </legend>
             {roomTypes.map((roomType) => {
               const selected = draft.memberRoomTypeIds.includes(roomType.id);
               const unavailable =
@@ -201,7 +203,7 @@ export default function LinkedInventoryGroupsPanel({
               onClick={() => setDraft(null)}
               className="rounded-lg px-3 py-2 text-xs font-semibold text-gray-600"
             >
-              Cancel
+              {t("rooms.cancelRename")}
             </button>
             <button
               type="button"
@@ -209,7 +211,7 @@ export default function LinkedInventoryGroupsPanel({
               onClick={save}
               className="rounded-lg bg-primary-600 px-3 py-2 text-xs font-semibold text-white disabled:opacity-50"
             >
-              {saving ? "Saving…" : "Save group"}
+              {saving ? t("common.saving") : t("rooms.linkedSaveGroup")}
             </button>
           </div>
         </div>

@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { ChevronDownIcon, ChevronRightIcon } from "@heroicons/react/24/outline";
 import { MonthlyRate } from "@/services/rooms";
+import { useTranslation } from "@/lib/i18n";
 
 const MONTHS = [
   "January",
@@ -32,6 +33,7 @@ export default function MonthlyRatesEditor({
   defaultNonRefundableRate,
   onChange,
 }: MonthlyRatesEditorProps) {
+  const { t } = useTranslation();
   const [open, setOpen] = useState(false);
 
   const handleChange = (month: number, field: "baseRate" | "nonRefundableRate", value: string) => {
@@ -61,10 +63,15 @@ export default function MonthlyRatesEditor({
         className="w-full flex items-center justify-between p-6"
       >
         <div className="flex items-center gap-2">
-          <h2 className="text-sm font-semibold text-gray-900">Monthly Pricing</h2>
+          <h2 className="text-sm font-semibold text-gray-900">{t("rooms.form.monthlyPricing")}</h2>
           {overrideCount > 0 && (
             <span className="text-xs bg-primary-50 text-primary-700 px-2 py-0.5 rounded-full">
-              {overrideCount} override{overrideCount !== 1 ? "s" : ""}
+              {t(
+                overrideCount === 1
+                  ? "rooms.form.monthlyPricingOverride"
+                  : "rooms.form.monthlyPricingOverrides",
+                { count: overrideCount },
+              )}
             </span>
           )}
         </div>
@@ -77,14 +84,12 @@ export default function MonthlyRatesEditor({
 
       {open && (
         <div className="px-6 pb-6 space-y-1">
-          <p className="text-xs text-gray-500 mb-3">
-            Set seasonal rates per month. Empty fields use the default rate above.
-          </p>
+          <p className="text-xs text-gray-500 mb-3">{t("rooms.form.monthlyPricingHint")}</p>
 
           <div className="grid grid-cols-[1fr_1fr_1fr] gap-x-3 gap-y-0 text-xs font-medium text-gray-500 mb-2">
-            <span>Month</span>
-            <span>Base Rate</span>
-            <span>Non-Refundable</span>
+            <span>{t("calendar.viewMonth")}</span>
+            <span>{t("rooms.form.baseRateColumn")}</span>
+            <span>{t("rooms.form.nonRefundableColumn")}</span>
           </div>
 
           {MONTHS.map((name, idx) => {

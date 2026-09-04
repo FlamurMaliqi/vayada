@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { useTranslation } from "@/lib/i18n";
 import {
   clearStoredPmsPropertyId,
   getStoredPmsPropertyId,
@@ -24,6 +25,7 @@ import {
 } from "@vayada/product-onboarding";
 
 export default function HandoffPage() {
+  const { t } = useTranslation();
   const [retryable, setRetryable] = useState(false);
   const [handoffError, setHandoffError] = useState<string | null>(null);
   const beginRedemption = useSingleFlightGuard();
@@ -273,15 +275,13 @@ export default function HandoffPage() {
         className="min-h-screen flex flex-col items-center justify-center gap-4 bg-gray-50 px-6 text-center"
         role="status"
       >
-        <p className="text-sm font-medium text-gray-700">
-          Your session transfer is temporarily unavailable.
-        </p>
+        <p className="text-sm font-medium text-gray-700">{t("handoff.temporarilyUnavailable")}</p>
         <button
           type="button"
           onClick={() => window.location.reload()}
           className="rounded-full bg-primary-600 px-5 py-2 text-sm font-semibold text-white"
         >
-          Try again
+          {t("auth.chooseProperty.retry")}
         </button>
       </div>
     );
@@ -295,7 +295,7 @@ export default function HandoffPage() {
       >
         <p className="max-w-md text-sm font-medium text-gray-700">{handoffError}</p>
         <a href="/choose-property" className="text-sm font-semibold text-primary-600 underline">
-          Choose another property
+          {t("handoff.chooseAnotherProperty")}
         </a>
       </div>
     );
@@ -306,7 +306,7 @@ export default function HandoffPage() {
       <div
         className="w-6 h-6 border-2 border-primary-500 border-t-transparent rounded-full animate-spin"
         role="status"
-        aria-label="Transferring your session"
+        aria-label={t("handoff.transferring")}
       />
     </div>
   );

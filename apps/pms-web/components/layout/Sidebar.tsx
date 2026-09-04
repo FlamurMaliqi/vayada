@@ -42,8 +42,8 @@ const CORE_NAV_ITEMS: Omit<NavItem, "badge">[] = [
   { labelKey: "layout.sidebar.dashboard", href: "/dashboard", icon: DashboardIcon },
   { labelKey: "layout.sidebar.calendar", href: "/calendar", icon: CalendarIcon },
   { labelKey: "layout.sidebar.reservations", href: "/bookings", icon: ReservationsIcon },
-  { label: "Inbox", href: "/inbox", icon: ChatBubbleLeftRightIcon },
-  { label: "Reviews", href: "/reviews", icon: StarIcon },
+  { labelKey: "layout.sidebar.inbox", href: "/inbox", icon: ChatBubbleLeftRightIcon },
+  { labelKey: "layout.sidebar.reviews", href: "/reviews", icon: StarIcon },
   { labelKey: "layout.sidebar.roomsAndRates", href: "/rooms", icon: RoomsIcon },
   {
     labelKey: "layout.sidebar.channelManager",
@@ -90,7 +90,7 @@ export default function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
     try {
       window.location.href = crossAppReauthenticationUrl(baseUrl, targetPath);
     } catch {
-      setSwitchError("We couldn't open that app. Please try again later.");
+      setSwitchError(t("layout.sidebar.switchError"));
     }
   };
 
@@ -362,14 +362,14 @@ export default function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
                     "relative flex cursor-not-allowed items-center gap-2.5 rounded-md px-2.5 py-2 text-[13px] text-gray-400",
                     collapsed && "justify-center px-0",
                   )}
-                  title={`${label} — not available yet`}
+                  title={t("layout.sidebar.unavailableNamed", { label })}
                 >
                   <item.icon className="h-[18px] w-[18px] shrink-0 text-gray-300" />
                   {!collapsed && (
                     <>
                       <span className="flex-1">{label}</span>
                       <span className="rounded bg-gray-100 px-1.5 py-0.5 text-[10px] font-medium text-gray-500">
-                        Soon
+                        {t("layout.sidebar.soon")}
                       </span>
                     </>
                   )}

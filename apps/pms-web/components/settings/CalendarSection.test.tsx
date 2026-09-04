@@ -4,6 +4,19 @@ import { describe, expect, it, vi } from "vitest";
 
 import { CalendarSection } from "./CalendarSection";
 
+vi.mock("@/lib/i18n", () => ({
+  useTranslation: () => ({
+    t: (key: string) =>
+      ({
+        "settings.calendar.optimizeAssignments": "Optimize room assignments",
+        "settings.calendar.allowSameDay": "Allow same-day bookings",
+        "settings.calendar.sameDayCutoff": "Same-day booking cutoff",
+        "common.saving": "Saving…",
+        "settings.retry": "Retry",
+      })[key] ?? key,
+  }),
+}));
+
 function props() {
   return {
     enabled: true,

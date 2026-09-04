@@ -1,6 +1,7 @@
 "use client";
 
 import { SettingsSection, SettingsCard } from "@vayada/settings-ui";
+import { useTranslation } from "@/lib/i18n";
 
 interface BookingEngineSectionProps {
   instantBook: boolean;
@@ -17,24 +18,27 @@ export function BookingEngineSection({
   onToggle,
   onRetry,
 }: BookingEngineSectionProps) {
+  const { t } = useTranslation();
+
   return (
     <SettingsSection
       id="booking-engine"
-      title="Booking Engine"
-      description="Choose how new bookings from your booking engine are accepted."
+      title={t("settings.bookingEngine.title")}
+      description={t("settings.bookingEngine.description")}
     >
       <SettingsCard>
         <div className="flex items-start justify-between gap-4">
           <div className="flex-1 min-w-0">
-            <p className="text-sm font-medium text-gray-900">Accept bookings instantly</p>
+            <p className="text-sm font-medium text-gray-900">
+              {t("settings.bookingEngine.instant")}
+            </p>
             <p className="text-xs text-gray-500 mt-1">
               {instantBook
-                ? "On — new bookings are confirmed immediately. Card payments are charged at booking time and the guest receives an instant confirmation."
-                : "Off — new bookings arrive as requests. Card payments are only authorized until you accept the booking."}
+                ? t("settings.bookingEngine.instantOn")
+                : t("settings.bookingEngine.instantOff")}
             </p>
             <p className="text-[11px] text-gray-400 mt-2">
-              Bank-transfer bookings always require manual review since no payment has been received
-              yet.
+              {t("settings.bookingEngine.bankTransfer")}
             </p>
           </div>
           {loadError ? (
@@ -43,13 +47,13 @@ export function BookingEngineSection({
               onClick={onRetry}
               className="shrink-0 rounded-lg border border-gray-300 px-3 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-50"
             >
-              Retry
+              {t("settings.retry")}
             </button>
           ) : (
             <button
               type="button"
               role="switch"
-              aria-label="Accept bookings instantly"
+              aria-label={t("settings.bookingEngine.instant")}
               aria-checked={instantBook}
               disabled={saving}
               onClick={() => onToggle(!instantBook)}

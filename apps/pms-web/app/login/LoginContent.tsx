@@ -116,15 +116,15 @@ export function LoginContent({
   return (
     <SharedHotelLoginForm
       copy={{
-        title: "Sign in to vayada",
-        subtitle: "Use your email and password to continue.",
+        title: t("auth.login.formTitle"),
+        subtitle: t("auth.login.formSubtitle"),
         chooseOrganizationTitle: t("auth.login.chooseHotelGroup"),
         chooseOrganizationSubtitle: t("auth.login.chooseHotelGroupSubtitle"),
         emailLabel: t("auth.login.emailLabel"),
         passwordLabel: t("auth.login.passwordLabel"),
         forgotPassword: t("auth.login.forgotPassword"),
-        googleLogin: "Continue with Google",
-        or: "or",
+        googleLogin: t("auth.login.googleLogin"),
+        or: t("auth.login.or"),
         submitLabel: t("auth.login.submitButton"),
         submittingLabel: t("auth.login.submitting"),
         noAccount: t("auth.login.noAccount"),
