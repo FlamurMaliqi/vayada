@@ -34,6 +34,7 @@ export type ChannexManagementProviderFailure = {
     | "timeout"
     | "provider_unavailable"
     | "provider_rejected"
+    | "mapping_missing"
     | "invalid_state"
     | "invalid_payload";
   message: string;

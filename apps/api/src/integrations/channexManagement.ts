@@ -72,6 +72,12 @@ export type ChannexManagementPlanPort = {
   plan(job: ChannexManagementJob): Promise<ChannexManagementActionPlan>;
 };
 
+export class ChannexAriMappingMissingError extends Error {
+  constructor() {
+    super("Future availability cannot sync: an active Channex room or rate mapping is missing.");
+  }
+}
+
 export function createChannexManagementProvider(config: {
   apiBaseUrl: string;
   apiKey: string;
@@ -87,7 +93,10 @@ export function createChannexManagementProvider(config: {
       try {
         plan = await config.plans.plan(job);
       } catch (error) {
-        return failure("invalid_state", error);
+        return failure(
+          error instanceof ChannexAriMappingMissingError ? "mapping_missing" : "invalid_state",
+          error,
+        );
       }
       let lastRequestId: string | undefined;
       let revisions: unknown[] = [];
