@@ -83,7 +83,7 @@ it.each([
       audit: { requestId: "request", receivedAt: "2026-09-05T00:00:00Z" },
     } as RequestContext;
   });
-  const publisher = { publish: vi.fn(async () => undefined) };
+  const publisher = { publish: vi.fn(async () => null) };
   await app.register(registerFinanceBankTransferRoutes, {
     prefix: "/api",
     repository,
