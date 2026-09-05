@@ -784,6 +784,8 @@ export type MarketplaceCollaborationRead = {
   offerTitle: string;
   hotelLocation: string | null;
   applicationMessage?: string | null;
+  selectedCompensationOptionId?: string | null;
+  cancelledBy?: MarketplaceCollaborationAuthorizationSide | null;
   creatorConsent?: boolean | null;
   creatorAgreedAt?: MarketplaceUtcDateTime | null;
   hotelAgreedAt?: MarketplaceUtcDateTime | null;
@@ -958,6 +960,7 @@ export const MARKETPLACE_COLLABORATION_LIFECYCLE_WRITE_ENDPOINTS = {
 export const MARKETPLACE_COLLABORATION_LIFECYCLE_WRITE_ACTIONS = [
   "create",
   "respond",
+  "edit_application",
   "update_terms",
   "approve_terms",
   "cancel",

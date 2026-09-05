@@ -96,6 +96,8 @@ export type MarketplaceCollaborationRead = {
   offerTitle: string;
   hotelLocation: string | null;
   applicationMessage?: string | null;
+  selectedCompensationOptionId?: string | null;
+  cancelledBy?: MarketplaceCollaborationSide | null;
   creatorConsent?: boolean | null;
   creatorAgreedAt?: string | null;
   hotelAgreedAt?: string | null;
@@ -198,6 +200,7 @@ export type MarketplaceCollaborationLifecycleWritesContractVersion =
 export const MARKETPLACE_COLLABORATION_LIFECYCLE_WRITE_ACTIONS = [
   "create",
   "respond",
+  "edit_application",
   "update_terms",
   "approve_terms",
   "cancel",
@@ -303,6 +306,7 @@ export type RespondToMarketplaceCollaborationLifecycleWriteRequest =
   MarketplaceCollaborationLifecycleWriteBaseRequest & {
     status: "accepted" | "declined";
     responseMessage?: string;
+    expectedUpdatedAt?: string;
   };
 
 export type UpdateMarketplaceCollaborationTermsLifecycleWriteRequest =
@@ -319,6 +323,7 @@ export type ApproveMarketplaceCollaborationTermsLifecycleWriteRequest =
 export type CancelMarketplaceCollaborationLifecycleWriteRequest =
   MarketplaceCollaborationLifecycleWriteBaseRequest & {
     reason?: string;
+    pendingOnly?: boolean;
   };
 
 export type ToggleMarketplaceCollaborationDeliverableLifecycleWriteRequest =
@@ -445,6 +450,16 @@ export async function createMarketplaceCollaboration(
     marketplaceCollaborationEndpoints.create(),
     request,
     toIdempotencyOptions(request.idempotencyKey),
+  );
+}
+
+export async function editMarketplaceCollaborationApplication(
+  collaborationId: string,
+  request: CreateMarketplaceCollaborationLifecycleWriteRequest & { expectedUpdatedAt: string },
+): Promise<MarketplaceCollaborationLifecycleWriteResponse> {
+  return vayadaApiClient.put(
+    `/api/marketplace/collaborations/${encodeURIComponent(collaborationId)}/application`,
+    request,
   );
 }
 
