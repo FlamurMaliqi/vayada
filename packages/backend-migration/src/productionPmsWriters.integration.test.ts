@@ -135,6 +135,27 @@ describe.skipIf(!URL)("production PMS writers (PostgreSQL)", () => {
       const prerequisites = await readProductionPmsPrerequisites(client, RUN);
       const source = sourceRows();
       const webhook = source.find((row) => row.sourceTable === "channex_webhook_events")!;
+      const inquiryThread = source.find((row) => row.sourceTable === "message_threads")!;
+      Object.assign(inquiryThread.data, {
+        channel: "airbnb",
+        booking_id: null,
+        status: "closed",
+        unread_count: 0,
+        last_message_preview: "inquiry",
+        last_message_direction: "outbound",
+      });
+      Object.assign(source.find((row) => row.sourceTable === "messages")!.data, {
+        body: "inquiry",
+        direction: "outbound",
+        raw_payload: {
+          sender: "system",
+          message: "inquiry",
+          meta: {
+            live_feed_event_id: "historical-inquiry",
+            booking_details: { property_id: EXTERNAL_PROPERTY },
+          },
+        },
+      });
       for (const [index, propertyId] of [EXTERNAL_PROPERTY, null, "unknown-property"].entries())
         source.push({
           ...webhook,
@@ -247,6 +268,25 @@ describe.skipIf(!URL)("production PMS writers (PostgreSQL)", () => {
       expect(verified.blockers).toEqual([]);
       expect(verified.writes).toEqual([]);
       expect(verified.checksum).toBe(plan.checksum);
+
+      const inquiry = await client.query(
+        `SELECT thread.attention_state, thread.unread_count, thread.last_message_direction,
+                thread.guest_booking_id, message.direction, message.sender_type, message.read_at
+           FROM pms.message_threads thread JOIN pms.messages message ON message.thread_id = thread.id
+          WHERE thread.id = $1`,
+        [inquiryThread.data["id"]],
+      );
+      expect(inquiry.rows).toEqual([
+        {
+          attention_state: "done",
+          unread_count: 1,
+          last_message_direction: "inbound",
+          guest_booking_id: null,
+          direction: "inbound",
+          sender_type: "system",
+          read_at: null,
+        },
+      ]);
 
       const unavailable = await client.query(
         `SELECT property_id, platform_media_object_id, s3_key, source_url, filename
