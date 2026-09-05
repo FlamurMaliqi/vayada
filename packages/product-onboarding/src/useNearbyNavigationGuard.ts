@@ -36,6 +36,32 @@ export function useNearbyNavigationGuard(dirty: boolean) {
       )
         event.preventDefault();
     };
+    const click = (event: MouseEvent) => {
+      if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey)
+        return;
+      const link = event.target instanceof Element ? event.target.closest("a[href]") : null;
+      if (
+        !(link instanceof HTMLAnchorElement) ||
+        link.download ||
+        (link.target && link.target !== "_self")
+      )
+        return;
+      const destination = new URL(link.href);
+      const current = new URL(window.location.href);
+      if (
+        destination.href === current.href ||
+        (destination.origin === current.origin &&
+          destination.pathname === current.pathname &&
+          destination.search === current.search &&
+          destination.hash)
+      )
+        return;
+      if (!leave()) {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+      }
+    };
+    if (!target.navigation) window.addEventListener("click", click, true);
     window.addEventListener("beforeunload", unload);
     target.navigation?.addEventListener("navigate", navigate);
     target.navigation?.addEventListener("navigatesuccess", reset);
@@ -46,6 +72,7 @@ export function useNearbyNavigationGuard(dirty: boolean) {
       target.navigation?.removeEventListener("navigatesuccess", reset);
       target.navigation?.removeEventListener("navigateerror", reset);
       window.removeEventListener("beforeunload", unload);
+      window.removeEventListener("click", click, true);
       target.navigation?.removeEventListener("navigate", navigate);
     };
   }, [dirty]);
