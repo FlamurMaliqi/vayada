@@ -89,6 +89,7 @@ import { createPgPropertyPlanReadRepository } from "./domains/propertyPlanReadMo
 import { createPgPmsRoomFactsReadModel } from "./domains/pmsRoomFactsReadModel.js";
 import { createPgPmsRoomFactsCommandRepository } from "./domains/pmsRoomFactsCommandRepository.js";
 import { createPmsRoomFactsVocabularyValidationPort } from "./domains/pmsRoomFactsVocabulary.js";
+import { createPgPmsPhysicalRoomManagementRepository } from "./domains/pmsPhysicalRoomManagementRepository.js";
 import { createPgPmsPhysicalRoomUnitReconcileRepository } from "./domains/pmsPhysicalRoomUnitReconcileRepository.js";
 import { createPgPmsPhysicalRoomOperationalLabelRepository } from "./domains/pmsPhysicalRoomOperationalLabelRepository.js";
 import { createPmsRoomAmenityVocabularyValidationPort } from "./domains/pmsRoomAmenityVocabulary.js";
@@ -863,6 +864,9 @@ const pmsRoomSetupRuntime =
       })()
     : undefined;
 const pmsPhysicalRoomOperationalLabels = pmsRoomSetupRuntime?.operationalLabels;
+const pmsPhysicalRoomManagement = pmsRoomSetupRuntime
+  ? createPgPmsPhysicalRoomManagementRepository({ connectionString: targetDatabaseUrl })
+  : undefined;
 
 const pmsRoomPublicationRuntime = bookingDesignMediaAdapter
   ? (() => {
@@ -1281,6 +1285,9 @@ const app = buildApp({
         physicalUnits: { commandPort: pmsRoomSetupRuntime.physicalUnits },
       }
     : undefined,
+  pmsPhysicalRoomManagement: pmsPhysicalRoomManagement
+    ? { commandPort: pmsPhysicalRoomManagement }
+    : undefined,
   pmsPhysicalRoomOperationalLabels: pmsPhysicalRoomOperationalLabels
     ? { commandPort: pmsPhysicalRoomOperationalLabels }
     : undefined,
@@ -1552,6 +1559,7 @@ app.addHook("onClose", async () => {
     pmsRoomSetupRuntime?.roomFactsCommands.close(),
     pmsRoomSetupRuntime?.physicalUnits.close(),
     pmsPhysicalRoomOperationalLabels?.close(),
+    pmsPhysicalRoomManagement?.close(),
     pmsOperatingCalendarRuntime?.close(),
     pmsInboxRuntime?.close(),
     ...(!platformMediaRuntime ? [hotelCatalogStep1Repository.close()] : []),
