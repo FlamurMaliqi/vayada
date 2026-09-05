@@ -137,3 +137,34 @@ or rebuilt UI, so its results do not validate the feature against the deployed
 API. The isolated app setup remains with VAY-1361. No Google configuration was
 found in local settings, `/vayada/` SSM parameter names, or Secrets Manager names
 matching google/maps/places. Live Google and rebuilt-app checks remain pending.
+
+## Live Google integration check
+
+On 2026-09-05, connected the two Google keys to a private local test setup,
+outside the repository. Backend key remains server-only and restricted to
+Places API (New). The browser key retains 15 allowed website entries.
+
+The actual `discoverGoogleNearby` adapter made its four bounded live requests
+at a synthetic public Paris location. All returned HTTP 200; the adapter returned
+`ready` with 39 places across nature, food, activities and transport. Only place
+IDs/categories were retained for the browser check; no provider coordinates or
+descriptive content were written to an application database.
+
+Mounted the actual shared `NearbyPreview` component at the approved local guest
+origin with one live result per category and one synthetic custom recommendation.
+The initial real UI Kit requests failed with an API-authorization error. Added
+Places UI Kit to the existing browser-key API allowlist, retaining its other APIs
+and all website restrictions. After reload, the map, four real Google compact
+cards, map attribution, card attribution and destination-only directions links
+rendered. Clicking a real map marker selected and focused its corresponding
+card; Tab then reached the Google review link. The approximate-location circle
+and synthetic hotel note remained visible.
+
+This is live provider/actual-component evidence, not a deployed full-application
+test. The harness supplied the preview payload and did not exercise authentication,
+curation PUT, database persistence or guest publication end to end. Prior mocked
+browser tests cover those editor interactions; real save/reload still requires
+the suitable isolated application runtime tracked in VAY-1361. No production
+service deployment, feature-flag activation, hotel privacy change or booking was
+performed. Google's legacy Marker deprecation warning remains non-blocking;
+no claim is made of comprehensive keyboard or all-provider-outage certification.
