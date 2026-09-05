@@ -46,6 +46,7 @@ test("readable timezone labels preserve IANA values when saved and reloaded", as
   await expect(timezone.locator("option:checked")).toHaveText("America/New York");
   await page.goto("/inbox");
   await page.getByRole("button", { name: /Ada Lovelace, Booking.com/ }).click();
+  await expect(page.getByRole("heading", { level: 2, name: "Ada Lovelace" })).toBeVisible();
   await page.getByRole("button", { name: "Follow up", exact: true }).last().click();
   await expect(page.getByText(/property-local time \(America\/New York\)/)).toBeVisible();
   await assertNoLegacyCalls();
