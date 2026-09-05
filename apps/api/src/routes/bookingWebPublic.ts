@@ -116,6 +116,7 @@ type BookingWebChangeRequest = {
   checkOut?: string;
   addonIds?: string[];
   addonQuantities?: Record<string, number>;
+  addonPackageQuantities?: Record<string, number>;
   addonDates?: Record<string, string[]>;
 };
 type BookingWebChangeRequestQuery = {
@@ -895,11 +896,16 @@ export async function registerBookingWebPublicRoutes(
     if (metadata["funnelVersion"] === 1) {
       const sequence = metadata["funnelSequence"];
       const method = metadata["paymentMethod"];
-      if (!(FUNNEL_STAGES as readonly string[]).includes(eventType) ||
-          !firstString(request.body?.sessionId, request.body?.session_id) ||
-          !Number.isSafeInteger(sequence) || Number(sequence) < 1 ||
-          (["complete_booking_clicked", "payment_authorized", "booking_completed"].includes(eventType) &&
-            !(FUNNEL_PAYMENT_METHODS as readonly unknown[]).includes(method))) {
+      if (
+        !(FUNNEL_STAGES as readonly string[]).includes(eventType) ||
+        !firstString(request.body?.sessionId, request.body?.session_id) ||
+        !Number.isSafeInteger(sequence) ||
+        Number(sequence) < 1 ||
+        (["complete_booking_clicked", "payment_authorized", "booking_completed"].includes(
+          eventType,
+        ) &&
+          !(FUNNEL_PAYMENT_METHODS as readonly unknown[]).includes(method))
+      ) {
         throw createHttpError(400, "Invalid booking funnel event.");
       }
     }
@@ -1334,6 +1340,7 @@ type TargetPromoSnapshot = {
 };
 
 type TargetCheckoutAddonRequest = {
+  addonPackageQuantities?: Record<string, number>;
   addonIds: string[];
   addonQuantities: Record<string, number>;
   addonDates: Record<string, string[]>;
@@ -2519,9 +2526,13 @@ async function loadTargetCheckoutConfig(
          'id', addon.id::text, 'name', addon.name, 'description', COALESCE(addon.description, ''),
          'price', addon.price_amount, 'currency', addon.currency, 'category', COALESCE(addon.category, 'other'),
          'image', COALESCE(addon.metadata ->> 'imageUrl', ''),
+         'images', COALESCE((SELECT jsonb_agg(photo ->> 'imageUrl') FROM jsonb_array_elements(COALESCE(addon.metadata -> 'photos', '[]'::jsonb)) photo), '[]'::jsonb),
+         'duration', addon.metadata ->> 'duration', 'location', addon.metadata ->> 'location',
+         'maxGuests', addon.metadata ->> 'maxGuests', 'leadTime', addon.metadata ->> 'leadTime',
+         'maxQuantity', COALESCE((addon.metadata ->> 'maxQuantity')::int, 1),
          'perPerson', addon.pricing_model IN ('per_guest', 'per_guest_night'),
          'perNight', addon.pricing_model IN ('per_night', 'per_guest_night')
-       ) ORDER BY addon.created_at, addon.id), '[]'::jsonb)
+       ) ORDER BY COALESCE((addon.metadata ->> 'sortOrder')::int, 0), addon.created_at, addon.id), '[]'::jsonb)
        FROM booking.addon_definitions addon WHERE addon.property_id = p.id
          AND addon.status = 'active' AND addon.public_visible
          AND COALESCE(bs.show_addons_step, TRUE)) AS "publicAddons",
@@ -6270,13 +6281,28 @@ function parseTargetCheckoutAddonRequest(
 ): TargetCheckoutAddonRequest {
   const rawIds = request["addonIds"] ?? [];
   const quantityInput = request["addonQuantities"] ?? {};
+  const packageInput = request["addonPackageQuantities"] ?? {};
+  if (!packageInput || typeof packageInput !== "object" || Array.isArray(packageInput))
+    throw createHttpError(400, "Selected add-on package quantities are invalid.");
+  const addonPackageQuantities = numericObject(packageInput);
+  if (
+    Object.keys(addonPackageQuantities).length !== Object.keys(packageInput).length ||
+    Object.values(addonPackageQuantities).some(
+      (value) => !Number.isSafeInteger(value) || value < 1 || value > 2147483647,
+    )
+  )
+    throw createHttpError(400, "Selected add-on package quantities are invalid.");
   const dateInput = request["addonDates"] ?? {};
   // prettier-ignore
   if (!Array.isArray(rawIds) || !quantityInput || typeof quantityInput !== "object" || Array.isArray(quantityInput) || !dateInput || typeof dateInput !== "object" || Array.isArray(dateInput)) throw createHttpError(400, "Selected add-on details are invalid.");
   const addonIds = rawIds.map((value) => (typeof value === "string" ? value.trim() : ""));
   const addonQuantities = numericObject(quantityInput);
   const addonDates = dateArrayObject(dateInput);
-  const detailKeys = new Set([...Object.keys(quantityInput), ...Object.keys(dateInput)]);
+  const detailKeys = new Set([
+    ...Object.keys(quantityInput),
+    ...Object.keys(dateInput),
+    ...Object.keys(packageInput),
+  ]);
   if (addonIds.some((value) => !value) || new Set(addonIds).size !== addonIds.length) {
     throw createHttpError(400, "Selected add-on identifiers are invalid.");
   }
@@ -6291,7 +6317,12 @@ function parseTargetCheckoutAddonRequest(
   ) {
     throw createHttpError(400, "Selected add-on details are invalid.");
   }
-  return { addonIds, addonQuantities, addonDates };
+  return {
+    addonIds,
+    addonQuantities,
+    addonDates,
+    ...(Object.keys(addonPackageQuantities).length ? { addonPackageQuantities } : {}),
+  };
 }
 
 function targetCheckoutAddonEvidenceError(): HttpError {
@@ -6304,6 +6335,7 @@ function expandTargetCheckoutAddonPurchase(
   requestedDates: string[],
   stayDates: string[],
   adults: number,
+  packages = 1,
 ): TargetCheckoutAddonExpansion {
   const perGuest = pricingModel === "per_guest" || pricingModel === "per_guest_night";
   const perNight = pricingModel === "per_night" || pricingModel === "per_guest_night";
@@ -6337,9 +6369,14 @@ function expandTargetCheckoutAddonPurchase(
         : stayDates
     : [stayDates[0] ?? ""];
   return {
-    quantity,
+    quantity: quantity * packages,
     serviceDates,
-    error: serviceDates.length === 0 ? "night_quantity" : null,
+    error:
+      !Number.isSafeInteger(quantity * packages) || quantity * packages > 2147483647
+        ? "guest_quantity"
+        : serviceDates.length === 0
+          ? "night_quantity"
+          : null,
   };
 }
 
@@ -6371,6 +6408,7 @@ function assertTargetCheckoutAddonEvidence(
       request.addonDates[addonId] ?? [],
       stayDates,
       stay.adults,
+      request.addonPackageQuantities?.[addonId] ?? 1,
     );
     const economics = stableJson([
       first.addonSnapshot,
@@ -6439,7 +6477,8 @@ async function resolveTargetCheckoutAddonPurchases(
        price_amount::text AS "unitAmount",
        currency,
        ownership_kind AS "ownershipKind",
-       partner_commission_rate::text AS "partnerCommissionRate"
+       partner_commission_rate::text AS "partnerCommissionRate",
+       COALESCE((metadata ->> 'maxQuantity')::int, 1) AS "maxQuantity"
      FROM booking.addon_definitions
      WHERE property_id = $1::uuid
        AND (id::text = ANY($2::text[]) OR source_addon_id = ANY($2::text[]))
@@ -6469,6 +6508,14 @@ async function resolveTargetCheckoutAddonPurchases(
       throw createHttpError(409, "Selected add-ons are invalid or unavailable. Please refresh.");
     }
     const requestedQuantity = input.request.addonQuantities[addonId];
+    const packageCount = input.request.addonPackageQuantities?.[addonId] ?? 1;
+    const totalPackages =
+      definition.pricingModel === "per_stay"
+        ? (requestedQuantity ?? 1) * packageCount
+        : packageCount;
+    if (totalPackages > (definition.maxQuantity ?? 1)) {
+      throw createHttpError(400, "Selected add-on quantity exceeds the maximum per booking.");
+    }
     const requestedDates = input.request.addonDates[addonId] ?? [];
     if (requestedDates.some((date) => !stayDateSet.has(date))) {
       throw createHttpError(400, "Selected add-on dates must be within the stay.");
@@ -6479,6 +6526,7 @@ async function resolveTargetCheckoutAddonPurchases(
       requestedDates,
       stayDates,
       input.adults,
+      packageCount,
     );
     if (expansion.error === "unsupported") {
       throw createHttpError(409, "Selected add-on pricing model is not supported.");
