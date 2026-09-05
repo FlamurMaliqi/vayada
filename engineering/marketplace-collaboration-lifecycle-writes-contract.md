@@ -43,3 +43,20 @@ must not write PMS, finance, or affiliate-owned tables directly.
 
 Fixture coverage lives in
 `engineering/fixtures/marketplace-collaboration-lifecycle-writes/cases.json`.
+
+## Property-local collaboration dates (VAY-954)
+
+Creator applications require concrete ISO start/end dates, with end after start.
+Create and terms edits reject past dates with “Collaboration dates cannot be in
+the past.” Today is allowed, using the property's IANA timezone from the catalog
+public-profile read model. Missing/invalid timezone blocks the write with an
+availability error; browser or server timezone is never a fallback. Edits validate
+the merged stored/requested dates, so omitting expired dates cannot bypass validation.
+Replacing both travel dates clears superseded preferred dates; otherwise edits also
+validate the retained preferred-date pair.
+Existing idempotent replays remain replays rather than new applications.
+
+Month-only offering availability is evaluated against the remaining months of the
+current property-local year: an option containing only earlier months blocks new
+applications with an availability restriction. This intentionally tightens the
+legacy behavior; the schema has no year attached to these month names.

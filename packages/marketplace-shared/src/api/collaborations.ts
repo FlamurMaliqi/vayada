@@ -94,6 +94,7 @@ export type MarketplaceCollaborationRead = {
   status: MarketplaceCollaborationStatus;
   compensationType: MarketplaceCompensationType | null;
   offerTitle: string;
+  propertyTimezone?: string | null;
   hotelLocation: string | null;
   applicationMessage?: string | null;
   creatorConsent?: boolean | null;

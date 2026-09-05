@@ -56,7 +56,7 @@ export type MarketplaceOfferReadModel = {
   hotelName: string;
   hotelSlug: string;
   hotelAccommodationType: string | null;
-  hotelLocation: { displayText: string; countryCode?: string; city?: string };
+  hotelLocation: { displayText: string; countryCode?: string; city?: string; timezone?: string };
   hotelCoverImageUrl: string | null;
   hotelImageUrls: string[];
   deliverables: MarketplaceOfferDeliverable[];
