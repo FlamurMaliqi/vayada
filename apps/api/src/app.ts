@@ -105,6 +105,8 @@ import {
   registerMarketplaceCreatorPlatformConnectionRoutes,
   type MarketplaceCreatorPlatformConnectionRoutesOptions,
 } from "./routes/marketplaceCreatorPlatformConnections.js";
+import { registerPropertyNearbyRoutes } from "./routes/propertyNearby.js";
+import type { PropertyNearbyRepository } from "./domains/propertyNearbyRepository.js";
 import {
   registerSharedHotelSetupStatusRoutes,
   type SharedHotelSetupStatusRepository,
@@ -345,6 +347,7 @@ type BuildAppOptions = Pick<FastifyServerOptions, "logger" | "trustProxy"> & {
   >;
   marketplaceCreatorProfileMediaRepository?: MarketplaceCreatorProfileMediaRepository;
   sharedHotelSetupStatusRepository?: SharedHotelSetupStatusRepository;
+  propertyNearbyRepository?: PropertyNearbyRepository;
   propertyLaunchSettingsRepository?: SharedPropertyLaunchSettingsRepository;
   hotelSetupTrackCommandRepository?: HotelSetupTrackCommandRepository;
   propertyMediaCommandRepository?: PropertyMediaCommandRepository;
@@ -573,6 +576,16 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       ...options.marketplaceCreatorPlatformConnections,
       profileRepository: options.marketplaceCreatorSelfServiceRepository,
       lifecycleCommandBus: options.identityLifecycleCommandBus,
+    });
+  }
+  if (options.propertyNearbyRepository) {
+    if (!options.auth?.propertyAccessRepository) {
+      throw new Error("Nearby routes require property access resolution");
+    }
+    app.register(registerPropertyNearbyRoutes, {
+      prefix: "/api/hotel-setup",
+      repository: options.propertyNearbyRepository,
+      propertyAccessRepository: options.auth.propertyAccessRepository,
     });
   }
   if (options.sharedHotelSetupStatusRepository) {
