@@ -278,6 +278,177 @@ describe("Finance subscription service", () => {
     expect(fixture.stripe.createFixedPlanCheckout).toHaveBeenCalledTimes(1);
   });
 
+  it("prices the Fixed Plan in the authoritative PMS property currency", async () => {
+    const fixture = setup({ activeRoomCount: 7, currency: "IDR" });
+
+    await expect(fixture.service.getPlanStatus("property-1")).resolves.toMatchObject({
+      currency: "IDR",
+      amountMinor: 98_000_000,
+      activeRoomCount: 7,
+    });
+    await fixture.service.createFixedPlanCheckout(command());
+    expect(fixture.stripe.createFixedPlanCheckout).toHaveBeenCalledWith(
+      expect.objectContaining({ currency: "IDR", activeRoomCount: 7 }),
+    );
+  });
+
+  it("creates the Stripe customer while saving required billing details", async () => {
+    const fixture = setup();
+    const result = await fixture.service.updateBillingDetails({
+      ...command(),
+      billingDetails: {
+        companyName: "Vayada Hotel",
+        billingEmail: "billing@example.test",
+        taxId: "EU123",
+      },
+    });
+
+    expect(result).toMatchObject({
+      ok: true,
+      value: {
+        billingDetails: { companyName: "Vayada Hotel", billingEmail: "billing@example.test" },
+        planStatus: { customerPortalAvailable: true },
+      },
+    });
+    expect(fixture.stripe.upsertCustomer).toHaveBeenCalledWith(
+      expect.objectContaining({ customerId: null, propertyId: "property-1" }),
+    );
+  });
+
+  it("switches an active Fixed Plan to Commission immediately with proration", async () => {
+    const fixture = setup({ planKey: "fixed", subscriptionRef: "sub_fixed" });
+
+    await expect(fixture.service.switchToCommissionNow(command())).resolves.toMatchObject({
+      ok: true,
+      status: "updated",
+      value: { planStatus: { plan: "commission", status: "commission" } },
+    });
+    expect(fixture.stripe.cancelImmediately).toHaveBeenCalledWith({
+      subscriptionId: "sub_fixed",
+      idempotencyKey: "idempotency-command-1",
+    });
+    expect(fixture.store.entitlement.planKey).toBe("commission");
+    expect(fixture.afterPlanChange).toHaveBeenCalledWith("property-1");
+  });
+
+  it("updates Stripe collection terms when bank transfer is selected", async () => {
+    const fixture = setup({ planKey: "fixed", subscriptionRef: "sub_fixed" });
+
+    await expect(
+      fixture.service.updatePaymentMethod({ ...command(), paymentMethod: "bank_transfer" }),
+    ).resolves.toMatchObject({ ok: true, value: { paymentMethod: "bank_transfer" } });
+    expect(fixture.stripe.updateCollectionMethod).toHaveBeenCalledWith({
+      subscriptionId: "sub_fixed",
+      paymentMethod: "bank_transfer",
+      idempotencyKey: "idempotency-command-1",
+    });
+  });
+
+  it("activates an invoiced Fixed Plan immediately for bank transfer", async () => {
+    const fixture = setup({ activeRoomCount: 7, currency: "IDR" });
+    fixture.store.entitlement.customerRef = "cus_fixed";
+    fixture.store.entitlement.metadata = { paymentMethod: "bank_transfer" };
+
+    await expect(fixture.service.activateFixedPlanByInvoice(command())).resolves.toMatchObject({
+      ok: true,
+      status: "updated",
+      value: {
+        planStatus: {
+          plan: "fixed",
+          status: "active",
+          currency: "IDR",
+          amountMinor: 98_000_000,
+        },
+      },
+    });
+    expect(fixture.stripe.createFixedPlanInvoiceSubscription).toHaveBeenCalledWith(
+      expect.objectContaining({
+        customerId: "cus_fixed",
+        currency: "IDR",
+        activeRoomCount: 7,
+      }),
+    );
+  });
+
+  it("activates a card-funded Fixed Plan immediately with the saved card", async () => {
+    const fixture = setup({ activeRoomCount: 2, currency: "USD" });
+    fixture.store.entitlement.customerRef = "cus_fixed";
+    fixture.store.entitlement.metadata = { paymentMethod: "card" };
+    fixture.stripe.getCustomerBilling.mockResolvedValue({
+      savedCard: { brand: "visa", last4: "4242", expiryMonth: 12, expiryYear: 2030 },
+    } as never);
+
+    await expect(fixture.service.activateFixedPlanByCard(command())).resolves.toMatchObject({
+      ok: true,
+      value: { planStatus: { plan: "fixed", status: "active", amountMinor: 3_500 } },
+    });
+    expect(fixture.stripe.createFixedPlanCardSubscription).toHaveBeenCalledWith(
+      expect.objectContaining({
+        customerId: "cus_fixed",
+        currency: "USD",
+        billingCycleAnchor: "2026-09-01T00:00:00.000Z",
+      }),
+    );
+  });
+
+  it("expires a pending hosted Checkout before immediate activation", async () => {
+    const fixture = setup();
+    fixture.store.entitlement.customerRef = "cus_fixed";
+    fixture.store.entitlement.checkoutSessionRef = "cs_legacy";
+    fixture.store.entitlement.providerSubscriptionStatus = "incomplete";
+    fixture.store.entitlement.metadata = { paymentMethod: "bank_transfer" };
+
+    await fixture.service.activateFixedPlanByInvoice(command());
+
+    expect(fixture.stripe.expireFixedPlanCheckout).toHaveBeenCalledWith({
+      checkoutSessionId: "cs_legacy",
+      idempotencyKey: "fixed-plan-expire:cs_legacy:v1",
+    });
+  });
+
+  it("reuses the Stripe activation key when persistence fails and the UI retries", async () => {
+    const fixture = setup();
+    fixture.store.entitlement.customerRef = "cus_fixed";
+    fixture.store.entitlement.metadata = { paymentMethod: "bank_transfer" };
+    vi.spyOn(fixture.store, "recordFixedActivation").mockRejectedValue(
+      new Error("database unavailable"),
+    );
+
+    await fixture.service.activateFixedPlanByInvoice(command("first"));
+    await fixture.service.activateFixedPlanByInvoice(command("retry"));
+
+    const keys = fixture.stripe.createFixedPlanInvoiceSubscription.mock.calls.map(
+      ([input]) => input.idempotencyKey,
+    );
+    expect(keys).toHaveLength(2);
+    expect(new Set(keys).size).toBe(1);
+    expect(fixture.stripe.cancelImmediately).not.toHaveBeenCalled();
+  });
+
+  it("keeps Billing readable when the Fixed Plan is unavailable in the property currency", async () => {
+    const fixture = setup({ currency: "CHF" });
+
+    await expect(fixture.service.getBillingOverview("property-1")).resolves.toMatchObject({
+      planStatus: { plan: "commission", currency: "CHF", fixedPlanAvailable: false },
+    });
+    await expect(fixture.service.createFixedPlanCheckout(command())).resolves.toMatchObject({
+      ok: false,
+      code: "billing_configuration_missing",
+    });
+  });
+
+  it("does not update a canceled Stripe subscription after switching to Commission", async () => {
+    const fixture = setup({ planKey: "fixed", subscriptionRef: "sub_fixed" });
+    await fixture.service.switchToCommissionNow(command("switch"));
+
+    await fixture.service.updatePaymentMethod({
+      ...command("payment"),
+      paymentMethod: "bank_transfer",
+    });
+
+    expect(fixture.stripe.updateCollectionMethod).not.toHaveBeenCalled();
+  });
+
   it("returns a typed service-unavailable error when Stripe is not configured", async () => {
     const fixture = setup({ stripeConfigured: false });
     await expect(fixture.service.createFixedPlanCheckout(command())).resolves.toMatchObject({
@@ -295,6 +466,7 @@ function setup(
     subscriptionRef?: string | null;
     stripeConfigured?: boolean;
     billingStatus?: string;
+    currency?: string;
   } = {},
 ) {
   const store = new MemoryStore(
@@ -311,9 +483,23 @@ function setup(
         checkoutUrl: "https://checkout.stripe.test/fixed",
       }),
     ),
+    createFixedPlanInvoiceSubscription: vi.fn(async (input) => ({
+      ...subscriptionSnapshot(false),
+      currency: input.currency,
+    })),
+    createFixedPlanCardSubscription: vi.fn(async (input) => ({
+      ...subscriptionSnapshot(false),
+      status: "active",
+      currency: input.currency,
+    })),
     expireFixedPlanCheckout: vi.fn(async () => undefined),
     createCustomerPortal: vi.fn(async () => ({ portalUrl: "https://billing.stripe.test/portal" })),
     cancelAtPeriodEnd: vi.fn(async () => subscriptionSnapshot(true)),
+    cancelImmediately: vi.fn(async () => ({ ...subscriptionSnapshot(false), status: "canceled" })),
+    getCustomerBilling: vi.fn(async () => ({ savedCard: null })),
+    upsertCustomer: vi.fn(async () => ({ customerId: "cus_fixed" })),
+    listInvoices: vi.fn(async () => []),
+    updateCollectionMethod: vi.fn(async () => subscriptionSnapshot(false)),
     retrieveSubscription: vi.fn(async () => subscriptionSnapshot(false)),
     updateRoomQuantity: vi.fn(async () => subscriptionSnapshot(false)),
   } satisfies StripeFinanceSubscriptionProvider;
@@ -327,8 +513,21 @@ function setup(
         capturedAt: "2026-08-11T12:00:00.000Z",
       })),
     },
+    pricing: {
+      getPropertyPricingCurrency: vi.fn(async () => ({
+        contractVersion: "pms-pricing.v1" as const,
+        propertyId: "property-1",
+        currency: (options.currency ?? "EUR") as never,
+        pricingCurrencyRevision: 1,
+        createdAt: "2026-08-11T12:00:00.000Z",
+        updatedAt: "2026-08-11T12:00:00.000Z",
+      })),
+    },
     stripe: options.stripeConfigured === false ? undefined : stripe,
-    bookingAdminBaseUrl: "https://admin.booking.test",
+    returnBaseUrls: {
+      bookingAdmin: "https://admin.booking.test",
+      pms: "https://pms.test",
+    },
     now: () => new Date("2026-08-11T12:00:00.000Z"),
     afterPlanChange,
   });
@@ -395,7 +594,7 @@ class MemoryStore implements FinanceSubscriptionStore {
   async recordCheckout(
     value: CreateFixedPlanCheckoutCommand,
     result: Awaited<ReturnType<StripeFinanceSubscriptionProvider["createFixedPlanCheckout"]>> & {
-      currency: "EUR";
+      currency: string;
       amountMinor: number;
       activeRoomCount: number;
     },
@@ -439,6 +638,49 @@ class MemoryStore implements FinanceSubscriptionStore {
     this.entitlement.periodEnd = snapshot.currentPeriodEnd;
   }
 
+  async recordImmediateCommission(
+    value: { idempotencyKey: string },
+    _snapshot: StripeSubscriptionSnapshot,
+    result: Awaited<ReturnType<FinanceSubscriptionService["getBillingOverview"]>>,
+  ) {
+    this.replay.set(`switch-commission-now:${value.idempotencyKey}`, result);
+    this.entitlement.planKey = "commission";
+    return { status: "updated" as const, result };
+  }
+
+  async recordFixedActivation(
+    value: { idempotencyKey: string },
+    _snapshot: StripeSubscriptionSnapshot,
+    result: Awaited<ReturnType<FinanceSubscriptionService["getBillingOverview"]>>,
+    paymentMethod: "card" | "bank_transfer",
+  ) {
+    this.replay.set(
+      `${paymentMethod === "card" ? "fixed-plan-card" : "fixed-plan-invoice"}:${value.idempotencyKey}`,
+      result,
+    );
+    this.entitlement.planKey = "fixed";
+    this.entitlement.subscriptionRef = "sub_fixed";
+    return { status: "updated" as const, result };
+  }
+
+  async recordBillingDetails(
+    value: { idempotencyKey: string },
+    customerRef: string | null,
+    result: Awaited<ReturnType<FinanceSubscriptionService["getBillingOverview"]>>,
+  ) {
+    this.replay.set(`billing-details:${value.idempotencyKey}`, result);
+    this.entitlement.customerRef = customerRef;
+    return { status: "updated" as const, result };
+  }
+
+  async recordPaymentMethod(
+    value: { idempotencyKey: string },
+    result: Awaited<ReturnType<FinanceSubscriptionService["getBillingOverview"]>>,
+  ) {
+    this.replay.set(`payment-method:${value.idempotencyKey}`, result);
+    return { status: "updated" as const, result };
+  }
+
   async close() {}
 }
 
@@ -475,5 +717,6 @@ function subscriptionSnapshot(cancelAtPeriodEnd: boolean): StripeSubscriptionSna
     currentPeriodEnd: "2026-09-10T12:00:00.000Z",
     cancelAtPeriodEnd,
     subscriptionItemId: "si_fixed",
+    currency: "EUR",
   };
 }

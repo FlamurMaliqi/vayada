@@ -450,6 +450,10 @@ const financeRepository =
       })
     : undefined;
 
+const pmsPricingReadModel = createPgPmsPricingReadModel({
+  connectionString: targetDatabaseUrl,
+});
+
 const stripeSubscriptionProvider = stripeSubscriptionRuntimeEnabled(config)
   ? createStripeFinanceSubscriptionProvider({
       secretKey: config.stripeSubscriptions.secretKey!,
@@ -465,8 +469,12 @@ const financeSubscriptionService =
     ? createFinanceSubscriptionService({
         store: createPgFinanceSubscriptionStore({ connectionString: targetDatabaseUrl }),
         roomInventory: financeSubscriptionRoomInventory!,
+        pricing: pmsPricingReadModel,
         stripe: stripeSubscriptionProvider,
-        bookingAdminBaseUrl: config.stripeSubscriptions.bookingAdminBaseUrl,
+        returnBaseUrls: {
+          bookingAdmin: config.stripeSubscriptions.bookingAdminBaseUrl,
+          pms: config.authSession?.authSurfaceOrigins["pms-web"],
+        },
         afterPlanChange: publicBookabilityPublisher
           ? async (propertyId) => {
               await publicBookabilityPublisher.publish({ propertyId });
@@ -514,9 +522,6 @@ const propertySetupDraftCommandRepository = createPgPropertySetupDraftCommandRep
   connectionString: targetDatabaseUrl,
 });
 const propertySetupDraftRepository = createPgPropertySetupDraftRepository({
-  connectionString: targetDatabaseUrl,
-});
-const pmsPricingReadModel = createPgPmsPricingReadModel({
   connectionString: targetDatabaseUrl,
 });
 // prettier-ignore

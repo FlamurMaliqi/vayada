@@ -1,21 +1,4 @@
-const ZERO_DECIMAL_CURRENCIES = new Set([
-  "BIF",
-  "CLP",
-  "DJF",
-  "GNF",
-  "JPY",
-  "KMF",
-  "KRW",
-  "MGA",
-  "PYG",
-  "RWF",
-  "UGX",
-  "VND",
-  "VUV",
-  "XAF",
-  "XOF",
-  "XPF",
-]);
+import { stripeCurrencyHasZeroDecimals } from "@vayada/domain-finance";
 const UNSUPPORTED_THREE_DECIMAL_CURRENCIES = new Set(["BHD", "JOD", "KWD", "OMR", "TND"]);
 
 export function stripeAmountMinor(amount: string | number, currency: string): number {
@@ -32,7 +15,7 @@ export function stripeAmountMinor(amount: string | number, currency: string): nu
   const whole = Number(match[1]);
   const fraction = (match[2] ?? "").padEnd(2, "0");
   if (!Number.isSafeInteger(whole)) throw new Error("Stripe amount exceeds safe integer range.");
-  if (ZERO_DECIMAL_CURRENCIES.has(normalizedCurrency)) {
+  if (stripeCurrencyHasZeroDecimals(normalizedCurrency)) {
     if (Number(fraction) !== 0) {
       throw new Error(`${normalizedCurrency} card amounts cannot include fractional units.`);
     }
@@ -51,7 +34,7 @@ export function stripeAmountDecimal(amountMinor: number, currency: string): stri
   if (UNSUPPORTED_THREE_DECIMAL_CURRENCIES.has(normalizedCurrency)) {
     throw new Error(`${normalizedCurrency} card payments are not supported.`);
   }
-  return ZERO_DECIMAL_CURRENCIES.has(normalizedCurrency)
+  return stripeCurrencyHasZeroDecimals(normalizedCurrency)
     ? `${amountMinor}.00`
     : `${Math.floor(amountMinor / 100)}.${String(amountMinor % 100).padStart(2, "0")}`;
 }

@@ -1224,6 +1224,7 @@
   "settings.navigation.checkinChecklist": "Check-in-Checkliste",
   "settings.navigation.checkoutInspection": "Check-out-Kontrolle",
   "settings.navigation.team": "Team & Rollen",
+  "settings.navigation.billing": "Abrechnung",
   "settings.navigation.localization": "Lokalisierung",
   "settings.property.title": "Unterkunft",
   "settings.property.description": "Nur die Angaben, die der Channel Manager tatsächlich benötigt. Titel, Währung und Kontakt-E-Mail werden an anderer Stelle festgelegt.",

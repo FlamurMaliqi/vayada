@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
-  FINANCE_FIXED_PLAN_INTERVAL_DAYS,
+  FINANCE_FIXED_PLAN_INTERVAL_MONTHS,
   fixedPlanAmountMinor,
   toFinancePlanStatusResponse,
 } from "./subscriptions.js";
@@ -16,8 +16,16 @@ describe("fixed-plan subscription contracts", () => {
     expect(fixedPlanAmountMinor(activeRoomCount)).toBe(amountMinor);
   });
 
-  it("uses an exact 30-day interval", () => {
-    expect(FINANCE_FIXED_PLAN_INTERVAL_DAYS).toBe(30);
+  it("uses a calendar-month interval", () => {
+    expect(FINANCE_FIXED_PLAN_INTERVAL_MONTHS).toBe(1);
+  });
+
+  it("uses the localized IDR catalog instead of changing only the minor-unit scale", () => {
+    expect(fixedPlanAmountMinor(7, "IDR")).toBe(98_000_000);
+  });
+
+  it("rejects currencies without an approved Fixed Plan price", () => {
+    expect(() => fixedPlanAmountMinor(1, "JPY")).toThrow(/not configured/);
   });
 
   it.each([-1, 1.5, Number.NaN])("rejects invalid room counts", (activeRoomCount) => {
@@ -32,6 +40,7 @@ describe("fixed-plan subscription contracts", () => {
       currency: "EUR",
       activeRoomCount: 4,
       amountMinor: 4_500,
+      fixedPlanAvailable: true,
       currentPeriodStart: "2026-08-11T12:00:00.000Z",
       currentPeriodEnd: "2026-09-10T12:00:00.000Z",
       nextBillingDate: null,

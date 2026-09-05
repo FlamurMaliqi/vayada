@@ -172,6 +172,45 @@ describe("Finance subscription store", () => {
     expect(replay?.text).toContain("organization_id IS NULL");
     expect(replay?.values?.[1]).toBe("a9fccec2-eb4c-4c35-bfd3-02a748c2e117");
   });
+
+  it("accepts the same active subscription when its webhook wins the activation race", async () => {
+    const calls: Array<{ text: string; values?: readonly unknown[] }> = [];
+    const pool = {
+      async query(text: string, values?: readonly unknown[]) {
+        calls.push({ text, values });
+        if (text.includes("INSERT INTO platform.idempotency_keys")) {
+          return { rows: [{ id: "idem-1" }], rowCount: 1 };
+        }
+        if (text.includes("UPDATE finance.billing_entitlements")) {
+          return { rows: [], rowCount: 1 };
+        }
+        return { rows: [], rowCount: 0 };
+      },
+      async end() {},
+    };
+    const store = createPgFinanceSubscriptionStore({
+      connectionString: "postgres://unused",
+      pool: pool as never,
+    });
+
+    await store.recordFixedActivation(
+      commissionCommand(),
+      {
+        customerId: "cus_fixed",
+        subscriptionId: "sub_fixed",
+        status: "active",
+        currentPeriodStart: "2026-09-01T00:00:00.000Z",
+        currentPeriodEnd: "2026-10-01T00:00:00.000Z",
+      } as never,
+      { planStatus: { amountMinor: 3_500, currency: "EUR", activeRoomCount: 2 } } as never,
+      "card",
+    );
+
+    const update = calls.find(({ text }) => text.includes("UPDATE finance.billing_entitlements"));
+    expect(update?.text).toContain("billing_subscription_ref = $4");
+    expect(update?.text).toContain("provider_subscription_status IN ('active', 'trialing')");
+    expect(calls.some(({ text }) => text === "COMMIT")).toBe(true);
+  });
 });
 
 function commissionCommand() {
@@ -198,6 +237,7 @@ function commissionResult() {
       currency: "EUR" as const,
       activeRoomCount: 1,
       amountMinor: 3_000,
+      fixedPlanAvailable: true,
       currentPeriodStart: null,
       currentPeriodEnd: null,
       nextBillingDate: null,

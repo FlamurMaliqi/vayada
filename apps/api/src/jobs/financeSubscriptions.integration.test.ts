@@ -372,6 +372,7 @@ function subscriptionSnapshot(): StripeSubscriptionSnapshot {
     currentPeriodEnd: "2026-09-10T12:00:00.000Z",
     cancelAtPeriodEnd: false,
     subscriptionItemId: "si_vay1120_a",
+    currency: "EUR",
   };
 }
 

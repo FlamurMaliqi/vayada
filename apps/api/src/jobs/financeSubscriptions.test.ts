@@ -39,6 +39,18 @@ describe("Finance subscription webhook lifecycle", () => {
     expect(fixture.refreshPublicBookability).toHaveBeenLastCalledWith("property-1");
   });
 
+  it("reconciles a direct activation webhook before the subscription reference is persisted", async () => {
+    const fixture = setup("commission");
+    fixture.store.entitlement.checkoutSessionRef = null;
+
+    await processFinanceSubscriptionWebhook(payload("invoice.paid", 20), fixture.dependencies);
+
+    expect(fixture.store.entitlement).toMatchObject({
+      planKey: "fixed",
+      subscriptionRef: "sub_fixed",
+    });
+  });
+
   it("activates Fixed when an older paid event arrives after a newer sync event", async () => {
     const fixture = setup("commission");
     fixture.store.entitlement.subscriptionRef = "sub_fixed";
@@ -143,7 +155,7 @@ describe("Finance subscription webhook lifecycle", () => {
     const store = createPgFinanceSubscriptionWebhookStore({
       query: vi.fn(async (sql: string, values?: readonly unknown[]) => {
         if (sql.includes("UPDATE finance.billing_entitlements")) {
-          metadata = JSON.parse(String(values?.[12])) as Record<string, unknown>;
+          metadata = JSON.parse(String(values?.[13])) as Record<string, unknown>;
           return { rows: [{ propertyId: "property-1", planKey: "commission" }] };
         }
         return { rows: [] };
@@ -202,6 +214,7 @@ describe("Finance subscription webhook lifecycle", () => {
         currentPeriodEnd: "2026-09-10T12:00:00.000Z",
         cancelAtPeriodEnd: false,
         subscriptionItemId: "si_fixed",
+        currency: "EUR",
       },
     });
 
@@ -265,13 +278,21 @@ function setup(planKey: "commission" | "fixed") {
     currentPeriodEnd: "2026-09-10T12:00:00.000Z",
     cancelAtPeriodEnd: false,
     subscriptionItemId: "si_fixed",
+    currency: "EUR",
   };
   const provider = {
     snapshot,
     createFixedPlanCheckout: vi.fn(),
+    createFixedPlanInvoiceSubscription: vi.fn(),
+    createFixedPlanCardSubscription: vi.fn(),
     expireFixedPlanCheckout: vi.fn(),
     createCustomerPortal: vi.fn(),
     cancelAtPeriodEnd: vi.fn(),
+    cancelImmediately: vi.fn(),
+    getCustomerBilling: vi.fn(),
+    upsertCustomer: vi.fn(),
+    listInvoices: vi.fn(),
+    updateCollectionMethod: vi.fn(),
     retrieveSubscription: vi.fn(async () => ({ ...snapshot })),
     updateRoomQuantity: vi.fn(async () => ({ ...snapshot })),
   } satisfies StripeFinanceSubscriptionProvider & { snapshot: StripeSubscriptionSnapshot };
@@ -394,5 +415,6 @@ function verifiedSnapshot(): StripeSubscriptionSnapshot {
     currentPeriodEnd: "2026-09-10T12:00:00.000Z",
     cancelAtPeriodEnd: false,
     subscriptionItemId: "si_fixed",
+    currency: "EUR",
   };
 }

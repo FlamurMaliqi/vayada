@@ -515,6 +515,7 @@ describe("api config", () => {
 
   it("enables Stripe Checkout only when subscription mutation and webhook recovery are ready", () => {
     const stripeRuntimeEnv = {
+      ...completeAuthSessionEnv,
       TARGET_DATABASE_URL: "postgresql://target-db",
       FINANCE_SOURCE: "target",
       STRIPE_SECRET_KEY: "sk_test_subscription",
@@ -537,6 +538,18 @@ describe("api config", () => {
     ]) {
       expect(stripeSubscriptionRuntimeEnabled(loadConfig(env))).toBe(false);
     }
+  });
+
+  it("requires an explicit PMS return origin when Stripe subscriptions are enabled", () => {
+    expect(() =>
+      loadConfig({
+        TARGET_DATABASE_URL: "postgresql://target-db",
+        FINANCE_SOURCE: "target",
+        STRIPE_SECRET_KEY: "sk_test_subscription",
+        STRIPE_WEBHOOK_SECRET: "whsec_subscription",
+        STRIPE_WEBHOOK_INTAKE_MODE: "mutating",
+      }),
+    ).toThrow("Stripe subscriptions require AUTH_PMS_WEB_ORIGIN");
   });
 
   it("rejects a non-HTTP Booking Admin return origin", () => {
@@ -740,6 +753,7 @@ describe("api config", () => {
   it("requires booking email delivery for checkout in production", () => {
     expect(() =>
       loadConfig({
+        ...completeAuthSessionEnv,
         NODE_ENV: "production",
         TARGET_DATABASE_URL: "postgresql://target-db",
       }),
@@ -747,6 +761,7 @@ describe("api config", () => {
 
     expect(
       loadConfig({
+        ...completeAuthSessionEnv,
         NODE_ENV: "production",
         TARGET_DATABASE_URL: "postgresql://target-db",
         RESEND_API_KEY: "re_test",
@@ -766,6 +781,7 @@ describe("api config", () => {
   it("requires the Stripe mutation and recovery runtime for checkout in production", () => {
     const complete = {
       ...financeFolioKmsEnv,
+      ...completeAuthSessionEnv,
       NODE_ENV: "production",
       API_RUNTIME: "next",
       TARGET_DATABASE_URL: "postgresql://target-db",

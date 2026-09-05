@@ -3,10 +3,14 @@ import { createHash } from "node:crypto";
 import type {
   CreateFixedPlanCheckoutCommand,
   CreateFixedPlanCheckoutResult,
+  FinanceBillingOverview,
+  FinancePaymentCollectionMethod,
   FinanceSubscriptionCommandContext,
   OpenFinanceCustomerPortalResult,
   SelectCommissionPlanResult,
   StripeSubscriptionSnapshot,
+  UpdateFinanceBillingDetailsCommand,
+  UpdateFinancePaymentMethodCommand,
 } from "@vayada/domain-finance";
 import pg, { type PoolClient, type QueryResult, type QueryResultRow } from "pg";
 
@@ -51,6 +55,17 @@ export type FinancePlanMutationStore = {
     command: FinanceSubscriptionCommandContext,
     result: SelectCommissionPlanResult,
   ): Promise<{ status: "created" | "idempotent_replay"; result: SelectCommissionPlanResult }>;
+  recordImmediateCommission(
+    command: FinanceSubscriptionCommandContext,
+    snapshot: StripeSubscriptionSnapshot,
+    result: FinanceBillingOverview,
+  ): Promise<{ status: "updated" | "idempotent_replay"; result: FinanceBillingOverview }>;
+  recordFixedActivation(
+    command: FinanceSubscriptionCommandContext,
+    snapshot: StripeSubscriptionSnapshot,
+    result: FinanceBillingOverview,
+    paymentMethod: FinancePaymentCollectionMethod,
+  ): Promise<{ status: "updated" | "idempotent_replay"; result: FinanceBillingOverview }>;
 };
 
 export type FinanceSubscriptionStore = FinancePlanMutationStore & {
@@ -66,6 +81,15 @@ export type FinanceSubscriptionStore = FinancePlanMutationStore & {
     command: FinanceSubscriptionCommandContext,
     snapshot: StripeSubscriptionSnapshot,
   ): Promise<void>;
+  recordBillingDetails(
+    command: UpdateFinanceBillingDetailsCommand,
+    customerRef: string | null,
+    result: FinanceBillingOverview,
+  ): Promise<{ status: "updated" | "idempotent_replay"; result: FinanceBillingOverview }>;
+  recordPaymentMethod(
+    command: UpdateFinancePaymentMethodCommand,
+    result: FinanceBillingOverview,
+  ): Promise<{ status: "updated" | "idempotent_replay"; result: FinanceBillingOverview }>;
   close(): Promise<void>;
 };
 
@@ -92,6 +116,14 @@ export function createPgFinanceSubscriptionStore(config: {
             withTransaction(pool, (transaction) =>
               recordCommissionSelection(transaction, command, result),
             ),
+          recordImmediateCommission: (command, snapshot, result) =>
+            withTransaction(pool, (transaction) =>
+              recordImmediateCommission(transaction, command, snapshot, result),
+            ),
+          recordFixedActivation: (command, snapshot, result, paymentMethod) =>
+            withTransaction(pool, (transaction) =>
+              recordFixedActivation(transaction, command, snapshot, result, paymentMethod),
+            ),
         });
       }
       const client = await pool.connect();
@@ -112,6 +144,14 @@ export function createPgFinanceSubscriptionStore(config: {
           recordCommissionSelection: (command, result) =>
             withExistingTransaction(client, (transaction) =>
               recordCommissionSelection(transaction, command, result),
+            ),
+          recordImmediateCommission: (command, snapshot, result) =>
+            withExistingTransaction(client, (transaction) =>
+              recordImmediateCommission(transaction, command, snapshot, result),
+            ),
+          recordFixedActivation: (command, snapshot, result, paymentMethod) =>
+            withExistingTransaction(client, (transaction) =>
+              recordFixedActivation(transaction, command, snapshot, result, paymentMethod),
             ),
         });
       } finally {
@@ -207,6 +247,62 @@ export function createPgFinanceSubscriptionStore(config: {
       });
     },
 
+    async recordImmediateCommission(command, snapshot, result) {
+      return withTransaction(pool, (client) =>
+        recordImmediateCommission(client, command, snapshot, result),
+      );
+    },
+
+    async recordFixedActivation(command, snapshot, result, paymentMethod) {
+      return withTransaction(pool, (client) =>
+        recordFixedActivation(client, command, snapshot, result, paymentMethod),
+      );
+    },
+
+    async recordBillingDetails(command, customerRef, result) {
+      return withTransaction(pool, async (client) => {
+        const idempotency = await insertCompletedIdempotency(client, "billing-details", command, {
+          result,
+        });
+        if (!idempotency.inserted) {
+          return {
+            status: "idempotent_replay",
+            result: idempotency.result as FinanceBillingOverview,
+          };
+        }
+        await upsertBillingMetadata(client, command, customerRef, {
+          billingDetails: command.billingDetails,
+        });
+        await insertAudit(client, "billing-details", command, idempotency.id, {
+          companyNameUpdated: true,
+          billingEmailUpdated: true,
+          taxIdPresent: Boolean(command.billingDetails.taxId),
+        });
+        return { status: "updated", result };
+      });
+    },
+
+    async recordPaymentMethod(command, result) {
+      return withTransaction(pool, async (client) => {
+        const idempotency = await insertCompletedIdempotency(client, "payment-method", command, {
+          result,
+        });
+        if (!idempotency.inserted) {
+          return {
+            status: "idempotent_replay",
+            result: idempotency.result as FinanceBillingOverview,
+          };
+        }
+        await upsertBillingMetadata(client, command, null, {
+          paymentMethod: command.paymentMethod,
+        });
+        await insertAudit(client, "payment-method", command, idempotency.id, {
+          paymentMethod: command.paymentMethod,
+        });
+        return { status: "updated", result };
+      });
+    },
+
     async close() {
       if (ownsPool) await pool.end?.();
     },
@@ -252,8 +348,8 @@ async function recordCheckout(
              )
            VALUES
              ($1::uuid, $2::uuid, 'booking', 'direct-booking-finance',
-              'active', 'commission', 'stripe', $3, 'incomplete', $4, 'EUR', $5,
-              'finance', $6::jsonb, $7::timestamptz)
+              'active', 'commission', 'stripe', $3, 'incomplete', $4, $5, $6,
+              'finance', $7::jsonb, $8::timestamptz)
            ON CONFLICT (organization_id, product, entitlement_key, (COALESCE(property_id::text, '')))
            DO UPDATE SET
              checkout_session_ref = EXCLUDED.checkout_session_ref,
@@ -273,9 +369,10 @@ async function recordCheckout(
       command.propertyId,
       result.checkoutSessionId,
       result.amountMinor,
+      result.currency,
       result.activeRoomCount,
       JSON.stringify({
-        fixedPlanPriceVersion: "vayada_fixed_eur_30d_v1",
+        fixedPlanPriceVersion: `vayada_fixed_${result.currency.toLowerCase()}_monthly_v2`,
         checkoutRequestedAt: command.audit.requestedAt,
         checkoutUrl: result.checkoutUrl,
       }),
@@ -290,6 +387,144 @@ async function recordCheckout(
     activeRoomCount: result.activeRoomCount,
   });
   return { status: "created", result };
+}
+
+async function recordImmediateCommission(
+  client: SubscriptionStoreExecutor,
+  command: FinanceSubscriptionCommandContext,
+  snapshot: StripeSubscriptionSnapshot,
+  result: FinanceBillingOverview,
+): Promise<{ status: "updated" | "idempotent_replay"; result: FinanceBillingOverview }> {
+  const idempotency = await insertCompletedIdempotency(client, "switch-commission-now", command, {
+    result,
+  });
+  if (!idempotency.inserted) {
+    return { status: "idempotent_replay", result: idempotency.result as FinanceBillingOverview };
+  }
+  const updated = await client.query(
+    `UPDATE finance.billing_entitlements
+     SET plan_key = 'commission', billing_status = 'active',
+         checkout_session_ref = NULL,
+         provider_subscription_status = $3, billing_period_start_at = NULL,
+         billing_period_end_at = NULL, cancel_at_period_end = FALSE,
+         billing_amount_minor = $4, billing_currency = $5,
+         active_room_count = $6,
+         entitlement_metadata = entitlement_metadata || $7::jsonb,
+         updated_at = $8::timestamptz
+     WHERE property_id = $1::uuid AND organization_id = $2::uuid
+       AND billing_subscription_ref = $9
+       AND product = 'booking' AND entitlement_key = 'direct-booking-finance'`,
+    [
+      command.propertyId,
+      command.organizationId,
+      snapshot.status,
+      result.planStatus.amountMinor,
+      result.planStatus.currency,
+      result.planStatus.activeRoomCount,
+      JSON.stringify({ planSelectedAt: command.audit.requestedAt, planSelectedBy: "billing" }),
+      command.audit.requestedAt,
+      snapshot.subscriptionId,
+    ],
+  );
+  if (updated.rowCount !== 1)
+    throw new Error("The Fixed Plan entitlement changed before it could be updated.");
+  await ensureBookingCommissionRule(client, command.propertyId, command.audit.requestedAt);
+  await insertAudit(client, "switch-commission-now", command, idempotency.id, {
+    plan: "commission",
+    prorated: true,
+    subscriptionId: snapshot.subscriptionId,
+  });
+  return { status: "updated", result };
+}
+
+async function recordFixedActivation(
+  client: SubscriptionStoreExecutor,
+  command: FinanceSubscriptionCommandContext,
+  snapshot: StripeSubscriptionSnapshot,
+  result: FinanceBillingOverview,
+  paymentMethod: FinancePaymentCollectionMethod,
+): Promise<{ status: "updated" | "idempotent_replay"; result: FinanceBillingOverview }> {
+  const operation = paymentMethod === "card" ? "fixed-plan-card" : "fixed-plan-invoice";
+  const idempotency = await insertCompletedIdempotency(client, operation, command, {
+    result,
+  });
+  if (!idempotency.inserted) {
+    return { status: "idempotent_replay", result: idempotency.result as FinanceBillingOverview };
+  }
+  const updated = await client.query(
+    `UPDATE finance.billing_entitlements
+     SET plan_key = 'fixed', billing_status = 'active', billing_provider = 'stripe',
+         billing_customer_ref = $3, billing_subscription_ref = $4,
+         checkout_session_ref = NULL, provider_subscription_status = $5,
+         billing_period_start_at = $6::timestamptz,
+         billing_period_end_at = $7::timestamptz, cancel_at_period_end = FALSE,
+         billing_amount_minor = $8, billing_currency = $9, active_room_count = $10,
+         starts_at = COALESCE(starts_at, $11::timestamptz),
+         entitlement_metadata = entitlement_metadata || $12::jsonb,
+         updated_at = $11::timestamptz
+     WHERE property_id = $1::uuid AND organization_id = $2::uuid
+       AND product = 'booking' AND entitlement_key = 'direct-booking-finance'
+       AND (plan_key <> 'fixed'
+         OR (plan_key = 'fixed' AND billing_status = 'active'
+           AND billing_provider = 'stripe'
+           AND billing_customer_ref = $3 AND billing_subscription_ref = $4
+           AND provider_subscription_status IN ('active', 'trialing')))`,
+    [
+      command.propertyId,
+      command.organizationId,
+      snapshot.customerId,
+      snapshot.subscriptionId,
+      snapshot.status,
+      snapshot.currentPeriodStart,
+      snapshot.currentPeriodEnd,
+      result.planStatus.amountMinor,
+      result.planStatus.currency,
+      result.planStatus.activeRoomCount,
+      command.audit.requestedAt,
+      JSON.stringify({
+        subscriptionItemId: snapshot.subscriptionItemId,
+        planSelectedAt: command.audit.requestedAt,
+        planSelectedBy: `billing-${paymentMethod}`,
+      }),
+    ],
+  );
+  if (updated.rowCount !== 1) throw new Error("The billing entitlement changed before activation.");
+  await insertAudit(client, operation, command, idempotency.id, {
+    plan: "fixed",
+    paymentMethod,
+    subscriptionId: snapshot.subscriptionId,
+  });
+  return { status: "updated", result };
+}
+
+async function upsertBillingMetadata(
+  client: SubscriptionStoreExecutor,
+  command: FinanceSubscriptionCommandContext,
+  customerRef: string | null,
+  metadata: Record<string, unknown>,
+): Promise<void> {
+  await client.query(
+    `INSERT INTO finance.billing_entitlements
+       (organization_id, property_id, product, entitlement_key, billing_status,
+        plan_key, billing_provider, billing_customer_ref, source_system,
+        entitlement_metadata, updated_at)
+     VALUES ($1::uuid, $2::uuid, 'booking', 'direct-booking-finance', 'active',
+       'commission', $3, $4, 'finance', $5::jsonb, $6::timestamptz)
+     ON CONFLICT (organization_id, product, entitlement_key, (COALESCE(property_id::text, '')))
+     DO UPDATE SET
+       billing_provider = CASE WHEN $4::text IS NULL THEN finance.billing_entitlements.billing_provider ELSE 'stripe' END,
+       billing_customer_ref = COALESCE($4, finance.billing_entitlements.billing_customer_ref),
+       entitlement_metadata = finance.billing_entitlements.entitlement_metadata || EXCLUDED.entitlement_metadata,
+       updated_at = EXCLUDED.updated_at`,
+    [
+      command.organizationId,
+      command.propertyId,
+      customerRef ? "stripe" : "none",
+      customerRef,
+      JSON.stringify(metadata),
+      command.audit.requestedAt,
+    ],
+  );
 }
 
 async function recordCommissionSelection(
@@ -551,6 +786,9 @@ function fingerprint(command: FinanceSubscriptionCommandContext): string {
       propertyId: command.propertyId,
       organizationId: command.organizationId,
       customerEmail: "customerEmail" in command ? command.customerEmail : undefined,
+      returnSurface: "returnSurface" in command ? command.returnSurface : undefined,
+      billingDetails: "billingDetails" in command ? command.billingDetails : undefined,
+      paymentMethod: "paymentMethod" in command ? command.paymentMethod : undefined,
     }),
   );
 }

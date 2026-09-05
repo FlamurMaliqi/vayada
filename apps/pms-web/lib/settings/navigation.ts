@@ -2,6 +2,7 @@ import {
   BoltIcon,
   CalendarDaysIcon,
   ClipboardDocumentCheckIcon,
+  CreditCardIcon,
   GlobeAltIcon,
   ReceiptPercentIcon,
   UserGroupIcon,
@@ -57,6 +58,12 @@ export function getPmsSettingsSections(
       label: t("settings.navigation.team"),
       icon: UserGroupIcon,
       href: "/settings/team",
+    },
+    {
+      id: "billing",
+      label: t("settings.navigation.billing"),
+      icon: CreditCardIcon,
+      href: "/settings/billing",
     },
     {
       id: "localization",

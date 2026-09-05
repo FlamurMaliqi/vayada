@@ -1,18 +1,18 @@
 import { Buffer } from "node:buffer";
 
 import {
-  FINANCE_FIXED_PLAN_BASE_AMOUNT_MINOR,
   FINANCE_FIXED_PLAN_CURRENCY,
-  FINANCE_FIXED_PLAN_EXTRA_ROOM_AMOUNT_MINOR,
-  FINANCE_FIXED_PLAN_INTERVAL_DAYS,
+  FINANCE_FIXED_PLAN_INTERVAL_MONTHS,
+  fixedPlanAmountMinor,
+  type FinanceBillingDetails,
+  type FinanceBillingInvoice,
+  type FinanceSavedCard,
   type StripeFinanceSubscriptionProvider,
   type StripeSubscriptionSnapshot,
 } from "@vayada/domain-finance";
 
 type StripeFetch = typeof globalThis.fetch;
 type StripeObject = Record<string, unknown>;
-
-const FIXED_PRICE_LOOKUP_KEY = "vayada_fixed_eur_30d_v1";
 
 export function createStripeFinanceSubscriptionProvider(config: {
   secretKey: string;
@@ -22,11 +22,14 @@ export function createStripeFinanceSubscriptionProvider(config: {
 }): StripeFinanceSubscriptionProvider {
   const endpoint = config.endpoint ?? "https://api.stripe.com/v1";
   const fetchImpl = config.fetch ?? globalThis.fetch;
-  let fixedPriceId = config.fixedPlanPriceId;
-  let fixedPriceVerified = false;
+  const fixedPriceIds = new Map<string, string>();
+  const configuredPriceIds = new Map<string, string>();
+  const verifiedPriceIds = new Set<string>();
+  if (config.fixedPlanPriceId)
+    configuredPriceIds.set(FINANCE_FIXED_PLAN_CURRENCY, config.fixedPlanPriceId);
 
   const request = async (
-    method: "GET" | "POST",
+    method: "GET" | "POST" | "DELETE",
     path: string,
     fields: ReadonlyArray<readonly [string, string]> = [],
     idempotencyKey?: string,
@@ -38,10 +41,10 @@ export function createStripeFinanceSubscriptionProvider(config: {
         method,
         headers: {
           Authorization: `Basic ${Buffer.from(`${config.secretKey}:`).toString("base64")}`,
-          ...(method === "POST" ? { "Content-Type": "application/x-www-form-urlencoded" } : {}),
+          ...(method !== "GET" ? { "Content-Type": "application/x-www-form-urlencoded" } : {}),
           ...(idempotencyKey ? { "Idempotency-Key": idempotencyKey } : {}),
         },
-        ...(method === "POST" ? { body: query.toString() } : {}),
+        ...(method !== "GET" ? { body: query.toString() } : {}),
       },
     );
     const payload = asObject(await response.json());
@@ -52,64 +55,86 @@ export function createStripeFinanceSubscriptionProvider(config: {
     return payload;
   };
 
-  const verifyFixedPrice = async (priceId: string): Promise<void> => {
+  const verifyFixedPrice = async (priceId: string, currency: string): Promise<void> => {
     const price = await request("GET", `/prices/${encodeURIComponent(priceId)}`, [
       ["expand[]", "tiers"],
     ]);
-    assertCanonicalFixedPrice(price, priceId);
+    assertCanonicalFixedPrice(price, priceId, currency);
   };
 
-  const ensureFixedPrice = async (): Promise<string> => {
-    if (fixedPriceId && fixedPriceVerified) return fixedPriceId;
-    if (fixedPriceId) {
-      await verifyFixedPrice(fixedPriceId);
-      fixedPriceVerified = true;
-      return fixedPriceId;
+  const ensureFixedPrice = async (rawCurrency: string): Promise<string> => {
+    const currency = normalizedCurrency(rawCurrency);
+    const lookupKey = fixedPriceLookupKey(currency);
+    const configuredId = configuredPriceIds.get(currency);
+    if (configuredId) {
+      const configuredPrice = await request("GET", `/prices/${encodeURIComponent(configuredId)}`, [
+        ["expand[]", "tiers"],
+      ]);
+      if (isCanonicalFixedPrice(configuredPrice, configuredId, currency)) {
+        fixedPriceIds.set(currency, configuredId);
+        verifiedPriceIds.add(configuredId);
+        configuredPriceIds.delete(currency);
+        return configuredId;
+      }
+      if (!isLegacyFixedPrice(configuredPrice, configuredId, currency)) {
+        throw new Error(
+          "Stripe Fixed Plan Price does not match the canonical Vayada billing terms.",
+        );
+      }
+      configuredPriceIds.delete(currency);
     }
+    const currentId = fixedPriceIds.get(currency);
+    if (currentId && verifiedPriceIds.has(currentId)) return currentId;
     const existing = await request("GET", "/prices", [
-      ["lookup_keys[]", FIXED_PRICE_LOOKUP_KEY],
+      ["lookup_keys[]", lookupKey],
       ["active", "true"],
       ["limit", "1"],
     ]);
     const existingPrice = objectArray(existing["data"])[0];
     const existingId = text(existingPrice?.["id"]);
     if (existingId) {
-      await verifyFixedPrice(existingId);
-      fixedPriceId = existingId;
-      fixedPriceVerified = true;
+      await verifyFixedPrice(existingId, currency);
+      fixedPriceIds.set(currency, existingId);
+      verifiedPriceIds.add(existingId);
       return existingId;
     }
+
+    const baseAmountMinor = fixedPlanAmountMinor(1, currency);
+    const extraAmountMinor = fixedPlanAmountMinor(2, currency) - baseAmountMinor;
 
     const created = await request(
       "POST",
       "/prices",
       [
-        ["currency", FINANCE_FIXED_PLAN_CURRENCY.toLowerCase()],
+        ["currency", currency.toLowerCase()],
         ["product_data[name]", "Vayada Fixed"],
-        ["recurring[interval]", "day"],
-        ["recurring[interval_count]", String(FINANCE_FIXED_PLAN_INTERVAL_DAYS)],
+        ["recurring[interval]", "month"],
+        ["recurring[interval_count]", String(FINANCE_FIXED_PLAN_INTERVAL_MONTHS)],
         ["billing_scheme", "tiered"],
         ["tiers_mode", "graduated"],
         ["tiers[0][up_to]", "1"],
-        ["tiers[0][unit_amount]", String(FINANCE_FIXED_PLAN_BASE_AMOUNT_MINOR)],
+        ["tiers[0][unit_amount]", String(baseAmountMinor)],
         ["tiers[1][up_to]", "inf"],
-        ["tiers[1][unit_amount]", String(FINANCE_FIXED_PLAN_EXTRA_ROOM_AMOUNT_MINOR)],
-        ["lookup_key", FIXED_PRICE_LOOKUP_KEY],
+        ["tiers[1][unit_amount]", String(extraAmountMinor)],
+        ["lookup_key", lookupKey],
         ["metadata[vayada_plan]", "fixed"],
       ],
-      "vayada-fixed-eur-30d-price-v1",
+      `vayada-fixed-${currency.toLowerCase()}-monthly-price-v2`,
     );
     const createdId = text(created["id"]);
     if (!createdId) throw new Error("Stripe did not return a fixed-plan Price ID.");
-    await verifyFixedPrice(createdId);
-    fixedPriceId = createdId;
-    fixedPriceVerified = true;
+    await verifyFixedPrice(createdId, currency);
+    fixedPriceIds.set(currency, createdId);
+    verifiedPriceIds.add(createdId);
     return createdId;
   };
 
+  const verifiedSnapshot = async (value: StripeObject): Promise<StripeSubscriptionSnapshot> =>
+    subscriptionSnapshot(value);
+
   return {
     async createFixedPlanCheckout(input) {
-      const priceId = await ensureFixedPrice();
+      const priceId = await ensureFixedPrice(input.currency);
       const fields: Array<readonly [string, string]> = [
         ["mode", "subscription"],
         ["success_url", input.successUrl],
@@ -118,7 +143,8 @@ export function createStripeFinanceSubscriptionProvider(config: {
         ["payment_method_types[0]", "card"],
         ["line_items[0][price]", priceId],
         ["line_items[0][quantity]", String(Math.max(input.activeRoomCount, 1))],
-        ["subscription_data[proration_behavior]", "none"],
+        ["subscription_data[billing_cycle_anchor]", stripeUnixTimestamp(input.billingCycleAnchor)],
+        ["subscription_data[proration_behavior]", "create_prorations"],
         ["subscription_data[metadata][vayada_property_id]", input.propertyId],
         ["subscription_data[metadata][vayada_organization_id]", input.organizationId],
         ["subscription_data[metadata][vayada_plan]", "fixed"],
@@ -135,6 +161,50 @@ export function createStripeFinanceSubscriptionProvider(config: {
       const checkoutSessionId = requiredText(session, "id");
       const checkoutUrl = requiredText(session, "url");
       return { checkoutSessionId, checkoutUrl };
+    },
+
+    async createFixedPlanInvoiceSubscription(input) {
+      const priceId = await ensureFixedPrice(input.currency);
+      const subscription = await request(
+        "POST",
+        "/subscriptions",
+        [
+          ["customer", input.customerId],
+          ["items[0][price]", priceId],
+          ["items[0][quantity]", String(Math.max(input.activeRoomCount, 1))],
+          ["collection_method", "send_invoice"],
+          ["days_until_due", "14"],
+          ["billing_cycle_anchor", stripeUnixTimestamp(input.billingCycleAnchor)],
+          ["proration_behavior", "create_prorations"],
+          ["metadata[vayada_property_id]", input.propertyId],
+          ["metadata[vayada_organization_id]", input.organizationId],
+          ["metadata[vayada_plan]", "fixed"],
+        ],
+        input.idempotencyKey,
+      );
+      return verifiedSnapshot(subscription);
+    },
+
+    async createFixedPlanCardSubscription(input) {
+      const priceId = await ensureFixedPrice(input.currency);
+      const subscription = await request(
+        "POST",
+        "/subscriptions",
+        [
+          ["customer", input.customerId],
+          ["items[0][price]", priceId],
+          ["items[0][quantity]", String(Math.max(input.activeRoomCount, 1))],
+          ["collection_method", "charge_automatically"],
+          ["billing_cycle_anchor", stripeUnixTimestamp(input.billingCycleAnchor)],
+          ["proration_behavior", "create_prorations"],
+          ["payment_behavior", "error_if_incomplete"],
+          ["metadata[vayada_property_id]", input.propertyId],
+          ["metadata[vayada_organization_id]", input.organizationId],
+          ["metadata[vayada_plan]", "fixed"],
+        ],
+        input.idempotencyKey,
+      );
+      return verifiedSnapshot(subscription);
     },
 
     async expireFixedPlanCheckout(input) {
@@ -160,7 +230,6 @@ export function createStripeFinanceSubscriptionProvider(config: {
     },
 
     async cancelAtPeriodEnd(input) {
-      const priceId = await ensureFixedPrice();
       const subscription = await request(
         "POST",
         `/subscriptions/${encodeURIComponent(input.subscriptionId)}`,
@@ -170,19 +239,94 @@ export function createStripeFinanceSubscriptionProvider(config: {
         ],
         input.idempotencyKey,
       );
-      return subscriptionSnapshot(subscription, priceId);
+      return verifiedSnapshot(subscription);
+    },
+
+    async cancelImmediately(input) {
+      const subscription = await request(
+        "DELETE",
+        `/subscriptions/${encodeURIComponent(input.subscriptionId)}`,
+        [
+          ["invoice_now", "true"],
+          ["prorate", "true"],
+        ],
+        input.idempotencyKey,
+      );
+      return verifiedSnapshot(subscription);
+    },
+
+    async getCustomerBilling(customerId) {
+      const customer = await request("GET", `/customers/${encodeURIComponent(customerId)}`, [
+        ["expand[]", "invoice_settings.default_payment_method"],
+      ]);
+      const invoiceSettings = asObject(customer["invoice_settings"]);
+      const defaultPaymentMethod = invoiceSettings["default_payment_method"];
+      const paymentMethod =
+        typeof defaultPaymentMethod === "string"
+          ? await request("GET", `/payment_methods/${encodeURIComponent(defaultPaymentMethod)}`)
+          : asObject(defaultPaymentMethod);
+      return { savedCard: savedCard(paymentMethod) };
+    },
+
+    async upsertCustomer(input) {
+      const path = input.customerId
+        ? `/customers/${encodeURIComponent(input.customerId)}`
+        : "/customers";
+      const customer = await request(
+        "POST",
+        path,
+        customerFields(input.billingDetails, input.propertyId, input.organizationId),
+        input.idempotencyKey,
+      );
+      return { customerId: requiredText(customer, "id") };
+    },
+
+    async listInvoices(customerId) {
+      const invoices: StripeObject[] = [];
+      let startingAfter: string | undefined;
+      while (true) {
+        const fields: Array<readonly [string, string]> = [
+          ["customer", customerId],
+          ["limit", "100"],
+        ];
+        if (startingAfter) fields.push(["starting_after", startingAfter]);
+        const response = await request("GET", "/invoices", fields);
+        const page = objectArray(response["data"]);
+        invoices.push(...page);
+        if (response["has_more"] !== true || page.length === 0) break;
+        const lastId = text(page.at(-1)?.["id"]);
+        if (!lastId || lastId === startingAfter) break;
+        startingAfter = lastId;
+      }
+      return invoices
+        .map(invoice)
+        .sort((left, right) => right.issuedAt.localeCompare(left.issuedAt));
+    },
+
+    async updateCollectionMethod(input) {
+      const fields: Array<readonly [string, string]> =
+        input.paymentMethod === "bank_transfer"
+          ? [
+              ["collection_method", "send_invoice"],
+              ["days_until_due", "14"],
+            ]
+          : [["collection_method", "charge_automatically"]];
+      const subscription = await request(
+        "POST",
+        `/subscriptions/${encodeURIComponent(input.subscriptionId)}`,
+        fields,
+        input.idempotencyKey,
+      );
+      return verifiedSnapshot(subscription);
     },
 
     async retrieveSubscription(subscriptionId) {
-      const priceId = await ensureFixedPrice();
-      return subscriptionSnapshot(
+      return verifiedSnapshot(
         await request("GET", `/subscriptions/${encodeURIComponent(subscriptionId)}`),
-        priceId,
       );
     },
 
     async updateRoomQuantity(input) {
-      const priceId = await ensureFixedPrice();
       const subscription = await request(
         "POST",
         `/subscriptions/${encodeURIComponent(input.subscriptionId)}`,
@@ -193,40 +337,69 @@ export function createStripeFinanceSubscriptionProvider(config: {
         ],
         input.idempotencyKey,
       );
-      return subscriptionSnapshot(subscription, priceId);
+      return verifiedSnapshot(subscription);
     },
   };
 }
 
-function assertCanonicalFixedPrice(price: StripeObject, expectedId: string): void {
+function isCanonicalFixedPrice(
+  price: StripeObject,
+  expectedId: string,
+  rawCurrency: string,
+): boolean {
+  const currency = normalizedCurrency(rawCurrency);
+  const baseAmountMinor = fixedPlanAmountMinor(1, currency);
+  const extraAmountMinor = fixedPlanAmountMinor(2, currency) - baseAmountMinor;
   const recurring = asObject(price["recurring"]);
   const metadata = asObject(price["metadata"]);
   const tiers = objectArray(price["tiers"]);
   const firstTier = tiers[0] ?? {};
   const extraTier = tiers[1] ?? {};
-  const valid =
+  return (
     text(price["id"]) === expectedId &&
     price["active"] !== false &&
-    text(price["currency"])?.toUpperCase() === FINANCE_FIXED_PLAN_CURRENCY &&
+    text(price["currency"])?.toUpperCase() === currency &&
     text(price["billing_scheme"]) === "tiered" &&
     text(price["tiers_mode"]) === "graduated" &&
-    text(price["lookup_key"]) === FIXED_PRICE_LOOKUP_KEY &&
+    text(price["lookup_key"]) === fixedPriceLookupKey(currency) &&
     text(metadata["vayada_plan"]) === "fixed" &&
-    text(recurring["interval"]) === "day" &&
-    Number(recurring["interval_count"]) === FINANCE_FIXED_PLAN_INTERVAL_DAYS &&
+    text(recurring["interval"]) === "month" &&
+    Number(recurring["interval_count"]) === FINANCE_FIXED_PLAN_INTERVAL_MONTHS &&
     Number(firstTier["up_to"]) === 1 &&
-    Number(firstTier["unit_amount"]) === FINANCE_FIXED_PLAN_BASE_AMOUNT_MINOR &&
+    Number(firstTier["unit_amount"]) === baseAmountMinor &&
     (extraTier["up_to"] === null || text(extraTier["up_to"]) === "inf") &&
-    Number(extraTier["unit_amount"]) === FINANCE_FIXED_PLAN_EXTRA_ROOM_AMOUNT_MINOR;
-  if (!valid) {
+    Number(extraTier["unit_amount"]) === extraAmountMinor
+  );
+}
+
+function assertCanonicalFixedPrice(
+  price: StripeObject,
+  expectedId: string,
+  currency: string,
+): void {
+  if (!isCanonicalFixedPrice(price, expectedId, currency)) {
     throw new Error("Stripe Fixed Plan Price does not match the canonical Vayada billing terms.");
   }
 }
 
-function subscriptionSnapshot(
-  value: StripeObject,
-  expectedPriceId: string,
-): StripeSubscriptionSnapshot {
+function isLegacyFixedPrice(price: StripeObject, expectedId: string, rawCurrency: string): boolean {
+  const currency = normalizedCurrency(rawCurrency);
+  const recurring = asObject(price["recurring"]);
+  const metadata = asObject(price["metadata"]);
+  return (
+    text(price["id"]) === expectedId &&
+    price["active"] !== false &&
+    text(price["currency"])?.toUpperCase() === currency &&
+    text(price["billing_scheme"]) === "tiered" &&
+    text(price["tiers_mode"]) === "graduated" &&
+    text(price["lookup_key"]) === legacyFixedPriceLookupKey(currency) &&
+    text(metadata["vayada_plan"]) === "fixed" &&
+    text(recurring["interval"]) === "day" &&
+    Number(recurring["interval_count"]) === 30
+  );
+}
+
+function subscriptionSnapshot(value: StripeObject): StripeSubscriptionSnapshot {
   const items = objectArray(asObject(value["items"])["data"]);
   const item = items[0] ?? {};
   const price = asObject(item["price"]);
@@ -236,6 +409,18 @@ function subscriptionSnapshot(
   const customer = value["customer"];
   const propertyId = text(subscriptionMetadata["vayada_property_id"]);
   const organizationId = text(subscriptionMetadata["vayada_organization_id"]);
+  const currency = (text(price["currency"]) ?? "").trim().toUpperCase();
+  const validCurrency = /^[A-Z]{3}$/.test(currency);
+  const currentTerms =
+    validCurrency &&
+    text(price["lookup_key"]) === fixedPriceLookupKey(currency) &&
+    text(recurring["interval"]) === "month" &&
+    Number(recurring["interval_count"]) === FINANCE_FIXED_PLAN_INTERVAL_MONTHS;
+  const legacyTerms =
+    validCurrency &&
+    text(price["lookup_key"]) === legacyFixedPriceLookupKey(currency) &&
+    text(recurring["interval"]) === "day" &&
+    Number(recurring["interval_count"]) === 30;
   return {
     subscriptionId: requiredText(value, "id"),
     customerId: typeof customer === "string" ? customer : requiredText(asObject(customer), "id"),
@@ -243,14 +428,11 @@ function subscriptionSnapshot(
     propertyId,
     organizationId,
     fixedPlanVerified:
-      text(price["id"]) === expectedPriceId &&
-      text(price["currency"])?.toUpperCase() === FINANCE_FIXED_PLAN_CURRENCY &&
+      validCurrency &&
       text(price["billing_scheme"]) === "tiered" &&
       text(price["tiers_mode"]) === "graduated" &&
-      text(price["lookup_key"]) === FIXED_PRICE_LOOKUP_KEY &&
       text(priceMetadata["vayada_plan"]) === "fixed" &&
-      text(recurring["interval"]) === "day" &&
-      Number(recurring["interval_count"]) === FINANCE_FIXED_PLAN_INTERVAL_DAYS &&
+      (currentTerms || legacyTerms) &&
       text(subscriptionMetadata["vayada_plan"]) === "fixed" &&
       Boolean(propertyId) &&
       Boolean(organizationId),
@@ -260,6 +442,90 @@ function subscriptionSnapshot(
     currentPeriodEnd: stripeTimestamp(item["current_period_end"] ?? value["current_period_end"]),
     cancelAtPeriodEnd: value["cancel_at_period_end"] === true,
     subscriptionItemId: text(item["id"]),
+    currency: validCurrency ? currency : "",
+  };
+}
+
+function fixedPriceLookupKey(currency: string): string {
+  return `vayada_fixed_${normalizedCurrency(currency).toLowerCase()}_monthly_v2`;
+}
+
+function legacyFixedPriceLookupKey(currency: string): string {
+  return `vayada_fixed_${normalizedCurrency(currency).toLowerCase()}_30d_v1`;
+}
+
+function normalizedCurrency(value: string): string {
+  const currency = value.trim().toUpperCase();
+  if (!/^[A-Z]{3}$/.test(currency)) throw new Error("Stripe currency must be a three-letter code.");
+  return currency;
+}
+
+function customerFields(
+  details: FinanceBillingDetails,
+  propertyId: string,
+  organizationId: string,
+): Array<readonly [string, string]> {
+  const fields: Array<readonly [string, string]> = [
+    ["name", details.companyName],
+    ["email", details.billingEmail],
+    ["metadata[vayada_property_id]", propertyId],
+    ["metadata[vayada_organization_id]", organizationId],
+  ];
+  if (details.taxId) {
+    fields.push(
+      ["metadata[vayada_tax_id]", details.taxId],
+      ["invoice_settings[custom_fields][0][name]", "Tax ID"],
+      ["invoice_settings[custom_fields][0][value]", details.taxId],
+    );
+  } else {
+    fields.push(["metadata[vayada_tax_id]", ""], ["invoice_settings[custom_fields]", ""]);
+  }
+  return fields;
+}
+
+function savedCard(paymentMethod: StripeObject): FinanceSavedCard | null {
+  const card = asObject(paymentMethod["card"]);
+  const last4 = text(card["last4"]);
+  const expiryMonth = Number(card["exp_month"]);
+  const expiryYear = Number(card["exp_year"]);
+  if (!last4 || !Number.isInteger(expiryMonth) || !Number.isInteger(expiryYear)) return null;
+  return {
+    brand: text(card["brand"]) ?? "card",
+    last4,
+    expiryMonth,
+    expiryYear,
+  };
+}
+
+function invoice(value: StripeObject): FinanceBillingInvoice {
+  const created = Number(value["created"]);
+  const transitions = asObject(value["status_transitions"]);
+  const paidAt = Number(transitions["paid_at"]);
+  const effectiveAt = Number(value["effective_at"]);
+  const date =
+    Number.isFinite(paidAt) && paidAt > 0
+      ? paidAt
+      : Number.isFinite(effectiveAt) && effectiveAt > 0
+        ? effectiveAt
+        : created;
+  const issuedAt = new Date(date * 1_000).toISOString();
+  const providerNumber = text(value["number"]);
+  const sequence = (providerNumber?.match(/(\d+)$/)?.[1] ?? String(created % 10_000)).slice(-4);
+  const status = text(value["status"]);
+  const paymentAttemptFailed = status === "open" && Number(value["attempt_count"]) > 0;
+  return {
+    id: requiredText(value, "id"),
+    number: `INV-${new Date(issuedAt).getUTCFullYear()}-${sequence.padStart(4, "0")}`,
+    issuedAt,
+    amountMinor: Math.max(0, Number(value["amount_paid"]) || Number(value["amount_due"]) || 0),
+    currency: normalizedCurrency(text(value["currency"]) ?? ""),
+    status:
+      status === "paid"
+        ? "paid"
+        : paymentAttemptFailed || ["void", "uncollectible"].includes(status ?? "")
+          ? "failed"
+          : "pending",
+    pdfUrl: httpsUrl(value["invoice_pdf"]),
   };
 }
 
@@ -270,6 +536,12 @@ function stripeTimestamp(value: unknown): string | null {
     : null;
 }
 
+function stripeUnixTimestamp(value: string): string {
+  const milliseconds = Date.parse(value);
+  if (!Number.isFinite(milliseconds)) throw new Error("Billing cycle anchor must be an ISO date.");
+  return String(Math.floor(milliseconds / 1_000));
+}
+
 function requiredText(value: StripeObject, key: string): string {
   const result = text(value[key]);
   if (!result) throw new Error(`Stripe response omitted ${key}.`);
@@ -278,6 +550,17 @@ function requiredText(value: StripeObject, key: string): string {
 
 function text(value: unknown): string | null {
   return typeof value === "string" && value.trim() ? value : null;
+}
+
+function httpsUrl(value: unknown): string | null {
+  const candidate = text(value);
+  if (!candidate) return null;
+  try {
+    const url = new URL(candidate);
+    return url.protocol === "https:" ? url.toString() : null;
+  } catch {
+    return null;
+  }
 }
 
 function asObject(value: unknown): StripeObject {
