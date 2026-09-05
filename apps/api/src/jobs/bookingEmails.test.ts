@@ -58,13 +58,14 @@ describe("booking lifecycle email jobs", () => {
     );
   });
 
-  it("renders the final confirmation email without the removed extra paragraph", async () => {
+  it("renders confirmation resends without requesting protected bank instructions", async () => {
     const target = createTargetEmailStore();
 
     await enqueueBookingLifecycleEmailJob(
       target,
       bookingEmailInput({
         kind: "final_confirmation",
+        resendKey: "booking.confirmation.resend:test",
       }),
     );
 
@@ -73,6 +74,7 @@ describe("booking lifecycle email jobs", () => {
 
     const payload = JSON.parse(String(jobInsert.values?.[8]));
     expect(payload.template).toBe("booking_final_confirmation");
+    expect(payload.requiresBankTransferInstructions).toBe(false);
     expect(payload.text).toContain("We look forward to welcoming you!");
     expect(payload.text).not.toContain("You can look up your booking anytime");
     expect(payload.text.split("We look forward to welcoming you!")[1]).toBe("");
