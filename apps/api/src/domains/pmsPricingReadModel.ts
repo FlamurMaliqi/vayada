@@ -224,8 +224,10 @@ export function pmsFlexibleRatePlanSnapshotFromRow(
   return parsed;
 }
 
-async function queryCurrency(
-  queryable: Queryable,
+export async function queryCurrency(
+  queryable: {
+    query<T extends QueryResultRow>(text: string, values?: unknown[]): Promise<{ rows: T[] }>;
+  },
   propertyId: string,
 ): Promise<PropertyPricingCurrencySnapshot | null> {
   const result = await queryable.query<PmsPricingCurrencyRow>(
