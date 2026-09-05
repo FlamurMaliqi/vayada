@@ -35,6 +35,10 @@ type Tab = "media" | "colors" | "fonts" | "layout" | "domain";
 export default function DesignStudioPage() {
   const { t } = useTranslation();
   const [activeTab, setActiveTab] = useState<Tab>("media");
+  useEffect(() => {
+    const tab = new URLSearchParams(window.location.search).get("tab");
+    if (["media", "colors", "fonts", "layout", "domain"].includes(tab ?? "")) setActiveTab(tab as Tab);
+  }, []);
   const [saving, setSaving] = useState(false);
   const [domainBusy, setDomainBusy] = useState(false);
   const [loading, setLoading] = useState(true);

@@ -12,6 +12,7 @@ import { authService } from "@/services/auth";
 import { settingsService, HotelSummary, SuperAdminHotel } from "@/services/settings";
 import { useTranslation, SUPPORTED_LANGUAGES } from "@/lib/i18n";
 import { CURRENCY_OPTIONS } from "@/lib/constants/options";
+import NavigationSearch from "./NavigationSearch";
 import ManagePropertiesModal from "./ManagePropertiesModal";
 import { buildBookingPreviewUrl } from "@/lib/utils/bookingPreviewUrl";
 
@@ -172,7 +173,7 @@ export default function Header({ onMenuToggle }: { onMenuToggle?: () => void }) 
             onClick={() => setDropdownOpen(!dropdownOpen)}
             className="flex items-center gap-1 text-[13px] text-gray-700 hover:text-gray-900 transition-colors"
           >
-            <span className="font-medium">
+            <span className="max-w-[110px] truncate font-medium sm:max-w-none">
               {selectedHotel?.name || t("layout.header.noProperties")}
             </span>
             <ChevronDownIcon
@@ -253,6 +254,8 @@ export default function Header({ onMenuToggle }: { onMenuToggle?: () => void }) 
           </span>
         )}
       </div>
+
+      <NavigationSearch hotelId={selectedHotel?.id} />
 
       {/* Right section: Preview + Notifications + Profile */}
       <div className="flex items-center gap-2">
