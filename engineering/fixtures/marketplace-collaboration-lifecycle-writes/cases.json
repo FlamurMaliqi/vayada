@@ -607,6 +607,7 @@
         "idempotencyKey": "marketplace.collaboration.edit_application:collab_688:nonce_edit:v1",
         "body": {
           "expectedUpdatedAt": "2026-09-05T01:00:00.000Z",
+          "terms": { "travelDateFrom": "2027-07-10", "travelDateTo": "2027-07-12" },
           "compensationOptionId": "compensation_free_stay_688",
           "whyGreatFit": "Updated pitch",
           "consent": true,
@@ -635,6 +636,7 @@
         "idempotencyKey": "marketplace.collaboration.edit_application:collab_688:nonce_edit:v1",
         "body": {
           "expectedUpdatedAt": "2026-09-05T01:00:00.000Z",
+          "terms": { "travelDateFrom": "2027-07-10", "travelDateTo": "2027-07-12" },
           "compensationOptionId": "compensation_free_stay_688",
           "whyGreatFit": "Updated pitch",
           "consent": true,
@@ -663,6 +665,7 @@
         "idempotencyKey": "marketplace.collaboration.edit_application:collab_688:nonce_edit:v1",
         "body": {
           "expectedUpdatedAt": "2026-09-05T01:00:00.000Z",
+          "terms": { "travelDateFrom": "2027-07-10", "travelDateTo": "2027-07-12" },
           "compensationOptionId": "compensation_free_stay_688",
           "whyGreatFit": "Updated pitch",
           "consent": true,
@@ -693,6 +696,7 @@
         "idempotencyKey": "marketplace.collaboration.edit_application:collab_688:nonce_edit:v1",
         "body": {
           "expectedUpdatedAt": "2026-09-05T01:00:00.000Z",
+          "terms": { "travelDateFrom": "2027-07-10", "travelDateTo": "2027-07-12" },
           "compensationOptionId": "compensation_free_stay_688",
           "whyGreatFit": "Different payload",
           "consent": true,
