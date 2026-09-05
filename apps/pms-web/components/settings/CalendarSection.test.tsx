@@ -27,7 +27,7 @@ function props() {
     onRetry: vi.fn(),
     sameDayEnabled: true,
     sameDayCutoffTime: "18:00",
-    sameDayTimeZone: "Europe/Berlin",
+    sameDayTimeZone: "America/New_York",
     sameDayLoading: false,
     sameDaySaving: false,
     sameDayLoadError: "",
@@ -70,6 +70,8 @@ describe("same-day booking calendar settings", () => {
     const view = create(createElement(CalendarSection, input));
     const toggle = view.root.findByProps({ "aria-label": "Allow same-day bookings" });
     const cutoff = view.root.findByProps({ "aria-label": "Same-day booking cutoff" });
+
+    expect(JSON.stringify(view.toJSON())).toContain("(America/New York)");
 
     expect(toggle.props["aria-checked"]).toBe(true);
     expect(cutoff.props.value).toBe("18:00");

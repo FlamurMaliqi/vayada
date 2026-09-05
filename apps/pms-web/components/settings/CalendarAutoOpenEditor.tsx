@@ -1,4 +1,5 @@
 "use client";
+import { formatTimezoneLabel } from "@/lib/timezoneLabel";
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { FormRow, SettingsCard } from "@vayada/settings-ui";
@@ -245,7 +246,7 @@ export function CalendarAutoOpenEditor() {
       <div className="mt-5 rounded-lg bg-gray-50 p-3 text-sm text-gray-700">
         <span className="font-medium">{t("settings.autoOpen.currentHorizon")}</span>{" "}
         {read.horizon.targetOpenThrough
-          ? `${formatDate(read.horizon.targetOpenThrough, locale)} (${read.horizon.propertyTimeZone})`
+          ? `${formatDate(read.horizon.targetOpenThrough, locale)} (${formatTimezoneLabel(read.horizon.propertyTimeZone)})`
           : t("settings.autoOpen.notActive")}
       </div>
 

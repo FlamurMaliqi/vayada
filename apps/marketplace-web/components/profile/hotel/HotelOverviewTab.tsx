@@ -142,10 +142,12 @@ export function HotelOverviewTab({
             <Input
               label="Website"
               required
-              type="url"
+              type="text"
+              inputMode="url"
+              aria-label="Website"
               value={editFormData.website}
               onChange={(e) => onEditFormChange({ ...editFormData, website: e.target.value })}
-              placeholder="https://example.com"
+              placeholder="name.com"
               disabled={!isEditing}
               leadingIcon={<GlobeAltIcon className="w-5 h-5 text-gray-400" />}
             />
