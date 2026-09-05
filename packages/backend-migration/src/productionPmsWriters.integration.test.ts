@@ -88,8 +88,14 @@ describe.skipIf(!URL)("production PMS writers (PostgreSQL)", () => {
   });
 
   it("writes and verifies a complete inert PMS migration flow", async () => {
-    await client.query("BEGIN");
+    await client.query("BEGIN ISOLATION LEVEL REPEATABLE READ");
     try {
+      // CI shares this database with other integration fixtures. Prove no new work,
+      // without assuming their durable jobs/events have been removed.
+      const initialWork = await client.query(`SELECT
+        (SELECT count(*)::int FROM platform.outbox_events) AS outbox_count,
+        (SELECT count(*)::int FROM platform.jobs) AS job_count,
+        (SELECT count(*)::int FROM platform.domain_events) AS domain_count`);
       await seedPrerequisites(client);
       const prerequisites = await readProductionPmsPrerequisites(client, RUN);
       const source = sourceRows();
@@ -159,7 +165,17 @@ describe.skipIf(!URL)("production PMS writers (PostgreSQL)", () => {
         `SELECT property_id, tenant_scope, delivery_status, failure_reason, raw_payload,
                 payload_retention_until::text, normalized_domain_event_id
            FROM platform.external_webhook_events
-          WHERE provider = 'channex' AND event_type = 'message' ORDER BY id`,
+          WHERE provider = 'channex' AND event_type = 'message'
+            AND id = ANY($1::uuid[]) ORDER BY id`,
+        [
+          plan.records
+            .filter(
+              (record) =>
+                record.targetTable === "external_webhook_events" &&
+                record.row["eventType"] === "message",
+            )
+            .map((record) => record.targetId),
+        ],
       );
       expect(receipts.rows).toHaveLength(3);
       expect(receipts.rows[0]).toMatchObject({
@@ -206,11 +222,12 @@ describe.skipIf(!URL)("production PMS writers (PostgreSQL)", () => {
              WHERE guest_booking_id = $2 AND assignment_id IS NULL AND sync_status = 'ignored') AS ignored_mappings,
            (SELECT count(*)::int FROM pms.room_type_media WHERE room_type_id = $3) AS room_media,
            (SELECT media_snapshot FROM pms.room_types WHERE id = $3) AS media_snapshot,
-           (SELECT delivery_status FROM platform.external_webhook_events WHERE provider = 'channex' AND event_type = 'booking_revision' LIMIT 1) AS webhook_status,
-           (SELECT normalized_domain_event_id FROM platform.external_webhook_events WHERE provider = 'channex' AND event_type = 'booking_revision' LIMIT 1) AS domain_event,
+           (SELECT delivery_status FROM platform.external_webhook_events WHERE id = $4) AS webhook_status,
+           (SELECT normalized_domain_event_id FROM platform.external_webhook_events WHERE id = $4) AS domain_event,
            (SELECT count(*)::int FROM platform.outbox_events) AS outbox_count,
-           (SELECT count(*)::int FROM platform.jobs) AS job_count`,
-        [PROPERTY, BOOKING, ROOM_TYPE],
+           (SELECT count(*)::int FROM platform.jobs) AS job_count,
+           (SELECT count(*)::int FROM platform.domain_events) AS domain_count`,
+        [PROPERTY, BOOKING, ROOM_TYPE, webhook.data["id"]],
       );
       expect(stored.rows[0]).toMatchObject({
         inventory: 1_098,
@@ -229,8 +246,7 @@ describe.skipIf(!URL)("production PMS writers (PostgreSQL)", () => {
         ],
         webhook_status: "observed",
         domain_event: null,
-        outbox_count: 0,
-        job_count: 0,
+        ...initialWork.rows[0],
       });
     } finally {
       await client.query("ROLLBACK");
