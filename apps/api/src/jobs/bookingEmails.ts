@@ -1,3 +1,4 @@
+import { paymentMethodLabel } from "@vayada/locale-constants";
 import { createHash } from "node:crypto";
 import type { QueryResultRow } from "pg";
 
@@ -33,6 +34,7 @@ export type BookingLifecycleTransition = {
 };
 
 export type BookingLifecycleEmailInput = {
+  resendKey?: string;
   kind: BookingLifecycleEmailKind;
   occurredAt: string;
   correlationId?: string | null;
@@ -56,6 +58,11 @@ export type BookingLifecycleEmailInput = {
     balanceAmount?: string | number | null;
     currency?: string | null;
     paymentMethod?: string | null;
+    addons?: string | null;
+    roomCount?: number;
+    adults?: number;
+    children?: number;
+    specialRequests?: string | null;
   };
 };
 
@@ -97,12 +104,14 @@ export async function enqueueBookingLifecycleEmailJob(
   const jobType = bookingLifecycleEmailJobType(input.kind);
   const eventType = `booking.notification.${input.kind}_requested`;
   const transition = input.transition ?? legacyTransition(input.kind);
-  const jobKey = bookingLifecycleEmailJobKey(
-    input.kind,
-    input.booking.guestBookingId,
-    recipientRole,
-    transition,
-  );
+  const jobKey =
+    input.resendKey ??
+    bookingLifecycleEmailJobKey(
+      input.kind,
+      input.booking.guestBookingId,
+      recipientRole,
+      transition,
+    );
   const keyHash = sha256(jobKey);
   const copy = emailCopy(input);
   const payload = {
@@ -115,6 +124,7 @@ export async function enqueueBookingLifecycleEmailJob(
     recipientRole,
     notificationType: input.kind,
     transition,
+    ...(input.resendKey ? { resentByUserId: input.actor?.userId } : {}),
   };
   const actorType = input.actor?.type ?? "system";
 
@@ -269,12 +279,18 @@ type BookingNotificationSnapshot = QueryResultRow & {
   currency: string;
   paymentMethod: string | null;
   bookingMetadata: unknown;
+  status: string;
+  roomCount: number;
+  adults: number;
+  children: number;
+  specialRequests: string | null;
+  addons: string | null;
 };
 
-export async function enqueueBookingTransitionNotifications(
+export async function loadBookingNotificationSnapshot(
   queryable: Queryable,
-  input: BookingTransitionNotificationInput,
-): Promise<BookingLifecycleEmailEnqueueResult[]> {
+  input: { propertyId: string; guestBookingId: string },
+) {
   const result = await queryable.query<BookingNotificationSnapshot>(
     `SELECT
        booking.property_id::text AS "propertyId",
@@ -289,12 +305,17 @@ export async function enqueueBookingTransitionNotifications(
        booking.total_amount::text AS "totalAmount",
        booking.balance_amount::text AS "balanceAmount",
        booking.currency,
-       booking.booking_metadata ->> 'paymentMethod' AS "paymentMethod",
-       booking.booking_metadata AS "bookingMetadata"
+       COALESCE(booking.booking_metadata ->> 'paymentMethod', booking.expected_payment_method) AS "paymentMethod",
+       booking.booking_metadata AS "bookingMetadata",
+       booking.lifecycle_status AS status, booking.adults, booking.children, booking.room_count AS "roomCount",
+       guest.special_requests AS "specialRequests",
+       (SELECT string_agg(item.addon_name || ' × ' || item.quantity, ', ' ORDER BY item.created_at)
+        FROM booking.booking_addon_selection_items item
+        WHERE item.guest_booking_id = booking.id AND item.property_id = booking.property_id) AS addons
      FROM booking.guest_bookings booking
      JOIN hotel_catalog.properties property ON property.id = booking.property_id
      LEFT JOIN LATERAL (
-       SELECT booking_guest.first_name, booking_guest.last_name, booking_guest.email
+       SELECT booking_guest.first_name, booking_guest.last_name, booking_guest.email, booking_guest.special_requests
        FROM booking.booking_guests booking_guest
        WHERE booking_guest.guest_booking_id = booking.id
          AND booking_guest.guest_role IN ('booker', 'primary_guest')
@@ -320,7 +341,14 @@ export async function enqueueBookingTransitionNotifications(
      LIMIT 1`,
     [input.propertyId, input.guestBookingId],
   );
-  const booking = result.rows[0];
+  return result.rows[0] ?? null;
+}
+
+export async function enqueueBookingTransitionNotifications(
+  queryable: Queryable,
+  input: BookingTransitionNotificationInput,
+): Promise<BookingLifecycleEmailEnqueueResult[]> {
+  const booking = await loadBookingNotificationSnapshot(queryable, input);
   if (!booking) throw new Error("Booking notification snapshot was not found.");
 
   const notifications = notificationsForTransition(input.transition, booking);
@@ -425,6 +453,7 @@ function emailCopy(input: BookingLifecycleEmailInput) {
         `Hi ${name},`,
         `We've accepted your booking request for ${property}.`,
         `Stay: ${dateOnly(booking.checkIn)} to ${dateOnly(booking.checkOut)}`,
+        ...confirmationDetails(booking),
         `Booking reference: ${booking.bookingReference}`,
       ].join("\n\n"),
     };
@@ -474,11 +503,25 @@ function emailCopy(input: BookingLifecycleEmailInput) {
       `Hi ${name},`,
       `Your booking at ${property} is confirmed.`,
       `Stay: ${dateOnly(booking.checkIn)} to ${dateOnly(booking.checkOut)}`,
-      `Total: ${money(booking.totalAmount, booking.currency)}`,
+      ...confirmationDetails(booking),
       `Booking reference: ${booking.bookingReference}`,
       "We look forward to welcoming you!",
     ].join("\n\n"),
   };
+}
+
+function confirmationDetails(booking: BookingLifecycleEmailInput["booking"]): string[] {
+  return [
+    `Total: ${money(booking.totalAmount, booking.currency)}`,
+    `Balance: ${money(booking.balanceAmount, booking.currency)}`,
+    `Payment method: ${paymentMethodLabel(booking.paymentMethod)}`,
+    ...(booking.adults == null
+      ? []
+      : [`Guests: ${booking.adults} adults, ${booking.children ?? 0} children`]),
+    ...(booking.roomCount == null ? [] : [`Rooms: ${booking.roomCount}`]),
+    `Add-ons: ${booking.addons || "None"}`,
+    ...(booking.specialRequests ? [`Special requests: ${booking.specialRequests}`] : []),
+  ];
 }
 
 function notificationsForTransition(
