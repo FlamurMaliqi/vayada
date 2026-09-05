@@ -35,6 +35,8 @@ import { createPgHotelCatalogCurrentOwnerEvidencePorts } from "./domains/hotelCa
 import { createPgHotelCatalogStep1Repository } from "./domains/hotelCatalogStep1Repository.js";
 import { createPgMarketplaceHotelCollaborationPreferencesRepository } from "./domains/marketplaceHotelCollaborationPreferencesRepository.js";
 import { createPgFinanceOtaCommissionRuleRepository } from "./domains/financeOtaCommissionRuleRepository.js";
+import { createBankTransferCodec } from "./domains/financeBankTransferCodec.js";
+import { createBankTransferRepository } from "./domains/financeBankTransferRepository.js";
 import { createPgFinanceExpenseCategoryRepository } from "./domains/financeExpenseCategoryRepository.js";
 import { createPgFinanceManualExpenseRepository } from "./domains/financeManualExpenseRepository.js";
 import { createPgFinanceRecurringExpenseRuleRepository } from "./domains/financeRecurringExpenseRuleRepository.js";
@@ -451,6 +453,14 @@ const financeRepository =
         stripeConnectProvider,
       })
     : undefined;
+
+const bankTransferKms = config.financeSource === "target" && config.financeBankTransferKms
+  ? createAwsFinanceFolioKms({ region: config.financeBankTransferKms.region }) : undefined;
+const bankTransferCodec = bankTransferKms && config.financeBankTransferKms
+  ? createBankTransferCodec({ ...config.financeBankTransferKms,
+      kms: { ...bankTransferKms.write, ...bankTransferKms.decrypt } }) : undefined;
+const bankTransferRepository = bankTransferCodec
+  ? createBankTransferRepository(targetDatabaseUrl, bankTransferCodec) : undefined;
 
 const pmsPricingReadModel = createPgPmsPricingReadModel({
   connectionString: targetDatabaseUrl,
@@ -1303,6 +1313,7 @@ const app = buildApp({
   pmsInventoryPublicOfferProjector: routePmsInventoryPublicOfferProjector,
   bookingGuestPiiPort,
   financeRepository,
+  financeBankTransfer: bankTransferRepository ? { repository: bankTransferRepository } : undefined,
   financeSubscriptionService,
   financeOtaCommissionSettingsRepository,
   financeExpenses: financeExpenseRuntime
@@ -1542,6 +1553,8 @@ app.addHook("onClose", async () => {
     financeOtaCommissionSettingsRepository?.close(),
     financeExpenseRuntime?.close(),
     financeFolioRuntime?.close(),
+    bankTransferRepository?.close(),
+    bankTransferKms?.close(),
     bookingDesignMediaAdapter?.close?.(),
     pmsRoomPublicationRuntime?.commandRepository.close(),
     pmsRoomPublicationRuntime?.readModel.close(),

@@ -154,6 +154,7 @@ export type ApiConfig = {
   pmsOperationsSource: PmsOperationsSource;
   financeSource: FinanceSource;
   financeFolioRecipientKms?: FinanceFolioRecipientKmsConfig;
+  financeBankTransferKms?: { currentKeyArn: string; allowedKeyArns: string[]; region: string };
   marketplaceDiscoveryAllowedOrigins: string[];
   affiliatePublicSource?: "target";
   pmsOperationsAllowedOrigins: string[];
@@ -263,6 +264,19 @@ function readOptionalCsvEnv(
 
 const KMS_KEY_ARN =
   /^arn:(aws(?:-[a-z]+)?):kms:([a-z0-9-]+):(\d{12}):key\/([0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12})$/;
+
+function loadBankTransferKms(env: NodeJS.ProcessEnv): ApiConfig["financeBankTransferKms"] {
+  const currentKeyArn = readOptionalEnv(env, "FINANCE_BANK_TRANSFER_KMS_CURRENT_KEY_ARN");
+  const allowed = readOptionalEnv(env, "FINANCE_BANK_TRANSFER_KMS_ALLOWED_KEY_ARNS");
+  if (!currentKeyArn && !allowed) return undefined;
+  const allowedKeyArns = allowed?.split(",") ?? [];
+  const keys = [currentKeyArn, ...allowedKeyArns].map((key) => key ? KMS_KEY_ARN.exec(key) : null);
+  if (!currentKeyArn || !allowedKeyArns.includes(currentKeyArn) || keys.some((key) => !key) ||
+      keys.some((key) => key!.slice(1, 4).join() !== keys[0]!.slice(1, 4).join())) {
+    throw new Error("Bank transfer KMS configuration is invalid");
+  }
+  return { currentKeyArn, allowedKeyArns, region: keys[0]![2]! };
+}
 
 function loadFinanceFolioRecipientKmsConfig(
   env: NodeJS.ProcessEnv,
@@ -841,6 +855,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
     pmsOperationsSource,
     financeSource,
     financeFolioRecipientKms,
+    financeBankTransferKms: loadBankTransferKms(env),
     marketplaceDiscoveryAllowedOrigins: readOptionalCsvEnv(
       env,
       "MARKETPLACE_DISCOVERY_ALLOWED_ORIGINS",
