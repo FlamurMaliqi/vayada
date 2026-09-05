@@ -287,3 +287,5 @@ export type {
   PlatformMarketplaceAccount,
   PlatformMarketplaceAccountsResponse,
 } from "./platformMarketplaceActivation.js";
+
+export * from "./nearbyView.js";

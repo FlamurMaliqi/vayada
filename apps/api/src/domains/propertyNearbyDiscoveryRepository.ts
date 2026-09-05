@@ -9,13 +9,8 @@ import {
 import type { NearbyScope } from "./propertyNearbyRepository.js";
 
 export type NearbyReference = { placeId: string; category: NearbyCategory };
-export type NearbyDiscoveryState = {
-  schemaVersion: 1;
-  profileRevision: number;
-  status: NearbyDiscoveryResult["status"] | "refreshing" | "stale";
-  places: NearbyReference[];
-  retryAfter: string | null;
-};
+export type { NearbyDiscoveryState } from "@vayada/domain-hotels";
+import type { NearbyDiscoveryState } from "@vayada/domain-hotels";
 export type NearbyClaim =
   | { status: "claimed"; token: string; origin: NearbyOrigin; profileRevision: number }
   | { status: "state"; state: NearbyDiscoveryState }
