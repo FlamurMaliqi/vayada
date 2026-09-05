@@ -464,7 +464,11 @@ async function recordFixedActivation(
          updated_at = $11::timestamptz
      WHERE property_id = $1::uuid AND organization_id = $2::uuid
        AND product = 'booking' AND entitlement_key = 'direct-booking-finance'
-       AND plan_key <> 'fixed'`,
+       AND (plan_key <> 'fixed'
+         OR (plan_key = 'fixed' AND billing_status = 'active'
+           AND billing_provider = 'stripe'
+           AND billing_customer_ref = $3 AND billing_subscription_ref = $4
+           AND provider_subscription_status IN ('active', 'trialing')))`,
     [
       command.propertyId,
       command.organizationId,

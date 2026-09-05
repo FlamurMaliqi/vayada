@@ -422,6 +422,7 @@ describe("Finance subscription service", () => {
     );
     expect(keys).toHaveLength(2);
     expect(new Set(keys).size).toBe(1);
+    expect(fixture.stripe.cancelImmediately).not.toHaveBeenCalled();
   });
 
   it("keeps Billing readable when the Fixed Plan is unavailable in the property currency", async () => {
