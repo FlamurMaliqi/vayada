@@ -420,6 +420,7 @@ export type BookingWebCalendarReadPool = BookingWebQueryExecutor & {
 };
 
 export type BookingWebPublicRoutesOptions = {
+  nearby?: import("./publicNearby.js").PublicNearbyOptions;
   profileRepository: PublicHotelProfileRepository;
   quoteRepository?: PublicHotelQuoteRepository;
   calendarRepository?: BookingWebCalendarRepository;
@@ -436,6 +437,10 @@ export async function registerBookingWebPublicRoutes(
   options: BookingWebPublicRoutesOptions,
 ): Promise<void> {
   const now = options.now ?? (() => new Date());
+  if (options.nearby) {
+    const { registerPublicNearbyRoute } = await import("./publicNearby.js");
+    await registerPublicNearbyRoute(app, options.profileRepository, options.nearby);
+  }
   const checkoutAdapter = options.checkoutAdapter;
   const affiliateAdapter =
     options.affiliateAdapter ?? createUnavailableBookingWebAffiliateAdapter();
@@ -895,11 +900,16 @@ export async function registerBookingWebPublicRoutes(
     if (metadata["funnelVersion"] === 1) {
       const sequence = metadata["funnelSequence"];
       const method = metadata["paymentMethod"];
-      if (!(FUNNEL_STAGES as readonly string[]).includes(eventType) ||
-          !firstString(request.body?.sessionId, request.body?.session_id) ||
-          !Number.isSafeInteger(sequence) || Number(sequence) < 1 ||
-          (["complete_booking_clicked", "payment_authorized", "booking_completed"].includes(eventType) &&
-            !(FUNNEL_PAYMENT_METHODS as readonly unknown[]).includes(method))) {
+      if (
+        !(FUNNEL_STAGES as readonly string[]).includes(eventType) ||
+        !firstString(request.body?.sessionId, request.body?.session_id) ||
+        !Number.isSafeInteger(sequence) ||
+        Number(sequence) < 1 ||
+        (["complete_booking_clicked", "payment_authorized", "booking_completed"].includes(
+          eventType,
+        ) &&
+          !(FUNNEL_PAYMENT_METHODS as readonly unknown[]).includes(method))
+      ) {
         throw createHttpError(400, "Invalid booking funnel event.");
       }
     }
