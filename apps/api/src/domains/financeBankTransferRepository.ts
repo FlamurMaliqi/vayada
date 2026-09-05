@@ -3,6 +3,12 @@ import pg from "pg";
 import type { createBankTransferCodec, BankTransferDetails } from "./financeBankTransferCodec.js";
 
 type Codec = ReturnType<typeof createBankTransferCodec>;
+export type BankTransferQueryable = {
+  query<T extends pg.QueryResultRow = pg.QueryResultRow>(
+    sql: string,
+    values?: readonly unknown[],
+  ): Promise<{ rows: T[] }>;
+};
 export type BankTransferDestinationSummary = {
   id: string;
   propertyId: string;
@@ -24,7 +30,7 @@ const columns = `id::text, property_id::text AS "propertyId", revision, state_ve
   account_last4 AS "accountLast4", deleted_at IS NOT NULL AS deleted`;
 const hash = (value: string) => createHash("sha256").update(value).digest("hex");
 
-export function createBankTransferRepository(connectionString: string, codec: Codec) {
+export function createBankTransferRepository(connectionString: string, codec?: Codec) {
   const pool = new pg.Pool({ connectionString });
   async function read(propertyId: string, queryable: Pick<pg.Pool, "query"> = pool) {
     return (
@@ -87,6 +93,7 @@ export function createBankTransferRepository(connectionString: string, codec: Co
         }
         let id = previous?.id ?? randomUUID();
         if (command.action === "replace") {
+          if (!codec) throw new Error();
           id = randomUUID();
           const revision = (previous?.revision ?? 0) + 1;
           const encrypted = await codec.encrypt(
@@ -161,7 +168,7 @@ export function createBankTransferRepository(connectionString: string, codec: Co
 }
 
 export async function recordBankTransferAudit(
-  queryable: Pick<pg.Pool, "query">,
+  queryable: BankTransferQueryable,
   input: {
     propertyId: string;
     id: string;
