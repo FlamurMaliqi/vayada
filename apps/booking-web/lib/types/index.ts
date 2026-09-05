@@ -114,6 +114,8 @@ export interface RoomType {
   partialRefundAmountPercent?: number;
   partialRefundTiers?: { minDaysBeforeCheckIn: number; refundPercent: number }[];
   originalRate?: number | null;
+  promotion?: { name: string; discountAmount: number; discountPercent: number };
+  nonRefundablePromotion?: { name: string; discountAmount: number; discountPercent: number };
   lastMinuteDiscountPercent?: number | null;
   ratePaymentMethods?: Record<string, string[]> | null;
   rateDepositSettings?: Record<

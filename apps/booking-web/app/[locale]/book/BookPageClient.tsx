@@ -106,6 +106,7 @@ function BookPageContent() {
     variableNightlyRates,
     roomTotal,
     promoDiscount,
+    promotion,
     promoError,
     discountAmount,
     grandTotal,
@@ -397,6 +398,12 @@ function BookPageContent() {
                 <p role="alert" className="border-b border-red-100 py-3 text-sm text-red-600">
                   {promoError}
                 </p>
+              )}
+              {promotion && (
+                <div className="flex justify-between pt-2 text-sm text-primary-600">
+                  <span>{promotion.name}</span>
+                  <span>-{formatPrice(promotion.discountAmount, selectedCurrency)}</span>
+                </div>
               )}
               {promoDiscount && (
                 <div className="flex items-center justify-between pt-3 pb-3 border-b border-gray-100">
@@ -767,6 +774,12 @@ function BookPageContent() {
                 <p role="alert" className="pt-2 text-sm text-red-600">
                   {promoError}
                 </p>
+              )}
+              {promotion && (
+                <div className="flex justify-between pt-2 text-sm text-primary-600">
+                  <span>{promotion.name}</span>
+                  <span>-{formatPrice(promotion.discountAmount, selectedCurrency)}</span>
+                </div>
               )}
               {promoDiscount && (
                 <div className="flex justify-between text-sm pt-2">

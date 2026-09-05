@@ -6,6 +6,59 @@ import { watchPageHealth } from "../support/pageHealth";
 const promoPath = `/api/booking-web/hotels/${SEEDED_BOOKING_SLUG}/promo/validate`;
 
 test.describe("booking-web promo validation", () => {
+  test("shows the selected rate's automatic discount on its room card", async ({ page }) => {
+    await mockBookingApis(page, {
+      automaticPromotion: { name: "Early bird", discountPercent: 20 },
+    });
+    await page.goto("/?checkIn=2026-09-12&checkOut=2026-09-15&adults=2&children=0&rooms=1");
+    const banner = page.getByText("Early bird", { exact: true }).first().locator("..");
+    await expect(banner).toContainText("€126");
+    await page.getByText("Flexible Rate", { exact: true }).first().click();
+    await expect(banner).toContainText("€144");
+    await page.getByRole("button", { name: "View Details", exact: true }).first().click();
+    const modal = page.getByRole("dialog", { name: "Alpine Suite" });
+    await expect(modal.getByText(/Early bird:/).filter({ visible: true }).first()).toBeVisible();
+    await expect(modal.getByText("€192", { exact: true }).filter({ visible: true }).first()).toBeVisible();
+    await expect(modal.getByText("€168", { exact: true }).filter({ visible: true }).first()).toBeVisible();
+    await modal.getByRole("button", { name: /Non-Refundable Rate/ }).click();
+    await expect(modal.getByText(/Early bird:/).filter({ visible: true }).first()).toContainText("€126");
+    await page.goBack();
+    await expect(modal).toHaveCount(0);
+  });
+
+  for (const discountPercent of [10, 30]) {
+    test(`chooses the better deal between automatic ${discountPercent}% and code 20%`, async ({
+      page,
+    }, testInfo) => {
+      const healthy = watchPageHealth(page, testInfo);
+      await mockBookingApis(page, { automaticPromotion: { name: "Early bird", discountPercent } });
+      await page.route(`**${promoPath}`, (route) =>
+        route.fulfill({
+          json: {
+            valid: true,
+            code: "SUMMER20",
+            discountType: "percentage",
+            discountValue: 20,
+            currency: "EUR",
+          },
+        }),
+      );
+      await page.goto(
+        "/en/book?room=alpine-suite&checkIn=2026-09-12&checkOut=2026-09-15&adults=2&children=0&rooms=1&rateType=flexible&promoCode=SUMMER20",
+      );
+      if (discountPercent > 20) {
+        await expect(page.getByText("Early bird", { exact: true }).first()).toBeVisible();
+        await expect(page.getByText("Promo SUMMER20: -20%", { exact: true })).toHaveCount(0);
+        await expect(page.getByText("€504", { exact: true }).first()).toBeVisible();
+      } else {
+        await expect(page.getByText("Promo SUMMER20: -20%", { exact: true }).first()).toBeVisible();
+        await expect(page.getByText("Early bird", { exact: true })).toHaveCount(0);
+        await expect(page.getByText("€576", { exact: true }).first()).toBeVisible();
+      }
+      await healthy();
+    });
+  }
+
   test("shows the specific rule failure returned by the canonical API", async ({
     page,
   }, testInfo) => {

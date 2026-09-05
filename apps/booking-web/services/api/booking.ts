@@ -54,6 +54,8 @@ export type BookingCreateRequest = {
 };
 
 export interface BookingQuote {
+  promotion?: { name: string; discountAmount: number; discountPercent: number } | null;
+  promotionDiscount?: number;
   quoteId?: string;
   expiresAt?: string;
   roomTypeId: string;
