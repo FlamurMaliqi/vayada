@@ -27,7 +27,7 @@ const file = { name: "photo.jpg" } as File;
 describe("offer media workflows", () => {
   beforeEach(() => Object.values(mocks).forEach((mock) => mock.mockReset()));
 
-  it("creates the offer before uploading and publishes only returned media IDs", async () => {
+  it("creates a draft before uploading without publishing", async () => {
     const order: string[] = [];
     mocks.createOffer.mockImplementation(async () => {
       order.push("create");
@@ -41,9 +41,9 @@ describe("offer media workflows", () => {
 
     await createOfferWithMedia("hotel-801", { name: "Stay" } as never, [file]);
 
-    expect(order).toEqual(["create", "upload", "verify"]);
+    expect(order).toEqual(["create", "upload"]);
     expect(mocks.upload).toHaveBeenCalledWith([file], "offer-801");
-    expect(mocks.verify).toHaveBeenCalledWith("hotel-801", "offer-801", ["media-801"]);
+    expect(mocks.verify).not.toHaveBeenCalled();
   });
 
   it("returns the created offer ID with a publication failure so callers do not recreate it", async () => {
@@ -59,7 +59,7 @@ describe("offer media workflows", () => {
     expect(mocks.createOffer).toHaveBeenCalledOnce();
   });
 
-  it("updates before uploading and uses the retry batch for publication", async () => {
+  it("updates and uploads without implicitly publishing", async () => {
     const order: string[] = [];
     mocks.updateOffer.mockImplementation(async () => order.push("update"));
     mocks.upload.mockImplementation(async () => {
@@ -70,7 +70,7 @@ describe("offer media workflows", () => {
 
     await updateOfferWithMedia("hotel-801", "offer-801", {}, [file]);
 
-    expect(order).toEqual(["update", "upload", "verify"]);
-    expect(mocks.verify).toHaveBeenCalledWith("hotel-801", "offer-801", ["media-retry"]);
+    expect(order).toEqual(["update", "upload"]);
+    expect(mocks.verify).not.toHaveBeenCalled();
   });
 });
