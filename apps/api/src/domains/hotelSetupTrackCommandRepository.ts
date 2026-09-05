@@ -14,6 +14,11 @@ import {
 } from "@vayada/domain-hotels";
 import pg, { type PoolClient } from "pg";
 
+import {
+  requireAuthorizedPlatformActor,
+  PlatformPropertyLifecycleError,
+} from "./platformPropertyLifecycleCommandRepository.js";
+
 import { hotelSetupTrackRequestFingerprint } from "./hotelSetupTrackCommandFingerprint.js";
 
 export type HotelSetupTrackCommand = UpdateTracksRequest & {
@@ -21,6 +26,7 @@ export type HotelSetupTrackCommand = UpdateTracksRequest & {
   idempotencyKey: string;
   actorUserId: string;
   audit: RequestAuditMetadata;
+  adminActivation?: { platformOrganizationId: string; accountUserId: string; actorUserId: string };
 };
 
 export type HotelSetupTrackCommandResult =
@@ -104,6 +110,32 @@ export function createPgHotelSetupTrackCommandRepository(config: {
 
       try {
         await client.query("BEGIN");
+        if (command.adminActivation) {
+          await lockOrganization(client, command.organizationId);
+          await requireAuthorizedPlatformActor(client, {
+            actorUserId: command.actorUserId,
+            organizationId: command.adminActivation.platformOrganizationId,
+            requestId: command.audit.requestId,
+            correlationId: command.audit.correlationId ?? command.audit.requestId,
+            requestedAt: command.audit.receivedAt,
+          });
+          const account = await client.query(
+            `SELECT membership.id FROM identity.organization_memberships membership
+             JOIN identity.users account ON account.id = membership.user_id AND account.status = 'active'
+             JOIN identity.organizations organization ON organization.id = membership.organization_id
+               AND organization.kind = 'hotel_group' AND organization.status = 'active'
+             WHERE membership.user_id = $1::uuid AND membership.organization_id = $2::uuid
+               AND membership.status = 'active'
+             FOR SHARE OF membership, account, organization`,
+            [command.adminActivation.accountUserId, command.organizationId],
+          );
+          if (
+            account.rows.length !== 1 ||
+            command.adminActivation.actorUserId !== command.actorUserId
+          ) {
+            throw new PlatformPropertyLifecycleError("invalid_platform_scope");
+          }
+        }
 
         const replay = await findReplay(client, command, keyHash, fingerprint);
         if (replay) {
@@ -192,11 +224,20 @@ async function executeCommand(
     return conflict("track_removal_requires_service_management", currentRevision);
   }
 
+  if (
+    command.adminActivation &&
+    (!command.selectedTracks.includes("creator_marketplace") ||
+      command.selectedTracks.includes("hotel_operations") !==
+        (previous?.selectedTracks.includes("hotel_operations") ?? false))
+  )
+    throw new PlatformPropertyLifecycleError("invalid_platform_scope");
+
   const trackRevision = await persistIntent(client, command, previous);
   const catalogLinks = await loadCatalogLinks(client, command.organizationId);
   let state = await loadProvisioningState(client, command.organizationId, catalogLinks, now);
 
   for (const track of command.selectedTracks) {
+    if (command.adminActivation && track !== "creator_marketplace") continue;
     if (trackIsBlocked(track, state, catalogLinks)) continue;
     const missingEntitlements = SETUP_TRACK_COMPONENT_PRODUCTS[track].filter(
       (product) => state.access[product] === "absent",
@@ -211,7 +252,13 @@ async function executeCommand(
   const activeTracks = command.selectedTracks.filter((track) =>
     trackIsActive(track, state, catalogLinks),
   );
-  await initializeProductRecords(client, command.organizationId, activeTracks);
+  await initializeProductRecords(
+    client,
+    command.organizationId,
+    command.adminActivation
+      ? activeTracks.filter((track) => track === "creator_marketplace")
+      : activeTracks,
+  );
   const response = trackStatusResponse(
     { selectedTracks: command.selectedTracks, revision: trackRevision },
     state,
@@ -892,6 +939,9 @@ async function recordAudit(
       }),
       JSON.stringify({
         source: input.command.audit.source,
+        ...(input.command.adminActivation
+          ? { adminActivation: input.command.adminActivation }
+          : {}),
         requestId: input.command.audit.requestId,
       }),
     ],

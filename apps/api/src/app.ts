@@ -1,5 +1,9 @@
 import { registerPmsConfirmationEmailRoutes } from "./routes/pmsConfirmationEmails.js";
 import type { PmsConfirmationEmails } from "./domains/pmsConfirmationEmails.js";
+import {
+  registerPlatformMarketplaceActivationRoutes,
+  type PlatformMarketplaceActivationOptions,
+} from "./routes/platform/admin/marketplaceActivation.js";
 import { backendAuthPlugin, type BackendAuthPluginOptions } from "@vayada/backend-auth";
 import type { IdentityLifecycleCommandBus } from "@vayada/backend-auth";
 import type { BookingGuestPiiPort } from "@vayada/domain-booking";
@@ -365,6 +369,7 @@ type BuildAppOptions = Pick<FastifyServerOptions, "logger" | "trustProxy"> & {
   platformContactIntake?: PlatformContactIntakeRoutesOptions;
   platformAdminDashboardRepository?: PlatformAdminDashboardRepository;
   platformAdminSmokeRecovery?: PlatformAdminDashboardRoutesOptions["smokeRecovery"];
+  platformMarketplaceActivation?: PlatformMarketplaceActivationOptions;
   platformPropertyLifecycle?: PlatformPropertyLifecycleRoutesOptions;
   marketplaceDiscoveryAllowedOrigins?: string[];
   identityPrivacyAllowedOrigins?: string[];
@@ -874,6 +879,12 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     repository: options.platformAdminDashboardRepository,
     smokeRecovery: options.platformAdminSmokeRecovery,
   });
+  if (options.platformMarketplaceActivation) {
+    app.register(registerPlatformMarketplaceActivationRoutes, {
+      prefix: "/api/platform/admin",
+      ...options.platformMarketplaceActivation,
+    });
+  }
   if (options.platformPropertyLifecycle) {
     app.register(registerPlatformPropertyLifecycleRoutes, {
       prefix: "/api/platform/admin",

@@ -1,4 +1,5 @@
 import { createPmsConfirmationEmails } from "./domains/pmsConfirmationEmails.js";
+import { createPgPlatformMarketplaceAccountsRepository } from "./domains/platformMarketplaceAccountsRepository.js";
 import {
   createPgIdentityRepository,
   createPgStaffInvitationAcceptanceRepository,
@@ -1353,6 +1354,13 @@ const app = buildApp({
           receiptSecret: config.authSession.workosApiKey,
         }
       : undefined,
+  platformMarketplaceActivation: {
+    accounts: createPgPlatformMarketplaceAccountsRepository({
+      connectionString: targetDatabaseUrl,
+      tracks: hotelSetupTrackCommandRepository,
+    }),
+    tracks: hotelSetupTrackCommandRepository,
+  },
   platformPropertyLifecycle: {
     impactRepository: createPgPlatformPropertyLifecycleImpactRepository({
       connectionString: targetDatabaseUrl,
