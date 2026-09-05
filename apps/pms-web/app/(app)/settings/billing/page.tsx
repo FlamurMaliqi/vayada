@@ -16,6 +16,7 @@ import {
   secondaryButton,
 } from "@/components/settings/BillingSettingsUi";
 import { formatBillingAmount, formatInvoiceDate } from "@/lib/settings/billing";
+import { useTranslation } from "@/lib/i18n";
 import { getPmsSettingsSections } from "@/lib/settings/navigation";
 import {
   activateFixedPlanByCard,
@@ -31,6 +32,7 @@ import {
 } from "@/services/api/financeBillingClient";
 
 export default function BillingSettingsPage() {
+  const { t } = useTranslation();
   const [billing, setBilling] = useState<BillingOverview | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -153,9 +155,9 @@ export default function BillingSettingsPage() {
 
   return (
     <SettingsLayout
-      title="Settings"
+      title={t("settings.title")}
       description="Manage your property, operations, and account preferences."
-      sections={getPmsSettingsSections(false)}
+      sections={getPmsSettingsSections(false, t)}
       activeId="billing"
     >
       {error && (

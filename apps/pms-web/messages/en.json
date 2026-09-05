@@ -1217,6 +1217,7 @@
   "settings.navigation.checkinChecklist": "Check-in checklist",
   "settings.navigation.checkoutInspection": "Check-out inspection",
   "settings.navigation.team": "Team & Roles",
+  "settings.navigation.billing": "Billing",
   "settings.navigation.localization": "Localization",
   "settings.property.title": "Property",
   "settings.property.description": "Only what the channel manager actually needs. Title, currency, and contact email are set elsewhere.",

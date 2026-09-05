@@ -61,7 +61,7 @@ export function getPmsSettingsSections(
     },
     {
       id: "billing",
-      label: "Billing",
+      label: t("settings.navigation.billing"),
       icon: CreditCardIcon,
       href: "/settings/billing",
     },
