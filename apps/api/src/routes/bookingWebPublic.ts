@@ -1,3 +1,4 @@
+import type { BankTransferBookingOperations } from "../domains/financeBankTransferBooking.js";
 import {
   assertPublicBookabilityPublicSafe,
   PUBLIC_BOOKABILITY_CONTRACT_VERSION,
@@ -40,10 +41,7 @@ import {
   stripeAmountMinor,
   stripeApplicationFeeMinor,
 } from "../domains/stripeMoney.js";
-import {
-  bankTransferDetailsFromPolicy,
-  enqueueBookingTransitionNotifications,
-} from "../jobs/bookingEmails.js";
+import { enqueueBookingTransitionNotifications } from "../jobs/bookingEmails.js";
 import {
   inventoryReservationReceiptFromBookingMetadata,
   type DirectBookingInventoryReservationPort,
@@ -1209,6 +1207,7 @@ type TargetCheckoutConfigRow = QueryResultRow & {
   providerAccountId: string | null;
   providerAccountRef: string | null;
   onlineCardReady: boolean | null;
+  bankTransferReady?: boolean;
 };
 
 type TargetBookingRow = QueryResultRow & {
@@ -1387,6 +1386,7 @@ type TargetChangeRequestRow = QueryResultRow & {
 };
 
 type PgTargetBookingWebCheckoutAdapterConfig = {
+  bankTransfers?: BankTransferBookingOperations;
   connectionString: string;
   inventoryReservationPort: DirectBookingInventoryReservationPort;
   billingConfigReadPortFactory?: (executor: Pick<pg.PoolClient, "query">) => BillingConfigReadPort;
@@ -1787,6 +1787,10 @@ export function createTargetBookingWebCheckoutAdapter(
           billingConfig,
           checkoutConfig,
         );
+        if (quote.paymentMethod === "bank_transfer") {
+          if (!config.bankTransfers) throw createHttpError(503, "Bank transfer is not configured.");
+          await config.bankTransfers.bind(client, property.propertyId, booking.guestBookingId);
+        }
         await redeemTargetPromo(client, property, booking, quote, context.occurredAt);
         const confirmation = await issueTargetBookingConfirmationToken(
           client,
@@ -2034,7 +2038,8 @@ export function createTargetBookingWebCheckoutAdapter(
       });
     },
     async confirmation(slug, request, context) {
-      return withCommand(slug, context, async () => {
+      let authorized: { propertyId: string; bookingId: string; tokenHash: string } | undefined;
+      const response = await withCommand(slug, context, async () => {
         const bookingReference = firstString(request.bookingReference);
         const confirmationToken = firstString(request.confirmationToken);
         if (
@@ -2094,6 +2099,11 @@ export function createTargetBookingWebCheckoutAdapter(
             sha256Hex(confirmationToken),
           );
         }
+        authorized = {
+          propertyId: property.propertyId,
+          bookingId: booking.guestBookingId,
+          tokenHash: sha256Hex(confirmationToken),
+        };
         return {
           propertyId: property.propertyId,
           resourceType: "guest_booking",
@@ -2101,6 +2111,13 @@ export function createTargetBookingWebCheckoutAdapter(
           body: serializeTargetBooking(booking),
         };
       });
+      return {
+        ...response,
+        bankTransferDetails:
+          authorized && config.bankTransfers
+            ? await config.bankTransfers.confirmation(authorized)
+            : null,
+      };
     },
     async withdraw(slug, bookingId, request, context) {
       return withGuestLifecycleMutation(
@@ -2506,6 +2523,8 @@ async function loadTargetCheckoutConfig(
        fs.payments_enabled AS "paymentsEnabled",
        fs.accepted_methods AS "acceptedMethods",
        fs.deposit_policy AS "depositPolicy",
+       EXISTS (SELECT 1 FROM finance.bank_transfer_destinations destination
+         WHERE destination.property_id=p.id AND destination.enabled) AS "bankTransferReady",
        fs.refund_policy AS "refundPolicy",
        fs.requires_manual_review AS "requiresManualReview",
        account.id::text AS "providerAccountId",
@@ -2539,7 +2558,7 @@ function serializeTargetCheckoutConfig(
   const methods = targetCheckoutSupportedPaymentMethods(row?.acceptedMethods).filter((method) => {
     if (method === "card") return row?.onlineCardReady === true;
     if (method === "bank_transfer") {
-      return bankTransferDetailsFromPolicy(depositPolicy) !== null;
+      return row?.bankTransferReady === true;
     }
     if (method === "paypal") return isValidPaymentEmail(depositPolicy["paypalEmail"]);
     return true;
@@ -3059,7 +3078,7 @@ function assertTargetCheckoutConfigMatchesQuote(
         ? accepted.includes("pay_at_property") &&
           accepted.some((candidate) => candidate === "cash" || candidate === "manual_card")
         : method === "bank_transfer"
-          ? accepted.includes("bank_transfer") && bankTransferDetailsFromPolicy(policy) !== null
+          ? accepted.includes("bank_transfer") && config?.bankTransferReady === true
           : method === "paypal"
             ? accepted.includes("paypal") && isValidPaymentEmail(policy["paypalEmail"])
             : false);
@@ -3374,14 +3393,12 @@ async function createTargetGuestBooking(
     depositPolicy["paypalPaymentWindowHours"],
   );
   const paymentInstructions =
-    quote.paymentMethod === "bank_transfer"
-      ? { bankTransferDetails: bankTransferDetailsFromPolicy(depositPolicy) }
-      : quote.paymentMethod === "paypal"
-        ? {
-            paypalEmail: stringValue(depositPolicy["paypalEmail"]),
-            paypalPaymentWindowHours,
-          }
-        : null;
+    quote.paymentMethod === "paypal"
+      ? {
+          paypalEmail: stringValue(depositPolicy["paypalEmail"]),
+          paypalPaymentWindowHours,
+        }
+      : null;
   const metadata = {
     targetSource: "booking_checkout_command",
     quoteReference: quote.publicQuoteReference,
@@ -4248,7 +4265,7 @@ function serializeTargetBooking(booking: TargetBookingRow): Record<string, unkno
     paymentDeadline:
       stringValue(metadata["acceptedPaymentDeadlineAt"]) ??
       stringValue(metadata["pendingExpiresAt"]),
-    bankTransferDetails: stringValue(paymentInstructions["bankTransferDetails"]),
+    bankTransferDetails: null,
     unitNames: stringArray(booking.unitNames),
     cancelledAt: toIsoDateTime(booking.cancelledAt ?? null),
     cardBrand: booking.cardBrand ?? null,

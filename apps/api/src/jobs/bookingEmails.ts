@@ -119,8 +119,10 @@ export async function enqueueBookingLifecycleEmailJob(
     ...copy,
     bookingReference: input.booking.bookingReference,
     paymentDeadlineAt: input.paymentDeadlineAt ?? null,
-    bankTransferDetails:
-      input.kind === "reserved_pending_payment" ? (input.bankTransferDetails ?? null) : null,
+    requiresBankTransferInstructions:
+      recipientRole === "guest" &&
+      input.booking.paymentMethod === "bank_transfer" &&
+      ["request_received", "reserved_pending_payment"].includes(input.kind),
     recipientRole,
     notificationType: input.kind,
     transition,
@@ -361,7 +363,6 @@ export async function enqueueBookingTransitionNotifications(
       causationId: input.causationId,
       actor: input.actor,
       paymentDeadlineAt: input.paymentDeadlineAt,
-      bankTransferDetails: input.bankTransferDetails,
       source: input.source,
       recipient: {
         role: notification.role,
@@ -397,28 +398,11 @@ export function bookingLifecycleEmailJobKey(
   return `${bookingLifecycleEmailJobType(kind)}:booking:${guestBookingId}:transition:${transitionKey}:recipient:${recipientRole}:${kind}:v1`;
 }
 
-export function bankTransferDetailsFromPolicy(policy: unknown): unknown | null {
-  if (!policy || typeof policy !== "object" || Array.isArray(policy)) return null;
-  const instructions = (policy as Record<string, unknown>)["bankTransferInstructions"];
-  if (typeof instructions === "string") {
-    const text = instructions.trim();
-    return text || null;
-  }
-  if (!instructions || typeof instructions !== "object" || Array.isArray(instructions)) {
-    return null;
-  }
-  return Object.keys(instructions).length > 0 ? instructions : null;
-}
-
 function emailCopy(input: BookingLifecycleEmailInput) {
   const { booking } = input;
   const name = booking.guestName?.trim() || "there";
   const property = booking.propertyName || "our property";
   if (input.kind === "reserved_pending_payment") {
-    const details =
-      typeof input.bankTransferDetails === "string"
-        ? input.bankTransferDetails
-        : JSON.stringify(input.bankTransferDetails ?? {});
     return {
       template: "booking_reserved_pending_payment",
       subject: `Your room is reserved pending payment - ${booking.bookingReference}`,
@@ -427,7 +411,6 @@ function emailCopy(input: BookingLifecycleEmailInput) {
         `We've reserved your room at ${property} while we wait for your bank transfer.`,
         `Amount due: ${money(booking.balanceAmount ?? booking.totalAmount, booking.currency)}`,
         `Payment deadline: ${input.paymentDeadlineAt ?? "as soon as possible"}`,
-        `Bank transfer details: ${details}`,
         `Booking reference: ${booking.bookingReference}`,
       ].join("\n\n"),
     };
