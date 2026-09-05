@@ -19,6 +19,7 @@ import { buildApp } from "./app.js";
 import {
   registerPmsPhysicalRoomOperationalLabelRoutes,
   registerPmsPhysicalRoomUnitRoutes,
+  registerPmsPhysicalRoomManagementRoutes,
   type PmsPhysicalRoomOperationalLabelRoutesOptions,
   type PmsPhysicalRoomUnitRoutesOptions,
 } from "./routes/pmsPhysicalRoomUnits.js";
@@ -524,5 +525,129 @@ describe("PMS physical room operational label route", () => {
     const response = await labelRequest(app);
     expect(response.statusCode).toBe(500);
     expect(response.body).toEqual({ code: "pms_physical_room_label_port_contract_violation" });
+  });
+});
+
+describe("physical-room management authorization and conflicts", () => {
+  for (const [name, auth, token] of [
+    ["missing auth", {}, undefined],
+    ["invalid auth", {}, "Bearer invalid"],
+    ["permission", { permissions: [] }, "Bearer valid-token"],
+    ["entitlement", { entitlements: [] }, "Bearer valid-token"],
+    ["inactive entitlement", { entitlements: [entitlement("suspended")] }, "Bearer valid-token"],
+    ["property link", { links: [] }, "Bearer valid-token"],
+  ] as const) {
+    it(`denies ${name} before a write`, async () => {
+      let called = false;
+      app = await scopedApp(
+        async (instance) =>
+          instance.register(registerPmsPhysicalRoomManagementRoutes, {
+            commandPort: {
+              async managePhysicalRoom() {
+                called = true;
+                throw new Error("Unexpected write");
+              },
+            },
+          }),
+        auth as AuthOptions,
+      );
+      for (const method of ["POST", "PUT", "DELETE"] as const) {
+        const response = await app.inject({
+          method,
+          url: `/properties/${propertyId}/room-types/${roomTypeId}/physical-units${method === "POST" ? "" : `/${roomUnitId}`}`,
+          headers: token ? { authorization: token } : {},
+          payload: {},
+        });
+        expect(response.statusCode).toBe(token === "Bearer valid-token" ? 403 : 401);
+      }
+      expect(called).toBe(false);
+    });
+  }
+  it("accepts create and update commands while rejecting injected owner fields", async () => {
+    let writes = 0;
+    app = await scopedApp(async (instance) =>
+      instance.register(registerPmsPhysicalRoomManagementRoutes, {
+        commandPort: {
+          async managePhysicalRoom(command) {
+            writes++;
+            return {
+              ok: true,
+              response: {
+                propertyId,
+                roomTypeId,
+                roomUnitId,
+                roomUnitsRevision: command.expectedRevision + 1,
+                outcome: command.action === "create" ? "created" : "updated",
+              },
+            };
+          },
+        },
+      }),
+    );
+    const headers = { authorization: "Bearer valid-token", "idempotency-key": "manage-1" };
+    const path = `/properties/${propertyId}/room-types/${roomTypeId}/physical-units`;
+    for (const method of ["POST", "PUT"] as const) {
+      const response = await app.inject({
+        method,
+        url: path + (method === "PUT" ? `/${roomUnitId}` : ""),
+        headers,
+        payload: { expectedRevision: 1, changes: { operationalLabel: "101" } },
+      });
+      expect(response.statusCode).toBe(method === "POST" ? 201 : 200);
+      expect(response.json()).toMatchObject({
+        propertyId,
+        roomTypeId,
+        roomUnitId,
+        roomUnitsRevision: 2,
+      });
+    }
+    const response = await app.inject({
+      method: "POST",
+      url: path,
+      headers,
+      payload: {
+        expectedRevision: 1,
+        organizationId: otherPropertyId,
+        changes: { operationalLabel: "101" },
+      },
+    });
+    expect(response.statusCode).toBe(400);
+    expect(writes).toBe(2);
+  });
+  it("passes only scoped versioned commands and reports repository blockers", async () => {
+    const calls: unknown[] = [];
+    app = await scopedApp(async (instance) =>
+      instance.register(registerPmsPhysicalRoomManagementRoutes, {
+        commandPort: {
+          async managePhysicalRoom(command) {
+            calls.push(command);
+            return {
+              ok: false,
+              error: {
+                code: "physical_room_protected",
+                message: "Assigned room",
+                blockers: ["assignment"],
+              },
+            };
+          },
+        },
+      }),
+    );
+    const response = await app.inject({
+      method: "DELETE",
+      url: `/properties/${propertyId}/room-types/${roomTypeId}/physical-units/${roomUnitId}`,
+      headers: { authorization: "Bearer valid-token", "idempotency-key": "retire-1" },
+      payload: { expectedRevision: 2 },
+    });
+    expect(response.statusCode).toBe(409);
+    expect(response.json()).toMatchObject({ blockers: ["assignment"] });
+    expect(calls[0]).toMatchObject({
+      propertyId,
+      roomTypeId,
+      roomUnitId,
+      organizationId,
+      expectedRevision: 2,
+      action: "retire",
+    });
   });
 });

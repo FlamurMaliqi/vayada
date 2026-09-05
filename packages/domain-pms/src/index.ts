@@ -412,3 +412,5 @@ export type RoomInventoryReadPort = {
 };
 
 export * from "./roomAssignmentOptimization.js";
+
+export * from "./physicalRoomManagement.js";

@@ -212,6 +212,7 @@ import {
 } from "./routes/pmsManualBookingCreate.js";
 import {
   registerPmsPhysicalRoomUnitRoutes,
+  registerPmsPhysicalRoomManagementRoutes,
   registerPmsPhysicalRoomOperationalLabelRoutes,
   type PmsPhysicalRoomUnitRoutesOptions,
   type PmsPhysicalRoomOperationalLabelRoutesOptions,
@@ -307,6 +308,9 @@ type BuildAppOptions = Pick<FastifyServerOptions, "logger" | "trustProxy"> & {
   pmsRoomSetup?: {
     facts: PmsRoomFactsRoutesOptions;
     physicalUnits: PmsPhysicalRoomUnitRoutesOptions;
+  };
+  pmsPhysicalRoomManagement?: {
+    commandPort: import("@vayada/domain-pms").PhysicalRoomManagementPort;
   };
   pmsPhysicalRoomOperationalLabels?: PmsPhysicalRoomOperationalLabelRoutesOptions;
   bookingDashboardMetricsReadPort?: BookingRoutesOptions["dashboardMetricsReadPort"];
@@ -774,6 +778,12 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     app.register(registerPmsPhysicalRoomUnitRoutes, {
       prefix: "/api/pms/setup",
       ...options.pmsRoomSetup.physicalUnits,
+    });
+  }
+  if (options.pmsPhysicalRoomManagement) {
+    app.register(registerPmsPhysicalRoomManagementRoutes, {
+      prefix: "/api/pms",
+      ...options.pmsPhysicalRoomManagement,
     });
   }
   if (options.pmsPhysicalRoomOperationalLabels) {
