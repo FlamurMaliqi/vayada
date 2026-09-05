@@ -23,6 +23,17 @@ describe("hotel website input", () => {
     expect(payload.website).toBe(expected || null);
   });
 
+  it("does not rewrite an equivalent stored website", () => {
+    const profile = { name: "Hotel", location: "Berlin", localityPublic: true };
+    expect(
+      buildHotelProfileDetailsUpdate(
+        { ...profile, website: "https://name.com" },
+        { ...profile, website: " name.com ", picture: "", about: "" },
+        "",
+      ),
+    ).toEqual({});
+  });
+
   it.each([
     "name",
     "https://",

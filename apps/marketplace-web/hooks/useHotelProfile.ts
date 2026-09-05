@@ -45,8 +45,9 @@ export function buildHotelProfileDetailsUpdate(
   if (form.localityPublic !== hotelProfile.localityPublic) {
     payload.localityPublic = form.localityPublic;
   }
-  if ((form.website || "") !== (hotelProfile.website || "")) {
-    payload.website = normalizeHotelWebsite(form.website) || null;
+  const website = normalizeHotelWebsite(form.website);
+  if (website !== (hotelProfile.website || "")) {
+    payload.website = website || null;
   }
   if ((form.about || "") !== (hotelProfile.about || "")) {
     payload.about = form.about.trim() || null;
