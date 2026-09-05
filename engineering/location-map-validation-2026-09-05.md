@@ -20,7 +20,7 @@ only to the disposable database; this report changes no source or target data.
 | --- | --- |
 | Canonical hotel location | Reuse VAY-1351 immutable extraction and VAY-1354 catalog reconciliation. Resolve through `property_source_links`, never hotel names or addresses. Newer target timestamps and location-owner revisions are preserved; equal-time conflicts are blocked. |
 | Privacy | Existing catalog writer does not overwrite `address_public`, `geo_public`, or `map_display_mode`. Nearby projection suppresses hidden locations and uses rounded public coordinates for approximate locations. |
-| Room location overrides | Preserve PMS `room_types.location_summary` and source room ID. Added replay test verifies address, zero latitude and coordinate precision survive unchanged. These overrides are not promoted to canonical hotel locations or nearby recommendations. |
+| Room location overrides | Preserve PMS `room_types.location_summary` and source room ID. Added record-builder regression verifies address, zero latitude and coordinate precision survive unchanged across repeated conversion. It does not exercise database replay or preservation of newer target room edits. These overrides are not promoted to canonical hotel locations or nearby recommendations. |
 | Historical POIs | Legacy Booking rows store label, travel time, color and coordinates without reliable author/provider provenance or the new category contract. Preserve the source rows. Require explicit provenance/category review before any import; do not copy historical travel times or guess Google IDs. |
 | New automatic places | Keep discovery IDs/category buckets separate from custom hotel content. Provider coordinates remain transient; discovery failure does not erase curation. |
 | Ambiguous/invalid data | Keep the existing catalog/PMS migration blockers. A missing pair, conflicting identity or unknown provenance does not authorize a guessed repair. Actual affected-row counts remain unknown without a real immutable extraction. |
@@ -35,7 +35,7 @@ Validated local integration commit `cc2ec1187`: guest rebuild `c43c988ab`
 (VAY-1479 final PR #1589) plus old-map removal `c6cb7ecf4` (PR #1565).
 The merge has one import conflict in the booking home page: retain the
 `Surroundings` import and remove `RoomMapPanel`. Preserve the new `<Surroundings>`
-mount. No other conflict occurred. Room replay regression is commit `1ffd03d51`.
+mount. No other conflict occurred. Room record-builder regression is commit `1ffd03d51`.
 
 The integration branch is validation evidence, not a replacement for merging
 the reviewed PR stack. Searches in Booking Web/Admin found no runtime references
@@ -48,7 +48,7 @@ or `pointsOfInterest` after combining both branches.
 - Root workspace build and typecheck passed on the combined implementation.
 - Booking Web/Admin builds passed as part of root build; lint had 0 errors
   (16 existing Booking Web warnings, 10 existing Booking Admin warnings).
-- Six migration suites passed 30 tests; the added room-location replay test
+- Six migration suites passed 30 tests; the added room-location record-builder test
   also passed (13 room tests total, 31 unique migration tests across these runs).
 - Eight nearby/publication API suites passed all 54 tests with PostgreSQL enabled.
 - All 95 browser checks passed: 86 Booking Web smoke tests and 9 hotel-editor
