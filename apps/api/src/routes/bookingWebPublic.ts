@@ -1,3 +1,4 @@
+import { FUNNEL_STAGES, FUNNEL_PAYMENT_METHODS } from "@vayada/domain-booking";
 import {
   assertPublicBookabilityPublicSafe,
   calendarStays,
@@ -889,6 +890,18 @@ export async function registerBookingWebPublicRoutes(
     if (!hotelSlug || !eventType) {
       throw createHttpError(400, "Hotel slug and event type are required.");
     }
+    const metadata = recordBody(request.body?.metadata);
+    if (metadata["funnelVersion"] === 1) {
+      const sequence = metadata["funnelSequence"];
+      const method = metadata["paymentMethod"];
+      if (!(FUNNEL_STAGES as readonly string[]).includes(eventType) ||
+          !firstString(request.body?.sessionId, request.body?.session_id) ||
+          !Number.isSafeInteger(sequence) || Number(sequence) < 1 ||
+          (["complete_booking_clicked", "payment_authorized", "booking_completed"].includes(eventType) &&
+            !(FUNNEL_PAYMENT_METHODS as readonly unknown[]).includes(method))) {
+        throw createHttpError(400, "Invalid booking funnel event.");
+      }
+    }
     if (options.attributionSink) {
       const profile = await options.profileRepository.findProfileBySlug(hotelSlug);
       if (!profile) {
@@ -1195,6 +1208,7 @@ type TargetCheckoutConfigRow = QueryResultRow & {
   defaultCurrency: string | null;
   benefits: unknown;
   showAddonsStep: boolean | null;
+  publicAddons?: unknown;
   groupAddonsByCategory: boolean | null;
   specialRequestsEnabled: boolean | null;
   arrivalTimeEnabled: boolean | null;
@@ -2497,6 +2511,16 @@ async function loadTargetCheckoutConfig(
        bs.default_currency AS "defaultCurrency",
        bs.benefits,
        bs.show_addons_step AS "showAddonsStep",
+       (SELECT COALESCE(jsonb_agg(jsonb_build_object(
+         'id', addon.id::text, 'name', addon.name, 'description', COALESCE(addon.description, ''),
+         'price', addon.price_amount, 'currency', addon.currency, 'category', COALESCE(addon.category, 'other'),
+         'image', COALESCE(addon.metadata ->> 'imageUrl', ''),
+         'perPerson', addon.pricing_model IN ('per_guest', 'per_guest_night'),
+         'perNight', addon.pricing_model IN ('per_night', 'per_guest_night')
+       ) ORDER BY addon.created_at, addon.id), '[]'::jsonb)
+       FROM booking.addon_definitions addon WHERE addon.property_id = p.id
+         AND addon.status = 'active' AND addon.public_visible
+         AND COALESCE(bs.show_addons_step, TRUE)) AS "publicAddons",
        bs.group_addons_by_category AS "groupAddonsByCategory",
        bs.special_requests_enabled AS "specialRequestsEnabled",
        bs.arrival_time_enabled AS "arrivalTimeEnabled",
@@ -2564,6 +2588,7 @@ function serializeTargetCheckoutConfig(
     ],
     requiresManualReview: row?.requiresManualReview ?? false,
     showAddonsStep: row?.showAddonsStep ?? true,
+    addons: Array.isArray(row?.publicAddons) ? row.publicAddons : [],
     groupAddonsByCategory: row?.groupAddonsByCategory ?? true,
     specialRequestsEnabled: row?.specialRequestsEnabled ?? true,
     arrivalTimeEnabled: row?.arrivalTimeEnabled ?? false,

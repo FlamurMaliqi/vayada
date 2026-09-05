@@ -1,5 +1,7 @@
 "use client";
 
+import { trackEvent } from "@/services/api/tracking";
+
 import { useState, useEffect, useRef, Suspense, type ReactNode } from "react";
 import { useSearchParams } from "next/navigation";
 import { useLocale, useTranslations } from "next-intl";
@@ -339,6 +341,7 @@ function PaymentPageContent() {
       return;
     }
 
+    if (!recovery) trackEvent(slug, "complete_booking_clicked", { paymentMethod: selectedPaymentMethod });
     setSubmitting(true);
     setError("");
     setSoldOut(false);

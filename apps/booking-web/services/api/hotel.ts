@@ -1,5 +1,5 @@
 import { Hotel, RoomType, Addon } from "@/lib/types";
-import { bookingEngine, bookingWebPublic } from "./client";
+import { bookingWebPublic } from "./client";
 import {
   bookingWebPublicApi,
   defaultOfferDates,
@@ -56,7 +56,10 @@ export const hotelService = {
   },
 
   async getAddons(slug: string): Promise<Addon[]> {
-    return bookingEngine.get<Addon[]>(`/api/hotels/${slug}/addons`);
+    const config = await bookingWebPublic.get<{ addons: Addon[] }>(
+      `/api/booking-web/hotels/${encodeURIComponent(slug)}/checkout-config`,
+    );
+    return config.addons ?? [];
   },
 
   async getUnavailableDates(

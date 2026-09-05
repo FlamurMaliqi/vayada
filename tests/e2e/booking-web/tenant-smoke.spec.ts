@@ -133,6 +133,10 @@ test.describe("booking-web tenant smoke", () => {
 
       await page.setViewportSize({ width: 390, height: 844 });
       await page.getByRole("button", { name: "View Details", exact: true }).first().tap();
+      await expect(modal).toBeVisible();
+      await page.goBack();
+      await expect(modal).toBeHidden();
+      await page.getByRole("button", { name: "View Details", exact: true }).first().tap();
       await modal.getByRole("button", { name: /Non-Refundable Rate/i }).tap();
       await modal.getByRole("button", { name: /Select This Rate/i }).tap();
       await expect(page).toHaveURL(/\/(addons|book)\?.*rateType=nonrefundable/);

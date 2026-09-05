@@ -7,6 +7,10 @@ test("recovers a completed card payment and survives refresh or a new tab", asyn
   browser,
 }) => {
   await mockBookingApis(page);
+  const telemetry: string[] = [];
+  page.on("request", request => {
+    if (request.url().endsWith("/api/booking-web/events")) telemetry.push(request.postDataJSON().eventType);
+  });
   let createCalls = 0;
   let idempotencyKey = "";
   const confirmationToken = "a".repeat(43);
@@ -106,6 +110,7 @@ test("recovers a completed card payment and survives refresh or a new tab", asyn
   await expect(page.getByText("Alpine Suite", { exact: true })).toBeVisible();
   await expect(page.getByText(/€720/)).toBeVisible();
   await expect(page.getByText(/Visa •••• 4242/)).toBeVisible();
+  await expect.poll(() => telemetry).toEqual(["payment_authorized", "booking_completed"]);
   expect(createCalls).toBe(1);
   expect(idempotencyKey).toBe("booking-web:create:card-1267");
 

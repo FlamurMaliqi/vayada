@@ -1,6 +1,5 @@
 "use client";
 
-import { useEffect } from "react";
 import Image from "next/image";
 import { useLocale, useTranslations } from "next-intl";
 import { Link } from "@/i18n/navigation";
@@ -8,9 +7,8 @@ import BookingNavigation from "@/components/layout/BookingNavigation";
 import BookingFooter from "@/components/layout/BookingFooter";
 import PublicStructuredData from "@/components/booking/PublicStructuredData";
 import { bookingImageSizes } from "@/components/booking/imageSizes";
-import { useHotel, useRooms, useSlug } from "@/contexts/HotelContext";
+import { useHotel, useRooms } from "@/contexts/HotelContext";
 import { useCurrency } from "@/contexts/CurrencyContext";
-import { trackEvent } from "@/services/api/tracking";
 
 export default function RoomsPage() {
   const locale = useLocale();
@@ -19,11 +17,6 @@ export default function RoomsPage() {
   const { hotel } = useHotel();
   const { rooms } = useRooms();
   const { formatPrice } = useCurrency();
-  const { slug } = useSlug();
-
-  useEffect(() => {
-    trackEvent(slug, "viewed_room");
-  }, [slug]);
 
   return (
     <div className="min-h-screen bg-white">
