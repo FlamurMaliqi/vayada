@@ -489,6 +489,7 @@ export async function readProductionParityEvidence(
     const mediaResult = await client.query<CountRow>(RAW_LEGACY_MEDIA_QUERY, [
       config.targetMediaBucket,
       cdnPrefix(config.mediaCdnBaseUrl),
+      config.sourceRunId,
     ]);
     const staleResult = await client.query<CountRow>(
       `SELECT count(*)::text AS count
@@ -1434,6 +1435,55 @@ const RAW_LEGACY_MEDIA_QUERY = `
        AND media.public_approved = TRUE
        AND media.lifecycle_status = 'active'
        AND media.deleted_at IS NULL
+  ), approved_private_media AS (
+    SELECT media.id AS media_object_id, media.purpose, media.resource_product,
+           media.resource_type, media.resource_id
+      FROM platform.media_objects media
+     WHERE media.visibility = 'private'
+       AND media.public_approved IS FALSE
+       AND media.lifecycle_status = 'active'
+       AND media.deleted_at IS NULL
+       AND media.bucket = $1
+       AND media.storage_kind = 'vayada_managed'
+       AND media.content_type ~ '^image/[a-z0-9.+-]+$'
+       AND media.size_bytes > 0
+       AND media.checksum_sha256 ~ '^[0-9a-f]{64}$'
+       AND media.storage_key ~ (
+             '^private/media/' || media.id::text || '/provider_original/sha256-' ||
+             media.checksum_sha256 || '\\.[a-z0-9]{1,10}$'
+           )
+       AND media.source_metadata ->> 'migrationRunId' = $3
+       AND EXISTS (
+         SELECT 1
+           FROM platform.production_media_migration_items item
+           JOIN platform.production_media_migration_runs run
+             ON run.source_run_id = item.source_run_id
+          WHERE item.source_run_id = $3
+            AND run.status = 'completed'
+            AND run.completed_at IS NOT NULL
+            AND item.item_status = 'completed'
+            AND item.completed_at IS NOT NULL
+            AND item.error_code IS NULL
+            AND item.media_object_id = media.id
+            AND item.source_system = media.source_system
+            AND item.source_table = media.source_table
+            AND item.source_row_id = media.source_row_id
+            AND item.purpose = media.purpose
+            AND item.content_checksum_sha256 = media.checksum_sha256
+            AND item.size_bytes = media.size_bytes
+       )
+       AND EXISTS (
+         SELECT 1
+           FROM platform.media_variants variant
+          WHERE variant.media_object_id = media.id
+            AND variant.variant_name = 'provider_original'
+            AND variant.visibility = 'private'
+            AND variant.public_cdn_url IS NULL
+            AND variant.storage_key = media.storage_key
+            AND variant.content_type = media.content_type
+            AND variant.size_bytes = media.size_bytes
+            AND variant.checksum_sha256 = media.checksum_sha256
+       )
   ), invalid_catalog_assignment AS (
     SELECT assignment.id
       FROM hotel_catalog.property_media assignment
@@ -1442,16 +1492,36 @@ const RAW_LEGACY_MEDIA_QUERY = `
        AND media.property_id = assignment.property_id
      WHERE assignment.platform_media_object_id IS NULL
         OR assignment.url <> 'platform-media:' || assignment.platform_media_object_id::text
-        OR assignment.public_approved IS NOT TRUE
         OR media.id IS NULL
-        OR media.visibility <> 'public'
-        OR media.public_approved IS NOT TRUE
-        OR media.lifecycle_status <> 'active'
-        OR media.deleted_at IS NOT NULL
-        OR NOT EXISTS (
-          SELECT 1
-            FROM approved_media_variant approved
-           WHERE approved.media_object_id = assignment.platform_media_object_id
+        OR NOT (
+          (
+            assignment.public_approved IS TRUE
+            AND media.visibility = 'public'
+            AND media.public_approved IS TRUE
+            AND media.lifecycle_status = 'active'
+            AND media.deleted_at IS NULL
+            AND EXISTS (
+              SELECT 1
+                FROM approved_media_variant approved
+               WHERE approved.media_object_id = assignment.platform_media_object_id
+            )
+          )
+          OR (
+            assignment.public_approved IS FALSE
+            AND EXISTS (
+              SELECT 1
+                FROM approved_private_media approved
+               WHERE approved.media_object_id = assignment.platform_media_object_id
+                 AND approved.purpose = CASE assignment.media_type
+                       WHEN 'hero_image' THEN 'property.hero_image'
+                       WHEN 'gallery_image' THEN 'property.gallery_image'
+                       WHEN 'logo' THEN 'property.logo'
+                     END
+                 AND approved.resource_product = 'hotel_catalog'
+                 AND approved.resource_type = 'property'
+                 AND approved.resource_id = assignment.property_id::text
+            )
+          )
         )
   ), invalid_room_assignment AS (
     SELECT assignment.room_type_id
@@ -1460,14 +1530,27 @@ const RAW_LEGACY_MEDIA_QUERY = `
         ON media.id = assignment.platform_media_object_id
        AND media.property_id = assignment.property_id
      WHERE media.id IS NULL
-        OR media.visibility <> 'public'
-        OR media.public_approved IS NOT TRUE
-        OR media.lifecycle_status <> 'active'
-        OR media.deleted_at IS NOT NULL
-        OR NOT EXISTS (
-          SELECT 1
-            FROM approved_media_variant approved
-           WHERE approved.media_object_id = assignment.platform_media_object_id
+        OR NOT (
+          (
+            media.visibility = 'public'
+            AND media.public_approved IS TRUE
+            AND media.lifecycle_status = 'active'
+            AND media.deleted_at IS NULL
+            AND EXISTS (
+              SELECT 1
+                FROM approved_media_variant approved
+               WHERE approved.media_object_id = assignment.platform_media_object_id
+            )
+          )
+          OR EXISTS (
+            SELECT 1
+              FROM approved_private_media approved
+             WHERE approved.media_object_id = assignment.platform_media_object_id
+               AND approved.purpose = 'pms.room_type.media'
+               AND approved.resource_product = 'pms'
+               AND approved.resource_type = 'room_type'
+               AND approved.resource_id = assignment.room_type_id::text
+          )
         )
   ), invalid_booking_header_logo AS (
     SELECT settings.property_id

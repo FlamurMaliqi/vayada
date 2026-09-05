@@ -12,6 +12,7 @@ import { transformHotelProfile } from "@/components/profile/transforms";
 import { formatErrorForModal } from "./useErrorModal";
 import type { HotelProfileStatus } from "@/lib/types";
 import type { ProfileHotelProfile } from "@/components/profile/types";
+import { normalizeHotelWebsite } from "@/lib/utils/hotelWebsite";
 
 type HotelProfileDetailsForm = {
   name: string;
@@ -44,8 +45,9 @@ export function buildHotelProfileDetailsUpdate(
   if (form.localityPublic !== hotelProfile.localityPublic) {
     payload.localityPublic = form.localityPublic;
   }
-  if ((form.website || "") !== (hotelProfile.website || "")) {
-    payload.website = form.website.trim() || null;
+  const website = normalizeHotelWebsite(form.website);
+  if (website !== (hotelProfile.website || "")) {
+    payload.website = website || null;
   }
   if ((form.about || "") !== (hotelProfile.about || "")) {
     payload.about = form.about.trim() || null;
@@ -201,12 +203,10 @@ export function useHotelProfile(
     ) {
       return "About must be at least 50 characters when provided";
     }
-    if (
-      hotelEditFormData.website &&
-      hotelEditFormData.website.trim() &&
-      !/^https?:\/\//i.test(hotelEditFormData.website.trim())
-    ) {
-      return "Website must start with http or https";
+    try {
+      normalizeHotelWebsite(hotelEditFormData.website);
+    } catch (error) {
+      return (error as Error).message;
     }
     if (phone !== undefined && phone !== null && phone.trim() === "") {
       return "Phone cannot be empty if provided";

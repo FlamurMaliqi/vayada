@@ -1,4 +1,5 @@
 "use client";
+import { formatTimezoneLabel } from "@/lib/timezoneLabel";
 
 import type { ReactNode } from "react";
 import { SettingsSection, SettingsCard } from "@vayada/settings-ui";
@@ -140,7 +141,7 @@ export function CalendarSection({
                 </p>
                 <p className="mt-1 text-xs text-gray-500">
                   {t("settings.calendar.sameDayDescription")}
-                  {sameDayTimeZone ? ` (${sameDayTimeZone})` : ""}.
+                  {sameDayTimeZone ? ` (${formatTimezoneLabel(sameDayTimeZone)})` : ""}.
                 </p>
               </div>
               <button

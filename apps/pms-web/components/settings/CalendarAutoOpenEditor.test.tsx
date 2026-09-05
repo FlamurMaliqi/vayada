@@ -24,7 +24,7 @@ const response = (revision = 3, enabled = false) => ({
     updatedAt: "2026-09-03T08:00:00.000Z",
   },
   horizon: {
-    propertyTimeZone: "Europe/Berlin",
+    propertyTimeZone: "America/Sao_Paulo",
     propertyLocalDate: "2026-09-03",
     targetOpenThrough: enabled ? "2028-03-31" : null,
   },
@@ -73,6 +73,7 @@ describe("calendar auto-open editor", () => {
       }),
     );
     expect(view.root.findByProps({ role: "status" }).children.join("")).toContain("Saved.");
+    expect(JSON.stringify(view.toJSON())).toContain("(America/Sao Paulo)");
   });
 
   it("uses a native fixed-month input and displays typed missing-rate warnings", async () => {
