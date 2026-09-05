@@ -9,12 +9,14 @@ import {
   type PmsCalendarAutoOpenSetting,
 } from "@/services/api/pmsPropertyClient";
 import { ApiErrorResponse } from "@/services/api/client";
+import { useTranslation } from "@/lib/i18n";
 
 const ROLLING_MONTHS = [12, 18, 24] as const;
 const inputClass =
   "mt-1 w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-primary-500 disabled:bg-gray-50 disabled:text-gray-400";
 
 export function CalendarAutoOpenEditor() {
+  const { t, locale } = useTranslation();
   const [read, setRead] = useState<PmsCalendarAutoOpenRead | null>(null);
   const [draft, setDraft] = useState<PmsCalendarAutoOpenSetting | null>(null);
   const [status, setStatus] = useState<"loading" | "ready" | "error">("loading");
@@ -53,17 +55,16 @@ export function CalendarAutoOpenEditor() {
       setDraft(saved.setting);
       if (saved.setupError) {
         setSaveError(
-          setupErrorMessage(saved.setupError.code) ??
-            "Auto-open was saved, but room and calendar setup are not ready.",
+          setupErrorMessage(saved.setupError.code, t) ?? t("settings.autoOpen.savedNotReady"),
         );
         return;
       }
       setSuccess(
         saved.enqueueIntentId
-          ? "Saved. Inventory and connected channels are updating in the background."
+          ? t("settings.autoOpen.savedUpdating")
           : saved.setting.enabled
-            ? "Saved. No calendar extension was needed."
-            : "Saved. Auto-open is off and existing open dates remain unchanged.",
+            ? t("settings.autoOpen.savedNoExtension")
+            : t("settings.autoOpen.savedOff"),
       );
     } catch (error) {
       if (
@@ -74,21 +75,15 @@ export function CalendarAutoOpenEditor() {
           const current = await getPmsCalendarAutoOpen();
           setRead(current);
           setDraft(current.setting);
-          setSaveError(
-            "This setting changed in another session. The latest version is loaded; review it before saving again.",
-          );
+          setSaveError(t("settings.autoOpen.revisionReloaded"));
         } catch {
-          setSaveError(
-            "This setting changed in another session. Reload the current setting and try again.",
-          );
+          setSaveError(t("settings.autoOpen.revisionError"));
         }
       } else if (error instanceof ApiErrorResponse) {
-        const setupMessage = setupErrorMessage(error.data.code);
-        setSaveError(
-          setupMessage ?? "We couldn’t save auto-open. Reload the current setting and try again.",
-        );
+        const setupMessage = setupErrorMessage(error.data.code, t);
+        setSaveError(setupMessage ?? t("settings.autoOpen.saveError"));
       } else {
-        setSaveError("We couldn’t save auto-open. Reload the current setting and try again.");
+        setSaveError(t("settings.autoOpen.saveError"));
       }
     } finally {
       setSaving(false);
@@ -99,7 +94,7 @@ export function CalendarAutoOpenEditor() {
     return (
       <SettingsCard>
         <p role="status" className="text-sm text-gray-600">
-          Loading auto-open settings…
+          {t("settings.autoOpen.loading")}
         </p>
       </SettingsCard>
     );
@@ -109,13 +104,13 @@ export function CalendarAutoOpenEditor() {
     return (
       <SettingsCard>
         <div role="alert" className="flex items-center justify-between gap-3 text-sm text-red-700">
-          <span>We couldn’t load auto-open settings.</span>
+          <span>{t("settings.autoOpen.loadError")}</span>
           <button
             type="button"
             onClick={load}
             className="shrink-0 rounded-lg border border-red-300 bg-white px-3 py-1.5 font-medium hover:bg-red-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500"
           >
-            Retry
+            {t("settings.retry")}
           </button>
         </div>
       </SettingsCard>
@@ -134,23 +129,23 @@ export function CalendarAutoOpenEditor() {
 
   return (
     <SettingsCard
-      title="Auto-open future calendar"
-      description="Keep future inventory open through a rolling window or a fixed target month. Manual blocks, bookings, and room limits are preserved."
+      title={t("settings.autoOpen.title")}
+      description={t("settings.autoOpen.description")}
     >
       <div className="flex items-start justify-between gap-4">
         <div className="min-w-0 flex-1">
           <p id="auto-open-state" className="text-sm text-gray-700">
             {draft.enabled
               ? read.setupError
-                ? "On, but paused until room and calendar setup are ready."
-                : "On. The selected schedule extends automatically."
-              : "Off. Existing open dates stay open."}
+                ? t("settings.autoOpen.statePaused")
+                : t("settings.autoOpen.stateOn")
+              : t("settings.autoOpen.stateOff")}
           </p>
         </div>
         <button
           type="button"
           role="switch"
-          aria-label="Auto-open future calendar"
+          aria-label={t("settings.autoOpen.title")}
           aria-describedby="auto-open-state"
           aria-checked={draft.enabled}
           disabled={saving}
@@ -164,7 +159,9 @@ export function CalendarAutoOpenEditor() {
       </div>
 
       <fieldset disabled={!draft.enabled || saving} className="mt-5 space-y-4 disabled:opacity-60">
-        <legend className="text-sm font-medium text-gray-900">Opening schedule</legend>
+        <legend className="text-sm font-medium text-gray-900">
+          {t("settings.autoOpen.schedule")}
+        </legend>
         <div className="grid gap-2 sm:grid-cols-2">
           {(["rolling", "fixed"] as const).map((mode) => (
             <label
@@ -193,13 +190,19 @@ export function CalendarAutoOpenEditor() {
                 }
                 className="mt-0.5 accent-primary-600"
               />
-              <span>{mode === "rolling" ? "Rolling window" : "Fixed end month"}</span>
+              <span>
+                {t(
+                  mode === "rolling"
+                    ? "settings.autoOpen.rollingWindow"
+                    : "settings.autoOpen.fixedEndMonth",
+                )}
+              </span>
             </label>
           ))}
         </div>
 
         {draft.mode === "rolling" ? (
-          <FormRow label="Open through" htmlFor="calendar-auto-open-months">
+          <FormRow label={t("settings.autoOpen.openThrough")} htmlFor="calendar-auto-open-months">
             <select
               id="calendar-auto-open-months"
               value={draft.rollingMonths ?? 18}
@@ -210,17 +213,20 @@ export function CalendarAutoOpenEditor() {
             >
               {ROLLING_MONTHS.map((months) => (
                 <option key={months} value={months}>
-                  End of month, {months} months ahead
+                  {t("settings.autoOpen.monthsAhead", { months })}
                 </option>
               ))}
             </select>
           </FormRow>
         ) : (
           <FormRow
-            label="Open through month"
+            label={t("settings.autoOpen.openThroughMonth")}
             htmlFor="calendar-auto-open-fixed-month"
-            description={`Choose ${minimumMonth} through ${maximumMonth}.`}
-            error={fixedMonthInvalid ? "Choose a month within the allowed 24-month window." : null}
+            description={t("settings.autoOpen.chooseRange", {
+              from: minimumMonth,
+              through: maximumMonth,
+            })}
+            error={fixedMonthInvalid ? t("settings.autoOpen.invalidMonth") : null}
           >
             <input
               id="calendar-auto-open-fixed-month"
@@ -237,10 +243,10 @@ export function CalendarAutoOpenEditor() {
       </fieldset>
 
       <div className="mt-5 rounded-lg bg-gray-50 p-3 text-sm text-gray-700">
-        <span className="font-medium">Current horizon:</span>{" "}
+        <span className="font-medium">{t("settings.autoOpen.currentHorizon")}</span>{" "}
         {read.horizon.targetOpenThrough
-          ? `${formatDate(read.horizon.targetOpenThrough)} (${read.horizon.propertyTimeZone})`
-          : "Not active"}
+          ? `${formatDate(read.horizon.targetOpenThrough, locale)} (${read.horizon.propertyTimeZone})`
+          : t("settings.autoOpen.notActive")}
       </div>
 
       {read.setupError && (
@@ -248,7 +254,7 @@ export function CalendarAutoOpenEditor() {
           role="alert"
           className="mt-3 rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800"
         >
-          {setupErrorMessage(read.setupError.code)}
+          {setupErrorMessage(read.setupError.code, t)}
         </p>
       )}
 
@@ -258,8 +264,11 @@ export function CalendarAutoOpenEditor() {
           role="alert"
           className="mt-3 rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800"
         >
-          Room type {warning.roomTypeId} has no positive rate from {formatDate(warning.from)} to{" "}
-          {formatDate(warning.through)}. Those dates remain unavailable until rates are added.
+          {t("settings.autoOpen.missingRate", {
+            roomType: warning.roomTypeId,
+            from: formatDate(warning.from, locale),
+            through: formatDate(warning.through, locale),
+          })}
         </p>
       ))}
 
@@ -272,7 +281,7 @@ export function CalendarAutoOpenEditor() {
         >
           <span>{saveError}</span>
           <button type="button" onClick={load} className="shrink-0 font-medium underline">
-            Reload
+            {t("settings.autoOpen.reload")}
           </button>
         </div>
       )}
@@ -290,7 +299,7 @@ export function CalendarAutoOpenEditor() {
           aria-busy={saving}
           className="rounded-lg bg-primary-600 px-4 py-2 text-sm font-medium text-white hover:bg-primary-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500 focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
         >
-          {saving ? "Saving…" : "Save auto-open"}
+          {saving ? t("common.saving") : t("settings.autoOpen.save")}
         </button>
       </div>
     </SettingsCard>
@@ -312,19 +321,18 @@ function configurationKey(setting: PmsCalendarAutoOpenSetting): string {
   ]);
 }
 
-function formatDate(value: string): string {
+function formatDate(value: string, locale: string): string {
   const date = new Date(`${value}T00:00:00Z`);
   return Number.isFinite(date.getTime())
-    ? new Intl.DateTimeFormat("en", { dateStyle: "medium", timeZone: "UTC" }).format(date)
+    ? new Intl.DateTimeFormat(locale, { dateStyle: "medium", timeZone: "UTC" }).format(date)
     : value;
 }
 
-function setupErrorMessage(code: unknown): string | null {
-  if (code === "operating_calendar_not_configured")
-    return "Finish Calendar setup before turning on auto-open.";
+function setupErrorMessage(code: unknown, t: (key: string) => string): string | null {
+  if (code === "operating_calendar_not_configured") return t("settings.autoOpen.setupCalendar");
   if (code === "operating_calendar_room_bindings_stale")
-    return "Room setup changed. Reopen Calendar setup and save the current room availability before turning on auto-open.";
+    return t("settings.autoOpen.setupBindingsStale");
   if (code === "physical_room_labels_unverified")
-    return "Verify every physical room label in Rooms setup before turning on auto-open.";
+    return t("settings.autoOpen.setupLabelsUnverified");
   return null;
 }

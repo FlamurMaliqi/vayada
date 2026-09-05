@@ -5,6 +5,7 @@ import { XMarkIcon, PhotoIcon, ArrowUpTrayIcon } from "@heroicons/react/24/outli
 import { imageReferenceUrl, isRoomImageReference, uploadService } from "@/services/upload";
 import type { RoomImageReference, UploadedImage } from "@/services/upload";
 import type { PlatformMediaResourceScope } from "@/services/platform-media";
+import { useTranslation } from "@/lib/i18n";
 
 interface ImageUploadProps {
   /** Already-uploaded image references (legacy URLs or platform media refs) */
@@ -32,9 +33,10 @@ export default function ImageUpload({
   maxImages,
   plan,
   maxSizeMB = 20,
-  label = "Room Images",
+  label,
   compact = false,
 }: ImageUploadProps) {
+  const { t } = useTranslation();
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState("");
   const [dragIndex, setDragIndex] = useState<number | null>(null);
@@ -58,12 +60,12 @@ export default function ImageUpload({
 
       // Validate count
       if (maxImages === null) {
-        setError("Photo limit is still loading. Please try again.");
+        setError(t("images.limitLoadingError"));
         e.target.value = "";
         return;
       }
       if (validImages.length + fileArray.length > maxImages) {
-        setError(photoLimitMessage(plan, validImages.length, maxImages));
+        setError(photoLimitMessage(t, plan, validImages.length, maxImages));
         e.target.value = "";
         return;
       }
@@ -71,12 +73,12 @@ export default function ImageUpload({
       // Validate each file
       for (const file of fileArray) {
         if (!file.type.startsWith("image/")) {
-          setError("Only image files are allowed (JPG, PNG, WebP)");
+          setError(t("rooms.form.onlyImageFiles"));
           e.target.value = "";
           return;
         }
         if (file.size > maxSizeMB * 1024 * 1024) {
-          setError(`Each image must be under ${maxSizeMB}MB`);
+          setError(t("images.sizeError", { size: maxSizeMB }));
           e.target.value = "";
           return;
         }
@@ -101,13 +103,13 @@ export default function ImageUpload({
         }));
         onChange([...validImages, ...newImages]);
       } catch (err: any) {
-        setError(err.message || "Upload failed");
+        setError(err.message || t("images.uploadError"));
       } finally {
         setUploading(false);
         e.target.value = "";
       }
     },
-    [validImages, onChange, maxImages, maxSizeMB, mediaResource, plan],
+    [validImages, onChange, maxImages, maxSizeMB, mediaResource, plan, t],
   );
 
   const removeImage = useCallback(
@@ -157,17 +159,13 @@ export default function ImageUpload({
   return (
     <div className="space-y-3">
       <div className="flex items-center justify-between gap-3">
-        {label && (
-          <label
-            className={`block font-medium text-gray-700 ${compact ? "text-[13px]" : "text-sm"}`}
-          >
-            {label}
-          </label>
-        )}
+        <label className={`block font-medium text-gray-700 ${compact ? "text-[13px]" : "text-sm"}`}>
+          {label ?? t("rooms.form.roomImages")}
+        </label>
         <span className={`font-medium text-gray-500 ${compact ? "text-[11px]" : "text-xs"}`}>
           {maxImages === null
-            ? "Loading photo limit…"
-            : `${validImages.length}/${maxImages} photos`}
+            ? t("images.loadingLimit")
+            : t("images.photoCount", { current: validImages.length, max: maxImages })}
         </span>
       </div>
 
@@ -194,19 +192,20 @@ export default function ImageUpload({
               >
                 <img
                   src={url}
-                  alt={`Room image ${i + 1}`}
+                  alt={t("images.roomImage", { number: i + 1 })}
                   className="w-full h-full object-cover pointer-events-none"
                 />
                 <button
                   type="button"
                   onClick={() => removeImage(i)}
+                  aria-label={t("images.removeImage", { number: i + 1 })}
                   className="absolute top-1 right-1 w-5 h-5 bg-black/60 text-white rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
                 >
                   <XMarkIcon className="w-3 h-3" />
                 </button>
                 {i === 0 && (
                   <span className="absolute bottom-1 left-1 px-1.5 py-0.5 bg-black/60 text-white text-[10px] font-medium rounded">
-                    Cover
+                    {t("common.coverLabel")}
                   </span>
                 )}
               </div>
@@ -229,7 +228,7 @@ export default function ImageUpload({
             <>
               <div className="w-6 h-6 border-2 border-primary-500 border-t-transparent rounded-full animate-spin mb-2" />
               <p className={`text-primary-600 font-medium ${compact ? "text-[12px]" : "text-sm"}`}>
-                Uploading...
+                {t("common.uploading")}
               </p>
             </>
           ) : (
@@ -242,10 +241,16 @@ export default function ImageUpload({
                 )}
               </div>
               <p className={`text-gray-700 font-medium ${compact ? "text-[12px]" : "text-sm"}`}>
-                {validImages.length === 0 ? "Upload room images" : "Add more images"}
+                {validImages.length === 0
+                  ? t("rooms.form.uploadRoomImages")
+                  : t("rooms.form.addMoreImages")}
               </p>
               <p className={`text-gray-400 mt-0.5 ${compact ? "text-[11px]" : "text-xs"}`}>
-                JPG, PNG, WebP up to {maxSizeMB}MB ({validImages.length}/{maxImages})
+                {t("images.formatsAndLimit", {
+                  size: maxSizeMB,
+                  current: validImages.length,
+                  max: maxImages ?? 0,
+                })}
               </p>
             </>
           )}
@@ -263,10 +268,10 @@ export default function ImageUpload({
 
       {isAtLimit && maxImages !== null && (
         <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2.5 text-xs leading-5 text-amber-950">
-          <p>{photoLimitMessage(plan, validImages.length, maxImages)}</p>
+          <p>{photoLimitMessage(t, plan, validImages.length, maxImages)}</p>
           {plan === "commission" && (
             <a className="font-semibold text-primary-700 hover:underline" href={upgradeUrl}>
-              Upgrade to show up to 15 photos per room and make a stronger first impression.
+              {t("images.upgrade")}
             </a>
           )}
         </div>
@@ -274,7 +279,7 @@ export default function ImageUpload({
 
       {!isAtLimit && plan === "commission" && (
         <a className="block text-xs font-medium text-primary-700 hover:underline" href={upgradeUrl}>
-          Upgrade to show up to 15 photos per room and make a stronger first impression.
+          {t("images.upgrade")}
         </a>
       )}
 
@@ -286,16 +291,13 @@ export default function ImageUpload({
 }
 
 function photoLimitMessage(
+  t: (key: string) => string,
   plan: "commission" | "fixed" | null,
   currentCount: number,
   maxImages: number,
 ): string {
   if (currentCount > maxImages) {
-    return plan === "commission"
-      ? "You have more photos than your plan allows. Remove photos to add new ones, or upgrade for up to 15."
-      : "You have more photos than the paid plan allows. Remove photos to add new ones.";
+    return plan === "commission" ? t("images.overCommissionLimit") : t("images.overPaidLimit");
   }
-  return plan === "commission"
-    ? "You've reached the 10-photo limit. Upgrade to the paid plan for up to 15 photos per room."
-    : "You've reached the 15-photo limit for the paid plan.";
+  return plan === "commission" ? t("images.commissionLimit") : t("images.paidLimit");
 }

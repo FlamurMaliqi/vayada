@@ -49,7 +49,7 @@ export default function ChannelManagerPage() {
       <div className="p-4 md:p-6">
         <div className="max-w-3xl rounded-xl border border-red-200 bg-white p-6" role="alert">
           <ExclamationTriangleIcon className="h-6 w-6 text-red-600" />
-          <h1 className="mt-3 text-lg font-semibold text-gray-950">Channel manager unavailable</h1>
+          <h1 className="mt-3 text-lg font-semibold text-gray-950">{t("channels.unavailable")}</h1>
           <p className="mt-1 text-sm text-gray-600">{loadError}</p>
           <button
             type="button"
@@ -58,7 +58,7 @@ export default function ChannelManagerPage() {
             }}
             className={`${buttonClass} mt-5 bg-gray-950 text-white hover:bg-gray-800`}
           >
-            Retry
+            {t("auth.chooseProperty.retry")}
           </button>
         </div>
       </div>
@@ -79,8 +79,7 @@ export default function ChannelManagerPage() {
           <div>
             <h1 className="text-xl font-bold text-gray-900">{t("channels.title")}</h1>
             <p className="mt-1 max-w-2xl text-sm leading-6 text-gray-500">
-              Connect booking channels and keep availability, rates, reservations, and messages in
-              sync.
+              {t("channels.description")}
             </p>
           </div>
           <ConnectionBadge status={snapshot.connection.status} />
@@ -89,10 +88,7 @@ export default function ChannelManagerPage() {
         {observeOnly && (
           <div className="mt-5 flex gap-3 rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
             <ExclamationTriangleIcon className="mt-0.5 h-5 w-5 shrink-0" />
-            <p>
-              Some controls are in observe-only mode during cutover. Their current state is visible,
-              but changes stay disabled until the capability is approved.
-            </p>
+            <p>{t("channels.observeOnly")}</p>
           </div>
         )}
 
@@ -115,11 +111,13 @@ export default function ChannelManagerPage() {
                     <LinkIcon className="h-5 w-5" />
                   </div>
                   <div>
-                    <h2 className="font-semibold text-gray-950">Channex connection</h2>
+                    <h2 className="font-semibold text-gray-950">{t("channels.connection")}</h2>
                     <p className="mt-1 text-sm text-gray-500">
                       {connected
-                        ? `Provider property ${snapshot.connection.externalPropertyId ?? "connected"}`
-                        : "Connect this property before provisioning channels."}
+                        ? t("channels.providerProperty", {
+                            id: snapshot.connection.externalPropertyId ?? t("channels.connected"),
+                          })
+                        : t("channels.connectBeforeProvisioning")}
                     </p>
                   </div>
                 </div>
@@ -136,7 +134,7 @@ export default function ChannelManagerPage() {
                   disabled={busy || !modeAllowsChanges(snapshot.capabilityModes.connection)}
                   className={`${buttonClass} ${connected ? "border border-gray-300 bg-white text-gray-800 hover:bg-gray-50" : "bg-primary-600 text-white hover:bg-primary-700"}`}
                 >
-                  {connected ? "Disable connection" : "Enable connection"}
+                  {connected ? t("channels.disableConnection") : t("channels.enableConnection")}
                 </button>
                 <button
                   type="button"
@@ -146,7 +144,7 @@ export default function ChannelManagerPage() {
                   }
                   className={`${buttonClass} border border-gray-300 bg-white text-gray-800 hover:bg-gray-50`}
                 >
-                  <Cog6ToothIcon className="h-4 w-4" /> Open channel settings
+                  <Cog6ToothIcon className="h-4 w-4" /> {t("channels.openSettings")}
                 </button>
               </div>
             </section>
@@ -154,10 +152,8 @@ export default function ChannelManagerPage() {
             <section className="rounded-xl border border-gray-200 bg-white p-5 md:p-6">
               <div className="flex items-center justify-between gap-3">
                 <div>
-                  <h2 className="font-semibold text-gray-950">Mappings</h2>
-                  <p className="mt-1 text-sm text-gray-500">
-                    Provider IDs linked to target PMS inventory.
-                  </p>
+                  <h2 className="font-semibold text-gray-950">{t("channels.mappings")}</h2>
+                  <p className="mt-1 text-sm text-gray-500">{t("channels.mappingsDescription")}</p>
                 </div>
                 <button
                   type="button"
@@ -167,26 +163,32 @@ export default function ChannelManagerPage() {
                   }
                   className={`${buttonClass} bg-gray-950 text-white hover:bg-gray-800`}
                 >
-                  Provision
+                  {t("channels.provision")}
                 </button>
               </div>
               <div className="mt-5 grid grid-cols-2 gap-3">
-                <Metric label="Room types" value={snapshot.mappings.roomTypes.length} />
-                <Metric label="Rate plans" value={snapshot.mappings.ratePlans.length} />
+                <Metric
+                  label={t("channels.roomTypes")}
+                  value={snapshot.mappings.roomTypes.length}
+                />
+                <Metric
+                  label={t("channels.ratePlans")}
+                  value={snapshot.mappings.ratePlans.length}
+                />
               </div>
               {snapshot.mappings.roomTypes.length === 0 &&
               snapshot.mappings.ratePlans.length === 0 ? (
                 <p className="mt-4 rounded-lg bg-gray-50 p-4 text-sm text-gray-500">
-                  No provider mappings yet.
+                  {t("channels.noMappings")}
                 </p>
               ) : (
                 <div className="mt-4 max-h-56 overflow-auto rounded-lg border border-gray-200">
                   <table className="w-full text-left text-sm">
                     <thead className="sticky top-0 bg-gray-50 text-xs font-semibold uppercase tracking-wide text-gray-500">
                       <tr>
-                        <th className="px-3 py-2">Inventory</th>
-                        <th className="px-3 py-2">Provider ID</th>
-                        <th className="px-3 py-2">Status</th>
+                        <th className="px-3 py-2">{t("channels.inventory")}</th>
+                        <th className="px-3 py-2">{t("channels.providerId")}</th>
+                        <th className="px-3 py-2">{t("bookings.tableStatus")}</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-gray-100">
@@ -219,13 +221,11 @@ export default function ChannelManagerPage() {
             </section>
 
             <section className="rounded-xl border border-gray-200 bg-white p-5 md:p-6">
-              <h2 className="font-semibold text-gray-950">Channel markups</h2>
-              <p className="mt-1 text-sm text-gray-500">
-                Adjust rates sent to each connected channel.
-              </p>
+              <h2 className="font-semibold text-gray-950">{t("channels.markups")}</h2>
+              <p className="mt-1 text-sm text-gray-500">{t("channels.markupsDescription")}</p>
               {channels.length === 0 ? (
                 <p className="mt-4 rounded-lg bg-gray-50 p-4 text-sm text-gray-500">
-                  Connect a channel in Channex to set markups.
+                  {t("channels.connectForMarkups")}
                 </p>
               ) : (
                 <div className="mt-5 space-y-3">
@@ -272,7 +272,7 @@ export default function ChannelManagerPage() {
                       }
                       className={`${buttonClass} bg-primary-600 text-white hover:bg-primary-700`}
                     >
-                      Save markups
+                      {t("channels.saveMarkups")}
                     </button>
                   </div>
                 </div>
@@ -282,11 +282,11 @@ export default function ChannelManagerPage() {
 
           <div className="space-y-5">
             <section className="rounded-xl border border-gray-200 bg-white p-5">
-              <h2 className="font-semibold text-gray-950">Sync operations</h2>
+              <h2 className="font-semibold text-gray-950">{t("channels.syncOperations")}</h2>
               <div className="mt-4 space-y-3">
                 <SyncAction
                   icon={CloudArrowUpIcon}
-                  title="Availability and rates"
+                  title={t("channels.availabilityAndRates")}
                   state={snapshot.sync.ari}
                   disabled={
                     busy || !connected || !modeAllowsChanges(snapshot.capabilityModes.ariSync)
@@ -295,7 +295,7 @@ export default function ChannelManagerPage() {
                 />
                 <SyncAction
                   icon={ArrowPathIcon}
-                  title="Reservations"
+                  title={t("layout.sidebar.reservations")}
                   state={snapshot.sync.booking}
                   disabled={
                     busy || !connected || !modeAllowsChanges(snapshot.capabilityModes.bookingSync)
@@ -304,7 +304,7 @@ export default function ChannelManagerPage() {
                 />
                 <SyncAction
                   icon={ChatBubbleLeftRightIcon}
-                  title="Messaging app"
+                  title={t("channels.messagingAppTitle")}
                   state={snapshot.sync.message}
                   disabled={
                     busy ||
@@ -315,17 +315,20 @@ export default function ChannelManagerPage() {
                   onClick={() =>
                     void runCommand("messaging installation", channexService.installMessagingApp)
                   }
-                  actionLabel={snapshot.connection.messagingAppInstalled ? "Installed" : "Install"}
+                  actionLabel={
+                    snapshot.connection.messagingAppInstalled
+                      ? t("channels.installed")
+                      : t("channels.install")
+                  }
                 />
               </div>
             </section>
 
             <section className="rounded-xl border border-gray-200 bg-white p-5">
-              <h2 className="font-semibold text-gray-950">Connected channels</h2>
+              <h2 className="font-semibold text-gray-950">{t("channels.connectedChannels")}</h2>
               {snapshot.channels.length === 0 ? (
                 <p className="mt-3 text-sm leading-6 text-gray-500">
-                  No connected channel applications yet. Open channel settings after provisioning to
-                  add one.
+                  {t("channels.noConnectedChannels")}
                 </p>
               ) : (
                 <ul className="mt-4 divide-y divide-gray-100">
@@ -343,7 +346,9 @@ export default function ChannelManagerPage() {
                       <span
                         className={`h-2.5 w-2.5 rounded-full ${channel.isActive ? "bg-green-500" : "bg-gray-300"}`}
                       >
-                        <span className="sr-only">{channel.isActive ? "Active" : "Inactive"}</span>
+                        <span className="sr-only">
+                          {channel.isActive ? t("common.active") : t("common.inactive")}
+                        </span>
                       </span>
                     </li>
                   ))}

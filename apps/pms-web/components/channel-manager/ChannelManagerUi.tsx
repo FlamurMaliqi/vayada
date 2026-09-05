@@ -5,6 +5,7 @@ import {
 } from "@heroicons/react/24/outline";
 import { terminalChannexStatuses } from "@/lib/channel-manager/useChannexManager";
 import type { ChannexCapabilityMode, ChannexOperation, ChannexSnapshot } from "@/services/channex";
+import { useTranslation } from "@/lib/i18n";
 
 export const channelManagerButtonClass =
   "inline-flex min-h-10 items-center justify-center gap-2 rounded-lg px-4 py-2 text-sm font-semibold transition-colors focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-45";
@@ -14,6 +15,7 @@ export function modeAllowsChanges(mode: ChannexCapabilityMode) {
 }
 
 export function ConnectionBadge({ status }: { status: ChannexSnapshot["connection"]["status"] }) {
+  const { t } = useTranslation();
   const connected = status === "connected";
   const degraded = status === "degraded";
   return (
@@ -23,12 +25,13 @@ export function ConnectionBadge({ status }: { status: ChannexSnapshot["connectio
       <span
         className={`h-2 w-2 rounded-full ${connected ? "bg-green-500" : degraded ? "bg-amber-500" : "bg-gray-400"}`}
       />
-      {status.replaceAll("_", " ")}
+      {translateEnum(t, "channels.status", status)}
     </span>
   );
 }
 
 export function OperationBanner({ operation }: { operation: ChannexOperation }) {
+  const { t } = useTranslation();
   const failed = ["failed", "dead_lettered"].includes(operation.status);
   const succeeded = operation.status === "succeeded";
   return (
@@ -45,14 +48,19 @@ export function OperationBanner({ operation }: { operation: ChannexOperation }) 
       )}
       <div>
         <p className="font-semibold capitalize">
-          {operation.operationType.replaceAll("_", " ")}: {operation.status.replaceAll("_", " ")}
+          {translateEnum(t, "channels.operation", operation.operationType)}:{" "}
+          {translateEnum(t, "channels.status", operation.status)}
         </p>
         {operation.lastError && <p className="mt-1">{operation.lastError.message}</p>}
         {!terminalChannexStatuses.has(operation.status) && (
           <p className="mt-1">
-            Attempt{" "}
-            {operation.status === "running" ? operation.attemptsMade : operation.attemptsMade + 1}{" "}
-            of {operation.maxAttempts}
+            {t("channels.attemptOf", {
+              attempt:
+                operation.status === "running"
+                  ? operation.attemptsMade
+                  : operation.attemptsMade + 1,
+              total: operation.maxAttempts,
+            })}
           </p>
         )}
       </div>
@@ -75,7 +83,7 @@ export function SyncAction({
   state,
   disabled,
   onClick,
-  actionLabel = "Sync now",
+  actionLabel,
 }: {
   icon: typeof ArrowPathIcon;
   title: string;
@@ -84,6 +92,7 @@ export function SyncAction({
   onClick: () => void;
   actionLabel?: string;
 }) {
+  const { t, locale } = useTranslation();
   return (
     <div className="rounded-lg border border-gray-200 p-4">
       <div className="flex items-start gap-3">
@@ -91,10 +100,14 @@ export function SyncAction({
         <div className="min-w-0 flex-1">
           <div className="flex items-center justify-between gap-3">
             <p className="text-sm font-semibold text-gray-900">{title}</p>
-            <span className="text-xs font-medium capitalize text-gray-500">{state.status}</span>
+            <span className="text-xs font-medium capitalize text-gray-500">
+              {translateEnum(t, "channels.status", state.status)}
+            </span>
           </div>
           <p className="mt-1 text-xs text-gray-500">
-            Last success: {formatTime(state.lastSuccessAt)}
+            {t("channels.lastSuccess", {
+              time: formatTime(state.lastSuccessAt, locale, t("common.never")),
+            })}
           </p>
           {state.lastErrorMessage && (
             <p className="mt-1 text-xs text-red-600">{state.lastErrorMessage}</p>
@@ -105,7 +118,7 @@ export function SyncAction({
             disabled={disabled}
             className="mt-3 text-xs font-semibold text-primary-700 hover:text-primary-800 disabled:cursor-not-allowed disabled:text-gray-400"
           >
-            {actionLabel}
+            {actionLabel ?? t("channels.syncNow")}
           </button>
         </div>
       </div>
@@ -114,8 +127,9 @@ export function SyncAction({
 }
 
 export function ChannelManagerSkeleton() {
+  const { t } = useTranslation();
   return (
-    <div className="p-4 md:p-6" aria-label="Loading channel manager" role="status">
+    <div className="p-4 md:p-6" aria-label={t("channels.loading")} role="status">
       <div className="mx-auto max-w-6xl animate-pulse">
         <div className="h-7 w-52 rounded bg-gray-200" />
         <div className="mt-3 h-4 w-full max-w-xl rounded bg-gray-200" />
@@ -134,10 +148,16 @@ export function ChannelManagerSkeleton() {
   );
 }
 
-function formatTime(value: string | null) {
-  if (!value) return "Never";
-  return new Date(value).toLocaleString(undefined, {
+function formatTime(value: string | null, locale: string, never: string) {
+  if (!value) return never;
+  return new Date(value).toLocaleString(locale, {
     dateStyle: "medium",
     timeStyle: "short",
   });
+}
+
+function translateEnum(t: (key: string) => string, prefix: string, value: string): string {
+  const key = `${prefix}.${value}`;
+  const translated = t(key);
+  return translated === key ? value.replaceAll("_", " ") : translated;
 }

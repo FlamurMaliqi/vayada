@@ -45,8 +45,12 @@ export function getPropertyToday(timezone?: string | null, date = new Date()) {
   return year && month && day ? `${year}-${month}-${day}` : date.toISOString().slice(0, 10);
 }
 
-export function formatPropertyDate(date: string, options: Intl.DateTimeFormatOptions) {
-  return new Date(`${date}T00:00:00Z`).toLocaleDateString("en-US", {
+export function formatPropertyDate(
+  date: string,
+  options: Intl.DateTimeFormatOptions,
+  locale = "en-US",
+) {
+  return new Date(`${date}T00:00:00Z`).toLocaleDateString(locale, {
     ...options,
     timeZone: "UTC",
   });

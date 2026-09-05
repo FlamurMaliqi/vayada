@@ -98,7 +98,7 @@ const FORECAST_MAX_WEEK_OFFSET = 24;
 type InventoryLoadStatus = "loading" | "ready" | "error";
 
 export default function DashboardPage() {
-  const { t } = useTranslation();
+  const { locale, t } = useTranslation();
   const [bookings, setBookings] = useState<Booking[]>([]);
   const [forecastInventoryDays, setForecastInventoryDays] = useState<CalendarInventoryDay[]>([]);
   const [tonightInventoryDays, setTonightInventoryDays] = useState<CalendarInventoryDay[]>([]);
@@ -284,12 +284,14 @@ export default function DashboardPage() {
         pct: occupancy.percentage,
         adr,
         label:
-          dateStr === today ? t("common.today") : formatPropertyDate(dateStr, { weekday: "short" }),
+          dateStr === today
+            ? t("common.today")
+            : formatPropertyDate(dateStr, { weekday: "short" }, locale),
         dayNum: Number(dateStr.slice(-2)),
       });
     }
     return days;
-  }, [bookings, forecastInventoryDays, weekOffset, today, t]);
+  }, [bookings, forecastInventoryDays, weekOffset, today, t, locale]);
 
   if (loading) {
     return (
@@ -311,12 +313,16 @@ export default function DashboardPage() {
     );
   }
 
-  const dateLabel = formatPropertyDate(today, {
-    weekday: "long",
-    month: "long",
-    day: "numeric",
-    year: "numeric",
-  });
+  const dateLabel = formatPropertyDate(
+    today,
+    {
+      weekday: "long",
+      month: "long",
+      day: "numeric",
+      year: "numeric",
+    },
+    locale,
+  );
 
   return (
     <div className="p-4 md:p-6 space-y-4 md:space-y-5 overflow-x-hidden">
@@ -325,12 +331,12 @@ export default function DashboardPage() {
           className="flex flex-col gap-3 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-950 sm:flex-row sm:items-center sm:justify-between"
           role="status"
         >
-          <p>Your property setup isn&apos;t complete. Your progress is saved.</p>
+          <p>{t("dashboard.setupIncomplete")}</p>
           <Link
             href={`/setup?entryProduct=pms&returnTo=%2Fdashboard&propertyId=${encodeURIComponent(incompleteSetupPropertyId)}`}
             className="shrink-0 font-semibold text-amber-950 underline decoration-amber-400 underline-offset-4 hover:decoration-amber-700"
           >
-            Resume setup
+            {t("dashboard.resumeSetup")}
           </Link>
         </div>
       )}
@@ -353,11 +359,11 @@ export default function DashboardPage() {
           }
           sub={
             displayedTonightStatus === "loading"
-              ? "Loading occupancy…"
+              ? t("dashboard.loadingOccupancy")
               : displayedTonightStatus === "error"
-                ? "Couldn’t load occupancy"
+                ? t("dashboard.occupancyLoadError")
                 : tonightOccupancy.percentage === null
-                  ? "Unavailable"
+                  ? t("common.unavailable")
                   : t("dashboard.occupancySub", {
                       occupied: String(tonightOccupancy.occupiedUnits),
                       total: String(tonightOccupancy.sellableUnits),
@@ -383,7 +389,10 @@ export default function DashboardPage() {
           value={String(departuresToday.length)}
           sub={
             departuresToday.length > 0
-              ? `${departuresToday.length} departures · ${remainingDepartures} remaining`
+              ? t("dashboard.departuresRemaining", {
+                  total: departuresToday.length,
+                  remaining: remainingDepartures,
+                })
               : t("dashboard.noDepartures")
           }
           icon={<ArrowUpIcon />}
@@ -490,14 +499,18 @@ export default function DashboardPage() {
                       {b.guestFirstName} {b.guestLastName}
                     </p>
                     <p className="text-xs text-gray-400 truncate">
-                      <span className="text-gray-500">Check-out by {checkoutTime()}</span> ·{" "}
-                      <span className="text-gray-500">{roomLabel(b)}</span>
+                      <span className="text-gray-500">
+                        {t("dashboard.checkoutBy", { time: checkoutTime() })}
+                      </span>{" "}
+                      · <span className="text-gray-500">{roomLabel(b)}</span>
                     </p>
                   </div>
                   <div className="flex shrink-0 items-center gap-2">
                     {!isPaid(b) && (
                       <span className="hidden rounded-full bg-amber-100 px-2 py-0.5 text-[11px] font-semibold text-amber-800 sm:inline-flex">
-                        {formatCurrency(b.balanceAmount || b.totalAmount, b.currency)} pending
+                        {t("dashboard.amountPending", {
+                          amount: formatCurrency(b.balanceAmount || b.totalAmount, b.currency),
+                        })}
                       </span>
                     )}
                     <span
@@ -510,17 +523,17 @@ export default function DashboardPage() {
                       }`}
                     >
                       {isCheckedOutDeparture(b)
-                        ? "Checked out"
+                        ? t("dashboard.checkedOut")
                         : isNotCheckedInDeparture(b)
-                          ? "Not checked in"
-                          : "Checked in"}
+                          ? t("dashboard.notCheckedIn")
+                          : t("dashboard.checkedIn")}
                     </span>
                     <span className="text-gray-300">›</span>
                   </div>
                 </button>
               ))}
               <p className="pt-3 text-xs font-medium text-gray-500">
-                Click a guest to start check-out.
+                {t("dashboard.clickGuestToStartCheckOut")}
               </p>
             </div>
           )}
@@ -543,15 +556,23 @@ export default function DashboardPage() {
           <div className="flex items-center gap-2 shrink-0">
             {forecastDays.length >= 14 && (
               <p className="text-xs text-gray-400 hidden sm:block">
-                {formatPropertyDate(forecastDays[0].dateStr, {
-                  month: "short",
-                  day: "numeric",
-                })}{" "}
+                {formatPropertyDate(
+                  forecastDays[0].dateStr,
+                  {
+                    month: "short",
+                    day: "numeric",
+                  },
+                  locale,
+                )}{" "}
                 –{" "}
-                {formatPropertyDate(forecastDays[13].dateStr, {
-                  month: "short",
-                  day: "numeric",
-                })}
+                {formatPropertyDate(
+                  forecastDays[13].dateStr,
+                  {
+                    month: "short",
+                    day: "numeric",
+                  },
+                  locale,
+                )}
               </p>
             )}
             <div className="flex items-center gap-1">
@@ -590,6 +611,7 @@ export default function DashboardPage() {
           today={today}
           currency={hotelCurrency}
           inventoryStatus={forecastInventoryStatus}
+          locale={locale}
           t={t}
         />
       </div>
@@ -628,6 +650,7 @@ function ArrivalQuickView({
   onClose: () => void;
   onNoShow?: (bookingId: string) => Promise<void>;
 }) {
+  const { t } = useTranslation();
   const [noShowLoading, setNoShowLoading] = useState(false);
   const [noShowError, setNoShowError] = useState<string | null>(null);
   const missingIds = loading ? 0 : incompleteGuestCount(booking, guests);
@@ -644,7 +667,7 @@ function ArrivalQuickView({
     try {
       await onNoShow(booking.id);
     } catch {
-      setNoShowError("Failed to mark as no-show. Please try again.");
+      setNoShowError(t("dashboard.noShowError"));
     } finally {
       setNoShowLoading(false);
     }
@@ -664,7 +687,7 @@ function ArrivalQuickView({
         <div className="sticky top-0 flex items-start justify-between gap-4 border-b border-gray-100 bg-white p-5">
           <div className="min-w-0">
             <p className="text-xs font-semibold uppercase tracking-wide text-blue-600">
-              {isDeparture ? "Departure quick view" : "Arrival quick view"}
+              {isDeparture ? t("dashboard.departureQuickView") : t("dashboard.arrivalQuickView")}
             </p>
             <h2 className="mt-1 truncate text-lg font-semibold text-gray-950">
               {guestName(booking)}
@@ -675,7 +698,7 @@ function ArrivalQuickView({
             type="button"
             onClick={onClose}
             className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-gray-200 text-gray-500 hover:bg-gray-50"
-            aria-label="Close"
+            aria-label={t("common.close")}
           >
             ×
           </button>
@@ -684,8 +707,7 @@ function ArrivalQuickView({
         <div className="space-y-4 p-5">
           {isNotCheckedIn && (
             <div className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
-              This guest hasn&apos;t been checked in yet. Check them in to proceed with check-out,
-              or mark as a no-show if the guest didn&apos;t arrive.
+              {t("dashboard.notCheckedInWarning")}
             </div>
           )}
           <div className="flex flex-wrap gap-2">
@@ -701,40 +723,44 @@ function ArrivalQuickView({
               }`}
             >
               {isNotCheckedIn
-                ? "Not checked in"
+                ? t("dashboard.notCheckedIn")
                 : isCheckedOut
-                  ? "Checked out"
+                  ? t("dashboard.checkedOut")
                   : isDeparture
-                    ? "Checked in"
-                    : "Arriving today"}
+                    ? t("dashboard.checkedIn")
+                    : t("dashboard.arrivingToday")}
             </span>
             {due > 0 && (
               <span className="rounded-full bg-amber-100 px-2.5 py-1 text-xs font-semibold text-amber-800">
-                {formatCurrency(due, booking.currency)} due
+                {t("dashboard.amountDue", {
+                  amount: formatCurrency(due, booking.currency),
+                })}
               </span>
             )}
             {missingIds > 0 && (
               <span className="rounded-full bg-orange-100 px-2.5 py-1 text-xs font-semibold text-orange-800">
-                {missingIds} guest{missingIds === 1 ? "" : "s"} ID missing
+                {t("dashboard.guestIdsMissing", { count: missingIds })}
               </span>
             )}
           </div>
 
           <dl className="grid gap-3 rounded-xl border border-gray-200 bg-gray-50 p-4 text-sm">
             <div>
-              <dt className="text-xs font-medium text-gray-500">Room</dt>
+              <dt className="text-xs font-medium text-gray-500">{t("bookings.tableRoom")}</dt>
               <dd className="mt-0.5 font-semibold text-gray-900">{roomLabel(booking)}</dd>
             </div>
             <div>
               <dt className="text-xs font-medium text-gray-500">
-                {isDeparture ? "Check-out" : "Arrival"}
+                {isDeparture ? t("bookings.detail.checkOut") : t("dashboard.arrival")}
               </dt>
               <dd className="mt-0.5 font-semibold text-gray-900">
-                Today · {isDeparture ? `by ${checkoutTime()}` : arrivalTime(booking)} ·{" "}
-                {booking.nights} night
-                {booking.nights === 1 ? "" : "s"} ·{" "}
-                {(booking.numberOfGuests ?? booking.adults + booking.children) || 1} guest
-                {(booking.numberOfGuests ?? booking.adults + booking.children) === 1 ? "" : "s"}
+                {t("dashboard.staySummary", {
+                  time: isDeparture
+                    ? t("dashboard.byTime", { time: checkoutTime() })
+                    : arrivalTime(booking),
+                  nights: booking.nights,
+                  guests: (booking.numberOfGuests ?? booking.adults + booking.children) || 1,
+                })}
               </dd>
             </div>
           </dl>
@@ -742,7 +768,7 @@ function ArrivalQuickView({
           {isDeparture && internalNotes.length > 0 && (
             <div className="rounded-xl border border-gray-200 bg-gray-50 p-4">
               <p className="text-xs font-semibold uppercase tracking-wide text-gray-500">
-                Internal note
+                {t("dashboard.internalNote")}
               </p>
               <p className="mt-1 text-sm text-gray-800">{internalNotes[0].body}</p>
             </div>
@@ -751,7 +777,7 @@ function ArrivalQuickView({
           {!isDeparture && booking.specialRequests && (
             <div className="rounded-xl border border-amber-200 bg-amber-50 p-4">
               <p className="text-xs font-semibold uppercase tracking-wide text-amber-800">
-                Special request
+                {t("dashboard.specialRequest")}
               </p>
               <p className="mt-1 text-sm text-amber-950">{booking.specialRequests}</p>
             </div>
@@ -769,7 +795,7 @@ function ArrivalQuickView({
                   href={`/check-in/${booking.id}?next=checkout`}
                   className="flex h-11 items-center justify-center rounded-lg bg-primary-600 px-4 text-sm font-semibold text-white hover:bg-primary-700"
                 >
-                  Check in now
+                  {t("dashboard.checkInNow")}
                 </Link>
                 <button
                   type="button"
@@ -777,7 +803,7 @@ function ArrivalQuickView({
                   disabled={noShowLoading}
                   className="flex h-11 items-center justify-center rounded-lg border border-red-200 px-4 text-sm font-semibold text-red-600 hover:bg-red-50 disabled:opacity-60"
                 >
-                  {noShowLoading ? "Marking…" : "Mark as no-show"}
+                  {noShowLoading ? t("dashboard.markingNoShow") : t("dashboard.markNoShow")}
                 </button>
               </>
             ) : (
@@ -785,14 +811,14 @@ function ArrivalQuickView({
                 href={isDeparture ? `/check-out/${booking.id}` : `/check-in/${booking.id}`}
                 className="flex h-11 items-center justify-center rounded-lg bg-primary-600 px-4 text-sm font-semibold text-white hover:bg-primary-700"
               >
-                {isDeparture ? "Start check-out" : "Start check-in"}
+                {isDeparture ? t("dashboard.startCheckOut") : t("dashboard.startCheckIn")}
               </Link>
             )}
             <Link
               href={`/bookings/${booking.id}`}
               className="flex h-11 items-center justify-center rounded-lg border border-gray-200 px-4 text-sm font-semibold text-gray-700 hover:bg-gray-50"
             >
-              View full booking
+              {t("dashboard.viewFullBooking")}
             </Link>
           </div>
         </div>
@@ -889,12 +915,14 @@ function ForecastChart({
   today,
   currency,
   inventoryStatus,
+  locale,
   t,
 }: {
   days: ForecastDay[];
   today: string;
   currency: string;
   inventoryStatus: InventoryLoadStatus;
+  locale: string;
   t: (key: string, params?: Record<string, string | number>) => string;
 }) {
   const chartHeight = 140;
@@ -958,11 +986,11 @@ function ForecastChart({
               const percentage = inventoryStatus === "ready" ? day.pct : null;
               const occupancyText =
                 inventoryStatus === "loading"
-                  ? "Loading…"
+                  ? t("dashboard.loadingOccupancy")
                   : inventoryStatus === "error"
-                    ? "Couldn’t load"
+                    ? t("dashboard.occupancyLoadError")
                     : percentage === null
-                      ? "Unavailable"
+                      ? t("common.unavailable")
                       : `${percentage}%`;
               const heightPx =
                 percentage === null ? 2 : Math.max(Math.round((percentage / 100) * chartHeight), 2);
@@ -970,15 +998,16 @@ function ForecastChart({
                 <div
                   key={day.dateStr}
                   role="img"
-                  aria-label={`${day.dateStr}: ${
+                  aria-label={t(
                     inventoryStatus === "loading"
-                      ? "occupancy loading"
+                      ? "dashboard.forecastOccupancyLoading"
                       : inventoryStatus === "error"
-                        ? "occupancy failed to load"
+                        ? "dashboard.forecastOccupancyLoadError"
                         : percentage === null
-                          ? "occupancy unavailable"
-                          : `${percentage}% occupancy`
-                  }`}
+                          ? "dashboard.forecastOccupancyUnavailable"
+                          : "dashboard.forecastOccupancyValue",
+                    { date: day.dateStr, percentage: percentage ?? 0 },
+                  )}
                   className="flex-1 flex justify-center group relative"
                   style={{ height: chartHeight }}
                 >
@@ -993,11 +1022,15 @@ function ForecastChart({
                   {/* Tooltip */}
                   <div className="pointer-events-none absolute bottom-full mb-2 left-1/2 -translate-x-1/2 hidden group-hover:block bg-gray-900 text-white text-[10px] rounded px-2 py-1 whitespace-nowrap z-10 shadow">
                     <div className="font-semibold">
-                      {formatPropertyDate(day.dateStr, {
-                        weekday: "short",
-                        month: "short",
-                        day: "numeric",
-                      })}
+                      {formatPropertyDate(
+                        day.dateStr,
+                        {
+                          weekday: "short",
+                          month: "short",
+                          day: "numeric",
+                        },
+                        locale,
+                      )}
                     </div>
                     <div>
                       {t("dashboard.occupancyAxis")}: {occupancyText}

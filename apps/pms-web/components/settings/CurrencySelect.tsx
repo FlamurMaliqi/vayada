@@ -22,9 +22,7 @@ export function CurrencySelect({ value, onChange, t }: CurrencySelectProps) {
     return () => document.removeEventListener("mousedown", handleClick);
   }, []);
 
-  const filtered = CURRENCIES.filter((c) =>
-    c.label.toLowerCase().includes(search.toLowerCase()),
-  );
+  const filtered = CURRENCIES.filter((c) => c.label.toLowerCase().includes(search.toLowerCase()));
 
   const selectedLabel = CURRENCIES.find((c) => c.value === value)?.label ?? value;
 
@@ -45,12 +43,7 @@ export function CurrencySelect({ value, onChange, t }: CurrencySelectProps) {
           stroke="currentColor"
           viewBox="0 0 24 24"
         >
-          <path
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            strokeWidth={2}
-            d="M19 9l-7 7-7-7"
-          />
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
         </svg>
       </button>
       {open && (
@@ -65,9 +58,7 @@ export function CurrencySelect({ value, onChange, t }: CurrencySelectProps) {
           />
           <ul className="max-h-60 overflow-y-auto py-1">
             {filtered.length === 0 ? (
-              <li className="px-3 py-2 text-sm text-gray-400">
-                {t("common.noResults")}
-              </li>
+              <li className="px-3 py-2 text-sm text-gray-400">{t("common.noResults")}</li>
             ) : (
               filtered.map((c) => (
                 <li

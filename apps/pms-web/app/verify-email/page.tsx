@@ -16,8 +16,10 @@ import {
   isAuthOrganizationSelectionResponse,
   type AuthOrganizationSelectionResponse,
 } from "@/services/auth/sessionStore";
+import { useTranslation } from "@/lib/i18n";
 
 export default function VerifyEmailPage() {
+  const { t } = useTranslation();
   const router = useRouter();
   const [pending, setPending] = useState<PendingEmailVerification | null>(null);
   const [loaded, setLoaded] = useState(false);
@@ -53,7 +55,7 @@ export default function VerifyEmailPage() {
     setSubmitError("");
     setResendMessage("");
     if (!code.trim()) {
-      setSubmitError("Enter the verification code from your email.");
+      setSubmitError(t("auth.verify.enterCode"));
       return;
     }
 
@@ -66,7 +68,7 @@ export default function VerifyEmailPage() {
       }
       await redirectAfterVerifiedSession();
     } catch (error) {
-      setSubmitError(error instanceof Error ? error.message : "Failed to verify email.");
+      setSubmitError(error instanceof Error ? error.message : t("auth.verify.failed"));
     } finally {
       setIsSubmitting(false);
     }
@@ -84,7 +86,7 @@ export default function VerifyEmailPage() {
       }
       await redirectAfterVerifiedSession();
     } catch (error) {
-      setSubmitError(error instanceof Error ? error.message : "Failed to verify email.");
+      setSubmitError(error instanceof Error ? error.message : t("auth.verify.failed"));
     } finally {
       setIsSubmitting(false);
     }
@@ -98,9 +100,7 @@ export default function VerifyEmailPage() {
       const response = await authService.resendEmailVerification();
       setResendMessage(response.message);
     } catch (error) {
-      setSubmitError(
-        error instanceof Error ? error.message : "Failed to resend verification code.",
-      );
+      setSubmitError(error instanceof Error ? error.message : t("auth.verify.resendFailed"));
     } finally {
       setIsResending(false);
     }
@@ -124,32 +124,30 @@ export default function VerifyEmailPage() {
                 className="mx-auto mb-4"
               />
               <h1 className="text-xl font-bold text-gray-900">
-                {organizationSelection ? "Choose workspace" : "Verify your email"}
+                {organizationSelection ? t("auth.verify.chooseWorkspace") : t("auth.verify.title")}
               </h1>
               <p className="mt-1 text-[13px] text-gray-500">
                 {organizationSelection
-                  ? "Select where you want to continue."
+                  ? t("auth.verify.chooseWorkspaceDescription")
                   : pending?.email
-                    ? `Enter the code sent to ${pending.email}.`
-                    : "Enter the verification code from your email."}
+                    ? t("auth.verify.codeSentTo", { email: pending.email })
+                    : t("auth.verify.enterCode")}
               </p>
             </div>
 
-            {!loaded && <p className="text-center text-sm text-gray-600">Loading...</p>}
+            {!loaded && <p className="text-center text-sm text-gray-600">{t("common.loading")}</p>}
 
             {loaded && !pending && (
               <div className="space-y-5 text-center">
                 <div className="rounded-lg border border-red-200 bg-red-50 p-4">
                   <XCircleIcon className="mx-auto mb-3 h-10 w-10 text-red-600" />
-                  <p className="text-sm font-medium text-red-700">
-                    Verification has expired. Please sign in again.
-                  </p>
+                  <p className="text-sm font-medium text-red-700">{t("auth.verify.expired")}</p>
                 </div>
                 <Link
                   href="/login"
                   className="block rounded-lg bg-primary-600 px-4 py-2.5 text-center text-sm font-medium text-white transition-colors hover:bg-primary-700"
                 >
-                  Back to sign in
+                  {t("auth.password.backToSignIn")}
                 </Link>
               </div>
             )}
@@ -158,9 +156,7 @@ export default function VerifyEmailPage() {
               <div className="space-y-5 text-center">
                 <div className="rounded-lg border border-green-200 bg-green-50 p-4">
                   <CheckCircleIcon className="mx-auto mb-3 h-10 w-10 text-green-600" />
-                  <p className="text-sm font-medium text-green-700">
-                    Email verified. Redirecting...
-                  </p>
+                  <p className="text-sm font-medium text-green-700">{t("auth.verify.success")}</p>
                 </div>
               </div>
             )}
@@ -194,7 +190,7 @@ export default function VerifyEmailPage() {
                       htmlFor="verification-code"
                       className="mb-1.5 block text-sm font-medium text-gray-700"
                     >
-                      Verification code
+                      {t("auth.verify.codeLabel")}
                     </label>
                     <input
                       id="verification-code"
@@ -229,7 +225,7 @@ export default function VerifyEmailPage() {
                     disabled={isSubmitting}
                     className="w-full rounded-lg bg-primary-600 px-4 py-2.5 text-sm font-medium text-white transition-colors hover:bg-primary-700 disabled:cursor-not-allowed disabled:opacity-50"
                   >
-                    {isSubmitting ? "Verifying..." : "Verify email"}
+                    {isSubmitting ? t("auth.verify.verifying") : t("auth.verify.button")}
                   </button>
 
                   <button
@@ -238,18 +234,18 @@ export default function VerifyEmailPage() {
                     disabled={isResending || !pending.emailVerificationId}
                     className="w-full rounded-lg border border-gray-300 px-4 py-2.5 text-sm font-medium text-gray-700 transition-colors hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
                   >
-                    {isResending ? "Sending..." : "Send new code"}
+                    {isResending ? t("auth.password.sending") : t("auth.verify.sendNewCode")}
                   </button>
                 </form>
 
                 <p className="mt-5 text-center text-sm text-gray-600">
-                  Wrong email?{" "}
+                  {t("auth.verify.wrongEmail")}{" "}
                   <Link
                     href="/login"
                     onClick={handleBackToLogin}
                     className="font-medium text-primary-600 hover:text-primary-700"
                   >
-                    Back to sign in
+                    {t("auth.password.backToSignIn")}
                   </Link>
                 </p>
               </>

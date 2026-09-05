@@ -82,7 +82,7 @@ const mergeRoomOrderIntent = (
 };
 
 export default function CalendarPage() {
-  const { t } = useTranslation();
+  const { locale, t } = useTranslation();
   const [viewMode, setViewMode] = useState<ViewMode>("timeline");
   const [startDate, setStartDate] = useState(() => startOfDay(new Date()));
   const [mobileMonth, setMobileMonth] = useState(() => startOfMonth(new Date()));
@@ -664,11 +664,16 @@ export default function CalendarPage() {
               >
                 <span>
                   {viewMode === "month" ? (
-                    format(startDate, "MMMM yyyy")
+                    startDate.toLocaleDateString(locale, { month: "long", year: "numeric" })
                   ) : (
                     <>
-                      {format(startDate, "MMM d")} &ndash;{" "}
-                      {format(addDays(endDate, -1), "MMM d, yyyy")}
+                      {startDate.toLocaleDateString(locale, { month: "short", day: "numeric" })}{" "}
+                      &ndash;{" "}
+                      {addDays(endDate, -1).toLocaleDateString(locale, {
+                        month: "short",
+                        day: "numeric",
+                        year: "numeric",
+                      })}
                     </>
                   )}
                 </span>
@@ -744,9 +749,7 @@ export default function CalendarPage() {
                 type="button"
                 disabled={!MANUAL_BOOKINGS_AVAILABLE}
                 title={
-                  !MANUAL_BOOKINGS_AVAILABLE
-                    ? "Manual booking creation is not available yet"
-                    : undefined
+                  !MANUAL_BOOKINGS_AVAILABLE ? t("calendar.manualBookingUnavailable") : undefined
                 }
                 onClick={() => {
                   setPrefill(null);
@@ -876,7 +879,7 @@ export default function CalendarPage() {
                 onClick={retryRoomOrderRefresh}
                 className="shrink-0 font-medium underline disabled:opacity-50"
               >
-                Refresh rooms
+                {t("calendar.refreshRooms")}
               </button>
             )}
           </div>
@@ -943,7 +946,7 @@ export default function CalendarPage() {
                           isToday ? "font-bold" : "font-medium text-gray-500"
                         }`}
                       >
-                        <div>{format(d, "EEE")}</div>
+                        <div>{d.toLocaleDateString(locale, { weekday: "short" })}</div>
                         <div className={`text-xs ${isToday ? "font-bold" : "font-semibold"}`}>
                           {format(d, "d")}
                         </div>
@@ -1111,10 +1114,10 @@ export default function CalendarPage() {
                                     : "bg-red-100 border-red-300 text-red-600 hover:bg-red-200"
                                 }`}
                                 style={style}
-                                title={`${bl.protected ? "Linked" : "Blocked"}: ${bl.sourceSummary || bl.reason || "No reason"}\n${bl.startDate} → ${bl.endDate}${
+                                title={`${bl.protected ? t("rooms.linked") : t("calendar.blocked")}: ${bl.sourceSummary || bl.reason || t("calendar.blockDetail.noReason")}\n${bl.startDate} → ${bl.endDate}${
                                   bl.roomId
-                                    ? `\nRoom #${bl.roomNumber ?? ""}`
-                                    : `\n${bl.blockedCount} room${bl.blockedCount !== 1 ? "s" : ""}`
+                                    ? `\n${t("calendar.roomNumber", { room: bl.roomNumber ?? "" })}`
+                                    : `\n${t("calendar.blockDetail.roomCount", { count: bl.blockedCount })}`
                                 }`}
                               >
                                 <svg
@@ -1131,7 +1134,9 @@ export default function CalendarPage() {
                                   />
                                 </svg>
                                 <span className="truncate">
-                                  {bl.protected ? "Linked" : bl.reason || "Blocked"}
+                                  {bl.protected
+                                    ? t("rooms.linked")
+                                    : bl.reason || t("calendar.blocked")}
                                 </span>
                               </button>
                             );
@@ -1144,7 +1149,11 @@ export default function CalendarPage() {
                             // VAY-403: multi-room reservation spans several rows.
                             const isMultiRoom = b.numberOfRooms > 1;
                             const multiRoomTitle = isMultiRoom
-                              ? `\n${b.bookingReference} · room ${b.roomPosition + 1} of ${b.numberOfRooms}`
+                              ? `\n${t("calendar.bookingRoomPosition", {
+                                  reference: b.bookingReference,
+                                  position: b.roomPosition + 1,
+                                  total: b.numberOfRooms,
+                                })}`
                               : "";
                             return (
                               <div
@@ -1185,8 +1194,7 @@ export default function CalendarPage() {
                         {t("calendar.unassigned")}
                       </div>
                       <div className="hidden md:block text-[10px] text-amber-500">
-                        {unassignedBookings.length} booking
-                        {unassignedBookings.length !== 1 ? "s" : ""}
+                        {t("calendar.bookingCount", { count: unassignedBookings.length })}
                       </div>
                     </td>
                     <td
@@ -1274,12 +1282,18 @@ export default function CalendarPage() {
                   {room ? `#${room.roomNumber}` : t("calendar.roomColumn")}
                 </div>
                 <div className="text-xs text-gray-900 font-medium mt-0.5">
-                  {format(parseISO(prefill.startDate), "MMM d")}
+                  {parseISO(prefill.startDate).toLocaleDateString(locale, {
+                    month: "short",
+                    day: "numeric",
+                  })}
                   <span className="text-gray-400 mx-1">→</span>
-                  {format(parseISO(prefill.endDate), "MMM d")}
+                  {parseISO(prefill.endDate).toLocaleDateString(locale, {
+                    month: "short",
+                    day: "numeric",
+                  })}
                   <span className="text-gray-400">
                     {" "}
-                    · {nights} night{nights !== 1 ? "s" : ""}
+                    · {nights} {t(nights === 1 ? "common.night" : "common.nights")}
                   </span>
                 </div>
               </div>

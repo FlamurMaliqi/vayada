@@ -19,6 +19,8 @@ import BookingStaySummary, {
   bookingSettlementLabel,
   expectedPaymentMethodLabel,
 } from "@/components/bookings/BookingStaySummary";
+import { useTranslation } from "@/lib/i18n";
+import { localizeBuiltInCheckinStep } from "@/lib/settings/checklistCopy";
 
 type GuestDraft = BookingAdditionalGuestPayload & { id?: string; position: number };
 
@@ -69,21 +71,27 @@ function roomUnit(b: Booking): string | null {
   return b.roomNumber || null;
 }
 
-function shortDateRange(checkIn: string, checkOut: string) {
+function shortDateRange(checkIn: string, checkOut: string, locale: string) {
   const ci = new Date(`${checkIn}T12:00:00`);
   const co = new Date(`${checkOut}T12:00:00`);
-  const mon = (d: Date) => d.toLocaleDateString("en-US", { month: "short" });
+  const mon = (d: Date) => d.toLocaleDateString(locale, { month: "short" });
   if (ci.getMonth() === co.getMonth() && ci.getFullYear() === co.getFullYear()) {
     return `${ci.getDate()}–${co.getDate()} ${mon(ci)}`;
   }
   return `${ci.getDate()} ${mon(ci)} – ${co.getDate()} ${mon(co)}`;
 }
 
-function guestsLabel(b: Booking) {
+function guestsLabel(
+  b: Booking,
+  t: (key: string, params?: Record<string, string | number>) => string,
+) {
   const parts: string[] = [];
-  if (b.adults > 0) parts.push(`${b.adults} adult${b.adults === 1 ? "" : "s"}`);
-  if (b.children > 0) parts.push(`${b.children} child${b.children === 1 ? "" : "ren"}`);
-  return parts.join(", ") || `${totalGuests(b)} guest${totalGuests(b) === 1 ? "" : "s"}`;
+  if (b.adults > 0)
+    parts.push(t(b.adults === 1 ? "checkIn.adult" : "checkIn.adults", { count: b.adults }));
+  if (b.children > 0)
+    parts.push(t(b.children === 1 ? "checkIn.child" : "checkIn.children", { count: b.children }));
+  const count = totalGuests(b);
+  return parts.join(", ") || t(count === 1 ? "checkIn.guest" : "checkIn.guests", { count });
 }
 
 function isPaid(b: Booking) {
@@ -124,8 +132,8 @@ function guestHasData(g: GuestRegistrationDraft) {
   return Boolean(g.firstName || g.lastName || g.email || g.phone || g.nationality);
 }
 
-function formatDateTime(iso: string): string {
-  return new Date(iso).toLocaleString(undefined, {
+function formatDateTime(iso: string, locale: string): string {
+  return new Date(iso).toLocaleString(locale, {
     day: "numeric",
     month: "short",
     year: "numeric",
@@ -151,6 +159,7 @@ function customStepValueForRecord(step: CheckinChecklistStep, value: string | bo
 }
 
 export default function CheckInPage() {
+  const { locale, t } = useTranslation();
   const params = useParams<{ id: string }>();
   const id = params.id;
   const searchParams = useSearchParams();
@@ -186,16 +195,19 @@ export default function CheckInPage() {
         setChecklistSteps(checklistRes.steps || []);
         setNotes(noteRes.notes || []);
       })
-      .catch((err) => setError(err.message || "Could not load check-in"))
+      .catch((err) => setError(err.message || t("checkIn.loadError")))
       .finally(() => setLoading(false));
-  }, [id]);
+  }, [id, t]);
 
   const pendingChecklistSteps = useMemo(
     () =>
       checklistSteps
         .filter((step) => step.required && !customStepDone(step, checklistValues[step.id]))
-        .map((step) => ({ stepId: step.id, label: step.label })),
-    [checklistSteps, checklistValues],
+        .map((step) => ({
+          stepId: step.id,
+          label: localizeBuiltInCheckinStep(step, t).label,
+        })),
+    [checklistSteps, checklistValues, t],
   );
   const flags = useMemo(
     () => pendingChecklistSteps.map((flag) => flag.label),
@@ -235,9 +247,7 @@ export default function CheckInPage() {
     const draft = guests[index];
     if (!draft) return;
     if (guestHasData(draft)) {
-      const confirmed = window.confirm(
-        `Remove Guest ${index + 2}? Their registration data will be deleted.`,
-      );
+      const confirmed = window.confirm(t("checkIn.removeGuestConfirm", { number: index + 2 }));
       if (!confirmed) return;
     }
     setRemovingGuest(`guest-${index}`);
@@ -252,7 +262,7 @@ export default function CheckInPage() {
           .map((guest, idx) => ({ ...guest, position: guest.id ? guest.position : idx + 1 })),
       );
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not remove guest");
+      setError(err instanceof Error ? err.message : t("checkIn.removeGuestError"));
     } finally {
       setRemovingGuest(null);
     }
@@ -269,7 +279,7 @@ export default function CheckInPage() {
       setNotes((prev) => [saved, ...prev]);
       setNoteDraft("");
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not save note");
+      setError(err instanceof Error ? err.message : t("checkIn.saveNoteError"));
     } finally {
       setSavingNote(false);
     }
@@ -293,7 +303,7 @@ export default function CheckInPage() {
         : await bookingsService.createAdditionalGuest(booking.id, payload);
       setGuests((prev) => prev.map((g, idx) => (idx === index ? { ...saved } : g)));
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not save guest");
+      setError(err instanceof Error ? err.message : t("checkIn.saveGuestError"));
     } finally {
       setSavingGuest(null);
     }
@@ -317,7 +327,7 @@ export default function CheckInPage() {
       setBooking(updated);
       setBooker(bookerDraftFromBooking(updated));
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not save booker");
+      setError(err instanceof Error ? err.message : t("checkIn.saveBookerError"));
     } finally {
       setSavingGuest(null);
     }
@@ -330,7 +340,7 @@ export default function CheckInPage() {
     try {
       setBooking(await bookingsService.markPaid(booking.id));
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not mark payment as paid");
+      setError(err instanceof Error ? err.message : t("checkIn.markPaidError"));
     } finally {
       setActionLoading(null);
     }
@@ -371,7 +381,7 @@ export default function CheckInPage() {
       setGuests(flushedGuests);
 
       if (flushResults.some((result) => result.status === "rejected")) {
-        throw new Error("Some guest drafts could not be saved. Please retry.");
+        throw new Error(t("checkIn.guestDraftsSaveError"));
       }
 
       const completedAt = new Date().toISOString();
@@ -395,20 +405,20 @@ export default function CheckInPage() {
       setBooking(checkedIn);
       setConfirmationFlags(carriedFlags);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not complete check-in");
+      setError(err instanceof Error ? err.message : t("checkIn.completeError"));
     } finally {
       setActionLoading(null);
     }
   };
 
   if (loading) {
-    return <div className="p-4 md:p-6 text-sm text-gray-500">Loading check-in...</div>;
+    return <div className="p-4 md:p-6 text-sm text-gray-500">{t("checkIn.loading")}</div>;
   }
 
   if (!booking || !booker) {
     return (
       <div className="p-4 md:p-6">
-        <p className="text-sm text-red-600">{error || "Booking not found."}</p>
+        <p className="text-sm text-red-600">{error || t("checkIn.bookingNotFound")}</p>
       </div>
     );
   }
@@ -417,16 +427,20 @@ export default function CheckInPage() {
     return (
       <main className="mx-auto max-w-3xl p-4 md:p-6">
         <div className="rounded-2xl border border-green-200 bg-white p-6 shadow-sm">
-          <p className="text-sm font-semibold uppercase tracking-wide text-green-700">Checked in</p>
+          <p className="text-sm font-semibold uppercase tracking-wide text-green-700">
+            {t("dashboard.checkedIn")}
+          </p>
           <h1 className="mt-2 text-2xl font-bold text-gray-950">{guestName(booking)}</h1>
           <p className="mt-1 text-sm text-gray-500">
-            {booking.bookingReference} is now marked Checked In.
+            {t("checkIn.completedReference", { reference: booking.bookingReference })}
           </p>
           {confirmationFlags.length > 0 && (
             <div className="mt-5 rounded-xl border border-amber-200 bg-amber-50 p-4">
               <p className="font-semibold text-amber-950">
-                {confirmationFlags.length} item{confirmationFlags.length === 1 ? "" : "s"} still
-                flagged on this booking
+                {t(
+                  confirmationFlags.length === 1 ? "checkIn.flaggedItem" : "checkIn.flaggedItems",
+                  { count: confirmationFlags.length },
+                )}
               </p>
               <ul className="mt-2 list-disc pl-5 text-sm text-amber-900">
                 {confirmationFlags.map((flag) => (
@@ -438,18 +452,18 @@ export default function CheckInPage() {
           <div className="mt-6 flex flex-wrap gap-2">
             {nextAfterCheckin === "checkout" ? (
               <Link href={`/check-out/${booking.id}`} className={primaryActionClass}>
-                Continue to check-out
+                {t("checkIn.continueToCheckout")}
               </Link>
             ) : (
               <Link href="/dashboard" className={primaryActionClass}>
-                Back to dashboard
+                {t("checkIn.backToDashboard")}
               </Link>
             )}
             <Link
               href={`/bookings/${booking.id}`}
               className="rounded-lg border border-gray-200 px-4 py-2 text-sm font-semibold text-gray-700"
             >
-              Open booking
+              {t("checkIn.openBooking")}
             </Link>
           </div>
         </div>
@@ -465,22 +479,22 @@ export default function CheckInPage() {
             <Link
               href="/dashboard"
               className="mt-1 flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-gray-200 bg-white text-gray-600 hover:bg-gray-50"
-              aria-label="Back to dashboard"
+              aria-label={t("checkIn.backToDashboard")}
             >
               ←
             </Link>
             <div className="min-w-0">
-              <p className="text-sm text-gray-500">Dashboard / Check-in</p>
+              <p className="text-sm text-gray-500">{t("checkIn.breadcrumb")}</p>
               <h1 className="flex flex-wrap items-center gap-x-2 gap-y-1 text-2xl font-bold text-gray-950 md:text-3xl">
-                Check in · {guestName(booking)}
+                {t("checkIn.title", { guest: guestName(booking) })}
                 <span className="rounded-full bg-green-100 px-2.5 py-1 text-xs font-semibold text-green-700">
-                  arriving today
+                  {t("checkIn.arrivingToday")}
                 </span>
               </h1>
               {ota && (
                 <div className="mt-1">
                   <span className="rounded-full bg-blue-100 px-2.5 py-1 text-xs font-semibold text-blue-700">
-                    OTA fields locked
+                    {t("checkIn.otaFieldsLocked")}
                   </span>
                 </div>
               )}
@@ -496,36 +510,42 @@ export default function CheckInPage() {
 
         {completedGuests < totalGuests(booking) && (
           <div className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-950">
-            {totalGuests(booking) - completedGuests} of {totalGuests(booking)} guests missing
-            registration details / passport / ID. Required for police registration. Check in now,
-            complete later.
+            {t("checkIn.missingRegistration", {
+              missing: totalGuests(booking) - completedGuests,
+              total: totalGuests(booking),
+            })}
           </div>
         )}
 
         <section className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_360px]">
           <div className="space-y-4">
-            <Card title="Stay">
+            <Card title={t("checkIn.stay")}>
               {booking.numberOfRooms > 1 && (
                 <BookingStaySummary stays={booking.stays} expectedCount={booking.numberOfRooms} />
               )}
               <div hidden={booking.numberOfRooms > 1} className="grid gap-3 text-sm md:grid-cols-3">
                 <Info
-                  label="Room"
+                  label={t("bookings.tableRoom")}
                   value={booking.roomName}
                   secondary={roomUnit(booking) ?? undefined}
                 />
                 <Info
-                  label="Nights"
-                  value={`${booking.nights} night${booking.nights === 1 ? "" : "s"}`}
-                  secondary={shortDateRange(booking.checkIn, booking.checkOut)}
+                  label={t("bookings.detail.nightsLabel")}
+                  value={t(booking.nights === 1 ? "checkIn.night" : "checkIn.nights", {
+                    count: booking.nights,
+                  })}
+                  secondary={shortDateRange(booking.checkIn, booking.checkOut, locale)}
                 />
-                <Info label="Guests" value={guestsLabel(booking)} />
+                <Info label={t("bookings.detail.guests")} value={guestsLabel(booking, t)} />
               </div>
             </Card>
 
             <Card
-              title="Guest register"
-              action={`${completedGuests} of ${guests.length + 1} complete`}
+              title={t("checkIn.guestRegister")}
+              action={t("checkIn.registrationProgress", {
+                completed: completedGuests,
+                total: guests.length + 1,
+              })}
             >
               <div className="space-y-3">
                 <div
@@ -538,21 +558,21 @@ export default function CheckInPage() {
                   }`}
                 >
                   {overCapacityBy > 0
-                    ? `Over capacity by ${overCapacityBy} guest${overCapacityBy === 1 ? "" : "s"}. Room capacity reached (${maxGuests} guests maximum).`
+                    ? t("checkIn.overCapacity", { count: overCapacityBy, max: maxGuests })
                     : capacityReached
-                      ? `Room capacity reached (${maxGuests} guests maximum).`
-                      : `This booking allows ${remainingGuestSlots} additional guest${remainingGuestSlots === 1 ? "" : "s"}.`}
+                      ? t("checkIn.capacityReached", { max: maxGuests })
+                      : t("checkIn.additionalGuestsAllowed", { count: remainingGuestSlots })}
                 </div>
                 <GuestRegistrationCard
-                  title={guestName(booking) || "Booker"}
-                  badge="booker"
+                  title={guestName(booking) || t("checkIn.booker")}
+                  badge={t("checkIn.bookerBadge")}
                   guest={booker}
                   complete={guestComplete(booker)}
                   ota={ota}
                   onChange={updateBooker}
                   onSave={saveBooker}
                   saving={savingGuest === "booker"}
-                  saveLabel="Save booker"
+                  saveLabel={t("checkIn.saveBooker")}
                   readOnly
                 />
 
@@ -561,7 +581,7 @@ export default function CheckInPage() {
                   return (
                     <GuestRegistrationCard
                       key={guest.id || `new-${index}`}
-                      title={`Guest ${index + 2}`}
+                      title={t("checkIn.guestNumber", { number: index + 2 })}
                       guest={guest}
                       complete={complete}
                       ota={ota}
@@ -581,22 +601,27 @@ export default function CheckInPage() {
                   className="w-full rounded-xl border border-dashed border-gray-300 py-3 text-sm font-medium text-gray-500 hover:border-gray-400 hover:text-gray-700 disabled:cursor-not-allowed disabled:border-gray-200 disabled:bg-gray-100 disabled:text-gray-400"
                 >
                   {capacityReached
-                    ? `Room capacity reached (${maxGuests} guests maximum).`
-                    : "+ Add guest"}
+                    ? t("checkIn.capacityReached", { max: maxGuests })
+                    : t("checkIn.addGuest")}
                 </button>
               </div>
             </Card>
 
-            <Card title="Payment">
+            <Card title={t("bookings.detail.payment")}>
               {/* prettier-ignore */}
-              <div className="mb-3 text-sm"><Info label="Expected method" value={expectedPaymentMethodLabel(booking.expectedPaymentMethod)} /></div>
+              <div className="mb-3 text-sm"><Info label={t("checkIn.expectedMethod")} value={expectedPaymentMethodLabel(booking.expectedPaymentMethod, t)} /></div>
               {booking.depositRequired && (
                 <div className="mb-3 rounded-xl border border-gray-200 bg-gray-50 p-3 text-sm">
                   <p className="font-semibold text-gray-900">
-                    Deposit: {formatCurrency(booking.depositAmount, booking.currency)}
+                    {t("checkIn.deposit", {
+                      amount: formatCurrency(booking.depositAmount, booking.currency),
+                    })}
                   </p>
                   <p className="text-xs text-gray-500">
-                    {booking.paymentStatus === "captured" ? "Paid" : "Pending"} before arrival
+                    {booking.paymentStatus === "captured"
+                      ? t("bookings.balancePaid")
+                      : t("bookings.statusPending")}{" "}
+                    {t("checkIn.beforeArrival")}
                   </p>
                 </div>
               )}
@@ -606,7 +631,7 @@ export default function CheckInPage() {
                 <p
                   className={`font-semibold ${isPaid(booking) ? "text-green-800" : "text-amber-950"}`}
                 >
-                  {bookingSettlementLabel(booking)}
+                  {bookingSettlementLabel(booking, t)}
                 </p>
                 {(!booking.depositRequired || booking.balanceAmount > 0) && (
                   <div className="mt-3">
@@ -614,17 +639,17 @@ export default function CheckInPage() {
                       type="button"
                       onClick={markPaid}
                       disabled={!LEGACY_BOOKING_WRITES_AVAILABLE || actionLoading !== null}
-                      title="Payment status changes are not available yet"
+                      title={t("checkIn.paymentChangesUnavailable")}
                       className="cursor-not-allowed rounded-lg border border-gray-200 bg-white px-4 py-2 text-sm font-semibold text-gray-400"
                     >
-                      Mark as paid · Not available yet
+                      {t("checkIn.markPaidUnavailable")}
                     </button>
                   </div>
                 )}
               </div>
             </Card>
 
-            <Card title="Notes">
+            <Card title={t("checkIn.notes")}>
               <div className="space-y-4">
                 {notes.length > 0 && (
                   <div className="space-y-3">
@@ -632,12 +657,12 @@ export default function CheckInPage() {
                       <div key={note.id} className="rounded-lg border border-gray-200 p-3">
                         <div className="flex flex-wrap items-center gap-2 text-xs text-gray-500">
                           <span className="font-medium text-gray-700">
-                            {note.authorName || "Unknown"}
+                            {note.authorName || t("checkIn.unknown")}
                           </span>
-                          <span>{formatDateTime(note.createdAt)}</span>
+                          <span>{formatDateTime(note.createdAt, locale)}</span>
                           {note.source === "check-in" && (
                             <span className="rounded-full bg-blue-50 px-2 py-0.5 font-medium text-blue-700">
-                              Check-in
+                              {t("bookings.detail.checkIn")}
                             </span>
                           )}
                         </div>
@@ -651,7 +676,7 @@ export default function CheckInPage() {
                 <textarea
                   value={noteDraft}
                   onChange={(e) => setNoteDraft(e.target.value)}
-                  placeholder="Add a note (visible on the reservation)."
+                  placeholder={t("checkIn.notePlaceholder")}
                   rows={3}
                   className="w-full resize-none rounded-lg border border-gray-200 px-3 py-2 text-sm text-gray-950 placeholder:text-gray-400 focus:border-primary-500 focus:outline-none focus:ring-2 focus:ring-primary-100"
                 />
@@ -661,18 +686,18 @@ export default function CheckInPage() {
                   disabled={savingNote || !noteDraft.trim()}
                   className={primaryActionClass}
                 >
-                  {savingNote ? "Saving..." : "Save note"}
+                  {savingNote ? t("common.saving") : t("checkIn.saveNote")}
                 </button>
               </div>
             </Card>
           </div>
 
           <aside className="lg:sticky lg:top-6 lg:self-start">
-            <Card title="Checklist">
+            <Card title={t("checkIn.checklist")}>
               <div className="space-y-3">
                 {checklistSteps.length === 0 && (
                   <div className="rounded-lg border border-dashed border-gray-300 p-3 text-sm text-gray-500">
-                    No check-in steps configured.
+                    {t("checkIn.noSteps")}
                   </div>
                 )}
                 {checklistSteps.map((step) => (
@@ -687,9 +712,12 @@ export default function CheckInPage() {
               </div>
               {requiredWarning && pendingChecklistSteps.length > 0 && (
                 <div className="mt-4 rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
-                  {pendingChecklistSteps.length} required step
-                  {pendingChecklistSteps.length === 1 ? "" : "s"} incomplete - you can still check
-                  in, but these will remain flagged on the booking.
+                  {t(
+                    pendingChecklistSteps.length === 1
+                      ? "checkIn.requiredStepIncomplete"
+                      : "checkIn.requiredStepsIncomplete",
+                    { count: pendingChecklistSteps.length },
+                  )}
                 </div>
               )}
               <button
@@ -698,12 +726,16 @@ export default function CheckInPage() {
                 disabled={actionLoading !== null}
                 className={`${primaryActionClass} mt-5 w-full py-3`}
               >
-                {actionLoading === "completeCheckIn" ? "Completing..." : "Complete check-in"}
+                {actionLoading === "completeCheckIn"
+                  ? t("checkIn.completing")
+                  : t("checkIn.complete")}
               </button>
               <p className="mt-3 text-center text-sm text-gray-500">
                 {flags.length === 0
-                  ? "Ready to check in"
-                  : `${flags.length} item${flags.length === 1 ? "" : "s"} pending - check in anyway`}
+                  ? t("checkIn.ready")
+                  : t(flags.length === 1 ? "checkIn.pendingItem" : "checkIn.pendingItems", {
+                      count: flags.length,
+                    })}
               </p>
             </Card>
           </aside>
@@ -724,7 +756,7 @@ function GuestRegistrationCard({
   saving,
   onRemove,
   removing,
-  saveLabel = "Save guest",
+  saveLabel,
   readOnly = false,
 }: {
   title: string;
@@ -740,6 +772,7 @@ function GuestRegistrationCard({
   saveLabel?: string;
   readOnly?: boolean;
 }) {
+  const { t } = useTranslation();
   const contactLocked = (value: string | null | undefined) => readOnly || (ota && Boolean(value));
 
   return (
@@ -759,13 +792,13 @@ function GuestRegistrationCard({
             )}
           </p>
           <p className={`text-sm ${complete ? "text-green-700" : "text-amber-700"}`}>
-            {complete ? "Registration complete" : "First and last name required"}
+            {complete ? t("checkIn.registrationComplete") : t("checkIn.nameRequired")}
           </p>
         </div>
         <div className="flex shrink-0 items-center gap-2">
           {ota && (
             <span className="text-right text-xs font-medium text-gray-500">
-              Imported fields locked where supplied
+              {t("checkIn.importedFieldsLocked")}
             </span>
           )}
           {onRemove && (
@@ -775,33 +808,33 @@ function GuestRegistrationCard({
               disabled={removing}
               className="rounded-lg border border-red-200 px-2.5 py-1 text-xs font-semibold text-red-700 hover:bg-red-50 disabled:opacity-60"
             >
-              {removing ? "Removing..." : "Remove"}
+              {removing ? t("checkIn.removing") : t("checkIn.remove")}
             </button>
           )}
         </div>
       </div>
       <div className="grid gap-3 md:grid-cols-2">
         <Field
-          label="First name"
+          label={t("calendar.newBookingModal.firstNameLabel")}
           value={guest.firstName || ""}
           disabled={contactLocked(guest.firstName)}
           onChange={(v) => onChange({ firstName: v })}
         />
         <Field
-          label="Last name"
+          label={t("calendar.newBookingModal.lastNameLabel")}
           value={guest.lastName || ""}
           disabled={contactLocked(guest.lastName)}
           onChange={(v) => onChange({ lastName: v })}
         />
         <Field
-          label="Email"
+          label={t("bookings.detail.email")}
           type="email"
           value={guest.email || ""}
           disabled={contactLocked(guest.email)}
           onChange={(v) => onChange({ email: v })}
         />
         <Field
-          label="Phone"
+          label={t("bookings.detail.phone")}
           type="tel"
           value={guest.phone || ""}
           disabled={contactLocked(guest.phone)}
@@ -817,10 +850,10 @@ function GuestRegistrationCard({
         />
       </div>
       <p className="mt-3 rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-xs text-gray-500">
-        Gender, date of birth, and passport details are not stored in PMS yet.
+        {t("checkIn.unsupportedGuestFields")}
       </p>
       {readOnly ? (
-        <p className="mt-3 text-xs text-gray-500">Booker editing is not available yet.</p>
+        <p className="mt-3 text-xs text-gray-500">{t("checkIn.bookerEditingUnavailable")}</p>
       ) : (
         <button
           type="button"
@@ -828,7 +861,7 @@ function GuestRegistrationCard({
           disabled={saving}
           className={`${primaryActionClass} mt-3`}
         >
-          {saving ? "Saving..." : saveLabel}
+          {saving ? t("common.saving") : (saveLabel ?? t("checkIn.saveGuest"))}
         </button>
       )}
     </div>
@@ -910,6 +943,8 @@ function CustomChecklistItem({
   currency: string;
   onChange: (value: string | boolean) => void;
 }) {
+  const { t } = useTranslation();
+  const displayStep = localizeBuiltInCheckinStep(step, t);
   const done = customStepDone(step, value);
   const controlId = `checklist-${step.id}`;
   const labelId = `checklist-label-${step.id}`;
@@ -930,15 +965,15 @@ function CustomChecklistItem({
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-1.5">
             <span id={labelId} className="break-words text-sm font-medium text-gray-900">
-              {step.label}
+              {displayStep.label}
             </span>
             {step.required && (
               <span className="rounded-full bg-red-50 px-2 py-0.5 text-xs font-medium text-red-700">
-                required
+                {t("common.required")}
               </span>
             )}
           </div>
-          {step.prompt && <p className="mt-1 text-xs text-gray-500">{step.prompt}</p>}
+          {displayStep.prompt && <p className="mt-1 text-xs text-gray-500">{displayStep.prompt}</p>}
 
           {step.type === "checkbox" && (
             <label className="mt-2 flex items-center gap-2 text-sm text-gray-600">
@@ -950,7 +985,7 @@ function CustomChecklistItem({
                 aria-labelledby={`${labelId} ${controlId}-suffix`}
                 className="h-4 w-4 rounded border-gray-300"
               />
-              <span id={`${controlId}-suffix`}>Done</span>
+              <span id={`${controlId}-suffix`}>{t("checkIn.done")}</span>
             </label>
           )}
 
@@ -959,7 +994,7 @@ function CustomChecklistItem({
               id={controlId}
               value={typeof value === "string" ? value : ""}
               onChange={(event) => onChange(event.target.value)}
-              placeholder={step.prompt || "Add note"}
+              placeholder={step.prompt || t("checkIn.addNote")}
               aria-labelledby={labelId}
               className="mt-2 h-10 w-full rounded-lg border border-gray-200 px-3 text-sm"
             />

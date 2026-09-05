@@ -31,7 +31,7 @@ import ConfirmDialog from "@/components/ConfirmDialog";
 import Modal from "@/components/Modal";
 import { NationalitySelect } from "@/components/NationalitySelect";
 import { formatCurrency } from "@/lib/formatCurrency";
-import { nationalityDisplayLabel, paymentMethodLabel } from "@vayada/locale-constants";
+import { nationalityDisplayLabel, paymentMethodLabelKey } from "@vayada/locale-constants";
 import {
   AddOnListPicker,
   SelectedAddOnSummary,
@@ -50,6 +50,9 @@ import {
 } from "@/lib/constants/statusStyles";
 import { messagingService } from "@/services/messaging";
 import { resolveSelectedPmsPropertyId } from "@/services/api/pmsPropertyClient";
+import { useTranslation } from "@/lib/i18n";
+
+type Translate = ReturnType<typeof useTranslation>["t"];
 
 // ─── Helpers ─────────────────────────────────────────────────────────
 
@@ -80,18 +83,18 @@ function formatPaymentCurrency(amount: number, currency: string): string {
   return new Intl.NumberFormat(undefined, { style: "currency", currency }).format(amount);
 }
 
-function formatDateLong(iso: string): string {
+function formatDateLong(iso: string, locale?: string): string {
   if (!iso) return "";
   const d = new Date(iso + "T00:00:00");
-  return d.toLocaleDateString(undefined, {
+  return d.toLocaleDateString(locale, {
     day: "numeric",
     month: "short",
     year: "numeric",
   });
 }
 
-function formatDateTime(iso: string): string {
-  return new Date(iso).toLocaleString(undefined, {
+function formatDateTime(iso: string, locale?: string): string {
+  return new Date(iso).toLocaleString(locale, {
     day: "numeric",
     month: "short",
     year: "numeric",
@@ -104,36 +107,74 @@ function errMessage(err: unknown, fallback: string): string {
   return err instanceof Error && err.message ? err.message : fallback;
 }
 
-function totalGuestsLabel(adults: number, children: number): string {
+function totalGuestsLabel(adults: number, children: number, t: Translate): string {
   const parts: string[] = [];
-  parts.push(`${adults} adult${adults !== 1 ? "s" : ""}`);
+  parts.push(`${adults} ${t(adults === 1 ? "common.adult" : "common.adults")}`);
   if (children > 0) {
-    parts.push(`${children} child${children !== 1 ? "ren" : ""}`);
+    parts.push(`${children} ${t(children === 1 ? "common.child" : "common.children")}`);
   }
   return parts.join(", ");
+}
+
+function paymentMethodDisplayLabel(method: string | null | undefined, t: Translate): string {
+  return t(`bookings.detail.paymentMethod.${paymentMethodLabelKey(method)}`);
+}
+
+function bookingStatusLabel(status: string, t: Translate): string {
+  const key = {
+    pending: "bookings.statusPending",
+    confirmed: "bookings.statusConfirmed",
+    checked_in: "bookings.statusCheckedIn",
+    in_house: "bookings.statusInHouse",
+    checked_out: "bookings.statusCheckedOut",
+    cancelled: "bookings.statusCancelled",
+    declined: "bookings.statusDeclined",
+    expired: "bookings.statusExpired",
+    completed: "bookings.statusCompleted",
+    no_show: "bookings.statusNoShow",
+  }[status];
+  return key ? t(key) : status;
+}
+
+function paymentStatusDisplayLabel(status: string, t: Translate): string {
+  const knownStatuses = new Set([
+    "unpaid",
+    "authorized",
+    "captured",
+    "cancelled",
+    "refunded",
+    "partially_refunded",
+    "failed",
+    "pay_at_property",
+    "awaiting_paypal",
+  ]);
+  return knownStatuses.has(status)
+    ? t(`bookings.detail.paymentStatus.${status}`)
+    : getPaymentStatusLabel(status);
 }
 
 const LEGACY_BOOKING_WRITES_AVAILABLE = false;
 const DRAFT_GUEST_ID_PREFIX = "draft-guest-";
 
 function CountdownTimer({ deadline }: { deadline: string }) {
+  const { t } = useTranslation();
   const [timeLeft, setTimeLeft] = useState("");
 
   useEffect(() => {
     const update = () => {
       const diff = new Date(deadline).getTime() - Date.now();
       if (diff <= 0) {
-        setTimeLeft("Expired");
+        setTimeLeft(t("bookings.detail.expired"));
         return;
       }
       const hours = Math.floor(diff / (1000 * 60 * 60));
       const minutes = Math.floor((diff % (1000 * 60 * 60)) / (1000 * 60));
-      setTimeLeft(`${hours}h ${minutes}m remaining`);
+      setTimeLeft(t("bookings.detail.remaining", { hours, minutes }));
     };
     update();
     const interval = setInterval(update, 60000);
     return () => clearInterval(interval);
-  }, [deadline]);
+  }, [deadline, t]);
 
   const isUrgent = new Date(deadline).getTime() - Date.now() < 4 * 60 * 60 * 1000;
   return (
@@ -146,6 +187,7 @@ function CountdownTimer({ deadline }: { deadline: string }) {
 // ─── Header bar with overflow menu ───────────────────────────────────
 
 function OverflowMenu({ onPrint, onExport }: { onPrint: () => void; onExport: () => void }) {
+  const { t } = useTranslation();
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
 
@@ -164,7 +206,7 @@ function OverflowMenu({ onPrint, onExport }: { onPrint: () => void; onExport: ()
         type="button"
         onClick={() => setOpen((v) => !v)}
         className="p-2 rounded-lg text-gray-400 hover:bg-gray-100 hover:text-gray-600"
-        aria-label="More actions"
+        aria-label={t("bookings.detail.moreActions")}
       >
         <EllipsisHorizontalIcon className="w-5 h-5" />
       </button>
@@ -177,17 +219,17 @@ function OverflowMenu({ onPrint, onExport }: { onPrint: () => void; onExport: ()
             }}
             className="w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-50"
           >
-            Print
+            {t("bookings.detail.print")}
           </button>
           <button
             type="button"
             disabled
-            title="Confirmation email resending is not available yet"
+            title={t("bookings.detail.resendUnavailable")}
             className="flex w-full cursor-not-allowed items-center justify-between px-4 py-2 text-left text-sm text-gray-400"
           >
-            <span>Resend confirmation email</span>
+            <span>{t("bookings.detail.resendConfirmation")}</span>
             <span className="rounded bg-gray-100 px-1.5 py-0.5 text-[10px] font-medium text-gray-500">
-              Soon
+              {t("bookings.detail.soon")}
             </span>
           </button>
           <button
@@ -197,7 +239,7 @@ function OverflowMenu({ onPrint, onExport }: { onPrint: () => void; onExport: ()
             }}
             className="w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-50"
           >
-            Export as JSON
+            {t("bookings.detail.exportJson")}
           </button>
         </div>
       )}
@@ -224,6 +266,7 @@ function CancellationPolicyPanel({
   currency,
   policy,
 }: CancellationPanelProps) {
+  const { locale, t } = useTranslation();
   // Free window cutoff = check-in - freeCancellationDays.
   const today = new Date();
   today.setHours(0, 0, 0, 0);
@@ -243,15 +286,17 @@ function CancellationPolicyPanel({
   // Effective refund percent inside the post-window region.
   const refundPctLabel =
     partialPct > 0
-      ? `${partialPct}% refund`
-      : `1 night/room · ${formatCurrency(totalCharge, currency)}`;
+      ? t("bookings.detail.partialRefund", { percent: partialPct })
+      : t("bookings.detail.oneNightPerRoom", {
+          amount: formatCurrency(totalCharge, currency),
+        });
 
-  const todayLabel = today.toLocaleDateString(undefined, {
+  const todayLabel = today.toLocaleDateString(locale, {
     day: "numeric",
     month: "long",
     year: "numeric",
   });
-  const cutoffLabel = cutoff.toLocaleDateString(undefined, {
+  const cutoffLabel = cutoff.toLocaleDateString(locale, {
     day: "numeric",
     month: "long",
     year: "numeric",
@@ -260,31 +305,39 @@ function CancellationPolicyPanel({
   return (
     <div className="border border-gray-200 rounded-lg overflow-hidden">
       <div className="px-4 py-2.5 bg-gray-50 border-b border-gray-200 text-xs font-semibold text-gray-500 uppercase tracking-wide">
-        Cancellation policy · {rateType} rate
+        {t("bookings.detail.cancellationPolicyTitle", { rateType })}
       </div>
       <div className="divide-y divide-gray-100">
         {!nonRefundable && (
           <div className="px-4 py-3 flex items-start justify-between gap-3">
             <div className="text-sm">
-              <p className="font-medium text-gray-900">Free cancellation</p>
+              <p className="font-medium text-gray-900">{t("bookings.detail.freeCancellation")}</p>
               <p className="text-gray-500 text-xs">
-                Until {cutoffLabel} · {freeDays} day{freeDays !== 1 ? "s" : ""} before check-in
+                {t("bookings.detail.freeCancellationDetails", {
+                  cutoff: cutoffLabel,
+                  days: freeDays,
+                  dayLabel: t(freeDays === 1 ? "common.day" : "common.days"),
+                })}
               </p>
             </div>
             <span className="shrink-0 inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-700">
-              No charge
+              {t("bookings.detail.noCharge")}
             </span>
           </div>
         )}
         <div className="px-4 py-3 flex items-start justify-between gap-3">
           <div className="text-sm">
             <p className="font-medium text-gray-900">
-              {nonRefundable ? "Non-refundable" : "After free window"}
+              {nonRefundable ? t("rooms.nonRefundableShort") : t("bookings.detail.afterFreeWindow")}
             </p>
             <p className="text-gray-500 text-xs">
               {nonRefundable
-                ? "Cancellation charges apply for the full stay."
-                : `After ${cutoffLabel} · Within ${freeDays} day${freeDays !== 1 ? "s" : ""} of check-in`}
+                ? t("bookings.detail.fullStayCancellationCharge")
+                : t("bookings.detail.afterFreeWindowDetails", {
+                    cutoff: cutoffLabel,
+                    days: freeDays,
+                    dayLabel: t(freeDays === 1 ? "common.day" : "common.days"),
+                  })}
             </p>
           </div>
           <span className="shrink-0 inline-flex items-center px-2 py-0.5 rounded-full text-xs font-bold bg-red-100 text-red-700">
@@ -297,12 +350,12 @@ function CancellationPolicyPanel({
           inFreeWindow ? "bg-green-50 text-green-800" : "bg-amber-50 text-amber-800"
         }`}
       >
-        Today is {todayLabel} —{" "}
+        {t("bookings.detail.todayIs", { date: todayLabel })} —{" "}
         {inFreeWindow
-          ? "within the free cancellation window. No charge applies."
+          ? t("bookings.detail.withinFreeWindow")
           : nonRefundable
-            ? "cancellation will incur the full charge."
-            : `${refundPctLabel} applies.`}
+            ? t("bookings.detail.fullChargeApplies")
+            : t("bookings.detail.refundApplies", { refund: refundPctLabel })}
       </div>
     </div>
   );
@@ -332,6 +385,7 @@ function AdditionalGuestRow({
   onSave,
   onDelete,
 }: GuestRowProps) {
+  const { t } = useTranslation();
   const [open, setOpen] = useState(!guest.firstName && !guest.lastName);
   const [saving, setSaving] = useState(false);
   const [form, setForm] = useState({
@@ -347,13 +401,14 @@ function AdditionalGuestRow({
       ? `${(guest.firstName[0] || "").toUpperCase()}${(guest.lastName[0] || "").toUpperCase()}`
       : "?";
   const displayName =
-    [guest.firstName, guest.lastName].filter(Boolean).join(" ") || "Unnamed guest";
+    [guest.firstName, guest.lastName].filter(Boolean).join(" ") ||
+    t("bookings.detail.unnamedGuest");
 
   const roomBadge =
     guest.roomPosition == null
       ? null
       : roomOptions.find((r) => r.position === guest.roomPosition)?.label ||
-        `Room ${guest.roomPosition + 1}`;
+        t("bookings.detail.roomNumber", { number: guest.roomPosition + 1 });
 
   const handleSave = async () => {
     setSaving(true);
@@ -378,7 +433,7 @@ function AdditionalGuestRow({
         <div className="flex-1 min-w-0">
           <p className="text-sm font-medium text-gray-900 truncate">{displayName}</p>
           <p className="text-xs text-gray-500">
-            Guest {position} of {total}
+            {t("bookings.detail.guestPosition", { position, total })}
             {roomBadge && (
               <>
                 {" · "}
@@ -390,14 +445,14 @@ function AdditionalGuestRow({
         <button
           onClick={() => setOpen((v) => !v)}
           className="p-1.5 rounded text-gray-400 hover:text-gray-600 hover:bg-gray-100"
-          aria-label={open ? "Collapse" : "Expand"}
+          aria-label={open ? t("layout.sidebar.collapse") : t("bookings.detail.expand")}
         >
           {open ? <ChevronUpIcon className="w-4 h-4" /> : <ChevronDownIcon className="w-4 h-4" />}
         </button>
         <button
           onClick={onDelete}
           className="p-1.5 rounded text-gray-400 hover:text-red-600 hover:bg-red-50"
-          aria-label="Delete guest"
+          aria-label={t("bookings.detail.deleteGuest")}
         >
           <TrashIcon className="w-4 h-4" />
         </button>
@@ -406,12 +461,12 @@ function AdditionalGuestRow({
         <div className="px-4 py-4 border-t border-gray-100 bg-gray-50">
           <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
             <Field
-              label="First name"
+              label={t("bookings.modal.firstNameLabel")}
               value={form.firstName}
               onChange={(v) => setForm({ ...form, firstName: v })}
             />
             <Field
-              label="Last name"
+              label={t("bookings.modal.lastNameLabel")}
               value={form.lastName}
               onChange={(v) => setForm({ ...form, lastName: v })}
             />
@@ -420,14 +475,14 @@ function AdditionalGuestRow({
               onChange={(v) => setForm({ ...form, nationality: v })}
             />
             <Field
-              label="Email (optional)"
+              label={t("bookings.detail.emailOptional")}
               type="email"
               value={form.email}
               onChange={(v) => setForm({ ...form, email: v })}
               disabled={guest.guestContactHidden}
             />
             <Field
-              label="Phone (optional)"
+              label={t("bookings.detail.phoneOptional")}
               type="tel"
               value={form.phone}
               onChange={(v) => setForm({ ...form, phone: v })}
@@ -436,12 +491,12 @@ function AdditionalGuestRow({
           </div>
           {guest.guestContactHidden && (
             <p className="mt-3 text-xs text-amber-700">
-              Guest email and phone become available after you accept the booking.
+              {t("bookings.detail.contactAvailableAfterAcceptance")}
             </p>
           )}
           {roomOptions.length > 1 && (
             <p className="mt-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
-              Additional guest room assignment is not available on PMS next-stack yet.
+              {t("bookings.detail.guestAssignmentUnavailable")}
             </p>
           )}
           <div className="mt-4 flex justify-end gap-2">
@@ -458,14 +513,14 @@ function AdditionalGuestRow({
               }}
               className="px-4 py-2 text-sm font-medium text-gray-700 bg-gray-100 hover:bg-gray-200 rounded-lg"
             >
-              Cancel
+              {t("bookings.modal.cancelButton")}
             </button>
             <button
               onClick={handleSave}
               disabled={saving}
               className="px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 disabled:opacity-50"
             >
-              {saving ? "Saving…" : "Save"}
+              {saving ? t("common.saving") : t("common.save")}
             </button>
           </div>
         </div>
@@ -541,6 +596,7 @@ interface MoveRoomModalProps {
 }
 
 function MoveRoomModal({ fromRoomNumber, candidates, onClose, onMove }: MoveRoomModalProps) {
+  const { t } = useTranslation();
   const [toRoomId, setToRoomId] = useState(candidates[0]?.id || "");
   const [moving, setMoving] = useState(false);
   const [err, setErr] = useState("");
@@ -553,7 +609,7 @@ function MoveRoomModal({ fromRoomNumber, candidates, onClose, onMove }: MoveRoom
       await onMove(toRoomId);
       onClose();
     } catch (e) {
-      setErr(errMessage(e, "Failed to move room"));
+      setErr(errMessage(e, t("bookings.detail.failedToMoveRoom")));
       setMoving(false);
     }
   };
@@ -561,24 +617,28 @@ function MoveRoomModal({ fromRoomNumber, candidates, onClose, onMove }: MoveRoom
   return (
     <Modal onClose={onClose}>
       <h3 className="text-lg font-semibold text-gray-900 mb-2">
-        Move {fromRoomNumber ? `Room ${fromRoomNumber}` : "this room"}
+        {t("bookings.detail.moveRoomTitle", {
+          room: fromRoomNumber
+            ? t("bookings.detail.roomNumber", { number: fromRoomNumber })
+            : t("bookings.detail.thisRoom"),
+        })}
       </h3>
-      <p className="text-sm text-gray-600 mb-4">
-        Pick another room of the same type to reassign this segment to. Other rooms on this booking
-        are excluded; rooms already occupied for these dates are excluded by the backend.
-      </p>
+      <p className="text-sm text-gray-600 mb-4">{t("bookings.detail.moveRoomDescription")}</p>
       {candidates.length === 0 ? (
         <p className="text-sm text-amber-700 bg-amber-50 border border-amber-200 rounded px-3 py-2 mb-4">
-          No other rooms of this type exist in your inventory.
+          {t("bookings.detail.noOtherRoomsInInventory")}
         </p>
       ) : (
         <SelectField
-          label="Destination room"
+          label={t("bookings.detail.destinationRoom")}
           value={toRoomId}
           onChange={setToRoomId}
           options={candidates.map((r) => ({
             value: r.id,
-            label: `Room ${r.roomNumber}${r.floor ? ` · Floor ${r.floor}` : ""}`,
+            label: t("bookings.detail.roomOption", {
+              number: r.roomNumber,
+              floor: r.floor ? ` · ${t("bookings.modal.floor", { floor: r.floor })}` : "",
+            }),
           }))}
         />
       )}
@@ -592,14 +652,14 @@ function MoveRoomModal({ fromRoomNumber, candidates, onClose, onMove }: MoveRoom
           onClick={onClose}
           className="px-4 py-2 text-sm font-medium text-gray-700 bg-gray-100 hover:bg-gray-200 rounded-lg"
         >
-          Cancel
+          {t("bookings.modal.cancelButton")}
         </button>
         <button
           onClick={handleMove}
           disabled={!toRoomId || moving || candidates.length === 0}
           className="px-4 py-2 text-sm font-medium text-white bg-gray-900 hover:bg-black rounded-lg disabled:opacity-50"
         >
-          {moving ? "Moving…" : "Move room"}
+          {moving ? t("bookings.detail.moving") : t("bookings.detail.moveRoom")}
         </button>
       </div>
     </Modal>
@@ -623,6 +683,7 @@ function AssignGuestsModal({
   onClose,
   onSave,
 }: AssignGuestsModalProps) {
+  const { t } = useTranslation();
   // Track which guest IDs the user has toggled into this room. Seed from
   // current state so editing then cancelling is a true no-op.
   const [assigned, setAssigned] = useState<Set<string>>(
@@ -655,30 +716,28 @@ function AssignGuestsModal({
       await onSave(changes);
       onClose();
     } catch (e) {
-      setErr(errMessage(e, "Failed to update assignments"));
+      setErr(errMessage(e, t("bookings.detail.failedToUpdateAssignments")));
       setSaving(false);
     }
   };
 
   return (
     <Modal onClose={onClose}>
-      <h3 className="text-lg font-semibold text-gray-900 mb-2">Guests in {roomLabel}</h3>
-      <p className="text-sm text-gray-600 mb-4">
-        Check the guests staying in this room. Unchecked guests are moved to other rooms or
-        unassigned. The booker is always in the primary room and isn&apos;t listed here.
-      </p>
+      <h3 className="text-lg font-semibold text-gray-900 mb-2">
+        {t("bookings.detail.guestsInRoom", { room: roomLabel })}
+      </h3>
+      <p className="text-sm text-gray-600 mb-4">{t("bookings.detail.assignGuestsDescription")}</p>
       {guests.length === 0 ? (
-        <p className="text-sm text-gray-500 mb-4">
-          No additional guests have been added yet. Add them from the Additional guests card first.
-        </p>
+        <p className="text-sm text-gray-500 mb-4">{t("bookings.detail.assignGuestsEmpty")}</p>
       ) : (
         <div className="space-y-2 mb-4 max-h-72 overflow-y-auto">
           {guests.map((g) => {
             const name =
-              [g.firstName, g.lastName].filter(Boolean).join(" ") || `Guest ${g.position}`;
+              [g.firstName, g.lastName].filter(Boolean).join(" ") ||
+              t("bookings.detail.guestNumber", { number: g.position });
             const elsewhere =
               g.roomPosition != null && g.roomPosition !== roomPosition
-                ? ` · currently Room ${g.roomPosition + 1}`
+                ? ` · ${t("bookings.detail.currentlyRoom", { number: g.roomPosition + 1 })}`
                 : "";
             return (
               <label
@@ -708,14 +767,14 @@ function AssignGuestsModal({
           onClick={onClose}
           className="px-4 py-2 text-sm font-medium text-gray-700 bg-gray-100 hover:bg-gray-200 rounded-lg"
         >
-          Cancel
+          {t("bookings.modal.cancelButton")}
         </button>
         <button
           onClick={handleSave}
           disabled={saving || guests.length === 0}
           className="px-4 py-2 text-sm font-medium text-white bg-gray-900 hover:bg-black rounded-lg disabled:opacity-50"
         >
-          {saving ? "Saving…" : "Save assignments"}
+          {saving ? t("common.saving") : t("bookings.detail.saveAssignments")}
         </button>
       </div>
     </Modal>
@@ -740,6 +799,7 @@ interface ModifyBookingModalProps {
 }
 
 function ModifyBookingModal({ booking, onClose, onSave }: ModifyBookingModalProps) {
+  const { t } = useTranslation();
   const [checkIn, setCheckIn] = useState(booking.checkIn);
   const [checkOut, setCheckOut] = useState(booking.checkOut);
   const [adults, setAdults] = useState(String(booking.adults));
@@ -762,7 +822,7 @@ function ModifyBookingModal({ booking, onClose, onSave }: ModifyBookingModalProp
         if (active) setAvailableAddons(addons);
       })
       .catch((e) => {
-        if (active) setErr(errMessage(e, "Failed to load add-ons"));
+        if (active) setErr(errMessage(e, t("bookings.detail.failedToLoadAddons")));
       })
       .finally(() => {
         if (active) setAddonsLoading(false);
@@ -770,7 +830,7 @@ function ModifyBookingModal({ booking, onClose, onSave }: ModifyBookingModalProp
     return () => {
       active = false;
     };
-  }, [booking.id]);
+  }, [booking.id, t]);
 
   const toggleAddon = (addon: BookingAddon, checked: boolean) => {
     setSelectedAddonIds((prev) =>
@@ -794,22 +854,22 @@ function ModifyBookingModal({ booking, onClose, onSave }: ModifyBookingModalProp
   const handleSave = async () => {
     setErr("");
     if (checkOut <= checkIn) {
-      setErr("Check-out must be after check-in.");
+      setErr(t("bookings.detail.errorCheckoutAfterCheckin"));
       return;
     }
     const newAdults = parseInt(adults, 10);
     const newChildren = parseInt(children, 10);
     const newNightlyRate = Number(nightlyRate);
     if (!Number.isFinite(newAdults) || newAdults < 1) {
-      setErr("Adults must be at least 1.");
+      setErr(t("bookings.detail.errorAdultsMinimum"));
       return;
     }
     if (!Number.isFinite(newChildren) || newChildren < 0) {
-      setErr("Children cannot be negative.");
+      setErr(t("bookings.detail.errorChildrenNegative"));
       return;
     }
     if (!Number.isFinite(newNightlyRate) || newNightlyRate < 0) {
-      setErr("Nightly rate must be a valid amount.");
+      setErr(t("bookings.detail.errorNightlyRate"));
       return;
     }
     const nextQuantities = selectedAddonIds.reduce<Record<string, number>>((acc, addonId) => {
@@ -834,40 +894,61 @@ function ModifyBookingModal({ booking, onClose, onSave }: ModifyBookingModalProp
       });
       onClose();
     } catch (e) {
-      setErr(errMessage(e, "Failed to modify booking"));
+      setErr(errMessage(e, t("bookings.detail.failedToModify")));
       setSaving(false);
     }
   };
 
   return (
     <Modal onClose={onClose}>
-      <h3 className="text-lg font-semibold text-gray-900 mb-1">Modify booking</h3>
-      <p className="text-sm text-gray-500 mb-5">
-        Changes apply to all rooms in this direct booking. The backend recalculates the total on
-        save.
-      </p>
+      <h3 className="text-lg font-semibold text-gray-900 mb-1">
+        {t("bookings.detail.modifyBooking")}
+      </h3>
+      <p className="text-sm text-gray-500 mb-5">{t("bookings.detail.modifyBookingDescription")}</p>
       <div className="space-y-4 mb-4">
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-          <Field label="Check-in" value={checkIn} onChange={setCheckIn} type="date" />
-          <Field label="Check-out" value={checkOut} onChange={setCheckOut} type="date" />
+          <Field
+            label={t("bookings.detail.checkIn")}
+            value={checkIn}
+            onChange={setCheckIn}
+            type="date"
+          />
+          <Field
+            label={t("bookings.detail.checkOut")}
+            value={checkOut}
+            onChange={setCheckOut}
+            type="date"
+          />
         </div>
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-          <Field label="Adults" value={adults} onChange={setAdults} type="number" />
-          <Field label="Children" value={children} onChange={setChildren} type="number" />
           <Field
-            label={`Nightly rate (${booking.currency})`}
+            label={t("bookings.modal.adultsLabel")}
+            value={adults}
+            onChange={setAdults}
+            type="number"
+          />
+          <Field
+            label={t("bookings.modal.childrenLabel")}
+            value={children}
+            onChange={setChildren}
+            type="number"
+          />
+          <Field
+            label={t("bookings.modal.nightlyRateLabel", { currency: booking.currency })}
             value={nightlyRate}
             onChange={setNightlyRate}
             type="number"
           />
         </div>
         <div>
-          <p className="block text-xs font-medium text-gray-600 mb-2">Add-ons</p>
+          <p className="block text-xs font-medium text-gray-600 mb-2">
+            {t("bookings.detail.addons")}
+          </p>
           {addonsLoading ? (
-            <p className="text-sm text-gray-500">Loading add-ons…</p>
+            <p className="text-sm text-gray-500">{t("bookings.detail.loadingAddons")}</p>
           ) : availableAddons.length === 0 ? (
             <p className="text-sm text-gray-500 border border-gray-200 rounded-lg px-3 py-2">
-              No add-ons are configured for this property.
+              {t("bookings.detail.noAddonsConfigured")}
             </p>
           ) : (
             <div className="space-y-2 max-h-56 overflow-auto pr-1">
@@ -890,8 +971,8 @@ function ModifyBookingModal({ booking, onClose, onSave }: ModifyBookingModalProp
                       </span>
                       <span className="block text-xs text-gray-500">
                         {formatCurrency(addon.price, addon.currency)}
-                        {addon.perPerson ? " · per person" : ""}
-                        {addon.perNight ? " · per night" : ""}
+                        {addon.perPerson ? ` · ${t("bookings.detail.perPerson")}` : ""}
+                        {addon.perNight ? ` · ${t("bookings.detail.perNight")}` : ""}
                       </span>
                     </span>
                     {selected && (
@@ -905,7 +986,7 @@ function ModifyBookingModal({ booking, onClose, onSave }: ModifyBookingModalProp
                             [addon.id]: Math.max(1, Number(e.target.value) || 1),
                           }))
                         }
-                        aria-label={`${addon.name} quantity`}
+                        aria-label={t("bookings.detail.addonQuantity", { name: addon.name })}
                         className="w-20 border border-gray-300 rounded-lg px-2 py-1.5 text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-gray-900 focus:border-transparent"
                       />
                     )}
@@ -917,7 +998,7 @@ function ModifyBookingModal({ booking, onClose, onSave }: ModifyBookingModalProp
         </div>
       </div>
       <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded px-3 py-2 mb-4">
-        Changing dates, rates, guests, or add-ons may affect pricing for all rooms.
+        {t("bookings.detail.pricingMayChange")}
       </p>
       {err && (
         <p className="mb-3 text-sm text-red-700 bg-red-50 border border-red-200 rounded px-3 py-2">
@@ -929,14 +1010,14 @@ function ModifyBookingModal({ booking, onClose, onSave }: ModifyBookingModalProp
           onClick={onClose}
           className="px-4 py-2 text-sm font-medium text-gray-700 bg-gray-100 hover:bg-gray-200 rounded-lg"
         >
-          Cancel
+          {t("bookings.modal.cancelButton")}
         </button>
         <button
           onClick={handleSave}
           disabled={saving}
           className="px-4 py-2 text-sm font-medium text-white bg-gray-900 hover:bg-black rounded-lg disabled:opacity-50"
         >
-          {saving ? "Saving…" : "Save changes"}
+          {saving ? t("common.saving") : t("bookings.modal.saveChanges")}
         </button>
       </div>
     </Modal>
@@ -956,6 +1037,7 @@ function EditAddOnsModal({
     addonDates: Record<string, string[]>;
   }) => Promise<void>;
 }) {
+  const { t } = useTranslation();
   const [availableAddons, setAvailableAddons] = useState<BookingAddon[]>([]);
   const [selectedAddonIds, setSelectedAddonIds] = useState<string[]>(booking.addonIds || []);
   const [addonQuantities, setAddonQuantities] = useState<Record<string, number>>(
@@ -979,7 +1061,7 @@ function EditAddOnsModal({
         );
       })
       .catch((e) => {
-        if (active) setErr(errMessage(e, "Failed to load add-ons"));
+        if (active) setErr(errMessage(e, t("bookings.detail.failedToLoadAddons")));
       })
       .finally(() => {
         if (active) setLoading(false);
@@ -987,7 +1069,7 @@ function EditAddOnsModal({
     return () => {
       active = false;
     };
-  }, [booking.id]);
+  }, [booking.id, t]);
 
   const nextAddonTotal = calculateAddOnsTotal(
     availableAddons,
@@ -1026,24 +1108,24 @@ function EditAddOnsModal({
       });
       onClose();
     } catch (e) {
-      setErr(errMessage(e, "Failed to save add-ons"));
+      setErr(errMessage(e, t("bookings.detail.failedToSaveAddons")));
       setSaving(false);
     }
   };
 
   return (
     <Modal onClose={onClose}>
-      <h3 className="text-lg font-semibold text-gray-900 mb-1">Edit add-ons</h3>
-      <p className="text-sm text-gray-500 mb-5">
-        Update selected add-ons for this unpaid direct booking.
-      </p>
+      <h3 className="text-lg font-semibold text-gray-900 mb-1">
+        {t("bookings.detail.editAddons")}
+      </h3>
+      <p className="text-sm text-gray-500 mb-5">{t("bookings.detail.editAddonsDescription")}</p>
       {loading ? (
         <p className="text-sm text-gray-500 border border-gray-200 rounded-lg px-3 py-2">
-          Loading add-ons…
+          {t("bookings.detail.loadingAddons")}
         </p>
       ) : availableAddons.length === 0 ? (
         <p className="text-sm text-gray-500 border border-gray-200 rounded-lg px-3 py-2">
-          No add-ons are configured for this property.
+          {t("bookings.detail.noAddonsConfigured")}
         </p>
       ) : (
         <div className="space-y-4">
@@ -1077,11 +1159,11 @@ function EditAddOnsModal({
           />
           <div className="rounded-lg bg-gray-50 border border-gray-200 px-3 py-2 text-sm">
             <div className="flex justify-between text-gray-600">
-              <span>Add-ons</span>
+              <span>{t("bookings.detail.addons")}</span>
               <span>{formatCurrency(nextAddonTotal, booking.currency)}</span>
             </div>
             <div className="flex justify-between font-semibold text-gray-900 pt-1 mt-1 border-t border-gray-200">
-              <span>Projected total</span>
+              <span>{t("bookings.detail.projectedTotal")}</span>
               <span>{formatCurrency(nextTotal, booking.currency)}</span>
             </div>
           </div>
@@ -1097,14 +1179,14 @@ function EditAddOnsModal({
           onClick={onClose}
           className="px-4 py-2 text-sm font-medium text-gray-700 bg-gray-100 hover:bg-gray-200 rounded-lg"
         >
-          Cancel
+          {t("bookings.modal.cancelButton")}
         </button>
         <button
           onClick={handleSave}
           disabled={saving || loading}
           className="px-4 py-2 text-sm font-medium text-white bg-gray-900 hover:bg-black rounded-lg disabled:opacity-50"
         >
-          {saving ? "Saving…" : "Save add-ons"}
+          {saving ? t("common.saving") : t("bookings.detail.saveAddons")}
         </button>
       </div>
     </Modal>
@@ -1114,6 +1196,7 @@ function EditAddOnsModal({
 // ─── Page ────────────────────────────────────────────────────────────
 
 export default function BookingDetailPage({ params }: { params: Promise<{ id: string }> }) {
+  const { locale, t } = useTranslation();
   const { id } = use(params);
   const [booking, setBooking] = useState<Booking | null>(null);
   const [directInboxEligibleBookingId, setDirectInboxEligibleBookingId] = useState<string | null>(
@@ -1227,7 +1310,7 @@ export default function BookingDetailPage({ params }: { params: Promise<{ id: st
     let cancelled = false;
     if (!booking || normalizeChannelKey(booking.channel) !== "direct") return;
 
-    void resolveSelectedPmsPropertyId("checking Inbox access")
+    void resolveSelectedPmsPropertyId(t("bookings.detail.checkingInboxAccess"))
       .then((propertyId) => messagingService.listDirectBookings(propertyId))
       .then((candidates) => {
         if (!cancelled) {
@@ -1245,7 +1328,7 @@ export default function BookingDetailPage({ params }: { params: Promise<{ id: st
     return () => {
       cancelled = true;
     };
-  }, [booking]);
+  }, [booking, t]);
 
   const doAction = useCallback(async (action: () => Promise<Booking>, errorMsg: string) => {
     setUpdating(true);
@@ -1264,16 +1347,16 @@ export default function BookingDetailPage({ params }: { params: Promise<{ id: st
     if (paymentDeadlineExpired) return;
     const message =
       booking?.paymentMethod === "card"
-        ? "Accept this booking request and capture the guest’s authorized card payment?"
+        ? t("bookings.detail.confirmAcceptCard")
         : booking?.paymentMethod === "pay_at_property"
-          ? "Accept this booking request? Payment will remain due at the property."
-          : "Accept this booking and send the guest the bank transfer instructions? No payment is recorded until you mark it as received.";
+          ? t("bookings.detail.confirmAcceptAtProperty")
+          : t("bookings.detail.confirmAcceptBankTransfer");
     setConfirmDialog({
       message,
-      confirmLabel: "Accept",
+      confirmLabel: t("bookings.detail.accept"),
       onConfirm: () => {
         setConfirmDialog(null);
-        doAction(() => bookingsService.acceptBooking(id), "Failed to accept booking");
+        doAction(() => bookingsService.acceptBooking(id), t("bookings.detail.failedToAccept"));
       },
     });
   };
@@ -1287,7 +1370,7 @@ export default function BookingDetailPage({ params }: { params: Promise<{ id: st
     setRejectOpen(false);
     doAction(
       () => bookingsService.rejectBooking(id, rejectReason.trim() || undefined),
-      "Failed to reject booking",
+      t("bookings.detail.failedToReject"),
     );
   };
 
@@ -1302,7 +1385,7 @@ export default function BookingDetailPage({ params }: { params: Promise<{ id: st
       setBooking(refreshed);
       setDecideOpen(null);
     } catch (err) {
-      setError(errMessage(err, "Failed to approve change request"));
+      setError(errMessage(err, t("bookings.detail.failedToApproveChange")));
     } finally {
       setDecidingChange(false);
     }
@@ -1321,7 +1404,7 @@ export default function BookingDetailPage({ params }: { params: Promise<{ id: st
       setChangeRequest(cr);
       setDecideOpen(null);
     } catch (err) {
-      setError(errMessage(err, "Failed to decline change request"));
+      setError(errMessage(err, t("bookings.detail.failedToDeclineChange")));
     } finally {
       setDecidingChange(false);
     }
@@ -1331,16 +1414,16 @@ export default function BookingDetailPage({ params }: { params: Promise<{ id: st
     if (paymentDeadlineExpired) return;
     const methodLabel =
       booking?.paymentMethod === "bank_transfer"
-        ? "bank transfer"
+        ? t("bookings.detail.bankTransferLower")
         : booking?.paymentMethod === "pay_at_property"
-          ? "pay-at-hotel payment"
-          : "PayPal payment";
+          ? t("bookings.detail.payAtHotelPaymentLower")
+          : t("bookings.detail.paypalPayment");
     setConfirmDialog({
-      message: `Confirm that the ${methodLabel} has been received?`,
-      confirmLabel: "Mark as paid",
+      message: t("bookings.detail.confirmPaymentReceived", { method: methodLabel }),
+      confirmLabel: t("bookings.detail.markAsPaid"),
       onConfirm: () => {
         setConfirmDialog(null);
-        doAction(() => bookingsService.markPaid(id), "Failed to mark booking paid");
+        doAction(() => bookingsService.markPaid(id), t("bookings.detail.failedToMarkPaid"));
       },
     });
   };
@@ -1357,7 +1440,7 @@ export default function BookingDetailPage({ params }: { params: Promise<{ id: st
       setNoteDraft("");
       setNoteDraftOpen(false);
     } catch (err) {
-      setError(errMessage(err, "Failed to save note"));
+      setError(errMessage(err, t("bookings.detail.failedToSaveNote")));
     } finally {
       noteSavePending.current = false;
       setNoteSaving(false);
@@ -1376,7 +1459,7 @@ export default function BookingDetailPage({ params }: { params: Promise<{ id: st
       setEditingNoteId(null);
       setEditingNoteDraft("");
     } catch (err) {
-      setError(errMessage(err, "Failed to update note"));
+      setError(errMessage(err, t("bookings.detail.failedToUpdateNote")));
     } finally {
       noteEditPending.current = false;
       setNoteEditSaving(false);
@@ -1385,9 +1468,9 @@ export default function BookingDetailPage({ params }: { params: Promise<{ id: st
 
   const handleDeleteNote = (noteId: string) => {
     setConfirmDialog({
-      message: "Delete this note?",
+      message: t("bookings.detail.deleteNoteConfirm"),
       variant: "danger",
-      confirmLabel: "Delete",
+      confirmLabel: t("common.delete"),
       onConfirm: async () => {
         setConfirmDialog(null);
         setError("");
@@ -1395,7 +1478,7 @@ export default function BookingDetailPage({ params }: { params: Promise<{ id: st
           await bookingsService.deleteNote(id, noteId);
           setNotes((prev) => prev.filter((n) => n.id !== noteId));
         } catch (err) {
-          setError(errMessage(err, "Failed to delete note"));
+          setError(errMessage(err, t("bookings.detail.failedToDeleteNote")));
         }
       },
     });
@@ -1432,15 +1515,15 @@ export default function BookingDetailPage({ params }: { params: Promise<{ id: st
         : await bookingsService.updateAdditionalGuest(id, guestId, patch);
       setGuests((prev) => prev.map((g) => (g.id === guestId ? updated : g)));
     } catch (err) {
-      setError(errMessage(err, "Failed to save guest"));
+      setError(errMessage(err, t("bookings.detail.failedToSaveGuest")));
     }
   };
 
   const handleDeleteGuest = async (guestId: string) => {
     setConfirmDialog({
-      message: "Delete this guest?",
+      message: t("bookings.detail.deleteGuestConfirm"),
       variant: "danger",
-      confirmLabel: "Delete",
+      confirmLabel: t("common.delete"),
       onConfirm: async () => {
         setConfirmDialog(null);
         if (guestId.startsWith(DRAFT_GUEST_ID_PREFIX)) {
@@ -1451,7 +1534,7 @@ export default function BookingDetailPage({ params }: { params: Promise<{ id: st
           await bookingsService.deleteAdditionalGuest(id, guestId);
           setGuests((prev) => prev.filter((g) => g.id !== guestId));
         } catch (err) {
-          setError(errMessage(err, "Failed to delete guest"));
+          setError(errMessage(err, t("bookings.detail.failedToDeleteGuest")));
         }
       },
     });
@@ -1490,7 +1573,7 @@ export default function BookingDetailPage({ params }: { params: Promise<{ id: st
       setBooking(updated);
       setBookerEditing(false);
     } catch (err) {
-      setError(errMessage(err, "Failed to save booker information"));
+      setError(errMessage(err, t("bookings.detail.failedToSaveBooker")));
     } finally {
       setBookerSaving(false);
     }
@@ -1514,7 +1597,7 @@ export default function BookingDetailPage({ params }: { params: Promise<{ id: st
       setNationalityError("");
       setNationalityEditing(false);
     } catch (err) {
-      setNationalityError(errMessage(err, "Failed to save nationality"));
+      setNationalityError(errMessage(err, t("bookings.detail.failedToSaveNationality")));
     } finally {
       nationalitySavePending.current = false;
       setNationalitySaving(false);
@@ -1555,7 +1638,7 @@ export default function BookingDetailPage({ params }: { params: Promise<{ id: st
   };
 
   const handleAssignGuests = async () => {
-    throw new Error("Additional guest room assignment is not available on PMS next-stack yet.");
+    throw new Error(t("bookings.detail.guestAssignmentUnavailable"));
   };
 
   const handleCancelBooking = async () => {
@@ -1576,7 +1659,7 @@ export default function BookingDetailPage({ params }: { params: Promise<{ id: st
       setCancelOpen(false);
       setCancelReason("");
     } catch (err) {
-      setError(errMessage(err, "Failed to cancel booking"));
+      setError(errMessage(err, t("bookings.detail.failedToCancel")));
     } finally {
       setCancelling(false);
     }
@@ -1606,7 +1689,7 @@ export default function BookingDetailPage({ params }: { params: Promise<{ id: st
   if (!booking) {
     return (
       <div className="p-6">
-        <p className="text-gray-500">Booking not found.</p>
+        <p className="text-gray-500">{t("bookings.detail.notFound")}</p>
       </div>
     );
   }
@@ -1657,7 +1740,9 @@ export default function BookingDetailPage({ params }: { params: Promise<{ id: st
   // Room-picker options for the per-guest dropdown + AssignGuestsModal label.
   const roomOptions: RoomOption[] = roomRows.map((row, idx) => ({
     position: idx,
-    label: row.roomNumber ? `Room ${row.roomNumber}` : `Room slot ${idx + 1}`,
+    label: row.roomNumber
+      ? t("bookings.detail.roomNumber", { number: row.roomNumber })
+      : t("bookings.detail.roomSlot", { number: idx + 1 }),
   }));
 
   // Candidates for Move: same room type, exclude rooms already on this booking.
@@ -1669,9 +1754,18 @@ export default function BookingDetailPage({ params }: { params: Promise<{ id: st
   );
 
   const channelKey = normalizeChannelKey(booking.channel);
-  const channelLabel = getChannelLabel(booking.channel);
+  const channelLabel =
+    channelKey === "direct"
+      ? t("calendar.channelDirect")
+      : channelKey === "airbnb"
+        ? t("calendar.channelAirbnb")
+        : channelKey === "booking.com"
+          ? t("calendar.channelBookingCom")
+          : channelKey === "expedia"
+            ? t("calendar.channelExpedia")
+            : getChannelLabel(booking.channel);
   const canMessageGuest = channelKey === "direct" && directInboxEligibleBookingId === booking.id;
-  const rateType = "Flexible"; // current bookings always use the hotel's default rate plan.
+  const rateType = t("bookings.detail.flexible"); // current bookings always use the hotel's default rate plan.
 
   // Add-ons rendered with quantity-suffix from addonQuantities.
   const addonRows = booking.addonIds.map((addonId, idx) => {
@@ -1687,11 +1781,13 @@ export default function BookingDetailPage({ params }: { params: Promise<{ id: st
         <Link href="/bookings" className="text-gray-400 hover:text-gray-600 -ml-1 p-1">
           <ArrowLeftIcon className="w-5 h-5" />
         </Link>
-        <h1 className="text-xl font-bold text-gray-900">Booking {booking.bookingReference}</h1>
+        <h1 className="text-xl font-bold text-gray-900">
+          {t("bookings.detail.title", { reference: booking.bookingReference })}
+        </h1>
         <span
           className={`inline-flex px-2.5 py-0.5 rounded-full text-xs font-medium ${BOOKING_STATUS_STYLES[booking.status] || "bg-gray-100 text-gray-600"}`}
         >
-          {booking.status}
+          {bookingStatusLabel(booking.status, t)}
         </span>
         <div className="ml-auto flex items-center gap-1.5">
           {canMessageGuest && (
@@ -1699,7 +1795,7 @@ export default function BookingDetailPage({ params }: { params: Promise<{ id: st
               href={`/inbox?booking=${encodeURIComponent(booking.id)}`}
               className="inline-flex min-h-9 items-center rounded-md border border-gray-200 px-3 text-xs font-semibold text-gray-700 hover:bg-gray-50"
             >
-              Message guest
+              {t("bookings.detail.messageGuest")}
             </Link>
           )}
           <OverflowMenu
@@ -1723,10 +1819,10 @@ export default function BookingDetailPage({ params }: { params: Promise<{ id: st
       {hasDeadline && (
         <div className="mb-4 p-4 bg-amber-50 border border-amber-200 rounded-xl flex items-center justify-between">
           <div>
-            <p className="text-sm font-semibold text-amber-800">Action Required</p>
-            <p className="text-xs text-amber-600">
-              This booking will auto-expire if not responded to in time.
+            <p className="text-sm font-semibold text-amber-800">
+              {t("bookings.detail.actionRequired")}
             </p>
+            <p className="text-xs text-amber-600">{t("bookings.detail.autoExpireWarning")}</p>
           </div>
           <CountdownTimer deadline={booking.hostResponseDeadline!} />
         </div>
@@ -1734,15 +1830,21 @@ export default function BookingDetailPage({ params }: { params: Promise<{ id: st
 
       {booking.guestWithdrawn && (
         <div className="mb-4 p-3 bg-gray-50 border border-gray-200 rounded-lg text-sm text-gray-600">
-          The guest withdrew this booking request.
+          {t("bookings.detail.guestWithdrawn")}
         </div>
       )}
 
       {booking.status === "checked_in" && booking.checkInPendingFlags.length > 0 && (
         <div className="mb-4 rounded-xl border border-amber-200 bg-amber-50 p-4">
           <p className="text-sm font-semibold text-amber-950">
-            Check-in completed with {booking.checkInPendingFlags.length} outstanding item
-            {booking.checkInPendingFlags.length === 1 ? "" : "s"}
+            {t("bookings.detail.checkInCompletedWithOutstanding", {
+              count: booking.checkInPendingFlags.length,
+              item: t(
+                booking.checkInPendingFlags.length === 1
+                  ? "bookings.detail.outstandingItem"
+                  : "bookings.detail.outstandingItems",
+              ),
+            })}
           </p>
           <p className="mt-1 text-xs text-amber-800">{booking.checkInPendingFlags.join(", ")}</p>
         </div>
@@ -1751,44 +1853,58 @@ export default function BookingDetailPage({ params }: { params: Promise<{ id: st
       {changeRequest && changeRequest.status === "pending" && (
         <div className="mb-4 p-5 bg-blue-50 border border-blue-200 rounded-xl">
           <div className="mb-3">
-            <p className="text-sm font-semibold text-blue-900">Change Request Pending</p>
-            <p className="text-xs text-blue-700">
-              The guest has requested an edit to this booking. Approve to apply the new details, or
-              decline to keep the booking as-is.
+            <p className="text-sm font-semibold text-blue-900">
+              {t("bookings.detail.changeRequestPending")}
             </p>
+            <p className="text-xs text-blue-700">{t("bookings.detail.changeRequestDescription")}</p>
           </div>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm mb-4">
             <div>
-              <p className="text-blue-900 font-medium">Current</p>
+              <p className="text-blue-900 font-medium">{t("bookings.detail.current")}</p>
               <p className="text-blue-800">
                 {changeRequest.oldCheckIn} → {changeRequest.oldCheckOut}
               </p>
               <p className="text-blue-800">
-                Total: {formatCurrency(changeRequest.oldTotal, changeRequest.currency)}
+                {t("bookings.detail.totalWithAmount", {
+                  amount: formatCurrency(changeRequest.oldTotal, changeRequest.currency),
+                })}
               </p>
             </div>
             <div>
-              <p className="text-blue-900 font-medium">Requested</p>
+              <p className="text-blue-900 font-medium">{t("bookings.detail.requested")}</p>
               <p className="text-blue-800">
                 {changeRequest.requestedCheckIn} → {changeRequest.requestedCheckOut}
               </p>
               <p className="text-blue-800">
-                Total: {formatCurrency(changeRequest.newTotal, changeRequest.currency)}
+                {t("bookings.detail.totalWithAmount", {
+                  amount: formatCurrency(changeRequest.newTotal, changeRequest.currency),
+                })}
               </p>
               {changeRequest.requestedAddonNames.length > 0 && (
                 <p className="text-blue-800 mt-1">
-                  Add-ons: {changeRequest.requestedAddonNames.join(", ")}
+                  {t("bookings.detail.addonsWithNames", {
+                    names: changeRequest.requestedAddonNames.join(", "),
+                  })}
                 </p>
               )}
             </div>
           </div>
           <div className="text-sm text-blue-900 font-medium mb-4">
-            Price difference:{" "}
-            {changeRequest.priceDifference === 0
-              ? "No change"
-              : changeRequest.priceDifference > 0
-                ? `+${formatCurrency(changeRequest.priceDifference, changeRequest.currency)} (added to the pay-at-property balance)`
-                : `${formatCurrency(changeRequest.priceDifference, changeRequest.currency)} (reduces the pay-at-property balance)`}
+            {t("bookings.detail.priceDifference", {
+              difference:
+                changeRequest.priceDifference === 0
+                  ? t("bookings.detail.noChange")
+                  : changeRequest.priceDifference > 0
+                    ? t("bookings.detail.balanceIncrease", {
+                        amount: `+${formatCurrency(changeRequest.priceDifference, changeRequest.currency)}`,
+                      })
+                    : t("bookings.detail.balanceDecrease", {
+                        amount: formatCurrency(
+                          changeRequest.priceDifference,
+                          changeRequest.currency,
+                        ),
+                      }),
+            })}
           </div>
           <div className="flex gap-3 flex-wrap">
             <button
@@ -1797,7 +1913,7 @@ export default function BookingDetailPage({ params }: { params: Promise<{ id: st
               className="inline-flex items-center gap-1.5 px-4 py-2 bg-green-600 text-white text-sm font-medium rounded-lg hover:bg-green-700 disabled:opacity-50"
             >
               <CheckCircleIcon className="w-4 h-4" />
-              Approve Change
+              {t("bookings.detail.approveChange")}
             </button>
             <button
               onClick={() => {
@@ -1808,7 +1924,7 @@ export default function BookingDetailPage({ params }: { params: Promise<{ id: st
               className="inline-flex items-center gap-1.5 px-4 py-2 border border-red-200 text-red-600 text-sm font-medium rounded-lg hover:bg-red-50 disabled:opacity-50"
             >
               <XCircleIcon className="w-4 h-4" />
-              Decline Change
+              {t("bookings.detail.declineChange")}
             </button>
           </div>
         </div>
@@ -1816,12 +1932,21 @@ export default function BookingDetailPage({ params }: { params: Promise<{ id: st
 
       {changeRequest && changeRequest.status !== "pending" && (
         <div className="mb-4 p-3 bg-gray-50 border border-gray-200 rounded-lg text-sm text-gray-600">
-          Last change request was{" "}
-          <span className="font-medium text-gray-800">{changeRequest.status}</span>
-          {changeRequest.decidedAt && <> on {formatDateTime(changeRequest.decidedAt)}</>}
+          {t("bookings.detail.lastChangeRequestWas")}{" "}
+          <span className="font-medium text-gray-800">
+            {t(`bookings.detail.changeRequestStatus.${changeRequest.status}`)}
+          </span>
+          {changeRequest.decidedAt && (
+            <>
+              {" "}
+              {t("bookings.detail.onDate", {
+                date: formatDateTime(changeRequest.decidedAt, locale),
+              })}
+            </>
+          )}
           {changeRequest.declineReason && (
             <span className="block mt-1 text-xs text-gray-500">
-              Reason: {changeRequest.declineReason}
+              {t("bookings.detail.reasonWithText", { reason: changeRequest.declineReason })}
             </span>
           )}
         </div>
@@ -1837,19 +1962,21 @@ export default function BookingDetailPage({ params }: { params: Promise<{ id: st
         {/* 2. Stay details */}
         <div className="bg-white border border-gray-200 rounded-xl p-5 sm:p-6">
           <div className="flex items-start justify-between gap-3 mb-5">
-            <h2 className="text-sm font-semibold text-gray-900">Stay details</h2>
+            <h2 className="text-sm font-semibold text-gray-900">
+              {t("bookings.detail.stayDetails")}
+            </h2>
             {/* Booking-level Modify (dates / guest count for whole booking) */}
             <button
               disabled={!LEGACY_BOOKING_WRITES_AVAILABLE}
               onClick={() => setModifyOpen(true)}
-              title="Booking modifications are not available yet"
-              aria-label="Modify booking — not available yet"
+              title={t("bookings.detail.modificationsUnavailable")}
+              aria-label={t("bookings.detail.modifyUnavailableLabel")}
               className="inline-flex cursor-not-allowed items-center gap-1.5 rounded-lg border border-gray-200 bg-gray-50 px-3 py-1.5 text-xs font-medium text-gray-400"
             >
               <PencilSquareIcon className="w-4 h-4" />
-              Modify
+              {t("bookings.detail.modify")}
               <span className="rounded bg-gray-100 px-1 py-0.5 text-[9px] font-medium text-gray-500">
-                Soon
+                {t("bookings.detail.soon")}
               </span>
             </button>
           </div>
@@ -1866,25 +1993,41 @@ export default function BookingDetailPage({ params }: { params: Promise<{ id: st
             className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm mb-6"
           >
             <div>
-              <p className="text-xs text-gray-500 uppercase tracking-wide">Check-in</p>
-              <p className="font-semibold text-gray-900">{formatDateLong(booking.checkIn)}</p>
-              <p className="text-xs text-gray-500">from 15:00</p>
-            </div>
-            <div>
-              <p className="text-xs text-gray-500 uppercase tracking-wide">Check-out</p>
-              <p className="font-semibold text-gray-900">{formatDateLong(booking.checkOut)}</p>
-              <p className="text-xs text-gray-500">by 12:00</p>
-            </div>
-            <div>
-              <p className="text-xs text-gray-500 uppercase tracking-wide">Duration</p>
+              <p className="text-xs text-gray-500 uppercase tracking-wide">
+                {t("bookings.detail.checkIn")}
+              </p>
               <p className="font-semibold text-gray-900">
-                {booking.nights} night{booking.nights !== 1 ? "s" : ""}
+                {formatDateLong(booking.checkIn, locale)}
+              </p>
+              <p className="text-xs text-gray-500">
+                {t("bookings.detail.fromTime", { time: "15:00" })}
               </p>
             </div>
             <div>
-              <p className="text-xs text-gray-500 uppercase tracking-wide">Total guests</p>
+              <p className="text-xs text-gray-500 uppercase tracking-wide">
+                {t("bookings.detail.checkOut")}
+              </p>
               <p className="font-semibold text-gray-900">
-                {totalGuestsLabel(booking.adults, booking.children)}
+                {formatDateLong(booking.checkOut, locale)}
+              </p>
+              <p className="text-xs text-gray-500">
+                {t("bookings.detail.byTime", { time: "12:00" })}
+              </p>
+            </div>
+            <div>
+              <p className="text-xs text-gray-500 uppercase tracking-wide">
+                {t("bookings.detail.duration")}
+              </p>
+              <p className="font-semibold text-gray-900">
+                {booking.nights} {t(booking.nights === 1 ? "common.night" : "common.nights")}
+              </p>
+            </div>
+            <div>
+              <p className="text-xs text-gray-500 uppercase tracking-wide">
+                {t("bookings.detail.totalGuests")}
+              </p>
+              <p className="font-semibold text-gray-900">
+                {totalGuestsLabel(booking.adults, booking.children, t)}
               </p>
             </div>
           </div>
@@ -1892,7 +2035,7 @@ export default function BookingDetailPage({ params }: { params: Promise<{ id: st
           {/* ROOMS sub-section */}
           <div hidden={hasHeterogeneousStays} className="mb-6">
             <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-3">
-              Rooms ({roomRows.length})
+              {t("bookings.detail.roomsCount", { count: roomRows.length })}
             </p>
             <div className="space-y-2">
               {roomRows.map((row, idx) => (
@@ -1909,24 +2052,30 @@ export default function BookingDetailPage({ params }: { params: Promise<{ id: st
                   <div className="flex-1 min-w-0">
                     <p className="text-sm font-medium text-gray-900 truncate">{booking.roomName}</p>
                     <p className="text-xs text-gray-500 truncate">
-                      {row.roomNumber ? `Room ${row.roomNumber}` : "Unassigned"} ·{" "}
-                      {perRoomAssigned[idx]} guest{perRoomAssigned[idx] !== 1 ? "s" : ""}
-                      {idx === 0 && " (incl. booker)"}
+                      {row.roomNumber
+                        ? t("bookings.detail.roomNumber", { number: row.roomNumber })
+                        : t("bookings.modal.unassigned")}{" "}
+                      {" · "}
+                      {perRoomAssigned[idx]}{" "}
+                      {t(perRoomAssigned[idx] === 1 ? "common.guest" : "common.guests")}
+                      {idx === 0 && ` ${t("bookings.detail.includingBooker")}`}
                     </p>
                   </div>
                   <button
                     onClick={() =>
                       setAssignTarget({
                         position: idx,
-                        label: row.roomNumber ? `Room ${row.roomNumber}` : `Room slot ${idx + 1}`,
+                        label: row.roomNumber
+                          ? t("bookings.detail.roomNumber", { number: row.roomNumber })
+                          : t("bookings.detail.roomSlot", { number: idx + 1 }),
                       })
                     }
                     disabled
-                    title="Additional guest room assignment is not available on PMS next-stack yet"
+                    title={t("bookings.detail.guestAssignmentUnavailable")}
                     className="hidden sm:inline-flex items-center gap-1 px-2.5 py-1 text-xs font-medium text-gray-700 bg-white border border-gray-300 rounded-md hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed"
                   >
                     <PencilSquareIcon className="w-3.5 h-3.5" />
-                    Modify
+                    {t("bookings.detail.modify")}
                   </button>
                   <button
                     onClick={() =>
@@ -1943,15 +2092,15 @@ export default function BookingDetailPage({ params }: { params: Promise<{ id: st
                     }
                     title={
                       roomRows.length > 1 && !row.assignmentId && !row.roomId
-                        ? "This unassigned room slot cannot be moved safely yet"
+                        ? t("bookings.detail.unassignedRoomMoveUnavailable")
                         : moveCandidates.length === 0
-                          ? "No other rooms of this type available"
-                          : "Reassign this segment to another physical room"
+                          ? t("bookings.detail.noOtherRoomsAvailable")
+                          : t("bookings.detail.reassignRoom")
                     }
                     className="inline-flex items-center gap-1 px-2.5 py-1 text-xs font-medium text-gray-700 bg-white border border-gray-300 rounded-md hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed"
                   >
                     <ArrowsRightLeftIcon className="w-3.5 h-3.5" />
-                    Move
+                    {t("bookings.detail.move")}
                   </button>
                 </div>
               ))}
@@ -1963,15 +2112,21 @@ export default function BookingDetailPage({ params }: { params: Promise<{ id: st
             <div className="mb-6">
               <div className="flex items-center justify-between gap-3 mb-3">
                 <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide">
-                  Add-ons
+                  {t("bookings.detail.addons")}
                 </p>
-                <span className="text-xs text-gray-500">Editing not available yet</span>
+                <span className="text-xs text-gray-500">
+                  {t("settings.localization.editingUnavailable")}
+                </span>
               </div>
               <div className="space-y-1.5 text-sm">
                 {addonRows.map((row) => (
                   <div key={row.addonId} className="flex justify-between text-gray-700">
                     <span>{row.name}</span>
-                    {row.qty && <span className="text-gray-500">Quantity {row.qty}</span>}
+                    {row.qty && (
+                      <span className="text-gray-500">
+                        {t("bookings.detail.quantity", { quantity: row.qty })}
+                      </span>
+                    )}
                   </div>
                 ))}
               </div>
@@ -1981,15 +2136,14 @@ export default function BookingDetailPage({ params }: { params: Promise<{ id: st
           {/* Pricing sub-section */}
           <div className="mb-6">
             <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-3">
-              Pricing
+              {t("bookings.detail.pricing")}
             </p>
             <div className="space-y-1.5 text-sm">
               {!hasHeterogeneousStays && (
                 <div className="flex justify-between text-gray-700">
                   <span>
-                    {roomRows.length} room{roomRows.length !== 1 ? "s" : ""} × {booking.nights}{" "}
-                    night
-                    {booking.nights !== 1 ? "s" : ""} ×{" "}
+                    {roomRows.length} {t(roomRows.length === 1 ? "common.room" : "common.rooms")} ×{" "}
+                    {booking.nights} {t(booking.nights === 1 ? "common.night" : "common.nights")} ×{" "}
                     {formatCurrency(booking.nightlyRate, booking.currency)}
                   </span>
                   <span className="font-medium text-gray-900">
@@ -1999,36 +2153,38 @@ export default function BookingDetailPage({ params }: { params: Promise<{ id: st
               )}
               {(pricingBreakdown?.addonsCost ?? 0) > 0 && (
                 <div className="flex justify-between text-gray-700">
-                  <span>Add-ons</span>
+                  <span>{t("bookings.detail.addons")}</span>
                   <span className="font-medium text-gray-900">
                     {formatCurrency(pricingBreakdown!.addonsCost, booking.currency)}
                   </span>
                 </div>
               )}
               <div className="flex justify-between pt-2 mt-1 border-t border-gray-100">
-                <span className="font-semibold text-gray-900">Total</span>
+                <span className="font-semibold text-gray-900">{t("bookings.tableTotal")}</span>
                 <span className="font-bold text-gray-900">
                   {formatCurrency(booking.totalAmount, booking.currency)}
                 </span>
               </div>
               {!hasHeterogeneousStays && pricingBreakdown?.mismatch && (
                 <p className="mt-2 text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded px-2 py-1.5">
-                  Charged total {formatCurrency(booking.totalAmount, booking.currency)} doesn&apos;t
-                  match the line-item math (
-                  {formatCurrency(pricingBreakdown.computed, booking.currency)}). May reflect a
-                  promo, discount, or rate-override.
+                  {t("bookings.detail.pricingMismatch", {
+                    charged: formatCurrency(booking.totalAmount, booking.currency),
+                    computed: formatCurrency(pricingBreakdown.computed, booking.currency),
+                  })}
                 </p>
               )}
               {booking.platformFeeAmount != null && booking.platformFeeAmount > 0 && (
                 <div className="flex justify-between text-xs text-gray-500 pt-1">
-                  <span>Platform fee</span>
+                  <span>{t("bookings.detail.platformFee")}</span>
                   <span>-{formatCurrency(booking.platformFeeAmount, booking.currency)}</span>
                 </div>
               )}
               {booking.propertyPayoutAmount != null &&
                 booking.propertyPayoutAmount !== booking.totalAmount && (
                   <div className="flex justify-between text-sm pt-2 border-t border-gray-100">
-                    <span className="font-medium text-gray-700">Property payout</span>
+                    <span className="font-medium text-gray-700">
+                      {t("bookings.detail.propertyPayout")}
+                    </span>
                     <span className="font-bold text-green-700">
                       {formatCurrency(booking.propertyPayoutAmount, booking.currency)}
                     </span>
@@ -2040,28 +2196,30 @@ export default function BookingDetailPage({ params }: { params: Promise<{ id: st
           {/* Payment sub-section */}
           <div className="mb-6">
             <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-3">
-              Payment
+              {t("bookings.detail.payment")}
             </p>
             <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
               <div>
-                <p className="text-xs text-gray-500">Expected method</p>
+                <p className="text-xs text-gray-500">{t("bookings.detail.expectedMethod")}</p>
                 <p className="font-medium text-gray-900">
-                  {expectedPaymentMethodLabel(booking.expectedPaymentMethod)}
+                  {expectedPaymentMethodLabel(booking.expectedPaymentMethod, t)}
                 </p>
               </div>
               <div>
-                <p className="text-xs text-gray-500">Method</p>
+                <p className="text-xs text-gray-500">{t("bookings.detail.method")}</p>
                 <p className="font-medium text-gray-900">
-                  {booking.paymentMethod ? paymentMethodLabel(booking.paymentMethod) : "—"}
+                  {booking.paymentMethod
+                    ? paymentMethodDisplayLabel(booking.paymentMethod, t)
+                    : "—"}
                 </p>
               </div>
               <div>
-                <p className="text-xs text-gray-500">Status</p>
+                <p className="text-xs text-gray-500">{t("bookings.tableStatus")}</p>
                 {booking.paymentStatus ? (
                   <span
                     className={`inline-flex px-2 py-0.5 rounded-full text-xs font-medium ${PAYMENT_STATUS_STYLES[booking.paymentStatus] || "bg-gray-100 text-gray-600"}`}
                   >
-                    {getPaymentStatusLabel(booking.paymentStatus)}
+                    {paymentStatusDisplayLabel(booking.paymentStatus, t)}
                   </span>
                 ) : (
                   <p className="text-gray-400">—</p>
@@ -2069,22 +2227,22 @@ export default function BookingDetailPage({ params }: { params: Promise<{ id: st
               </div>
               {!hasHeterogeneousStays && (
                 <div>
-                  <p className="text-xs text-gray-500">Rate plan</p>
+                  <p className="text-xs text-gray-500">{t("bookings.detail.ratePlan")}</p>
                   <p className="font-medium text-gray-900">{rateType}</p>
                 </div>
               )}
               <div>
-                <p className="text-xs text-gray-500">Source</p>
+                <p className="text-xs text-gray-500">{t("bookings.tableSource")}</p>
                 <p className="font-medium text-gray-900">{channelLabel}</p>
                 {channelKey !== "direct" && (
-                  <p className="text-xs text-gray-500">Channel-managed</p>
+                  <p className="text-xs text-gray-500">{t("bookings.detail.channelManaged")}</p>
                 )}
               </div>
             </div>
             {booking.paymentBreakdown && (
               <div className="mt-4 rounded-xl border border-gray-200 bg-gray-50 p-4 text-sm">
                 <div className="flex justify-between gap-4 py-1">
-                  <span className="text-gray-600">Gross amount</span>
+                  <span className="text-gray-600">{t("bookings.detail.grossAmount")}</span>
                   <span className="font-medium text-gray-900">
                     {formatPaymentCurrency(
                       booking.paymentBreakdown.grossAmount,
@@ -2093,7 +2251,7 @@ export default function BookingDetailPage({ params }: { params: Promise<{ id: st
                   </span>
                 </div>
                 <div className="flex justify-between gap-4 py-1">
-                  <span className="text-gray-600">Stripe fee</span>
+                  <span className="text-gray-600">{t("bookings.detail.stripeFee")}</span>
                   <span className="font-medium text-gray-900">
                     -
                     {formatPaymentCurrency(
@@ -2104,7 +2262,7 @@ export default function BookingDetailPage({ params }: { params: Promise<{ id: st
                 </div>
                 {booking.paymentBreakdown.vayadaCommission > 0 && (
                   <div className="flex justify-between gap-4 py-1">
-                    <span className="text-gray-600">Vayada commission</span>
+                    <span className="text-gray-600">{t("bookings.detail.vayadaCommission")}</span>
                     <span className="font-medium text-gray-900">
                       -
                       {formatPaymentCurrency(
@@ -2115,7 +2273,9 @@ export default function BookingDetailPage({ params }: { params: Promise<{ id: st
                   </div>
                 )}
                 <div className="mt-2 flex justify-between gap-4 border-t border-gray-200 pt-3">
-                  <span className="font-semibold text-gray-900">Net payout</span>
+                  <span className="font-semibold text-gray-900">
+                    {t("bookings.detail.netPayout")}
+                  </span>
                   <span className="font-bold text-green-700">
                     {formatPaymentCurrency(
                       booking.paymentBreakdown.netPayout,
@@ -2124,8 +2284,7 @@ export default function BookingDetailPage({ params }: { params: Promise<{ id: st
                   </span>
                 </div>
                 <p className="mt-3 border-t border-gray-200 pt-3 text-xs text-gray-500">
-                  Stripe processing fees may not be returned when a payment is refunded. Account for
-                  them in your cancellation policy.
+                  {t("bookings.detail.stripeFeeNotice")}
                 </p>
               </div>
             )}
@@ -2134,15 +2293,31 @@ export default function BookingDetailPage({ params }: { params: Promise<{ id: st
                 <div className="flex items-center justify-between gap-4">
                   <div>
                     <p className="font-semibold text-gray-900">
-                      Deposit: {formatCurrency(booking.depositAmount, booking.currency)}
+                      {t("bookings.detail.depositWithAmount", {
+                        amount: formatCurrency(booking.depositAmount, booking.currency),
+                      })}
                     </p>
                     <p className="text-xs text-gray-500">
-                      {booking.depositPercentage}% of booking total ·{" "}
+                      {t("bookings.detail.depositPercentage", {
+                        percentage: booking.depositPercentage ?? 0,
+                      })}{" "}
+                      {" · "}
                       {booking.paymentStatus === "captured"
-                        ? `Paid via ${booking.paymentMethod === "card" ? "Stripe" : booking.paymentMethod ? paymentMethodLabel(booking.paymentMethod) : "manual method"}`
+                        ? t("bookings.detail.paidVia", {
+                            method:
+                              booking.paymentMethod === "card"
+                                ? "Stripe"
+                                : booking.paymentMethod
+                                  ? paymentMethodDisplayLabel(booking.paymentMethod, t)
+                                  : t("bookings.detail.manualMethod"),
+                          })
                         : booking.paymentStatus === "refunded"
-                          ? "Deposit was refunded"
-                          : `Pending (${booking.paymentMethod ? paymentMethodLabel(booking.paymentMethod) : "manual method"})`}
+                          ? t("bookings.detail.depositWasRefunded")
+                          : t("bookings.detail.pendingMethod", {
+                              method: booking.paymentMethod
+                                ? paymentMethodDisplayLabel(booking.paymentMethod, t)
+                                : t("bookings.detail.manualMethod"),
+                            })}
                     </p>
                   </div>
                   <span
@@ -2155,22 +2330,28 @@ export default function BookingDetailPage({ params }: { params: Promise<{ id: st
                     }`}
                   >
                     {booking.paymentStatus === "captured"
-                      ? "Deposit paid"
+                      ? t("bookings.detail.depositPaid")
                       : booking.paymentStatus === "refunded"
-                        ? "Deposit refunded"
-                        : "Deposit pending"}
+                        ? t("bookings.detail.depositRefunded")
+                        : t("bookings.detail.depositPending")}
                   </span>
                 </div>
                 <div className="flex items-center justify-between gap-4 border-t border-gray-200 pt-3">
                   <p className="font-semibold text-gray-900">
-                    Balance: {formatCurrency(booking.balanceAmount, booking.currency)}
+                    {t("bookings.detail.balanceWithAmount", {
+                      amount: formatCurrency(booking.balanceAmount, booking.currency),
+                    })}
                   </p>
-                  <p className="text-xs text-gray-500">Due at property</p>
+                  <p className="text-xs text-gray-500">{t("bookings.detail.dueAtProperty")}</p>
                 </div>
                 {booking.depositAmount > booking.totalAmount && (
                   <p className="text-xs text-amber-700">
-                    Deposit exceeds current total by{" "}
-                    {formatCurrency(booking.depositAmount - booking.totalAmount, booking.currency)}.
+                    {t("bookings.detail.depositExceedsTotal", {
+                      amount: formatCurrency(
+                        booking.depositAmount - booking.totalAmount,
+                        booking.currency,
+                      ),
+                    })}
                   </p>
                 )}
               </div>
@@ -2183,7 +2364,7 @@ export default function BookingDetailPage({ params }: { params: Promise<{ id: st
                   {hasAcceptedBankDeadline ? (
                     <div className="flex items-center justify-between gap-3 rounded-lg border border-amber-200 bg-amber-50 p-3">
                       <p className="text-xs text-amber-800">
-                        Payment must be recorded before this reservation is released.
+                        {t("bookings.detail.paymentBeforeRelease")}
                       </p>
                       <CountdownTimer deadline={booking.hostResponseDeadline!} />
                     </div>
@@ -2195,8 +2376,8 @@ export default function BookingDetailPage({ params }: { params: Promise<{ id: st
                   >
                     <CheckCircleIcon className="h-4 w-4" />
                     {booking.paymentMethod === "bank_transfer"
-                      ? "Mark bank transfer received"
-                      : "Mark pay-at-hotel payment received"}
+                      ? t("bookings.detail.markBankTransferReceived")
+                      : t("bookings.detail.markPayAtHotelReceived")}
                   </button>
                 </div>
               )}
@@ -2206,17 +2387,19 @@ export default function BookingDetailPage({ params }: { params: Promise<{ id: st
         {/* 3. Guest information · booker */}
         <div className="bg-white border border-gray-200 rounded-xl p-5 sm:p-6">
           <div className="flex items-center justify-between mb-4">
-            <h2 className="text-sm font-semibold text-gray-900">Guest information · booker</h2>
+            <h2 className="text-sm font-semibold text-gray-900">
+              {t("bookings.detail.guestInformationBooker")}
+            </h2>
             {!bookerEditing && (
               <button
                 onClick={handleEditBooker}
                 disabled={!LEGACY_BOOKING_WRITES_AVAILABLE}
-                title="Booker editing is not available yet"
+                title={t("bookings.detail.bookerEditingUnavailable")}
                 className="inline-flex cursor-not-allowed items-center gap-1 rounded bg-gray-50 px-2 py-1 text-[11px] font-medium text-gray-400"
-                aria-label="Edit booker information — not available yet"
+                aria-label={t("bookings.detail.editBookerUnavailableLabel")}
               >
                 <PencilSquareIcon className="w-4 h-4" />
-                Soon
+                {t("bookings.detail.soon")}
               </button>
             )}
           </div>
@@ -2224,25 +2407,28 @@ export default function BookingDetailPage({ params }: { params: Promise<{ id: st
             <div>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                 <Field
-                  label="First name"
+                  label={t("bookings.modal.firstNameLabel")}
                   value={bookerForm.guestFirstName}
                   onChange={(v) => setBookerForm({ ...bookerForm, guestFirstName: v })}
                 />
                 <Field
-                  label="Last name"
+                  label={t("bookings.modal.lastNameLabel")}
                   value={bookerForm.guestLastName}
                   onChange={(v) => setBookerForm({ ...bookerForm, guestLastName: v })}
                 />
                 <SelectField
-                  label="Gender"
+                  label={t("bookings.detail.gender")}
                   value={bookerForm.guestGender}
                   onChange={(v) => setBookerForm({ ...bookerForm, guestGender: v })}
                   options={[
                     { value: "", label: "—" },
-                    { value: "female", label: "Female" },
-                    { value: "male", label: "Male" },
-                    { value: "other", label: "Other" },
-                    { value: "prefer_not_to_say", label: "Prefer not to say" },
+                    { value: "female", label: t("bookings.detail.genderFemale") },
+                    { value: "male", label: t("bookings.detail.genderMale") },
+                    { value: "other", label: t("bookings.detail.genderOther") },
+                    {
+                      value: "prefer_not_to_say",
+                      label: t("bookings.detail.genderPreferNotToSay"),
+                    },
                   ]}
                 />
                 <NationalitySelect
@@ -2250,32 +2436,32 @@ export default function BookingDetailPage({ params }: { params: Promise<{ id: st
                   onChange={(v) => setBookerForm({ ...bookerForm, guestCountry: v })}
                 />
                 <Field
-                  label="Date of birth"
+                  label={t("bookings.detail.dateOfBirth")}
                   type="date"
                   value={bookerForm.guestDateOfBirth}
                   onChange={(v) => setBookerForm({ ...bookerForm, guestDateOfBirth: v })}
                 />
                 <Field
-                  label="Email"
+                  label={t("bookings.detail.email")}
                   type="email"
                   value={bookerForm.guestEmail}
                   onChange={(v) => setBookerForm({ ...bookerForm, guestEmail: v })}
                 />
                 <Field
-                  label="Phone (optional)"
+                  label={t("bookings.detail.phoneOptional")}
                   type="tel"
                   value={bookerForm.guestPhone}
                   onChange={(v) => setBookerForm({ ...bookerForm, guestPhone: v })}
                 />
                 <Field
-                  label="Passport / ID (optional)"
+                  label={t("bookings.detail.passportOptional")}
                   value={bookerForm.guestPassportNumber}
                   onChange={(v) => setBookerForm({ ...bookerForm, guestPassportNumber: v })}
                 />
                 <div className="md:col-span-2">
                   <label className="block">
                     <span className="block text-xs font-medium text-gray-600 mb-1">
-                      Special requests
+                      {t("bookings.detail.specialRequests")}
                     </span>
                     <textarea
                       value={bookerForm.specialRequests}
@@ -2293,14 +2479,14 @@ export default function BookingDetailPage({ params }: { params: Promise<{ id: st
                   onClick={() => setBookerEditing(false)}
                   className="px-3 py-1.5 text-xs font-medium text-gray-700 rounded-lg hover:bg-gray-100"
                 >
-                  Cancel
+                  {t("bookings.modal.cancelButton")}
                 </button>
                 <button
                   onClick={handleSaveBooker}
                   disabled={bookerSaving}
                   className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
                 >
-                  {bookerSaving ? "Saving…" : "Save"}
+                  {bookerSaving ? t("common.saving") : t("common.save")}
                 </button>
               </div>
             </div>
@@ -2308,17 +2494,17 @@ export default function BookingDetailPage({ params }: { params: Promise<{ id: st
             <>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
                 <div>
-                  <p className="text-xs text-gray-500">Name</p>
+                  <p className="text-xs text-gray-500">{t("bookings.detail.name")}</p>
                   <p className="font-medium text-gray-900">
                     {booking.guestFirstName} {booking.guestLastName}
                   </p>
                 </div>
                 <div>
-                  <p className="text-xs text-gray-500">Email</p>
+                  <p className="text-xs text-gray-500">{t("bookings.detail.email")}</p>
                   <p className="font-medium text-gray-900 break-words">{booking.guestEmail}</p>
                 </div>
                 <div>
-                  <p className="text-xs text-gray-500">Phone</p>
+                  <p className="text-xs text-gray-500">{t("bookings.detail.phone")}</p>
                   <p className="font-medium text-gray-900">{booking.guestPhone || "—"}</p>
                 </div>
                 <div className="space-y-2">
@@ -2339,7 +2525,7 @@ export default function BookingDetailPage({ params }: { params: Promise<{ id: st
                           disabled={nationalitySaving}
                           className="rounded-lg px-3 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-100 disabled:opacity-50"
                         >
-                          Cancel
+                          {t("bookings.modal.cancelButton")}
                         </button>
                         <button
                           type="button"
@@ -2347,7 +2533,9 @@ export default function BookingDetailPage({ params }: { params: Promise<{ id: st
                           disabled={!nationalityDraft || nationalitySaving}
                           className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
                         >
-                          {nationalitySaving ? "Saving…" : "Save nationality"}
+                          {nationalitySaving
+                            ? t("common.saving")
+                            : t("bookings.detail.saveNationality")}
                         </button>
                       </div>
                       {nationalityError && (
@@ -2360,7 +2548,9 @@ export default function BookingDetailPage({ params }: { params: Promise<{ id: st
                     <>
                       <div className="flex items-start justify-between gap-3">
                         <div>
-                          <p className="text-xs text-gray-500">Nationality</p>
+                          <p className="text-xs text-gray-500">
+                            {t("bookings.detail.nationality")}
+                          </p>
                           <p className="font-medium text-gray-900">
                             {nationalityDisplayLabel(booking.guestCountry) || "—"}
                           </p>
@@ -2370,20 +2560,24 @@ export default function BookingDetailPage({ params }: { params: Promise<{ id: st
                           onClick={handleEditNationality}
                           aria-label={
                             booking.guestCountryReviewRequired
-                              ? "Correct nationality"
-                              : "Edit nationality"
+                              ? t("bookings.detail.correctNationality")
+                              : t("bookings.detail.editNationality")
                           }
                           className="inline-flex items-center gap-1 rounded bg-gray-50 px-2 py-1 text-[11px] font-medium text-gray-700 hover:bg-gray-100"
                         >
                           <PencilSquareIcon className="h-3.5 w-3.5" />
-                          {booking.guestCountryReviewRequired ? "Correct" : "Edit"}
+                          {booking.guestCountryReviewRequired
+                            ? t("bookings.detail.correct")
+                            : t("common.edit")}
                         </button>
                       </div>
                       {booking.guestCountryReviewRequired && (
                         <p role="status" className="text-xs font-medium text-amber-700">
-                          Needs review
+                          {t("bookings.detail.needsReview")}
                           {booking.guestCountryRaw
-                            ? ` · Imported value: ${booking.guestCountryRaw}`
+                            ? ` · ${t("bookings.detail.importedValue", {
+                                value: booking.guestCountryRaw,
+                              })}`
                             : ""}
                         </p>
                       )}
@@ -2392,25 +2586,31 @@ export default function BookingDetailPage({ params }: { params: Promise<{ id: st
                 </div>
                 {booking.guestGender && (
                   <div>
-                    <p className="text-xs text-gray-500">Gender</p>
+                    <p className="text-xs text-gray-500">{t("bookings.detail.gender")}</p>
                     <p className="font-medium text-gray-900 capitalize">
                       {booking.guestGender === "prefer_not_to_say"
-                        ? "Prefer not to say"
-                        : booking.guestGender}
+                        ? t("bookings.detail.genderPreferNotToSay")
+                        : booking.guestGender === "female"
+                          ? t("bookings.detail.genderFemale")
+                          : booking.guestGender === "male"
+                            ? t("bookings.detail.genderMale")
+                            : booking.guestGender === "other"
+                              ? t("bookings.detail.genderOther")
+                              : booking.guestGender}
                     </p>
                   </div>
                 )}
                 {booking.guestDateOfBirth && (
                   <div>
-                    <p className="text-xs text-gray-500">Date of birth</p>
+                    <p className="text-xs text-gray-500">{t("bookings.detail.dateOfBirth")}</p>
                     <p className="font-medium text-gray-900">
-                      {formatDateLong(booking.guestDateOfBirth)}
+                      {formatDateLong(booking.guestDateOfBirth, locale)}
                     </p>
                   </div>
                 )}
                 {booking.guestPassportNumber && (
                   <div>
-                    <p className="text-xs text-gray-500">Passport / ID</p>
+                    <p className="text-xs text-gray-500">{t("bookings.detail.passport")}</p>
                     <p className="font-medium text-gray-900">{booking.guestPassportNumber}</p>
                   </div>
                 )}
@@ -2419,13 +2619,17 @@ export default function BookingDetailPage({ params }: { params: Promise<{ id: st
                 <div className="mt-4 pt-4 border-t border-gray-100 grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
                   {booking.specialRequests && (
                     <div>
-                      <p className="text-xs text-gray-500">Special requests</p>
+                      <p className="text-xs text-gray-500">
+                        {t("bookings.detail.specialRequests")}
+                      </p>
                       <p className="text-gray-900 whitespace-pre-wrap">{booking.specialRequests}</p>
                     </div>
                   )}
                   {booking.estimatedArrivalTime && (
                     <div>
-                      <p className="text-xs text-gray-500">Estimated arrival time</p>
+                      <p className="text-xs text-gray-500">
+                        {t("bookings.detail.estimatedArrivalTime")}
+                      </p>
                       <p className="font-medium text-gray-900">{booking.estimatedArrivalTime}</p>
                     </div>
                   )}
@@ -2439,12 +2643,21 @@ export default function BookingDetailPage({ params }: { params: Promise<{ id: st
         <div className="bg-white border border-gray-200 rounded-xl p-5 sm:p-6">
           <div className="flex items-start justify-between gap-3 mb-4">
             <div>
-              <h2 className="text-sm font-semibold text-gray-900">Additional guests</h2>
+              <h2 className="text-sm font-semibold text-gray-900">
+                {t("bookings.detail.additionalGuests")}
+              </h2>
               <p className="text-xs text-gray-500 mt-0.5">
-                {totalParty} {totalParty === 1 ? "guest" : "guests"} booked · {guests.length} of{" "}
-                {additionalCapacity} added
+                {t("bookings.detail.additionalGuestProgress", {
+                  party: totalParty,
+                  guestLabel: t(totalParty === 1 ? "common.guest" : "common.guests"),
+                  added: guests.length,
+                  capacity: additionalCapacity,
+                })}
                 {roomRows.length > 1 && unassignedGuests > 0 && (
-                  <> · {unassignedGuests} not yet assigned to a room</>
+                  <>
+                    {" · "}
+                    {t("bookings.detail.unassignedGuestCount", { count: unassignedGuests })}
+                  </>
                 )}
               </p>
             </div>
@@ -2453,19 +2666,19 @@ export default function BookingDetailPage({ params }: { params: Promise<{ id: st
               disabled={guests.length >= additionalCapacity || channelKey !== "direct"}
               title={
                 channelKey !== "direct"
-                  ? "Channel-managed bookings carry limited guest PII"
+                  ? t("bookings.detail.channelGuestPiiLimited")
                   : guests.length >= additionalCapacity
-                    ? "All booked guests have been added"
+                    ? t("bookings.detail.allGuestsAdded")
                     : ""
               }
               className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-gray-900 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed"
             >
               <PlusIcon className="w-4 h-4" />
-              Add guest
+              {t("bookings.detail.addGuest")}
             </button>
           </div>
           {guests.length === 0 ? (
-            <p className="text-sm text-gray-500">No additional guests added yet.</p>
+            <p className="text-sm text-gray-500">{t("bookings.detail.noAdditionalGuests")}</p>
           ) : (
             <div className="space-y-2">
               {guests.map((g, idx) => (
@@ -2486,14 +2699,16 @@ export default function BookingDetailPage({ params }: { params: Promise<{ id: st
         {/* 5. Internal notes */}
         <div className="bg-white border border-gray-200 rounded-xl p-5 sm:p-6">
           <div className="flex items-start justify-between gap-3 mb-4">
-            <h2 className="text-sm font-semibold text-gray-900">Internal notes</h2>
+            <h2 className="text-sm font-semibold text-gray-900">
+              {t("bookings.detail.internalNotes")}
+            </h2>
             <button
               onClick={() => setNoteDraftOpen((v) => !v)}
               disabled={noteEditSaving}
               className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-gray-900 bg-white border border-gray-300 rounded-lg hover:bg-gray-50"
             >
               <PlusIcon className="w-4 h-4" />
-              Add note
+              {t("bookings.detail.addNote")}
             </button>
           </div>
           {noteDraftOpen && (
@@ -2502,7 +2717,7 @@ export default function BookingDetailPage({ params }: { params: Promise<{ id: st
                 value={noteDraft}
                 onChange={(e) => setNoteDraft(e.target.value)}
                 disabled={noteSaving}
-                placeholder="Notes are only visible to your team — never shown to the guest."
+                placeholder={t("bookings.detail.notePlaceholder")}
                 rows={3}
                 className="w-full border border-gray-300 rounded-lg px-3 py-2 text-base text-gray-900 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-gray-900 focus:border-transparent resize-none"
               />
@@ -2515,36 +2730,38 @@ export default function BookingDetailPage({ params }: { params: Promise<{ id: st
                   disabled={noteSaving}
                   className="px-4 py-2 text-sm font-medium text-gray-700 bg-gray-100 hover:bg-gray-200 rounded-lg"
                 >
-                  Cancel
+                  {t("bookings.modal.cancelButton")}
                 </button>
                 <button
                   onClick={handleSaveNote}
                   disabled={!noteDraft.trim() || noteSaving}
                   className="px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 disabled:opacity-50"
                 >
-                  {noteSaving ? "Saving…" : "Save note"}
+                  {noteSaving ? t("common.saving") : t("bookings.detail.saveNote")}
                 </button>
               </div>
             </div>
           )}
           {notes.length === 0 ? (
-            <p className="text-sm text-gray-500">No notes yet.</p>
+            <p className="text-sm text-gray-500">{t("bookings.detail.noNotes")}</p>
           ) : (
             <div className="space-y-3">
               {notes.map((n) => (
                 <div key={n.id} className="border border-gray-200 rounded-lg p-3">
                   <div className="flex items-start justify-between gap-2">
                     <div className="text-xs text-gray-500">
-                      <span className="font-medium text-gray-700">{n.authorName || "Unknown"}</span>{" "}
-                      · {formatDateTime(n.createdAt)}
+                      <span className="font-medium text-gray-700">
+                        {n.authorName || t("bookings.detail.unknown")}
+                      </span>{" "}
+                      · {formatDateTime(n.createdAt, locale)}
                       {n.source === "check-in" && (
                         <span className="ml-2 rounded-full bg-blue-50 px-2 py-0.5 font-medium text-blue-700">
-                          Check-in
+                          {t("bookings.detail.checkIn")}
                         </span>
                       )}
                       {n.source === "check-out" && (
                         <span className="ml-2 rounded-full bg-emerald-50 px-2 py-0.5 font-medium text-emerald-700">
-                          Check-out
+                          {t("bookings.detail.checkOut")}
                         </span>
                       )}
                     </div>
@@ -2556,7 +2773,7 @@ export default function BookingDetailPage({ params }: { params: Promise<{ id: st
                         }}
                         disabled={noteEditSaving}
                         className="rounded p-1 text-gray-400 hover:bg-blue-50 hover:text-blue-600 disabled:cursor-not-allowed disabled:opacity-40"
-                        aria-label="Edit note"
+                        aria-label={t("bookings.detail.editNote")}
                       >
                         <PencilSquareIcon className="h-3.5 w-3.5" />
                       </button>
@@ -2564,7 +2781,7 @@ export default function BookingDetailPage({ params }: { params: Promise<{ id: st
                         onClick={() => handleDeleteNote(n.id)}
                         disabled={noteEditSaving}
                         className="p-1 rounded text-gray-400 hover:text-red-600 hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-40"
-                        aria-label="Delete note"
+                        aria-label={t("bookings.detail.deleteNote")}
                       >
                         <TrashIcon className="w-3.5 h-3.5" />
                       </button>
@@ -2573,7 +2790,7 @@ export default function BookingDetailPage({ params }: { params: Promise<{ id: st
                   {editingNoteId === n.id ? (
                     <div className="mt-2">
                       <textarea
-                        aria-label="Edit note text"
+                        aria-label={t("bookings.detail.editNoteText")}
                         value={editingNoteDraft}
                         onChange={(event) => setEditingNoteDraft(event.target.value)}
                         disabled={noteEditSaving}
@@ -2586,14 +2803,14 @@ export default function BookingDetailPage({ params }: { params: Promise<{ id: st
                           disabled={noteEditSaving}
                           className="rounded-lg bg-gray-100 px-3 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-200 disabled:opacity-50"
                         >
-                          Cancel edit
+                          {t("bookings.detail.cancelEdit")}
                         </button>
                         <button
                           onClick={handleSaveNoteEdit}
                           disabled={!editingNoteDraft.trim() || noteEditSaving}
                           className="rounded-lg bg-blue-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-700 disabled:opacity-50"
                         >
-                          {noteEditSaving ? "Saving…" : "Save edit"}
+                          {noteEditSaving ? t("common.saving") : t("bookings.detail.saveEdit")}
                         </button>
                       </div>
                     </div>
@@ -2602,7 +2819,10 @@ export default function BookingDetailPage({ params }: { params: Promise<{ id: st
                   )}
                   {n.editedAt && (
                     <p className="mt-1.5 text-xs text-gray-500">
-                      Edited by {n.editedByName || "Unknown"} · {formatDateTime(n.editedAt)}
+                      {t("bookings.detail.editedBy", {
+                        name: n.editedByName || t("bookings.detail.unknown"),
+                        date: formatDateTime(n.editedAt, locale),
+                      })}
                     </p>
                   )}
                 </div>
@@ -2618,7 +2838,7 @@ export default function BookingDetailPage({ params }: { params: Promise<{ id: st
               href={`/check-in/${booking.id}`}
               className="inline-flex items-center gap-1.5 px-5 py-2.5 bg-primary-600 text-white text-sm font-medium rounded-lg hover:bg-primary-700"
             >
-              Check in guest
+              {t("bookings.detail.checkInGuest")}
             </Link>
           </div>
         )}
@@ -2627,7 +2847,7 @@ export default function BookingDetailPage({ params }: { params: Promise<{ id: st
             most urgent action stays visible without scrolling further. */}
         {isPending && booking.hostResponseDeadline && (
           <div className="rounded-lg border border-gray-200 bg-gray-50 p-3">
-            <p className="mb-2 text-xs text-gray-500">Review this manual-payment booking.</p>
+            <p className="mb-2 text-xs text-gray-500">{t("bookings.detail.reviewManualPayment")}</p>
             <div className="flex flex-wrap gap-3">
               {booking.paymentMethod === "paypal" ? (
                 <button
@@ -2636,7 +2856,7 @@ export default function BookingDetailPage({ params }: { params: Promise<{ id: st
                   className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-600 px-5 py-2.5 text-sm font-medium text-white hover:bg-emerald-700 disabled:opacity-50"
                 >
                   <CheckCircleIcon className="w-4 h-4" />
-                  Mark as paid
+                  {t("bookings.detail.markAsPaid")}
                 </button>
               ) : (
                 <button
@@ -2645,17 +2865,19 @@ export default function BookingDetailPage({ params }: { params: Promise<{ id: st
                   className="inline-flex items-center gap-1.5 rounded-lg bg-primary-600 px-5 py-2.5 text-sm font-medium text-white hover:bg-primary-700 disabled:opacity-50"
                 >
                   <CheckCircleIcon className="w-4 h-4" />
-                  Accept booking
+                  {t("bookings.detail.acceptBooking")}
                 </button>
               )}
               <button
                 onClick={handleReject}
                 disabled={!LEGACY_BOOKING_WRITES_AVAILABLE || updating}
-                title="Booking rejection is not available yet"
+                title={t("bookings.detail.rejectionUnavailable")}
                 className="inline-flex cursor-not-allowed items-center gap-1.5 rounded-lg border border-gray-200 bg-white px-5 py-2.5 text-sm font-medium text-gray-400"
               >
                 <XCircleIcon className="w-4 h-4" />
-                {booking.paymentMethod === "paypal" ? "Cancel - not received" : "Reject booking"}
+                {booking.paymentMethod === "paypal"
+                  ? t("bookings.detail.cancelNotReceived")
+                  : t("bookings.detail.rejectBooking")}
               </button>
             </div>
           </div>
@@ -2664,12 +2886,12 @@ export default function BookingDetailPage({ params }: { params: Promise<{ id: st
           <div className="rounded-lg border border-gray-200 bg-gray-50 p-3">
             <p className="mb-2 text-xs text-gray-500">
               {booking.paymentMethod === "paypal"
-                ? "Confirm the PayPal payment after it reaches your account."
+                ? t("bookings.detail.confirmPaypalAfterReceipt")
                 : booking.paymentMethod === "card"
-                  ? "Accept the request to capture the authorized card and confirm the booking."
+                  ? t("bookings.detail.acceptCardRequest")
                   : booking.paymentMethod === "pay_at_property"
-                    ? "Accept the request to confirm the booking with payment due at the property."
-                    : "Accept the booking to send bank transfer instructions to the guest."}
+                    ? t("bookings.detail.acceptAtPropertyRequest")
+                    : t("bookings.detail.acceptBankTransferRequest")}
             </p>
             <button
               onClick={booking.paymentMethod === "paypal" ? handleMarkPaid : handleAccept}
@@ -2677,7 +2899,9 @@ export default function BookingDetailPage({ params }: { params: Promise<{ id: st
               className="inline-flex items-center gap-1.5 rounded-lg bg-primary-600 px-4 py-2 text-sm font-medium text-white hover:bg-primary-700 disabled:opacity-50"
             >
               <CheckCircleIcon className="w-4 h-4" />
-              {booking.paymentMethod === "paypal" ? "Mark as paid" : "Accept booking"}
+              {booking.paymentMethod === "paypal"
+                ? t("bookings.detail.markAsPaid")
+                : t("bookings.detail.acceptBooking")}
             </button>
           </div>
         )}
@@ -2685,13 +2909,17 @@ export default function BookingDetailPage({ params }: { params: Promise<{ id: st
         {/* 6. Cancel booking (confirmed bookings only) */}
         {canCancelBooking && (
           <div className="bg-white border border-gray-200 rounded-xl p-5 sm:p-6">
-            <h2 className="text-sm font-semibold text-gray-900 mb-1">Cancel booking</h2>
+            <h2 className="text-sm font-semibold text-gray-900 mb-1">
+              {t("bookings.detail.cancelBooking")}
+            </h2>
             <p className="text-sm text-gray-600 mb-4">
               <span className="font-semibold">
-                Cancels all {roomRows.length} {roomRows.length === 1 ? "room" : "rooms"} in this
-                booking.
+                {t("bookings.detail.cancelsAllRooms", {
+                  count: roomRows.length,
+                  roomLabel: t(roomRows.length === 1 ? "common.room" : "common.rooms"),
+                })}
               </span>{" "}
-              A reason is required.
+              {t("bookings.detail.reasonRequired")}
             </p>
 
             <div className="mb-4">
@@ -2711,11 +2939,11 @@ export default function BookingDetailPage({ params }: { params: Promise<{ id: st
                 setCancelOpen(true);
               }}
               disabled={!LEGACY_BOOKING_WRITES_AVAILABLE || updating}
-              title="Booking cancellation is not available yet"
+              title={t("bookings.detail.cancellationUnavailableTitle")}
               className="inline-flex cursor-not-allowed items-center gap-1.5 rounded-lg border border-gray-200 bg-gray-50 px-4 py-2 text-sm font-medium text-gray-400"
             >
               <XCircleIcon className="w-4 h-4" />
-              Cancellation unavailable
+              {t("bookings.detail.cancellationUnavailable")}
             </button>
           </div>
         )}
@@ -2734,21 +2962,28 @@ export default function BookingDetailPage({ params }: { params: Promise<{ id: st
 
       {decideOpen === "approve" && changeRequest && (
         <Modal onClose={() => setDecideOpen(null)}>
-          <h3 className="text-lg font-semibold text-gray-900 mb-2">Approve change request?</h3>
+          <h3 className="text-lg font-semibold text-gray-900 mb-2">
+            {t("bookings.detail.approveChangeRequestTitle")}
+          </h3>
           <p className="text-sm text-gray-600 mb-4">
-            The booking will be updated to use the requested dates.
+            {t("bookings.detail.approveChangeDescription")}
             {changeRequest.priceDifference > 0 && (
               <>
                 {" "}
-                The pay-at-property balance will increase by{" "}
-                {formatCurrency(changeRequest.priceDifference, changeRequest.currency)}.
+                {t("bookings.detail.payAtPropertyIncrease", {
+                  amount: formatCurrency(changeRequest.priceDifference, changeRequest.currency),
+                })}
               </>
             )}
             {changeRequest.priceDifference < 0 && (
               <>
                 {" "}
-                The pay-at-property balance will decrease by{" "}
-                {formatCurrency(Math.abs(changeRequest.priceDifference), changeRequest.currency)}.
+                {t("bookings.detail.payAtPropertyDecrease", {
+                  amount: formatCurrency(
+                    Math.abs(changeRequest.priceDifference),
+                    changeRequest.currency,
+                  ),
+                })}
               </>
             )}
           </p>
@@ -2757,14 +2992,14 @@ export default function BookingDetailPage({ params }: { params: Promise<{ id: st
               onClick={() => setDecideOpen(null)}
               className="px-4 py-2 text-sm font-medium text-gray-700 bg-gray-100 hover:bg-gray-200 rounded-lg"
             >
-              Cancel
+              {t("bookings.modal.cancelButton")}
             </button>
             <button
               onClick={handleApproveChange}
               disabled={decidingChange}
               className="px-4 py-2 text-sm font-medium text-white bg-green-600 hover:bg-green-700 rounded-lg disabled:opacity-50"
             >
-              {decidingChange ? "Approving…" : "Approve"}
+              {decidingChange ? t("bookings.detail.approving") : t("bookings.detail.approve")}
             </button>
           </div>
         </Modal>
@@ -2772,14 +3007,16 @@ export default function BookingDetailPage({ params }: { params: Promise<{ id: st
 
       {decideOpen === "decline" && (
         <Modal onClose={() => setDecideOpen(null)}>
-          <h3 className="text-lg font-semibold text-gray-900 mb-2">Decline change request</h3>
+          <h3 className="text-lg font-semibold text-gray-900 mb-2">
+            {t("bookings.detail.declineChangeRequestTitle")}
+          </h3>
           <p className="text-sm text-gray-600 mb-4">
-            The booking will stay as-is. The guest will receive an email with your reason.
+            {t("bookings.detail.declineChangeDescription")}
           </p>
           <textarea
             value={declineReason}
             onChange={(e) => setDeclineReason(e.target.value)}
-            placeholder="Reason (optional — will be included in the guest's email)"
+            placeholder={t("bookings.detail.declineReasonPlaceholder")}
             rows={3}
             className="w-full border border-gray-300 rounded-lg px-3 py-2 text-base text-gray-900 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-red-500 focus:border-transparent mb-4 resize-none"
           />
@@ -2788,14 +3025,14 @@ export default function BookingDetailPage({ params }: { params: Promise<{ id: st
               onClick={() => setDecideOpen(null)}
               className="px-4 py-2 text-sm font-medium text-gray-700 bg-gray-100 hover:bg-gray-200 rounded-lg"
             >
-              Cancel
+              {t("bookings.modal.cancelButton")}
             </button>
             <button
               onClick={handleDeclineChange}
               disabled={decidingChange}
               className="px-4 py-2 text-sm font-medium text-white bg-red-600 hover:bg-red-700 rounded-lg disabled:opacity-50"
             >
-              {decidingChange ? "Declining…" : "Decline"}
+              {decidingChange ? t("bookings.detail.declining") : t("bookings.detail.decline")}
             </button>
           </div>
         </Modal>
@@ -2805,18 +3042,18 @@ export default function BookingDetailPage({ params }: { params: Promise<{ id: st
         <Modal onClose={() => setRejectOpen(false)}>
           <h3 className="text-lg font-semibold text-gray-900 mb-2">
             {booking?.paymentMethod === "paypal"
-              ? "Cancel - payment not received"
-              : "Reject booking"}
+              ? t("bookings.detail.cancelPaymentNotReceived")
+              : t("bookings.detail.rejectBooking")}
           </h3>
           <p className="text-sm text-gray-600 mb-4">
             {booking?.paymentMethod === "paypal"
-              ? "Are you sure you want to cancel this PayPal booking because payment was not received? No automatic payment hold applies."
-              : "Are you sure you want to reject this booking? The payment hold will be released."}
+              ? t("bookings.detail.confirmCancelPaypal")
+              : t("bookings.detail.confirmRejectBooking")}
           </p>
           <textarea
             value={rejectReason}
             onChange={(e) => setRejectReason(e.target.value)}
-            placeholder="Reason for rejection (optional — will be included in the guest's email)"
+            placeholder={t("bookings.detail.rejectReasonPlaceholder")}
             rows={3}
             className="w-full border border-gray-300 rounded-lg px-3 py-2 text-base text-gray-900 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-red-500 focus:border-transparent mb-4 resize-none"
           />
@@ -2825,13 +3062,15 @@ export default function BookingDetailPage({ params }: { params: Promise<{ id: st
               onClick={() => setRejectOpen(false)}
               className="px-4 py-2 text-sm font-medium text-gray-700 bg-gray-100 hover:bg-gray-200 rounded-lg"
             >
-              Cancel
+              {t("bookings.modal.cancelButton")}
             </button>
             <button
               onClick={confirmReject}
               className="px-4 py-2 text-sm font-medium text-white bg-red-600 hover:bg-red-700 rounded-lg"
             >
-              {booking?.paymentMethod === "paypal" ? "Cancel booking" : "Reject"}
+              {booking?.paymentMethod === "paypal"
+                ? t("bookings.detail.cancelBooking")
+                : t("bookings.detail.reject")}
             </button>
           </div>
         </Modal>
@@ -2839,15 +3078,19 @@ export default function BookingDetailPage({ params }: { params: Promise<{ id: st
 
       {LEGACY_BOOKING_WRITES_AVAILABLE && cancelOpen && canCancelBooking && (
         <Modal onClose={() => setCancelOpen(false)}>
-          <h3 className="text-lg font-semibold text-gray-900 mb-2">Cancel this booking?</h3>
+          <h3 className="text-lg font-semibold text-gray-900 mb-2">
+            {t("bookings.detail.cancelThisBookingTitle")}
+          </h3>
           <p className="text-sm text-gray-600 mb-4">
-            This cancels all {roomRows.length} {roomRows.length === 1 ? "room" : "rooms"} in the
-            booking and emails the guest. The reason is recorded as an internal note.
+            {t("bookings.detail.cancelAllRoomsDescription", {
+              count: roomRows.length,
+              roomLabel: t(roomRows.length === 1 ? "common.room" : "common.rooms"),
+            })}
           </p>
           <textarea
             value={cancelReason}
             onChange={(e) => setCancelReason(e.target.value)}
-            placeholder="Cancellation reason (required)"
+            placeholder={t("bookings.detail.cancellationReasonPlaceholder")}
             rows={3}
             className="w-full border border-gray-300 rounded-lg px-3 py-2 text-base text-gray-900 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-red-500 focus:border-transparent mb-4 resize-none"
           />
@@ -2856,14 +3099,14 @@ export default function BookingDetailPage({ params }: { params: Promise<{ id: st
               onClick={() => setCancelOpen(false)}
               className="px-4 py-2 text-sm font-medium text-gray-700 bg-gray-100 hover:bg-gray-200 rounded-lg"
             >
-              Keep booking
+              {t("bookings.detail.keepBooking")}
             </button>
             <button
               onClick={handleCancelBooking}
               disabled={!cancelReason.trim() || cancelling}
               className="px-4 py-2 text-sm font-medium text-white bg-red-600 hover:bg-red-700 rounded-lg disabled:opacity-50"
             >
-              {cancelling ? "Cancelling…" : "Cancel booking"}
+              {cancelling ? t("bookings.modal.cancelling") : t("bookings.detail.cancelBooking")}
             </button>
           </div>
         </Modal>

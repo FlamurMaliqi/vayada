@@ -5,8 +5,10 @@ import Image from "next/image";
 import { useRouter, useSearchParams } from "next/navigation";
 import { EyeIcon, EyeSlashIcon } from "@heroicons/react/24/outline";
 import { authService } from "@/services/auth";
+import { useTranslation } from "@/lib/i18n";
 
 function ResetPasswordContent() {
+  const { t } = useTranslation();
   const router = useRouter();
   const searchParams = useSearchParams();
   const token = searchParams.get("token") ?? "";
@@ -33,11 +35,11 @@ function ResetPasswordContent() {
     setConfirmPasswordError("");
 
     if (password.length < 8) {
-      setPasswordError("Password must be at least 8 characters");
+      setPasswordError(t("auth.register.passwordMinLength"));
       return;
     }
     if (password !== confirmPassword) {
-      setConfirmPasswordError("Passwords do not match");
+      setConfirmPasswordError(t("auth.register.passwordsMismatch"));
       return;
     }
 
@@ -46,11 +48,7 @@ function ResetPasswordContent() {
       await authService.resetPassword(token, password);
       setIsSuccess(true);
     } catch (error) {
-      setSubmitError(
-        error instanceof Error
-          ? error.message
-          : "Something went wrong. Please try again or request a new reset link.",
-      );
+      setSubmitError(error instanceof Error ? error.message : t("auth.password.resetError"));
     } finally {
       setIsSubmitting(false);
     }
@@ -69,36 +67,38 @@ function ResetPasswordContent() {
                 height={40}
                 className="mx-auto mb-4 h-10 w-auto"
               />
-              <h1 className="text-xl font-bold text-gray-900">Reset password</h1>
-              <p className="mt-1 text-[13px] text-gray-500">Enter your new password below.</p>
+              <h1 className="text-xl font-bold text-gray-900">{t("auth.password.resetTitle")}</h1>
+              <p className="mt-1 text-[13px] text-gray-500">
+                {t("auth.password.resetDescription")}
+              </p>
             </div>
 
             {!token ? (
               <div className="space-y-5 text-center">
                 <div className="rounded-lg border border-red-200 bg-red-50 p-4">
                   <p className="text-sm font-medium text-red-700">
-                    Invalid or missing reset token. Please request a new password reset link.
+                    {t("auth.password.invalidToken")}
                   </p>
                 </div>
                 <a
                   href="/forgot-password"
                   className="inline-block w-full rounded-lg bg-primary-600 px-4 py-2.5 text-center text-sm font-medium text-white transition-colors hover:bg-primary-700"
                 >
-                  Request New Reset Link
+                  {t("auth.password.requestNewLink")}
                 </a>
               </div>
             ) : isSuccess ? (
               <div className="space-y-5 text-center">
                 <div className="rounded-lg border border-green-200 bg-green-50 p-4">
                   <p className="text-sm font-medium text-green-700">
-                    Password reset successful. Redirecting to sign in...
+                    {t("auth.password.resetSuccess")}
                   </p>
                 </div>
                 <a
                   href="/login"
                   className="inline-block w-full rounded-lg bg-primary-600 px-4 py-2.5 text-center text-sm font-medium text-white transition-colors hover:bg-primary-700"
                 >
-                  Back to Sign In
+                  {t("auth.password.backToSignIn")}
                 </a>
               </div>
             ) : (
@@ -108,7 +108,7 @@ function ResetPasswordContent() {
                     htmlFor="password"
                     className="mb-1.5 block text-sm font-medium text-gray-700"
                   >
-                    New Password
+                    {t("auth.password.newPassword")}
                   </label>
                   <div className="relative">
                     <input
@@ -120,7 +120,7 @@ function ResetPasswordContent() {
                         if (passwordError) setPasswordError("");
                       }}
                       required
-                      placeholder="At least 8 characters"
+                      placeholder={t("auth.register.passwordPlaceholder")}
                       autoComplete="new-password"
                       className={`w-full rounded-lg border px-4 py-2.5 pr-12 text-sm text-gray-900 focus:border-transparent focus:outline-none focus:ring-2 focus:ring-primary-500 ${
                         passwordError ? "border-red-300 ring-1 ring-red-300" : "border-gray-300"
@@ -130,7 +130,7 @@ function ResetPasswordContent() {
                       type="button"
                       onClick={() => setShowPassword(!showPassword)}
                       className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-500 hover:text-gray-700"
-                      aria-label={showPassword ? "Hide password" : "Show password"}
+                      aria-label={showPassword ? t("auth.password.hide") : t("auth.password.show")}
                     >
                       {showPassword ? (
                         <EyeSlashIcon className="h-5 w-5" />
@@ -146,7 +146,7 @@ function ResetPasswordContent() {
                     htmlFor="confirmPassword"
                     className="mb-1.5 block text-sm font-medium text-gray-700"
                   >
-                    Confirm Password
+                    {t("auth.register.confirmPasswordLabel")}
                   </label>
                   <div className="relative">
                     <input
@@ -158,7 +158,7 @@ function ResetPasswordContent() {
                         if (confirmPasswordError) setConfirmPasswordError("");
                       }}
                       required
-                      placeholder="Confirm your password"
+                      placeholder={t("auth.register.confirmPasswordPlaceholder")}
                       autoComplete="new-password"
                       className={`w-full rounded-lg border px-4 py-2.5 pr-12 text-sm text-gray-900 focus:border-transparent focus:outline-none focus:ring-2 focus:ring-primary-500 ${
                         confirmPasswordError
@@ -170,7 +170,9 @@ function ResetPasswordContent() {
                       type="button"
                       onClick={() => setShowConfirmPassword(!showConfirmPassword)}
                       className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-500 hover:text-gray-700"
-                      aria-label={showConfirmPassword ? "Hide password" : "Show password"}
+                      aria-label={
+                        showConfirmPassword ? t("auth.password.hide") : t("auth.password.show")
+                      }
                     >
                       {showConfirmPassword ? (
                         <EyeSlashIcon className="h-5 w-5" />
@@ -193,12 +195,12 @@ function ResetPasswordContent() {
                   disabled={isSubmitting}
                   className="w-full rounded-lg bg-primary-600 px-4 py-2.5 text-sm font-medium text-white transition-colors hover:bg-primary-700 disabled:cursor-not-allowed disabled:opacity-50"
                 >
-                  {isSubmitting ? "Resetting..." : "Reset Password"}
+                  {isSubmitting ? t("auth.password.resetting") : t("auth.password.resetButton")}
                 </button>
                 <p className="text-center text-sm text-gray-600">
-                  Remember your password?{" "}
+                  {t("auth.password.rememberPassword")}{" "}
                   <a href="/login" className="font-medium text-primary-600 hover:text-primary-700">
-                    Sign in
+                    {t("auth.register.signIn")}
                   </a>
                 </p>
               </form>

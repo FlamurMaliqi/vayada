@@ -155,11 +155,15 @@ export default function Header({ onMenuToggle }: { onMenuToggle?: () => void }) 
         .slice(0, 2)
     : "?";
 
-  const dateStr = formatPropertyDate(stats.today, {
-    weekday: "long",
-    month: "short",
-    day: "numeric",
-  });
+  const dateStr = formatPropertyDate(
+    stats.today,
+    {
+      weekday: "long",
+      month: "short",
+      day: "numeric",
+    },
+    locale,
+  );
 
   return (
     <header className="h-12 bg-white border-b border-gray-200 flex items-center px-4 shrink-0 gap-3">

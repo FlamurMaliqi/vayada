@@ -99,13 +99,10 @@ export default function SettingsPage() {
     } catch (loadError) {
       setPropertyProfileLoadStatus("error");
       setPropertyProfileLoadError(
-        humanizeApiError(
-          loadError,
-          "We couldn’t load the canonical property profile. Retry before editing these fields.",
-        ),
+        humanizeApiError(loadError, t("settings.property.loadBeforeEditing")),
       );
     }
-  }, []);
+  }, [t]);
 
   const loadAcceptanceMode = useCallback(async () => {
     setLoadingAcceptance(true);
@@ -114,13 +111,11 @@ export default function SettingsPage() {
       const settings = await settingsService.getBookingAcceptance();
       setAcceptanceMode(settings.acceptanceMode);
     } catch (loadError) {
-      setAcceptanceLoadError(
-        humanizeApiError(loadError, "We couldn’t load booking acceptance settings."),
-      );
+      setAcceptanceLoadError(humanizeApiError(loadError, t("settings.bookingEngine.loadError")));
     } finally {
       setLoadingAcceptance(false);
     }
-  }, []);
+  }, [t]);
 
   const loadCalendarSettings = useCallback(async () => {
     setCalendarLoading(true);
@@ -129,13 +124,11 @@ export default function SettingsPage() {
       const settings = await getPmsCalendarSettings();
       setAutoRearrangeEnabled(settings.autoRearrangeEnabled);
     } catch (loadError) {
-      setCalendarLoadError(
-        humanizeApiError(loadError, "We couldn’t load automatic room-assignment settings."),
-      );
+      setCalendarLoadError(humanizeApiError(loadError, t("settings.calendar.loadAssignmentError")));
     } finally {
       setCalendarLoading(false);
     }
-  }, []);
+  }, [t]);
 
   const loadSameDayBooking = useCallback(async () => {
     setSameDayLoading(true);
@@ -146,13 +139,11 @@ export default function SettingsPage() {
       setSameDayCutoffTime(settings.cutoffLocalTime);
       setSameDayTimeZone(settings.propertyTimeZone);
     } catch (loadError) {
-      setSameDayLoadError(
-        humanizeApiError(loadError, "We couldn’t load same-day booking settings."),
-      );
+      setSameDayLoadError(humanizeApiError(loadError, t("settings.calendar.loadSameDayError")));
     } finally {
       setSameDayLoading(false);
     }
-  }, []);
+  }, [t]);
 
   useEffect(() => {
     bookingsService
@@ -164,7 +155,7 @@ export default function SettingsPage() {
       })
       .catch(() => {
         setCurrency("");
-        setCurrencyLoadError("We couldn’t load the persisted property currency.");
+        setCurrencyLoadError(t("settings.localization.currencyLoadError"));
         setCurrencyLoadStatus("error");
       })
       .finally(() => setLoading(false));
@@ -173,7 +164,7 @@ export default function SettingsPage() {
     void loadAcceptanceMode();
     void loadCalendarSettings();
     void loadSameDayBooking();
-  }, [loadAcceptanceMode, loadCalendarSettings, loadPropertyProfile, loadSameDayBooking]);
+  }, [loadAcceptanceMode, loadCalendarSettings, loadPropertyProfile, loadSameDayBooking, t]);
 
   const saveAcceptanceMode = async (instantBook: boolean) => {
     setSavingAcceptance(true);
@@ -184,9 +175,9 @@ export default function SettingsPage() {
         instantBook ? "instant" : "request",
       );
       setAcceptanceMode(saved.acceptanceMode);
-      setSuccess("Booking acceptance settings saved");
+      setSuccess(t("settings.bookingEngine.saved"));
     } catch (saveError) {
-      setError(humanizeApiError(saveError, "Couldn’t save booking acceptance settings."));
+      setError(humanizeApiError(saveError, t("settings.bookingEngine.saveError")));
     } finally {
       setSavingAcceptance(false);
     }
@@ -199,9 +190,9 @@ export default function SettingsPage() {
     try {
       const saved = await updatePmsCalendarSettings(enabled);
       setAutoRearrangeEnabled(saved.autoRearrangeEnabled);
-      setSuccess("Calendar settings saved");
+      setSuccess(t("settings.calendar.saved"));
     } catch (saveError) {
-      setError(humanizeApiError(saveError, "Couldn’t save calendar settings."));
+      setError(humanizeApiError(saveError, t("settings.calendar.saveError")));
     } finally {
       setCalendarSaving(false);
     }
@@ -216,9 +207,9 @@ export default function SettingsPage() {
       setSameDayEnabled(saved.enabled);
       setSameDayCutoffTime(saved.cutoffLocalTime);
       setSameDayTimeZone(saved.propertyTimeZone);
-      setSuccess("Same-day booking settings saved");
+      setSuccess(t("settings.calendar.sameDaySaved"));
     } catch (saveError) {
-      setError(humanizeApiError(saveError, "Couldn’t save same-day booking settings."));
+      setError(humanizeApiError(saveError, t("settings.calendar.sameDaySaveError")));
     } finally {
       setSameDaySaving(false);
     }
@@ -258,7 +249,13 @@ export default function SettingsPage() {
       country,
     });
     if (validationError) {
-      setError(validationError);
+      setError(
+        t(
+          validationError === "profile_not_ready"
+            ? "settings.property.profileNotReady"
+            : "settings.property.invalidLocation",
+        ),
+      );
       return;
     }
 
@@ -278,20 +275,15 @@ export default function SettingsPage() {
       setTimezone(normalizedTimezone);
       setCountry(normalizedCountry);
       setAutoOpenReloadKey((key) => key + 1);
-      setSuccess("Property details saved");
+      setSuccess(t("settings.property.saved"));
     } catch (err: any) {
-      setError(
-        humanizeApiError(
-          err,
-          "Couldn’t save property details. Please try again, or contact support if the issue persists.",
-        ),
-      );
+      setError(humanizeApiError(err, t("settings.property.saveError")));
     } finally {
       setSavingProperty(false);
     }
   };
 
-  const sections = getPmsSettingsSections(true);
+  const sections = getPmsSettingsSections(true, t);
 
   if (loading) {
     return (

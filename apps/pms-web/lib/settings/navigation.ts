@@ -9,55 +9,58 @@ import {
 import { HotelIcon } from "@vayada/product-onboarding";
 import type { SettingsNavSection } from "@vayada/settings-ui";
 
-export function getPmsSettingsSections(indexPage: boolean): SettingsNavSection[] {
+export function getPmsSettingsSections(
+  indexPage: boolean,
+  t: (key: string) => string,
+): SettingsNavSection[] {
   const anchorHref = (id: string) => (indexPage ? undefined : `/settings#${id}`);
 
   return [
     {
       id: "property-details",
-      label: "Property",
+      label: t("settings.navigation.property"),
       icon: HotelIcon,
       href: anchorHref("property-details"),
     },
     {
       id: "calendar",
-      label: "Calendar",
+      label: t("settings.navigation.calendar"),
       icon: CalendarDaysIcon,
       href: anchorHref("calendar"),
     },
     {
       id: "booking-engine",
-      label: "Booking Engine",
+      label: t("settings.navigation.bookingEngine"),
       icon: BoltIcon,
       href: anchorHref("booking-engine"),
     },
     {
       id: "ota-commissions",
-      label: "OTA commissions",
+      label: t("settings.navigation.otaCommissions"),
       icon: ReceiptPercentIcon,
       href: anchorHref("ota-commissions"),
     },
     {
       id: "checkin-checklist",
-      label: "Check-in checklist",
+      label: t("settings.navigation.checkinChecklist"),
       icon: ClipboardDocumentCheckIcon,
       href: "/settings/checkin-checklist",
     },
     {
       id: "checkout-inspection",
-      label: "Check-out inspection",
+      label: t("settings.navigation.checkoutInspection"),
       icon: ClipboardDocumentCheckIcon,
       href: "/settings/checkout-inspection",
     },
     {
       id: "team",
-      label: "Team & Roles",
+      label: t("settings.navigation.team"),
       icon: UserGroupIcon,
       href: "/settings/team",
     },
     {
       id: "localization",
-      label: "Localization",
+      label: t("settings.navigation.localization"),
       icon: GlobeAltIcon,
       href: anchorHref("localization"),
     },

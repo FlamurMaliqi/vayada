@@ -1184,7 +1184,7 @@ test.describe("pms-web smoke", () => {
     const rateTable = page.getByText("Set rates per season").locator("xpath=../..");
     await rateTable.getByRole("spinbutton").first().fill("125");
     await page.getByRole("button", { name: "Save Changes" }).click();
-    await expect(page.getByText("Room type changes saved.")).toBeVisible();
+    await expect(page.getByText("Room type updated successfully")).toBeVisible();
     expect(savedPlanBody).toMatchObject({
       expectedRoomFactsRevision: 3,
       expectedPricingCurrencyRevision: 4,
