@@ -1,4 +1,5 @@
 import { createPmsConfirmationEmails } from "./domains/pmsConfirmationEmails.js";
+import { createBankTransferBookingOperations } from "./domains/financeBankTransferBooking.js";
 import {
   createPgIdentityRepository,
   createPgStaffInvitationAcceptanceRepository,
@@ -355,7 +356,27 @@ const stripeBookingPaymentProvider = config.stripeSubscriptions.secretKey
   ? createStripeBookingPaymentProvider({ secretKey: config.stripeSubscriptions.secretKey })
   : undefined;
 
+const bankTransferKms =
+  config.financeSource === "target" && config.financeBankTransferKms
+    ? createAwsFinanceFolioKms({ region: config.financeBankTransferKms.region })
+    : undefined;
+const bankTransferCodec =
+  bankTransferKms && config.financeBankTransferKms
+    ? createBankTransferCodec({
+        ...config.financeBankTransferKms,
+        kms: { ...bankTransferKms.write, ...bankTransferKms.decrypt },
+      })
+    : undefined;
+const bankTransferRepository =
+  config.financeSource === "target"
+    ? createBankTransferRepository(targetDatabaseUrl, bankTransferCodec)
+    : undefined;
+const bankTransferBookings = bankTransferCodec
+  ? createBankTransferBookingOperations(targetDatabaseUrl, bankTransferCodec)
+  : undefined;
+
 const bookingWebCheckoutAdapter = createTargetBookingWebCheckoutAdapter({
+  bankTransfers: bankTransferBookings,
   connectionString: targetDatabaseUrl,
   inventoryReservationPort: createTargetPmsInventoryReservationPort(),
   billingConfigReadPortFactory: (executor) =>
@@ -453,14 +474,6 @@ const financeRepository =
         stripeConnectProvider,
       })
     : undefined;
-
-const bankTransferKms = config.financeSource === "target" && config.financeBankTransferKms
-  ? createAwsFinanceFolioKms({ region: config.financeBankTransferKms.region }) : undefined;
-const bankTransferCodec = bankTransferKms && config.financeBankTransferKms
-  ? createBankTransferCodec({ ...config.financeBankTransferKms,
-      kms: { ...bankTransferKms.write, ...bankTransferKms.decrypt } }) : undefined;
-const bankTransferRepository = bankTransferCodec
-  ? createBankTransferRepository(targetDatabaseUrl, bankTransferCodec) : undefined;
 
 const pmsPricingReadModel = createPgPmsPricingReadModel({
   connectionString: targetDatabaseUrl,
@@ -1554,6 +1567,7 @@ app.addHook("onClose", async () => {
     financeExpenseRuntime?.close(),
     financeFolioRuntime?.close(),
     bankTransferRepository?.close(),
+    bankTransferBookings?.close(),
     bankTransferKms?.close(),
     bookingDesignMediaAdapter?.close?.(),
     pmsRoomPublicationRuntime?.commandRepository.close(),
@@ -2037,7 +2051,11 @@ const bookingEmailDelivery = config.bookingEmailDelivery
 let activeBookingEmailDelivery: Promise<void> | undefined;
 const runBookingEmailDelivery = () => {
   if (!bookingEmailDelivery || activeBookingEmailDelivery) return;
-  activeBookingEmailDelivery = runBookingEmailDeliveryJobs(targetDatabaseUrl, bookingEmailDelivery)
+  activeBookingEmailDelivery = runBookingEmailDeliveryJobs(
+    targetDatabaseUrl,
+    bookingEmailDelivery,
+    { bankTransfers: bankTransferBookings },
+  )
     .then((result) => {
       if (result.failed > 0) {
         app.log.warn({ failed: result.failed }, "Booking email delivery completed with failures");
