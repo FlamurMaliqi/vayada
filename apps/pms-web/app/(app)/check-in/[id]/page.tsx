@@ -132,8 +132,8 @@ function guestHasData(g: GuestRegistrationDraft) {
   return Boolean(g.firstName || g.lastName || g.email || g.phone || g.nationality);
 }
 
-function formatDateTime(iso: string): string {
-  return new Date(iso).toLocaleString(undefined, {
+function formatDateTime(iso: string, locale: string): string {
+  return new Date(iso).toLocaleString(locale, {
     day: "numeric",
     month: "short",
     year: "numeric",
@@ -192,9 +192,7 @@ export default function CheckInPage() {
         setBooking(bookingRes);
         setBooker(bookerDraftFromBooking(bookingRes));
         setGuests(normalizeGuests(bookingRes, guestRes.guests));
-        setChecklistSteps(
-          (checklistRes.steps || []).map((step) => localizeBuiltInCheckinStep(step, t)),
-        );
+        setChecklistSteps(checklistRes.steps || []);
         setNotes(noteRes.notes || []);
       })
       .catch((err) => setError(err.message || t("checkIn.loadError")))
@@ -205,8 +203,11 @@ export default function CheckInPage() {
     () =>
       checklistSteps
         .filter((step) => step.required && !customStepDone(step, checklistValues[step.id]))
-        .map((step) => ({ stepId: step.id, label: step.label })),
-    [checklistSteps, checklistValues],
+        .map((step) => ({
+          stepId: step.id,
+          label: localizeBuiltInCheckinStep(step, t).label,
+        })),
+    [checklistSteps, checklistValues, t],
   );
   const flags = useMemo(
     () => pendingChecklistSteps.map((flag) => flag.label),
@@ -658,7 +659,7 @@ export default function CheckInPage() {
                           <span className="font-medium text-gray-700">
                             {note.authorName || t("checkIn.unknown")}
                           </span>
-                          <span>{formatDateTime(note.createdAt)}</span>
+                          <span>{formatDateTime(note.createdAt, locale)}</span>
                           {note.source === "check-in" && (
                             <span className="rounded-full bg-blue-50 px-2 py-0.5 font-medium text-blue-700">
                               {t("bookings.detail.checkIn")}
@@ -943,6 +944,7 @@ function CustomChecklistItem({
   onChange: (value: string | boolean) => void;
 }) {
   const { t } = useTranslation();
+  const displayStep = localizeBuiltInCheckinStep(step, t);
   const done = customStepDone(step, value);
   const controlId = `checklist-${step.id}`;
   const labelId = `checklist-label-${step.id}`;
@@ -963,7 +965,7 @@ function CustomChecklistItem({
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-1.5">
             <span id={labelId} className="break-words text-sm font-medium text-gray-900">
-              {step.label}
+              {displayStep.label}
             </span>
             {step.required && (
               <span className="rounded-full bg-red-50 px-2 py-0.5 text-xs font-medium text-red-700">
@@ -971,7 +973,7 @@ function CustomChecklistItem({
               </span>
             )}
           </div>
-          {step.prompt && <p className="mt-1 text-xs text-gray-500">{step.prompt}</p>}
+          {displayStep.prompt && <p className="mt-1 text-xs text-gray-500">{displayStep.prompt}</p>}
 
           {step.type === "checkbox" && (
             <label className="mt-2 flex items-center gap-2 text-sm text-gray-600">

@@ -18,7 +18,6 @@ import { CalendarBooking, CalendarBlock, CalendarRoomType } from "@/services/cal
 import { getChannelBarColor } from "@/lib/constants/statusStyles";
 import { useTranslation } from "@/lib/i18n";
 
-const WEEKDAYS = ["Mo", "Tu", "We", "Th", "Fr", "Sa", "Su"];
 export const calendarLaneTop = (index: number) => index * 36 + 6;
 
 interface MobileCalendarProps {
@@ -54,7 +53,14 @@ export default function MobileCalendar({
   writeActionsAvailable = true,
   manualBookingAvailable = writeActionsAvailable,
 }: MobileCalendarProps) {
-  const { t } = useTranslation();
+  const { locale, t } = useTranslation();
+  const weekdays = useMemo(
+    () =>
+      Array.from({ length: 7 }, (_, index) =>
+        new Date(2024, 0, index + 1).toLocaleDateString(locale, { weekday: "short" }),
+      ),
+    [locale],
+  );
   // Selection model: tap a day to single-select it (so the user can browse
   // that day's bookings/blocks); drag from one day onto another to form a
   // range. The drag mirrors desktop's pointer drag-to-select. While the
@@ -282,7 +288,7 @@ export default function MobileCalendar({
       {/* Month header */}
       <div className="bg-white border-b border-gray-200 px-4 pt-3 pb-2">
         <div className="text-center text-[11px] text-gray-400 mb-1">
-          {format(currentMonth, "yyyy")}
+          {currentMonth.toLocaleDateString(locale, { year: "numeric" })}
         </div>
         <div className="flex items-center justify-between">
           <button
@@ -300,7 +306,9 @@ export default function MobileCalendar({
               />
             </svg>
           </button>
-          <h2 className="text-[15px] font-bold text-gray-900">{format(currentMonth, "MMMM")}</h2>
+          <h2 className="text-[15px] font-bold text-gray-900">
+            {currentMonth.toLocaleDateString(locale, { month: "long" })}
+          </h2>
           <button
             type="button"
             aria-label={t("calendar.nextMonth")}
@@ -318,7 +326,7 @@ export default function MobileCalendar({
       <div className="bg-white px-3 py-2">
         {/* Weekday headers */}
         <div className="grid grid-cols-7 mb-1">
-          {WEEKDAYS.map((d, i) => {
+          {weekdays.map((d, i) => {
             const isWeekendCol = i >= 5;
             return (
               <div
@@ -432,8 +440,18 @@ export default function MobileCalendar({
                 {!headerStart || !headerEnd
                   ? t("calendar.selectDay")
                   : isRangeSelection
-                    ? `${format(headerStart, "MMM d")} – ${format(headerEnd, "MMM d")} · ${nights} nights`
-                    : format(headerStart, "EEEE, MMM d")}
+                    ? `${headerStart.toLocaleDateString(locale, {
+                        month: "short",
+                        day: "numeric",
+                      })} – ${headerEnd.toLocaleDateString(locale, {
+                        month: "short",
+                        day: "numeric",
+                      })} · ${nights} ${t(nights === 1 ? "common.night" : "common.nights")}`
+                    : headerStart.toLocaleDateString(locale, {
+                        weekday: "long",
+                        month: "short",
+                        day: "numeric",
+                      })}
               </h3>
               {isRangeSelection && (
                 <button

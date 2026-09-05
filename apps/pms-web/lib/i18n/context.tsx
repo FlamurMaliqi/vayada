@@ -1,6 +1,14 @@
 "use client";
 
-import { createContext, useContext, useState, useEffect, useCallback, type ReactNode } from "react";
+import {
+  createContext,
+  useContext,
+  useState,
+  useEffect,
+  useCallback,
+  useRef,
+  type ReactNode,
+} from "react";
 import { DEFAULT_LOCALE, SUPPORTED_LANGUAGES } from "./languages";
 import defaultEnMessages from "../../messages/en.json";
 
@@ -63,25 +71,36 @@ async function loadMessages(locale: string): Promise<Messages> {
 export function LanguageProvider({ children }: { children: ReactNode }) {
   const [locale, setLocaleState] = useState(DEFAULT_LOCALE);
   const [messages, setMessages] = useState<Messages>(defaultEnMessages as Messages);
+  const messageRequest = useRef(0);
+
+  const applyMessages = useCallback((nextLocale: string) => {
+    const request = ++messageRequest.current;
+    void loadMessages(nextLocale).then((nextMessages) => {
+      if (request === messageRequest.current) setMessages(nextMessages);
+    });
+  }, []);
 
   useEffect(() => {
     const stored = localStorage.getItem(STORAGE_KEY);
     if (stored && supportedLocales.has(stored) && stored !== DEFAULT_LOCALE) {
       setLocaleState(stored);
       document.documentElement.lang = stored;
-      loadMessages(stored).then(setMessages);
+      applyMessages(stored);
     } else {
       document.documentElement.lang = DEFAULT_LOCALE;
     }
-  }, []);
+  }, [applyMessages]);
 
-  const setLocale = useCallback((newLocale: string) => {
-    if (!supportedLocales.has(newLocale)) return;
-    setLocaleState(newLocale);
-    localStorage.setItem(STORAGE_KEY, newLocale);
-    document.documentElement.lang = newLocale;
-    loadMessages(newLocale).then(setMessages);
-  }, []);
+  const setLocale = useCallback(
+    (newLocale: string) => {
+      if (!supportedLocales.has(newLocale)) return;
+      setLocaleState(newLocale);
+      localStorage.setItem(STORAGE_KEY, newLocale);
+      document.documentElement.lang = newLocale;
+      applyMessages(newLocale);
+    },
+    [applyMessages],
+  );
 
   const t = useCallback(
     (key: string, params?: Record<string, string | number>): string =>

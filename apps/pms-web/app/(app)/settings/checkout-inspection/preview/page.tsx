@@ -8,7 +8,6 @@ import {
 } from "@/components/settings/CheckoutInspectionBuilder";
 import { CheckoutInspectionStep, settingsService } from "@/services/settings";
 import { useTranslation } from "@/lib/i18n";
-import { localizeCheckoutInspectionStep } from "@/lib/settings/checklistCopy";
 
 export default function CheckoutInspectionPreviewPage() {
   const { t } = useTranslation();
@@ -18,17 +17,15 @@ export default function CheckoutInspectionPreviewPage() {
   useEffect(() => {
     const draft = readCheckoutInspectionPreviewDraft();
     if (draft) {
-      setSteps(draft.map((step) => localizeCheckoutInspectionStep(step, t)));
+      setSteps(draft);
       setLoading(false);
       return;
     }
     settingsService
       .getCheckoutInspection()
-      .then((template) =>
-        setSteps((template.steps || []).map((step) => localizeCheckoutInspectionStep(step, t))),
-      )
+      .then((template) => setSteps(template.steps || []))
       .finally(() => setLoading(false));
-  }, [t]);
+  }, []);
 
   if (loading) {
     return (

@@ -80,6 +80,13 @@ describe("dashboard booking dates", () => {
         year: "numeric",
       }),
     ).toBe("Thursday, June 25, 2026");
+    expect(
+      formatPropertyDate(
+        "2026-06-25",
+        { weekday: "long", month: "long", day: "numeric", year: "numeric" },
+        "de",
+      ),
+    ).toBe("Donnerstag, 25. Juni 2026");
   });
 
   it("builds date-only forecast windows without the viewer timezone", () => {

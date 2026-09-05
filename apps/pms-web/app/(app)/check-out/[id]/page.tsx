@@ -131,8 +131,8 @@ function guestsLabel(
   return parts.join(", ") || t(count === 1 ? "checkOut.guest" : "checkOut.guests", { count });
 }
 
-function formatDateTime(iso: string): string {
-  return new Date(iso).toLocaleString(undefined, {
+function formatDateTime(iso: string, locale: string): string {
+  return new Date(iso).toLocaleString(locale, {
     day: "numeric",
     month: "short",
     year: "numeric",
@@ -173,7 +173,7 @@ export default function CheckOutPage() {
     ])
       .then(([bookingRes, templateRes, chargeRes, noteRes]) => {
         setBooking(bookingRes);
-        setSteps((templateRes.steps || []).map((step) => localizeCheckoutInspectionStep(step, t)));
+        setSteps(templateRes.steps || []);
         setCharges(chargeRes.charges || []);
         setNotes(noteRes.notes || []);
       })
@@ -474,6 +474,7 @@ export default function CheckOutPage() {
               <div className="space-y-3">
                 {steps.map((step) => {
                   const draft = inspection[step.id];
+                  const displayStep = localizeCheckoutInspectionStep(step, t);
                   return (
                     <div key={step.id} className="rounded-lg border border-gray-200 bg-white p-3">
                       <div className="flex flex-wrap items-start justify-between gap-3">
@@ -489,9 +490,11 @@ export default function CheckOutPage() {
                             }`}
                           >
                             {draft?.status === "issue"
-                              ? t("checkOut.inspectionSelected", { label: step.negativeLabel })
+                              ? t("checkOut.inspectionSelected", {
+                                  label: displayStep.negativeLabel,
+                                })
                               : draft?.status === "ok"
-                                ? step.okLabel
+                                ? displayStep.okLabel
                                 : step.required
                                   ? t("common.required")
                                   : t("checkOut.optional")}
@@ -518,7 +521,7 @@ export default function CheckOutPage() {
                                 : "border-gray-200 bg-white text-gray-700 hover:bg-gray-50"
                             }`}
                           >
-                            {step.negativeLabel}
+                            {displayStep.negativeLabel}
                           </button>
                         </div>
                       </div>
@@ -526,7 +529,7 @@ export default function CheckOutPage() {
                         <input
                           value={draft.note}
                           onChange={(event) => updateInspectionNote(step.id, event.target.value)}
-                          placeholder={step.notePrompt}
+                          placeholder={displayStep.notePrompt}
                           className="mt-3 w-full rounded-lg border border-gray-200 px-3 py-2 text-sm outline-none focus:border-gray-400"
                         />
                       )}
@@ -554,7 +557,9 @@ export default function CheckOutPage() {
                       <div>
                         <p className="text-sm font-semibold text-gray-950">{charge.label}</p>
                         <p className="text-xs text-gray-500">
-                          {t("checkOut.addedAt", { date: formatDateTime(charge.createdAt) })}
+                          {t("checkOut.addedAt", {
+                            date: formatDateTime(charge.createdAt, locale),
+                          })}
                         </p>
                       </div>
                       <div className="flex flex-wrap items-center gap-2">
@@ -664,7 +669,7 @@ export default function CheckOutPage() {
                     </p>
                     <div className="mt-2 space-y-2">
                       {checkInNotes.map((note) => (
-                        <NoteRow key={note.id} note={note} />
+                        <NoteRow key={note.id} note={note} locale={locale} />
                       ))}
                     </div>
                   </div>
@@ -693,7 +698,7 @@ export default function CheckOutPage() {
                   {checkoutNotes.length > 0 && (
                     <div className="mt-3 space-y-2">
                       {checkoutNotes.map((note) => (
-                        <NoteRow key={note.id} note={note} />
+                        <NoteRow key={note.id} note={note} locale={locale} />
                       ))}
                     </div>
                   )}
@@ -709,14 +714,15 @@ export default function CheckOutPage() {
                 <ChecklistItem label={t("checkOut.stayReviewed")} state="ok" />
                 {steps.map((step) => {
                   const draft = inspection[step.id];
+                  const displayStep = localizeCheckoutInspectionStep(step, t);
                   return (
                     <ChecklistItem
                       key={step.id}
                       label={
                         draft?.status === "issue"
-                          ? `${step.label} - ${step.negativeLabel}`
+                          ? `${step.label} - ${displayStep.negativeLabel}`
                           : draft?.status === "ok"
-                            ? `${step.label} - ${step.okLabel}`
+                            ? `${step.label} - ${displayStep.okLabel}`
                             : step.label
                       }
                       state={
@@ -831,12 +837,12 @@ function TotalRow({
   );
 }
 
-function NoteRow({ note }: { note: BookingNote }) {
+function NoteRow({ note, locale }: { note: BookingNote; locale: string }) {
   return (
     <div className="rounded-lg border border-gray-200 bg-gray-50 p-3">
       <p className="text-sm text-gray-900">{note.body}</p>
       <p className="mt-1 text-xs text-gray-500">
-        {note.authorName} - {formatDateTime(note.createdAt)}
+        {note.authorName} - {formatDateTime(note.createdAt, locale)}
       </p>
     </div>
   );

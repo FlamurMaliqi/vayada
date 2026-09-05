@@ -53,26 +53,31 @@ export function CheckinChecklistPreview({ steps }: { steps: CheckinChecklistStep
             {t("settings.checklist.previewEmpty")}
           </div>
         )}
-        {steps.map((step) => (
-          <div key={step.id} className="rounded-lg border border-gray-200 bg-white p-3">
-            <div className="flex items-start justify-between gap-3">
-              <div className="min-w-0">
-                <p className="break-words text-sm font-semibold text-gray-950">
-                  {step.label.trim() || t("settings.checklist.unnamed")}
-                </p>
-                {step.prompt && <p className="mt-0.5 text-xs text-gray-500">{step.prompt}</p>}
+        {steps.map((step) => {
+          const displayStep = localizeBuiltInCheckinStep(step, t);
+          return (
+            <div key={step.id} className="rounded-lg border border-gray-200 bg-white p-3">
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <p className="break-words text-sm font-semibold text-gray-950">
+                    {displayStep.label.trim() || t("settings.checklist.unnamed")}
+                  </p>
+                  {displayStep.prompt && (
+                    <p className="mt-0.5 text-xs text-gray-500">{displayStep.prompt}</p>
+                  )}
+                </div>
+                <span className="shrink-0 rounded-full bg-white px-2 py-0.5 text-xs text-gray-500">
+                  {step.required ? t("common.required") : t("settings.checklist.optional")}
+                </span>
               </div>
-              <span className="shrink-0 rounded-full bg-white px-2 py-0.5 text-xs text-gray-500">
-                {step.required ? t("common.required") : t("settings.checklist.optional")}
-              </span>
+              <div className="mt-2 flex flex-wrap gap-1.5">
+                <span className="rounded-full bg-gray-100 px-2 py-0.5 text-xs font-medium text-gray-700">
+                  {typeLabel(step.type, t)}
+                </span>
+              </div>
             </div>
-            <div className="mt-2 flex flex-wrap gap-1.5">
-              <span className="rounded-full bg-gray-100 px-2 py-0.5 text-xs font-medium text-gray-700">
-                {typeLabel(step.type, t)}
-              </span>
-            </div>
-          </div>
-        ))}
+          );
+        })}
       </div>
     </div>
   );
@@ -92,9 +97,7 @@ export function CheckinChecklistBuilder() {
   useEffect(() => {
     settingsService
       .getCheckinChecklist()
-      .then((template) =>
-        setSteps((template.steps || []).map((step) => localizeBuiltInCheckinStep(step, t))),
-      )
+      .then((template) => setSteps(template.steps || []))
       .catch((err) => setError(err.message || t("settings.checklist.loadError")))
       .finally(() => setLoading(false));
   }, [t]);
@@ -130,7 +133,7 @@ export function CheckinChecklistBuilder() {
     setSuccess("");
     setError("");
     setErrors({});
-    const restored = defaultCheckinChecklistSteps(t);
+    const restored = defaultCheckinChecklistSteps();
     nextFocusId.current = restored[0]?.id ?? null;
     setSteps(restored);
   };
@@ -237,6 +240,7 @@ export function CheckinChecklistBuilder() {
               {normalizedSteps.map((step, index) => {
                 const previousStep = normalizedSteps[index - 1];
                 const nextStep = normalizedSteps[index + 1];
+                const displayStep = localizeBuiltInCheckinStep(step, t);
 
                 return (
                   <div
@@ -282,7 +286,7 @@ export function CheckinChecklistBuilder() {
                       </div>
                       <div className="space-y-2">
                         <Field
-                          value={step.label}
+                          value={displayStep.label}
                           placeholder={t("settings.checklist.labelPlaceholder")}
                           maxLength={120}
                           error={errors[step.id]}
@@ -290,7 +294,7 @@ export function CheckinChecklistBuilder() {
                           onChange={(value) => updateStep(step.id, { label: value })}
                         />
                         <TextAreaField
-                          value={step.prompt ?? ""}
+                          value={displayStep.prompt ?? ""}
                           placeholder={t("settings.checklist.helpPlaceholder")}
                           maxLength={200}
                           onChange={(value) => updateStep(step.id, { prompt: value })}

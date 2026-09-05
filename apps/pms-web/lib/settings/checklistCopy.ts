@@ -26,11 +26,11 @@ const CHECKIN_DEFAULTS = [
   },
 ] as const;
 
-export function defaultCheckinChecklistSteps(t: Translate): CheckinChecklistStep[] {
+export function defaultCheckinChecklistSteps(): CheckinChecklistStep[] {
   return CHECKIN_DEFAULTS.map((step, position) => ({
     id: step.id,
-    label: t(step.labelKey),
-    prompt: t(step.promptKey),
+    label: step.label,
+    prompt: step.prompt,
     type: "checkbox",
     required: true,
     system: false,
@@ -43,6 +43,7 @@ export function localizeBuiltInCheckinStep(
   t: Translate,
 ): CheckinChecklistStep {
   const defaultStep = CHECKIN_DEFAULTS.find((candidate) => candidate.id === step.id);
+  // The persisted ID establishes built-in identity; canonical copy means the user has not edited it.
   if (!defaultStep || step.label !== defaultStep.label) return step;
 
   return {

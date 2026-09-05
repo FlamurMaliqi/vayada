@@ -9,7 +9,6 @@ import {
 } from "@/components/settings/CheckinChecklistBuilder";
 import { CheckinChecklistStep, settingsService } from "@/services/settings";
 import { useTranslation } from "@/lib/i18n";
-import { localizeBuiltInCheckinStep } from "@/lib/settings/checklistCopy";
 
 export default function CheckinChecklistPreviewPage() {
   const { t } = useTranslation();
@@ -19,17 +18,15 @@ export default function CheckinChecklistPreviewPage() {
   useEffect(() => {
     const draft = readChecklistPreviewDraft();
     if (draft) {
-      setSteps(draft.map((step) => localizeBuiltInCheckinStep(step, t)));
+      setSteps(draft);
       setLoading(false);
       return;
     }
     settingsService
       .getCheckinChecklist()
-      .then((template) =>
-        setSteps((template.steps || []).map((step) => localizeBuiltInCheckinStep(step, t))),
-      )
+      .then((template) => setSteps(template.steps || []))
       .finally(() => setLoading(false));
-  }, [t]);
+  }, []);
 
   return (
     <main className="min-h-[100dvh] bg-gray-50 p-4 md:p-6">

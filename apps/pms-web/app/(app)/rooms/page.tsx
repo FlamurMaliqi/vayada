@@ -278,9 +278,7 @@ function RoomTypeCard({
             )}
           </div>
           <p className="text-[12px] text-gray-400 mt-0.5 truncate">
-            {typeRooms.length}
-            {t("common.room")}
-            {typeRooms.length !== 1 ? "s" : ""}
+            {typeRooms.length} {t(typeRooms.length === 1 ? "common.room" : "common.rooms")}
             {room.maxOccupancy > 0 && (
               <>
                 {" "}

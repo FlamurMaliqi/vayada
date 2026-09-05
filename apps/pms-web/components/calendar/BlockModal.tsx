@@ -256,9 +256,7 @@ export default function BlockModal({
           </div>
           {nights > 0 && (
             <p className="text-xs text-gray-500 mt-2">
-              {nights}
-              {t("common.night")}
-              {nights !== 1 ? "s" : ""}
+              {nights} {t(nights === 1 ? "common.night" : "common.nights")}
             </p>
           )}
         </div>
@@ -273,9 +271,8 @@ export default function BlockModal({
           >
             {roomTypes.map((rt) => (
               <option key={rt.id} value={rt.id}>
-                {rt.name} · {rt.totalRooms}
-                {t("common.room")}
-                {rt.totalRooms !== 1 ? "s" : ""}
+                {rt.name} · {rt.totalRooms}{" "}
+                {t(rt.totalRooms === 1 ? "common.room" : "common.rooms")}
               </option>
             ))}
           </select>

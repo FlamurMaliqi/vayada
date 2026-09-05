@@ -112,7 +112,7 @@ export default function BookingDetailModal({
   bookings = [],
   sourceAssignmentSelector,
 }: BookingDetailModalProps) {
-  const { t } = useTranslation();
+  const { locale, t } = useTranslation();
   const [booking, setBooking] = useState<Booking | null>(null);
   const [loading, setLoading] = useState(true);
   const [actionLoading, setActionLoading] = useState(false);
@@ -1330,7 +1330,7 @@ export default function BookingDetailModal({
                 {t("calendar.bookingDetail.booked")}
               </p>
               <p className="text-sm font-semibold text-gray-900 mt-0.5">
-                {booking.createdAt ? new Date(booking.createdAt).toLocaleDateString() : "—"}
+                {booking.createdAt ? new Date(booking.createdAt).toLocaleDateString(locale) : "—"}
               </p>
             </div>
             <div>

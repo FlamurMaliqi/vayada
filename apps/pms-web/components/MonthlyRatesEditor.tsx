@@ -5,20 +5,7 @@ import { ChevronDownIcon, ChevronRightIcon } from "@heroicons/react/24/outline";
 import { MonthlyRate } from "@/services/rooms";
 import { useTranslation } from "@/lib/i18n";
 
-const MONTHS = [
-  "January",
-  "February",
-  "March",
-  "April",
-  "May",
-  "June",
-  "July",
-  "August",
-  "September",
-  "October",
-  "November",
-  "December",
-];
+const MONTHS = Array.from({ length: 12 }, (_, index) => index);
 
 interface MonthlyRatesEditorProps {
   monthlyRates: Record<string, MonthlyRate>;
@@ -33,7 +20,7 @@ export default function MonthlyRatesEditor({
   defaultNonRefundableRate,
   onChange,
 }: MonthlyRatesEditorProps) {
-  const { t } = useTranslation();
+  const { locale, t } = useTranslation();
   const [open, setOpen] = useState(false);
 
   const handleChange = (month: number, field: "baseRate" | "nonRefundableRate", value: string) => {
@@ -92,7 +79,11 @@ export default function MonthlyRatesEditor({
             <span>{t("rooms.form.nonRefundableColumn")}</span>
           </div>
 
-          {MONTHS.map((name, idx) => {
+          {MONTHS.map((monthIndex) => {
+            const name = new Date(2024, monthIndex, 1).toLocaleDateString(locale, {
+              month: "long",
+            });
+            const idx = monthIndex;
             const month = idx + 1;
             const key = String(month);
             const entry = monthlyRates[key] || {};

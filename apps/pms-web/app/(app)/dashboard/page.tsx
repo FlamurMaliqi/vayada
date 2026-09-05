@@ -98,7 +98,7 @@ const FORECAST_MAX_WEEK_OFFSET = 24;
 type InventoryLoadStatus = "loading" | "ready" | "error";
 
 export default function DashboardPage() {
-  const { t } = useTranslation();
+  const { locale, t } = useTranslation();
   const [bookings, setBookings] = useState<Booking[]>([]);
   const [forecastInventoryDays, setForecastInventoryDays] = useState<CalendarInventoryDay[]>([]);
   const [tonightInventoryDays, setTonightInventoryDays] = useState<CalendarInventoryDay[]>([]);
@@ -284,12 +284,14 @@ export default function DashboardPage() {
         pct: occupancy.percentage,
         adr,
         label:
-          dateStr === today ? t("common.today") : formatPropertyDate(dateStr, { weekday: "short" }),
+          dateStr === today
+            ? t("common.today")
+            : formatPropertyDate(dateStr, { weekday: "short" }, locale),
         dayNum: Number(dateStr.slice(-2)),
       });
     }
     return days;
-  }, [bookings, forecastInventoryDays, weekOffset, today, t]);
+  }, [bookings, forecastInventoryDays, weekOffset, today, t, locale]);
 
   if (loading) {
     return (
@@ -311,12 +313,16 @@ export default function DashboardPage() {
     );
   }
 
-  const dateLabel = formatPropertyDate(today, {
-    weekday: "long",
-    month: "long",
-    day: "numeric",
-    year: "numeric",
-  });
+  const dateLabel = formatPropertyDate(
+    today,
+    {
+      weekday: "long",
+      month: "long",
+      day: "numeric",
+      year: "numeric",
+    },
+    locale,
+  );
 
   return (
     <div className="p-4 md:p-6 space-y-4 md:space-y-5 overflow-x-hidden">
@@ -550,15 +556,23 @@ export default function DashboardPage() {
           <div className="flex items-center gap-2 shrink-0">
             {forecastDays.length >= 14 && (
               <p className="text-xs text-gray-400 hidden sm:block">
-                {formatPropertyDate(forecastDays[0].dateStr, {
-                  month: "short",
-                  day: "numeric",
-                })}{" "}
+                {formatPropertyDate(
+                  forecastDays[0].dateStr,
+                  {
+                    month: "short",
+                    day: "numeric",
+                  },
+                  locale,
+                )}{" "}
                 –{" "}
-                {formatPropertyDate(forecastDays[13].dateStr, {
-                  month: "short",
-                  day: "numeric",
-                })}
+                {formatPropertyDate(
+                  forecastDays[13].dateStr,
+                  {
+                    month: "short",
+                    day: "numeric",
+                  },
+                  locale,
+                )}
               </p>
             )}
             <div className="flex items-center gap-1">
@@ -597,6 +611,7 @@ export default function DashboardPage() {
           today={today}
           currency={hotelCurrency}
           inventoryStatus={forecastInventoryStatus}
+          locale={locale}
           t={t}
         />
       </div>
@@ -900,12 +915,14 @@ function ForecastChart({
   today,
   currency,
   inventoryStatus,
+  locale,
   t,
 }: {
   days: ForecastDay[];
   today: string;
   currency: string;
   inventoryStatus: InventoryLoadStatus;
+  locale: string;
   t: (key: string, params?: Record<string, string | number>) => string;
 }) {
   const chartHeight = 140;
@@ -969,11 +986,11 @@ function ForecastChart({
               const percentage = inventoryStatus === "ready" ? day.pct : null;
               const occupancyText =
                 inventoryStatus === "loading"
-                  ? "Loading…"
+                  ? t("dashboard.loadingOccupancy")
                   : inventoryStatus === "error"
-                    ? "Couldn’t load"
+                    ? t("dashboard.occupancyLoadError")
                     : percentage === null
-                      ? "Unavailable"
+                      ? t("common.unavailable")
                       : `${percentage}%`;
               const heightPx =
                 percentage === null ? 2 : Math.max(Math.round((percentage / 100) * chartHeight), 2);
@@ -981,15 +998,16 @@ function ForecastChart({
                 <div
                   key={day.dateStr}
                   role="img"
-                  aria-label={`${day.dateStr}: ${
+                  aria-label={t(
                     inventoryStatus === "loading"
-                      ? "occupancy loading"
+                      ? "dashboard.forecastOccupancyLoading"
                       : inventoryStatus === "error"
-                        ? "occupancy failed to load"
+                        ? "dashboard.forecastOccupancyLoadError"
                         : percentage === null
-                          ? "occupancy unavailable"
-                          : `${percentage}% occupancy`
-                  }`}
+                          ? "dashboard.forecastOccupancyUnavailable"
+                          : "dashboard.forecastOccupancyValue",
+                    { date: day.dateStr, percentage: percentage ?? 0 },
+                  )}
                   className="flex-1 flex justify-center group relative"
                   style={{ height: chartHeight }}
                 >
@@ -1004,11 +1022,15 @@ function ForecastChart({
                   {/* Tooltip */}
                   <div className="pointer-events-none absolute bottom-full mb-2 left-1/2 -translate-x-1/2 hidden group-hover:block bg-gray-900 text-white text-[10px] rounded px-2 py-1 whitespace-nowrap z-10 shadow">
                     <div className="font-semibold">
-                      {formatPropertyDate(day.dateStr, {
-                        weekday: "short",
-                        month: "short",
-                        day: "numeric",
-                      })}
+                      {formatPropertyDate(
+                        day.dateStr,
+                        {
+                          weekday: "short",
+                          month: "short",
+                          day: "numeric",
+                        },
+                        locale,
+                      )}
                     </div>
                     <div>
                       {t("dashboard.occupancyAxis")}: {occupancyText}

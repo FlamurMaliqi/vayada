@@ -17,7 +17,7 @@ import { localizeCheckoutInspectionStep } from "@/lib/settings/checklistCopy";
 
 const DRAFT_STORAGE_KEY = "vayada:pms:checkout-inspection-preview";
 
-function newStep(position: number, t: (key: string) => string): CheckoutInspectionStep {
+function newStep(position: number): CheckoutInspectionStep {
   const id =
     typeof crypto !== "undefined" && "randomUUID" in crypto
       ? crypto.randomUUID()
@@ -25,9 +25,9 @@ function newStep(position: number, t: (key: string) => string): CheckoutInspecti
   return {
     id,
     label: "",
-    okLabel: t("settings.inspection.defaults.okLabel"),
-    negativeLabel: t("settings.inspection.defaults.negativeLabel"),
-    notePrompt: t("settings.inspection.defaults.notePrompt"),
+    okLabel: "OK",
+    negativeLabel: "Issue",
+    notePrompt: "Add details...",
     required: true,
     position,
   };
@@ -43,29 +43,32 @@ export function CheckoutInspectionPreview({ steps }: { steps: CheckoutInspection
         </p>
       </div>
       <div className="max-h-[520px] space-y-2 overflow-y-auto p-4">
-        {steps.map((step) => (
-          <div key={step.id} className="rounded-lg border border-gray-200 bg-white p-3">
-            <div className="flex items-start justify-between gap-3">
-              <div className="min-w-0">
-                <p className="break-words text-sm font-semibold text-gray-950">
-                  {step.label.trim() || t("settings.inspection.unnamed")}
-                </p>
-                <p className="mt-1 text-xs text-gray-500">{step.notePrompt}</p>
+        {steps.map((step) => {
+          const displayStep = localizeCheckoutInspectionStep(step, t);
+          return (
+            <div key={step.id} className="rounded-lg border border-gray-200 bg-white p-3">
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <p className="break-words text-sm font-semibold text-gray-950">
+                    {step.label.trim() || t("settings.inspection.unnamed")}
+                  </p>
+                  <p className="mt-1 text-xs text-gray-500">{displayStep.notePrompt}</p>
+                </div>
+                <span className="rounded-full bg-white px-2 py-0.5 text-xs text-gray-500">
+                  {step.required ? t("common.required") : t("settings.inspection.optional")}
+                </span>
               </div>
-              <span className="rounded-full bg-white px-2 py-0.5 text-xs text-gray-500">
-                {step.required ? t("common.required") : t("settings.inspection.optional")}
-              </span>
+              <div className="mt-3 flex flex-wrap gap-2">
+                <span className="rounded-full border border-green-200 bg-green-50 px-3 py-1 text-xs font-semibold text-green-700">
+                  {displayStep.okLabel}
+                </span>
+                <span className="rounded-full border border-amber-200 bg-amber-50 px-3 py-1 text-xs font-semibold text-amber-800">
+                  {displayStep.negativeLabel}
+                </span>
+              </div>
             </div>
-            <div className="mt-3 flex flex-wrap gap-2">
-              <span className="rounded-full border border-green-200 bg-green-50 px-3 py-1 text-xs font-semibold text-green-700">
-                {step.okLabel}
-              </span>
-              <span className="rounded-full border border-amber-200 bg-amber-50 px-3 py-1 text-xs font-semibold text-amber-800">
-                {step.negativeLabel}
-              </span>
-            </div>
-          </div>
-        ))}
+          );
+        })}
       </div>
     </div>
   );
@@ -86,9 +89,7 @@ export function CheckoutInspectionBuilder() {
   useEffect(() => {
     settingsService
       .getCheckoutInspection()
-      .then((template) =>
-        setSteps((template.steps || []).map((step) => localizeCheckoutInspectionStep(step, t))),
-      )
+      .then((template) => setSteps(template.steps || []))
       .catch((err) => setError(err.message || t("settings.inspection.loadError")))
       .finally(() => setLoading(false));
   }, [t]);
@@ -115,7 +116,7 @@ export function CheckoutInspectionBuilder() {
   };
 
   const addStep = () => {
-    const step = newStep(steps.length, t);
+    const step = newStep(steps.length);
     nextFocusId.current = step.id;
     setSteps((prev) => [...prev, step]);
   };
@@ -224,6 +225,7 @@ export function CheckoutInspectionBuilder() {
               {normalizedSteps.map((step, index) => {
                 const previousStep = normalizedSteps[index - 1];
                 const nextStep = normalizedSteps[index + 1];
+                const displayStep = localizeCheckoutInspectionStep(step, t);
                 return (
                   <div
                     key={step.id}
@@ -283,21 +285,21 @@ export function CheckoutInspectionBuilder() {
                       {supportsCustomCopy && (
                         <>
                           <Field
-                            value={step.okLabel}
+                            value={displayStep.okLabel}
                             placeholder={t("settings.inspection.okPlaceholder")}
                             maxLength={40}
                             error={errors[`${step.id}-ok`]}
                             onChange={(value) => updateStep(step.id, { okLabel: value })}
                           />
                           <Field
-                            value={step.negativeLabel}
+                            value={displayStep.negativeLabel}
                             placeholder={t("settings.inspection.negativePlaceholder")}
                             maxLength={40}
                             error={errors[`${step.id}-negative`]}
                             onChange={(value) => updateStep(step.id, { negativeLabel: value })}
                           />
                           <Field
-                            value={step.notePrompt}
+                            value={displayStep.notePrompt}
                             placeholder={t("settings.inspection.notePlaceholder")}
                             error={errors[`${step.id}-prompt`]}
                             onChange={(value) => updateStep(step.id, { notePrompt: value })}

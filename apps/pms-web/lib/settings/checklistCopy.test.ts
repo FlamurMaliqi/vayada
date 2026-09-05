@@ -8,13 +8,13 @@ import {
 const t = (key: string) => `de:${key}`;
 
 describe("localized checklist defaults", () => {
-  it("creates check-in defaults in the active language", () => {
-    const steps = defaultCheckinChecklistSteps(t);
+  it("creates locale-independent check-in defaults", () => {
+    const steps = defaultCheckinChecklistSteps();
 
     expect(steps[0]).toMatchObject({
       id: "default-verify-guest-ids",
-      label: "de:settings.checklist.defaults.verifyGuestIds.label",
-      prompt: "de:settings.checklist.defaults.verifyGuestIds.prompt",
+      label: "Verify guest IDs / passports",
+      prompt: "Confirm passport or ID details are captured for every guest.",
     });
   });
 
@@ -50,6 +50,22 @@ describe("localized checklist defaults", () => {
 
     expect(step.label).toBe("Check every travel document");
     expect(step.prompt).toBe("Use the scanner");
+  });
+
+  it("does not infer a built-in step from user-authored visible text", () => {
+    const step = localizeBuiltInCheckinStep(
+      {
+        id: "custom-step",
+        label: "Verify guest IDs / passports",
+        prompt: "Confirm passport or ID details are captured for every guest.",
+        type: "checkbox",
+        required: true,
+        position: 0,
+      },
+      t,
+    );
+
+    expect(step.label).toBe("Verify guest IDs / passports");
   });
 
   it("localizes only the untouched checkout helper copy", () => {

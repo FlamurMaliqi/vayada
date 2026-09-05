@@ -159,13 +159,9 @@ export default function ImageUpload({
   return (
     <div className="space-y-3">
       <div className="flex items-center justify-between gap-3">
-        {label && (
-          <label
-            className={`block font-medium text-gray-700 ${compact ? "text-[13px]" : "text-sm"}`}
-          >
-            {label ?? t("rooms.form.roomImages")}
-          </label>
-        )}
+        <label className={`block font-medium text-gray-700 ${compact ? "text-[13px]" : "text-sm"}`}>
+          {label ?? t("rooms.form.roomImages")}
+        </label>
         <span className={`font-medium text-gray-500 ${compact ? "text-[11px]" : "text-xs"}`}>
           {maxImages === null
             ? t("images.loadingLimit")
