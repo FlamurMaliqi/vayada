@@ -63,9 +63,9 @@ function getTodayString(): string {
 }
 
 function addDays(dateStr: string, days: number): string {
-  const d = new Date(dateStr);
-  d.setDate(d.getDate() + days);
-  return toDateString(d.getFullYear(), d.getMonth(), d.getDate());
+  const d = new Date(`${dateStr}T00:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + days);
+  return d.toISOString().slice(0, 10);
 }
 
 function hasUnavailableStayNight(
@@ -100,6 +100,9 @@ function MonthGrid({
   maxStayNights,
   selectionState,
   availabilityStatus,
+  validCheckOutsByArrival,
+  minStayByArrival,
+  onExplain,
 }: {
   year: number;
   month: number;
@@ -115,6 +118,9 @@ function MonthGrid({
   maxStayNights: number | null;
   selectionState: "selectCheckIn" | "selectCheckOut";
   availabilityStatus: AvailabilityStatus;
+  validCheckOutsByArrival?: Record<string, string[]>;
+  minStayByArrival: Record<string, number>;
+  onExplain: (message: string) => void;
 }) {
   const t = useTranslations("home");
   const daysInMonth = getDaysInMonth(year, month);
@@ -149,7 +155,7 @@ function MonthGrid({
   const rangeEnd = checkIn && !checkOut && hoverDate ? hoverDate : checkOut;
 
   return (
-    <div className="w-[252px] mx-auto">
+    <div className="w-full max-w-[252px] mx-auto">
       {/* Month title */}
       <h3 className="text-sm font-semibold text-gray-900 text-center mb-3">
         {formatMonthYear(year, month)}
@@ -203,7 +209,30 @@ function MonthGrid({
             isBeforeDate(checkIn, cell.dateStr) &&
             isAfterDate(cell.dateStr, maxCheckOut)
           );
-          const isDisabled = isPast || isUnavailable || isBelowMinStay || isAboveMaxStay;
+          const invalidCombination =
+            validCheckOutsByArrival !== undefined &&
+            (isSelectingCheckout
+              ? !validCheckOutsByArrival[checkIn]?.includes(cell.dateStr)
+              : !validCheckOutsByArrival[cell.dateStr]?.length);
+          const isDisabled =
+            isPast || isUnavailable || isBelowMinStay || isAboveMaxStay || invalidCombination;
+          const minimum = isSelectingCheckout
+            ? minStayNights
+            : (minStayByArrival[cell.dateStr] ?? 1);
+          const explanation =
+            availabilityStatus === "loading"
+              ? t("calendar.checkingAvailability")
+              : availabilityStatus === "failed"
+                ? t("calendar.availabilityUnavailableTooltip")
+                : isBelowMinStay
+                  ? `Minimum stay of ${minimum} nights required.`
+                  : invalidCombination && !isSelectingCheckout && !isUnavailable
+                    ? `No valid stay from this date in the loaded calendar. ${minimum > 1 ? `Minimum stay of ${minimum} nights required. ` : ""}Try another arrival or browse later months.`
+                    : invalidCombination || isUnavailable
+                      ? "No available room and rate for this stay. Try different dates."
+                      : isAboveMaxStay
+                        ? `Maximum stay is ${maxStayNights} nights.`
+                        : "";
 
           return (
             <div
@@ -218,26 +247,18 @@ function MonthGrid({
               }`}
             >
               <button
-                disabled={isDisabled}
-                onClick={() => !isDisabled && onDayClick(cell.dateStr)}
-                onMouseEnter={() => !isDisabled && onDayHover(cell.dateStr)}
+                type="button"
+                disabled={isPast || availabilityStatus !== "ready"}
+                aria-disabled={isDisabled}
+                aria-label={`${cell.dateStr}${explanation ? `. ${explanation}` : ""}`}
+                onClick={() => (isDisabled ? onExplain(explanation) : onDayClick(cell.dateStr))}
+                onFocus={() => onExplain(explanation)}
+                onMouseEnter={() => {
+                  if (!isDisabled) onDayHover(cell.dateStr);
+                }}
                 onMouseLeave={() => onDayHover(null)}
-                title={
-                  isUnavailable
-                    ? availabilityStatus === "loading"
-                      ? t("calendar.checkingAvailability")
-                      : availabilityStatus === "failed"
-                        ? t("calendar.availabilityUnavailableTooltip")
-                        : isSelectingCheckout
-                          ? "Stay crosses a fully booked night"
-                          : "Fully booked"
-                    : isBelowMinStay
-                      ? `Minimum stay is ${minStayNights} nights`
-                      : isAboveMaxStay && maxStayNights
-                        ? `Maximum stay is ${maxStayNights} nights`
-                        : undefined
-                }
-                className={`w-9 h-9 flex items-center justify-center text-sm rounded-full transition-colors relative z-10 ${
+                title={explanation || undefined}
+                className={`w-full max-w-9 aspect-square flex items-center justify-center text-sm rounded-full transition-colors relative z-10 ${
                   isDisabled
                     ? isUnavailable
                       ? "text-gray-300 cursor-default bg-gray-100 line-through decoration-red-300"
@@ -269,6 +290,10 @@ export default function DatePickerCalendar({
   const ref = useRef<HTMLDivElement>(null);
   const t = useTranslations("home");
   const { slug } = useSlug();
+  const [explanation, setExplanation] = useState("");
+  const [validCheckOutsByArrival, setValidCheckOutsByArrival] = useState<
+    Record<string, string[]> | undefined
+  >();
   const [hoverDate, setHoverDate] = useState<string | null>(null);
   const [selectionState, setSelectionState] = useState<"selectCheckIn" | "selectCheckOut">(
     checkIn ? "selectCheckOut" : "selectCheckIn",
@@ -292,6 +317,7 @@ export default function DatePickerCalendar({
   useEffect(() => {
     if (open) {
       setAvailabilityStatus("loading");
+      setExplanation("");
       setTempCheckIn(checkIn);
       setTempCheckOut(checkOut);
       setSelectionState(
@@ -313,11 +339,12 @@ export default function DatePickerCalendar({
   // Fetch unavailable dates for the visible months
   useEffect(() => {
     if (!open) return;
-    const start = toDateString(baseYear, baseMonth, 1);
+    const visibleStart = toDateString(baseYear, baseMonth, 1);
+    const start = tempCheckIn && tempCheckIn < visibleStart ? tempCheckIn : visibleStart;
     const endMonth = baseMonth === 11 ? 0 : baseMonth + 1;
     const endYear = baseMonth === 11 ? baseYear + 1 : baseYear;
     const lastDay = getDaysInMonth(endYear, endMonth);
-    const end = addDays(toDateString(endYear, endMonth, lastDay), 1);
+    const end = addDays(toDateString(endYear, endMonth, lastDay), 32);
     const requestedDates = calendarDatesInRange(start, end);
     let cancelled = false;
 
@@ -330,17 +357,26 @@ export default function DatePickerCalendar({
 
     hotelService
       .getUnavailableDates(slug, start, end)
-      .then(({ dates, minStayByArrival, maxStayByArrival, availabilityUnavailable }) => {
-        if (cancelled) return;
-        setUnavailableDates(new Set(dates));
-        setMinStayByArrival((prev) =>
-          replaceRestrictionsForDates(prev, requestedDates, minStayByArrival),
-        );
-        setMaxStayByArrival((prev) =>
-          replaceRestrictionsForDates(prev, requestedDates, maxStayByArrival),
-        );
-        setAvailabilityStatus(availabilityUnavailable ? "failed" : "ready");
-      })
+      .then(
+        ({
+          dates,
+          minStayByArrival,
+          maxStayByArrival,
+          validCheckOutsByArrival,
+          availabilityUnavailable,
+        }) => {
+          if (cancelled) return;
+          setUnavailableDates(new Set(dates));
+          setValidCheckOutsByArrival(validCheckOutsByArrival);
+          setMinStayByArrival((prev) =>
+            replaceRestrictionsForDates(prev, requestedDates, minStayByArrival),
+          );
+          setMaxStayByArrival((prev) =>
+            replaceRestrictionsForDates(prev, requestedDates, maxStayByArrival),
+          );
+          setAvailabilityStatus(availabilityUnavailable ? "failed" : "ready");
+        },
+      )
       .catch(() => {
         if (cancelled) return;
         setUnavailableDates(new Set(requestedDates));
@@ -350,7 +386,7 @@ export default function DatePickerCalendar({
     return () => {
       cancelled = true;
     };
-  }, [open, slug, baseMonth, baseYear]);
+  }, [open, slug, baseMonth, baseYear, tempCheckIn]);
 
   // Click outside to close
   useEffect(() => {
@@ -366,6 +402,7 @@ export default function DatePickerCalendar({
   if (!open) return null;
 
   const handleDayClick = (date: string) => {
+    setExplanation("");
     if (selectionState === "selectCheckIn") {
       setTempCheckIn(date);
       setTempCheckOut(null);
@@ -437,6 +474,36 @@ export default function DatePickerCalendar({
       ? addDays(tempCheckIn, requiredMaxStay)
       : null;
 
+  const visibleMinimums = Object.entries(minStayByArrival)
+    .filter(
+      ([date]) =>
+        date >= getTodayString() &&
+        date >= toDateString(baseYear, baseMonth, 1) &&
+        date <= toDateString(secondYear, secondMonth, getDaysInMonth(secondYear, secondMonth)),
+    )
+    .map(([, minimum]) => minimum);
+  const minimums = Array.from(new Set(visibleMinimums)).sort((a, b) => a - b);
+  const minimumMessage =
+    selectionState === "selectCheckOut" && tempCheckIn
+      ? requiredMinStay > 1
+        ? `Minimum stay: ${requiredMinStay} nights. Choose an available check-out date on or after ${addDays(tempCheckIn, requiredMinStay)}.`
+        : ""
+      : minimums.some((minimum) => minimum > 1)
+        ? minimums.length === 1
+          ? `Minimum stay: ${minimums[0]} nights.`
+          : `Minimum stays vary by arrival date and rate: ${minimums[0]}–${minimums.at(-1)} nights. Select an arrival to see the shortest available stay.`
+        : "";
+  const noValidStay =
+    validCheckOutsByArrival &&
+    visibleMinimums.length > 0 &&
+    !Object.entries(validCheckOutsByArrival).some(
+      ([date, dates]) =>
+        date >= getTodayString() &&
+        date >= toDateString(baseYear, baseMonth, 1) &&
+        date <= toDateString(secondYear, secondMonth, getDaysInMonth(secondYear, secondMonth)) &&
+        dates.length,
+    );
+
   const formatSummaryDate = (dateStr: string) => {
     const d = new Date(dateStr);
     return d.toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" });
@@ -460,6 +527,17 @@ export default function DatePickerCalendar({
         >
           {t("calendar.availabilityUnavailable")}
         </p>
+      )}
+
+      {availabilityStatus === "ready" && (
+        <div role="status" aria-live="polite" className="mb-4 text-sm text-gray-700 space-y-1">
+          {minimumMessage && <p>{minimumMessage}</p>}
+          {noValidStay && (
+            <p>
+              No available stay satisfies the stay requirements in these dates. Try later months.
+            </p>
+          )}
+        </div>
       )}
 
       {/* Mobile nav bar */}
@@ -536,6 +614,9 @@ export default function DatePickerCalendar({
             maxStayNights={requiredMaxStay}
             selectionState={selectionState}
             availabilityStatus={availabilityStatus}
+            validCheckOutsByArrival={validCheckOutsByArrival}
+            minStayByArrival={minStayByArrival}
+            onExplain={setExplanation}
           />
           <MonthGrid
             year={secondYear}
@@ -552,6 +633,9 @@ export default function DatePickerCalendar({
             maxStayNights={requiredMaxStay}
             selectionState={selectionState}
             availabilityStatus={availabilityStatus}
+            validCheckOutsByArrival={validCheckOutsByArrival}
+            minStayByArrival={minStayByArrival}
+            onExplain={setExplanation}
           />
         </div>
 
@@ -570,6 +654,18 @@ export default function DatePickerCalendar({
           </svg>
         </button>
       </div>
+
+      <p
+        role="status"
+        aria-live="polite"
+        className={
+          explanation
+            ? "fixed bottom-4 left-4 right-4 z-50 rounded-lg bg-amber-50 p-3 text-sm text-amber-800 md:static md:mt-3"
+            : ""
+        }
+      >
+        {availabilityStatus === "ready" ? explanation : ""}
+      </p>
 
       {/* Summary bar */}
       {tempCheckIn && (

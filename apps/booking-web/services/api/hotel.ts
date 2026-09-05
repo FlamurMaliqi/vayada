@@ -66,6 +66,7 @@ export const hotelService = {
   ): Promise<{
     dates: string[];
     minStayByArrival: Record<string, number>;
+    validCheckOutsByArrival?: Record<string, string[]>;
     maxStayByArrival: Record<string, number>;
     availabilityUnavailable: boolean;
   }> {
