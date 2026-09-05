@@ -2029,5 +2029,11 @@
   "common.done": "Done",
   "layout.sidebar.unavailableNamed": "{label} — not available yet",
   "layout.sidebar.soon": "Soon",
-  "inbox.loadingInbox": "Loading Inbox"
+  "inbox.loadingInbox": "Loading Inbox",
+  "dashboard.arrivalsOn": "Arrivals • {date}",
+  "dashboard.departuresOn": "Departures • {date}",
+  "dashboard.noArrivalsOnDate": "No arrivals on this date",
+  "dashboard.noDeparturesOnDate": "No departures on this date",
+  "dashboard.previousDay": "Previous day",
+  "dashboard.nextDay": "Next day"
 }
