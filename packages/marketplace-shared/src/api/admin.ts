@@ -167,6 +167,7 @@ export type MarketplaceAdminHotelReviewProfile = {
   displayName: string;
   location: string;
   hostSummary: string | null;
+  profileComplete?: boolean;
   profileStatus: "pending" | "verified" | "rejected" | "suspended" | "archived";
   createdAt: string;
   updatedAt: string;
@@ -349,18 +350,21 @@ export async function approveMarketplaceAdminCollaborationAsHotel(
 export async function createMarketplaceAdminOffer(
   hotelUserId: string,
   request: MarketplaceAdminCreateOfferRequest,
+  scope?: { propertyId?: string; idempotencyKey?: string },
 ): Promise<MarketplaceAdminOffer> {
   return vayadaApiClient.post<MarketplaceAdminOffer>(
-    marketplaceAdminEndpoints.createOffer(hotelUserId),
+    withProperty(marketplaceAdminEndpoints.createOffer(hotelUserId), scope?.propertyId),
     request,
+    toIdempotencyOptions(scope?.idempotencyKey ?? crypto.randomUUID()),
   );
 }
 
 export async function getMarketplaceAdminHotelReview(
   hotelUserId: string,
+  propertyId?: string,
 ): Promise<MarketplaceAdminHotelReviewResponse> {
   return vayadaApiClient.get<MarketplaceAdminHotelReviewResponse>(
-    marketplaceAdminEndpoints.hotelReview(hotelUserId),
+    withProperty(marketplaceAdminEndpoints.hotelReview(hotelUserId), propertyId),
   );
 }
 
@@ -398,9 +402,10 @@ export async function updateMarketplaceAdminOffer(
   hotelUserId: string,
   offerId: string,
   request: MarketplaceAdminUpdateOfferRequest,
+  propertyId?: string,
 ): Promise<MarketplaceAdminOffer> {
   return vayadaApiClient.put<MarketplaceAdminOffer>(
-    marketplaceAdminEndpoints.updateOffer(hotelUserId, offerId),
+    withProperty(marketplaceAdminEndpoints.updateOffer(hotelUserId, offerId), propertyId),
     request,
   );
 }
@@ -408,9 +413,10 @@ export async function updateMarketplaceAdminOffer(
 export async function deleteMarketplaceAdminOffer(
   hotelUserId: string,
   offerId: string,
+  propertyId?: string,
 ): Promise<MarketplaceAdminDeleteOfferResponse> {
   return vayadaApiClient.delete<MarketplaceAdminDeleteOfferResponse>(
-    marketplaceAdminEndpoints.deleteOffer(hotelUserId, offerId),
+    withProperty(marketplaceAdminEndpoints.deleteOffer(hotelUserId, offerId), propertyId),
   );
 }
 
@@ -418,9 +424,10 @@ export async function verifyMarketplaceAdminOffer(
   hotelUserId: string,
   offerId: string,
   mediaObjectIds?: string[],
+  propertyId?: string,
 ): Promise<MarketplaceAdminOffer> {
   return vayadaApiClient.post<MarketplaceAdminOffer>(
-    marketplaceAdminEndpoints.verifyOffer(hotelUserId, offerId),
+    withProperty(marketplaceAdminEndpoints.verifyOffer(hotelUserId, offerId), propertyId),
     mediaObjectIds ? { mediaObjectIds } : undefined,
   );
 }
@@ -458,4 +465,8 @@ function sanitizeIdempotencySegment(value: string): string {
 
 function toIdempotencyOptions(idempotencyKey: string): RequestInit {
   return { headers: { "Idempotency-Key": idempotencyKey } };
+}
+
+function withProperty(path: string, propertyId?: string): string {
+  return propertyId ? `${path}?propertyId=${encodeURIComponent(propertyId)}` : path;
 }

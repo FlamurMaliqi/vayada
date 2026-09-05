@@ -383,7 +383,7 @@ describe("marketplace admin routes", () => {
     const create = await injectJson<MarketplaceAdminOffer>(app, {
       method: "POST",
       url: "/api/marketplace/admin/users/user_hotel/offers",
-      headers: { authorization: "Bearer platform-token" },
+      headers: { authorization: "Bearer platform-token", "idempotency-key": "admin-draft-test" },
       payload,
     });
 
@@ -1275,7 +1275,7 @@ describe("marketplace admin routes", () => {
     expect(sql.join("\n")).not.toContain("SET offer_status = 'verified'");
   });
 
-  it("rejects verified admin offer creation while the Marketplace hotel profile is incomplete", async () => {
+  it("saves an unpublished draft while the Marketplace hotel profile is incomplete", async () => {
     const sql: string[] = [];
     const repository = createPgMarketplaceAdminRepository({
       connectionString: "postgresql://target-db",
@@ -1290,8 +1290,9 @@ describe("marketplace admin routes", () => {
         request: offerPayload(),
         authorizationMode: "platform_organization_membership",
       }),
-    ).rejects.toMatchObject({ statusCode: 422 });
-    expect(sql.join("\n")).not.toContain("INSERT INTO marketplace.marketplace_offers");
+    ).resolves.toMatchObject({ offerId: expect.any(String) });
+    expect(sql.join("\n")).toContain("INSERT INTO marketplace.marketplace_offers");
+    expect(sql.join("\n")).toContain("$4, 'draft'");
   });
 
   it("retains pending offer media metadata for the owner without publishing a URL", () => {
