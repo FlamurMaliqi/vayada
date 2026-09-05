@@ -532,8 +532,8 @@ describe.skipIf(!URL)("production PMS writers (PostgreSQL)", () => {
       // Unrelated threads are excluded. Once a candidate, an empty thread needs null/zero caches.
       const emptyId = "13560000-0000-4000-8000-000000000998";
       await client.query(
-        `INSERT INTO pms.message_threads (id, property_id, source, source_thread_id, unread_count)
-        VALUES ($1, $2, 'channex', 'empty-target', 1)`,
+        `INSERT INTO pms.message_threads (id, property_id, source, source_thread_id, unread_count, delivery_channel)
+        VALUES ($1, $2, 'channex', 'empty-target', 1, 'ota')`,
         [emptyId, PROPERTY],
       );
       expect(await check()).toEqual([]);
