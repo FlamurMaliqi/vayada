@@ -3,6 +3,8 @@ import { describe, expect, it } from "vitest";
 import { createProductionPmsContext } from "./productionPmsContext.js";
 import { buildPmsMessagingRecords } from "./productionPmsMessagingRecords.js";
 import type { IdentitySourceRow } from "./productionIdentityDisposition.js";
+import { sha256 } from "./productionBookingValues.js";
+import type { PmsMediaQuarantine, ProductionPmsTargetState } from "./productionPmsTypes.js";
 
 const HOTEL = "10000000-0000-4000-a000-000000000001";
 const PROPERTY = "20000000-0000-4000-a000-000000000001";
@@ -62,6 +64,154 @@ describe("production PMS messaging", () => {
     buildPmsMessagingRecords(context);
     expect(context.blockers).toContainEqual(
       expect.objectContaining({ message: expect.stringContaining("VAY-1055 gate") }),
+    );
+  });
+
+  it.each([null, undefined, "", "   "])(
+    "preserves a missing attachment source (%j) as unavailable history",
+    (sourceUrl) => {
+      const context = attachmentContext(sourceUrl, target([]));
+      context.rowsByTable.get("message_attachments")![0]!.data["s3_key"] = sourceUrl;
+      const record = buildPmsMessagingRecords(context).find(
+        (entry) => entry.targetTable === "message_attachments",
+      )!;
+      expect(context.blockers).toEqual([]);
+      expect(record.row).toMatchObject({
+        id: ATTACHMENT,
+        propertyId: PROPERTY,
+        messageId: MESSAGE,
+        platformMediaObjectId: null,
+        s3Key: null,
+        sourceUrl: null,
+        filename: "file.pdf",
+        sourceAttachmentId: "attachment-ext",
+      });
+    },
+  );
+
+  it.each(["http://provider.example/file?token=secret", { stale: "private-token" }])(
+    "accepts an exact media quarantine without copying its raw value",
+    (sourceUrl) => {
+      const context = attachmentContext(sourceUrl, {
+        ...target([]),
+        mediaQuarantines: [quarantine(sourceUrl)],
+      });
+      const record = buildPmsMessagingRecords(context).find(
+        (entry) => entry.targetTable === "message_attachments",
+      )!;
+      expect(context.blockers).toEqual([]);
+      expect(record.row).toMatchObject({
+        platformMediaObjectId: null,
+        s3Key: null,
+        sourceUrl: null,
+      });
+      expect(JSON.stringify(record)).not.toMatch(/secret|private-token|provider\.example/);
+    },
+  );
+
+  it.each<Partial<PmsMediaQuarantine>>([
+    { sourceTable: "room_types" },
+    { sourceRowId: `${MEDIA}:source_url` },
+    { sourceField: "s3_key" },
+    { purpose: "pms.room_type.media" },
+    { reasonCode: "INVALID_STRING_ARRAY" },
+    { sourceValueSha256: sha256({ value: "an earlier value" }) },
+  ])("blocks a non-matching quarantine (%j)", (mismatch) => {
+    const sourceUrl = "http://provider.example/file?token=secret";
+    const context = attachmentContext(sourceUrl, {
+      ...target([]),
+      mediaQuarantines: [{ ...quarantine(sourceUrl), ...mismatch }],
+    });
+    const records = buildPmsMessagingRecords(context);
+    expect(context.blockers).not.toEqual([]);
+    expect(records.some((entry) => entry.targetTable === "message_attachments")).toBe(false);
+    expect(JSON.stringify(context.blockers)).not.toMatch(/secret|provider\.example/);
+  });
+
+  it.each([null, "http://provider.example/file?token=secret"])(
+    "blocks unavailable history when any media binding already exists",
+    (sourceUrl) => {
+      const mediaTarget = target([MEDIA]);
+      mediaTarget.media[0]!.propertyId = HOTEL;
+      const context = attachmentContext(sourceUrl, {
+        ...mediaTarget,
+        mediaQuarantines: [quarantine(sourceUrl)],
+      });
+      buildPmsMessagingRecords(context);
+      expect(context.blockers).toContainEqual(
+        expect.objectContaining({ message: expect.stringContaining("conflicts with") }),
+      );
+    },
+  );
+
+  it.each([
+    { propertyId: HOTEL },
+    { publicApproved: true },
+    { lifecycleStatus: "quarantined" },
+    { storageKey: "public/file.pdf" },
+  ])("keeps the private media gate for valid sources (%j)", (mismatch) => {
+    const mediaTarget = target([MEDIA]);
+    Object.assign(mediaTarget.media[0]!, mismatch);
+    const context = contextFor(rows(), mediaTarget);
+    buildPmsMessagingRecords(context);
+    expect(context.blockers).not.toEqual([]);
+  });
+
+  it.each([null, "http://provider.example/private"])(
+    "does not hide prior-run media bindings behind unavailable history",
+    (sourceUrl) => {
+      const context = attachmentContext(sourceUrl, {
+        ...target([]),
+        attachmentMediaSourceIds: [`${ATTACHMENT}:source_url`],
+        mediaQuarantines: [quarantine(sourceUrl)],
+      });
+      buildPmsMessagingRecords(context);
+      expect(context.blockers).toContainEqual(
+        expect.objectContaining({ message: expect.stringContaining("conflicts with") }),
+      );
+    },
+  );
+
+  it("does not use a quarantine to bypass unresolved property ownership", () => {
+    const sourceUrl = "http://provider.example/private";
+    const context = attachmentContext(sourceUrl, {
+      ...target([]),
+      propertyLinks: [],
+      mediaQuarantines: [quarantine(sourceUrl)],
+    });
+    const records = buildPmsMessagingRecords(context);
+    expect(context.blockers).not.toEqual([]);
+    expect(records.some((entry) => entry.targetTable === "message_attachments")).toBe(false);
+  });
+
+  it("prefers migrated S3 media without parsing an unused malformed source URL", () => {
+    const sourceRows = rows();
+    sourceRows.find((entry) => entry.sourceTable === "message_attachments")!.data["source_url"] = {
+      stale: "private-token",
+    };
+    const context = contextFor(sourceRows);
+    const records = buildPmsMessagingRecords(context);
+    expect(context.blockers).toEqual([]);
+    expect(records.find((entry) => entry.targetTable === "message_attachments")?.row).toMatchObject(
+      {
+        platformMediaObjectId: MEDIA,
+        sourceUrl: null,
+      },
+    );
+  });
+
+  it("uses migrated URL media when the S3 key is only whitespace", () => {
+    const mediaTarget = target([MEDIA]);
+    mediaTarget.media[0]!.sourceRowId = `${ATTACHMENT}:source_url`;
+    const context = attachmentContext(mediaTarget.media[0]!.sourceUrl, mediaTarget);
+    context.rowsByTable.get("message_attachments")![0]!.data["s3_key"] = " \t ";
+    const records = buildPmsMessagingRecords(context);
+    expect(context.blockers).toEqual([]);
+    expect(records.find((entry) => entry.targetTable === "message_attachments")?.row).toMatchObject(
+      {
+        platformMediaObjectId: MEDIA,
+        sourceUrl: null,
+      },
     );
   });
 
@@ -256,13 +406,36 @@ describe("production PMS messaging", () => {
   });
 });
 
-function contextFor(sourceRows: IdentitySourceRow[]) {
+function contextFor(
+  sourceRows: IdentitySourceRow[],
+  targetState: ProductionPmsTargetState = target([MEDIA]),
+) {
   return createProductionPmsContext({
     sourceRunId: "run",
     completedAt: "2026-08-30T00:00:00Z",
     rows: sourceRows,
-    target: target([MEDIA]),
+    target: targetState,
   });
+}
+
+function attachmentContext(sourceUrl: unknown, targetState: ProductionPmsTargetState) {
+  const sourceRows = rows();
+  Object.assign(sourceRows.find((entry) => entry.sourceTable === "message_attachments")!.data, {
+    s3_key: null,
+    source_url: sourceUrl,
+  });
+  return contextFor(sourceRows, targetState);
+}
+
+function quarantine(value: unknown): PmsMediaQuarantine {
+  return {
+    sourceTable: "message_attachments",
+    sourceRowId: `${ATTACHMENT}:source_url`,
+    sourceField: "source_url",
+    purpose: "pms.messaging.attachment",
+    reasonCode: "INVALID_HTTPS_URL",
+    sourceValueSha256: sha256({ value }),
+  };
 }
 
 function rows(): IdentitySourceRow[] {

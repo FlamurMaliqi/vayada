@@ -90,6 +90,13 @@ export async function readProductionPmsPrerequisites(
       ORDER BY source_table, source_row_id, purpose`,
     [sourceRunId],
   );
+  const attachmentBindings = await client.query<{ sourceRowId: string }>(
+    `SELECT DISTINCT source_row_id AS "sourceRowId"
+       FROM platform.media_objects
+      WHERE source_system = 'pms' AND source_table = 'message_attachments'
+        AND source_row_id IS NOT NULL
+      ORDER BY source_row_id`,
+  );
   return {
     propertyLinks: links.rows,
     bookings: bookings.rows.map((booking) => ({
@@ -99,6 +106,7 @@ export async function readProductionPmsPrerequisites(
     userIds: users.rows.map((row) => row.id),
     media: mediaReferences.rows,
     mediaQuarantines: mediaQuarantines.rows,
+    attachmentMediaSourceIds: attachmentBindings.rows.map((row) => row.sourceRowId),
     mediaIds: media.rows.map((row) => row.id),
   };
 }
