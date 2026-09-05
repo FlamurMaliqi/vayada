@@ -21,6 +21,7 @@ export default function EditRoomPage({ params }: { params: Promise<{ id: string 
   const router = useRouter();
   const [room, setRoom] = useState<RoomType | null>(null);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
@@ -40,10 +41,10 @@ export default function EditRoomPage({ params }: { params: Promise<{ id: string 
       })
       .catch((cause) => {
         console.error(cause);
-        setError(cause instanceof Error ? cause.message : t("rooms.edit.failedToLoad"));
+        setLoadError(cause instanceof Error ? cause.message : "");
       })
       .finally(() => setLoading(false));
-  }, [id, t]);
+  }, [id]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -89,10 +90,12 @@ export default function EditRoomPage({ params }: { params: Promise<{ id: string 
   if (!room) {
     return (
       <div className="p-6">
-        <p className={error ? "text-red-600" : "text-gray-500"}>
-          {error || t("rooms.edit.notFound")}
+        <p className={loadError !== null ? "text-red-600" : "text-gray-500"}>
+          {loadError !== null
+            ? loadError || t("rooms.edit.failedToLoad")
+            : t("rooms.edit.notFound")}
         </p>
-        {error && (
+        {loadError !== null && (
           <button
             type="button"
             onClick={() => window.location.reload()}

@@ -1075,6 +1075,7 @@ test.describe("pms-web smoke", () => {
     let savedRate = "180.00";
     let canonicalPlanRevision = 0;
     let savedPlanBody: Record<string, unknown> | undefined;
+    let roomReads = 0;
     const roomType = () => ({
       ...pmsWebRoomType,
       roomTypeId,
@@ -1101,7 +1102,10 @@ test.describe("pms-web smoke", () => {
     await mockPmsWebTargetRoutes(page);
     await page.route(
       `**/api/pms/properties/${PMS_WEB_PROPERTY_ID}/room-types/${roomTypeId}`,
-      (route) => route.fulfill({ json: { propertyId: PMS_WEB_PROPERTY_ID, item: roomType() } }),
+      (route) => {
+        roomReads += 1;
+        return route.fulfill({ json: { propertyId: PMS_WEB_PROPERTY_ID, item: roomType() } });
+      },
     );
     const setupPath = `**/api/pms/setup/properties/${PMS_WEB_PROPERTY_ID}/room-types/${roomTypeId}`;
     await page.route(`${setupPath}/capacity`, (route) =>
@@ -1183,6 +1187,17 @@ test.describe("pms-web smoke", () => {
     await expect(page.getByText("Currency is managed in property pricing settings.")).toBeVisible();
     const rateTable = page.getByText("Set rates per season").locator("xpath=../..");
     await rateTable.getByRole("spinbutton").first().fill("125");
+    const readsBeforeLanguageChange = roomReads;
+    await page.getByRole("button", { name: "PO", exact: true }).click();
+    await page.getByRole("button", { name: /^Language/ }).click();
+    await page.getByRole("button", { name: "🇩🇪 Deutsch", exact: true }).click();
+    await expect(page.getByRole("button", { name: "Preise & Tarife" })).toBeVisible();
+    await page.getByRole("button", { name: "PO", exact: true }).click();
+    await page.getByRole("button", { name: /^Sprache/ }).click();
+    await page.getByRole("button", { name: "🇬🇧 English", exact: true }).click();
+    await expect(page.getByRole("button", { name: "Pricing & Rates" })).toBeVisible();
+    expect(roomReads).toBe(readsBeforeLanguageChange);
+    await expect(rateTable.getByRole("spinbutton").first()).toHaveValue("125");
     await page.getByRole("button", { name: "Save Changes" }).click();
     await expect(page.getByText("Room type updated successfully")).toBeVisible();
     expect(savedPlanBody).toMatchObject({
