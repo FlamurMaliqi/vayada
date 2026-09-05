@@ -114,11 +114,12 @@ class CleanupTest(unittest.TestCase):
             ).stdout.strip(),
             "0|0",
         )
+        archived_sends = self.sql(
+            "SELECT 'sends', jsonb_agg(to_jsonb(t) ORDER BY id) FROM inbox_prototype_archive_20260905.automation_sends t;"
+        ).stdout.strip()
         self.assertEqual(
-            self.sql(
-                "SELECT count(*) FROM inbox_prototype_archive_20260905.automation_sends;"
-            ).stdout.strip(),
-            "9",
+            archived_sends,
+            next(line for line in self.before.splitlines() if line.startswith("sends|")),
         )
         self.assertNotEqual(self.sql(APPROVAL + self.cleanup, check=False).returncode, 0)
         # A booking deletion cannot cascade into the detached archival send snapshot.
@@ -155,6 +156,14 @@ class CleanupTest(unittest.TestCase):
         self.sql("""CREATE FUNCTION unexpected() RETURNS trigger LANGUAGE plpgsql AS $$BEGIN RETURN OLD; END$$;
             CREATE TRIGGER unexpected BEFORE DELETE ON guest_automations FOR EACH ROW EXECUTE FUNCTION unexpected();""")
         self.assert_blocked("INBOX_CLEANUP_UNREVIEWED_BEHAVIOR")
+
+    def test_dependent_view(self):
+        self.sql("CREATE VIEW unexpected AS SELECT id FROM message_templates;")
+        self.assert_blocked("INBOX_CLEANUP_DEPENDENCIES_CHANGED")
+
+    def test_dependent_materialized_view(self):
+        self.sql("CREATE MATERIALIZED VIEW unexpected AS SELECT id FROM guest_automations;")
+        self.assert_blocked("INBOX_CLEANUP_DEPENDENCIES_CHANGED")
 
     def test_inherited_archive_grant_rolls_back(self):
         self.sql("ALTER DEFAULT PRIVILEGES GRANT SELECT ON TABLES TO pg_monitor;")

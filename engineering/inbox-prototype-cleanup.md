@@ -86,8 +86,9 @@ Staging has no audited prototype tables, so this script must not run there.
 
 ## Local validation
 
-Eight synthetic PostgreSQL 17 checks cover archival/history preservation, refused
-rerun, approval, activity/count/dependency/trigger/ACL guards and late rollback.
+Ten synthetic PostgreSQL 17 checks cover exact archival/history preservation,
+refused rerun, approval, activity/count/dependency/trigger/ACL guards, dependent
+views/materialized views and late rollback.
 With the dedicated local database already created and historical git object
 `668b55d5c` available, run `python3 -m unittest discover -s scripts/ops -p
 test_retire_inbox_prototype.py -v` with `INBOX_CLEANUP_TEST_DATABASE_URL` pointing

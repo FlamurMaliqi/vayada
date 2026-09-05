@@ -49,7 +49,13 @@ BEGIN
             RAISE EXCEPTION 'INBOX_CLEANUP_POST_AUDIT_ACTIVITY';
         END IF;
     END LOOP;
-    IF (SELECT count(*) FROM pg_constraint WHERE contype = 'f' AND confrelid IN
+    IF EXISTS (SELECT 1 FROM pg_depend d
+           JOIN pg_rewrite r ON r.oid = d.objid AND d.classid = 'pg_rewrite'::regclass
+           JOIN pg_class c ON c.oid = r.ev_class
+           WHERE d.refclassid = 'pg_class'::regclass AND c.relkind IN ('v', 'm')
+           AND d.refobjid IN ('public.message_templates'::regclass,
+               'public.guest_automations'::regclass))
+       OR (SELECT count(*) FROM pg_constraint WHERE contype = 'f' AND confrelid IN
         ('public.message_templates'::regclass, 'public.guest_automations'::regclass,
          'public.automation_sends'::regclass)) <> 2
        OR NOT EXISTS (SELECT 1 FROM pg_constraint
