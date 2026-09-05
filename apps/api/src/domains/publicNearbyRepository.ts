@@ -25,8 +25,11 @@ export type PublicNearbyRepository = {
 };
 
 /** Catalog-owned projection. Live publication, tenancy and entitlement gates share one snapshot. */
-export function createPgPublicNearbyRepository(connectionString: string): PublicNearbyRepository {
-  const pool = new pg.Pool({ connectionString });
+export function createPgPublicNearbyRepository(
+  connectionString: string,
+  testClient?: pg.Client,
+): PublicNearbyRepository {
+  const pool = testClient ?? new pg.Pool({ connectionString });
   return {
     async read(propertyId) {
       const result = await pool.query(
@@ -129,6 +132,8 @@ export function createPgPublicNearbyRepository(connectionString: string): Public
         },
       };
     },
-    close: () => pool.end(),
+    close: async () => {
+      if (!testClient) await pool.end();
+    },
   };
 }
