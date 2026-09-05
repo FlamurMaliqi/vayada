@@ -230,7 +230,7 @@ export default function KpiDashboardPage() {
                     <MetricIcon metricKey={metric.key} />
                   </div>
                   <p className="text-3xl font-semibold tracking-normal text-gray-900">
-                    {isLoading ? "..." : metric.value}
+                    {isLoading ? "..." : error ? "—" : metric.value}
                   </p>
                   <p className="mt-2 text-[12px] text-gray-500">{metric.delta?.label || ""}</p>
                 </article>
@@ -259,7 +259,7 @@ export default function KpiDashboardPage() {
               value={bookingPropertyId}
               onChange={(event) => setBookingPropertyId(event.target.value)}
               className="h-10 min-w-0 rounded-lg border border-gray-200 bg-white px-3 text-[13px] font-medium text-gray-700 outline-none focus:ring-2 focus:ring-gray-200 sm:min-w-72"
-              aria-label="Booking requests property"
+              aria-label="Dashboard property"
             >
               <option value="">All properties</option>
               {liveProperties.map((property) => (
@@ -271,7 +271,7 @@ export default function KpiDashboardPage() {
           </div>
         </section>
 
-        {data?.emptyMessage ? (
+        {!isLoading && !error && data?.emptyMessage ? (
           <div className="mt-4 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-[13px] font-medium text-amber-700">
             {data.emptyMessage}
           </div>
@@ -280,17 +280,28 @@ export default function KpiDashboardPage() {
         <div className="mt-4 grid gap-4 xl:grid-cols-2">
           <ChartPanel
             title="Page views"
-            subtitle="All selected properties"
+            subtitle={bookingPropertyId ? "Single property drill-down" : "All selected properties"}
             icon={<PresentationChartLineIcon className="h-5 w-5" aria-hidden="true" />}
           >
-            <LineChart points={data?.pageViews || []} />
+            {isLoading ? (
+              <ChartLoading />
+            ) : (
+              <LineChart points={error ? [] : data?.pageViews || []} yLabel="Number of views" />
+            )}
           </ChartPanel>
           <ChartPanel
             title="Booking requests"
-            subtitle={bookingPropertyId ? "Single property drill-down" : "All properties"}
+            subtitle={bookingPropertyId ? "Single property drill-down" : "All selected properties"}
             icon={<ChartBarIcon className="h-5 w-5" aria-hidden="true" />}
           >
-            <BarChart points={data?.bookingRequests || []} />
+            {isLoading ? (
+              <ChartLoading />
+            ) : (
+              <BarChart
+                points={error ? [] : data?.bookingRequests || []}
+                yLabel="Number of requests"
+              />
+            )}
           </ChartPanel>
         </div>
 
@@ -300,7 +311,15 @@ export default function KpiDashboardPage() {
             subtitle="Cumulative live properties"
             icon={<CursorArrowRaysIcon className="h-5 w-5" aria-hidden="true" />}
           >
-            <LineChart points={data?.liveProperties || []} tone="brass" />
+            {isLoading ? (
+              <ChartLoading />
+            ) : (
+              <LineChart
+                points={error ? [] : data?.liveProperties || []}
+                tone="brass"
+                yLabel="Number of properties"
+              />
+            )}
           </ChartPanel>
         </div>
       </div>
@@ -315,6 +334,14 @@ export default function KpiDashboardPage() {
         }}
         onClose={() => setSelectorOpen(false)}
       />
+    </div>
+  );
+}
+
+function ChartLoading() {
+  return (
+    <div role="status" className="flex h-[260px] items-center justify-center text-sm text-gray-500">
+      Loading chart…
     </div>
   );
 }

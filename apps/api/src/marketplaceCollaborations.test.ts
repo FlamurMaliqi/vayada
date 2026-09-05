@@ -17,7 +17,7 @@ import {
 } from "@vayada/domain-marketplace";
 import { createHash, randomUUID } from "node:crypto";
 import pg from "pg";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, afterEach, describe, expect, it, vi } from "vitest";
 
 import { buildApp } from "./app.js";
 import { agencyPropertyAccessRepository } from "./testAuthorization.js";
@@ -44,6 +44,11 @@ const session: VerifiedSession = {
 };
 
 describe("marketplace collaboration read routes", () => {
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-06-30T12:00:00Z"));
+  });
+  afterEach(() => vi.useRealTimers());
   it("lists current-user collaborations through the V4 read repository", async () => {
     const calls: MarketplaceCollaborationListFilters[] = [];
     const repository = createCollaborationRepository({
@@ -311,7 +316,7 @@ describe("marketplace collaboration read routes", () => {
     });
   });
 
-  it("rejects reversed creator travel dates before repository access", async () => {
+  it("rejects malformed creator travel dates before repository access", async () => {
     const executeLifecycleWrite = vi.fn();
     const app = buildMarketplaceCollaborationsApp({
       repository: createCollaborationRepository({ executeLifecycleWrite }),
@@ -329,7 +334,7 @@ describe("marketplace collaboration read routes", () => {
         whyGreatFit: "My audience is a strong match.",
         deliverables: [{ platform: "instagram", type: "reel", quantity: 1 }],
         terms: {
-          travelDateFrom: "2026-10-10",
+          travelDateFrom: "2026-02-30",
           travelDateTo: "2026-10-09",
         },
       },
@@ -340,7 +345,7 @@ describe("marketplace collaboration read routes", () => {
     expect(response.body).toMatchObject({
       code: "invalid_query",
       category: "validation",
-      message: "travelDateTo must be after travelDateFrom.",
+      message: "travelDateFrom must be a real ISO date in YYYY-MM-DD format.",
     });
     expect(executeLifecycleWrite).not.toHaveBeenCalled();
   });
@@ -429,6 +434,147 @@ describe("marketplace collaboration read routes", () => {
     });
   });
 
+  it.each([
+    { token: undefined, permissions: ["marketplace.collaboration.write"], expected: 401 },
+    { token: "invalid", permissions: ["marketplace.collaboration.write"], expected: 401 },
+    { token: "valid-token", permissions: [], expected: 403 },
+    {
+      token: "valid-token",
+      permissions: ["marketplace.collaboration.write"],
+      resources: [],
+      expected: 403,
+    },
+    { token: "valid-token", permissions: ["marketplace.collaboration.write"], expected: 200 },
+  ])("enforces application edit route authorization: %j", async (options) => {
+    const app = buildMarketplaceCollaborationsApp({
+      permissions: options.permissions as PermissionKey[],
+      resources: options.resources,
+    });
+    const response = await injectJson(app, {
+      method: "PUT",
+      url: "/api/marketplace/collaborations/collab_001/application",
+      headers: options.token ? { authorization: `Bearer ${options.token}` } : {},
+      payload: {
+        idempotencyKey: "edit-route",
+        expectedUpdatedAt: "2026-09-05T01:00:00.000Z",
+        terms: { travelDateFrom: "2027-09-01", travelDateTo: "2027-09-03" },
+      },
+    });
+    expect(response.statusCode).toBe(options.expected);
+  });
+
+  it.each(["respond", "cancel"] as const)(
+    "rejects hotel response after cancellation and pending-only cancellation after response: %s",
+    async (action) => {
+      const pool = createCreatorApplicationPool({
+        mutationStatus: action === "respond" ? "cancelled" : "negotiating",
+        mutationInitiator: "hotel",
+      });
+      const repository = createPgMarketplaceCollaborationReadRepository({
+        connectionString: "postgresql://target-db",
+        pool: pool as never,
+      });
+      await expect(
+        repository.executeLifecycleWrite!({
+          context: creatorRequestContext(),
+          side: "creator",
+          action,
+          collaborationId: "collab_001",
+          idempotencyKey: "race-test",
+          payload: { status: "accepted", pendingOnly: true },
+        }),
+      ).rejects.toThrow(/pending/i);
+      expect(pool.calls.some((c) => c.text.includes("UPDATE marketplace.collaborations"))).toBe(
+        false,
+      );
+    },
+  );
+
+  it.each(["pending", "negotiating", "accepted", "declined", "cancelled"])(
+    "edits only pending creator applications (%s)",
+    async (status) => {
+      const pool = createCreatorApplicationPool({ mutationStatus: status });
+      const repository = createPgMarketplaceCollaborationReadRepository({
+        connectionString: "postgresql://target-db",
+        pool: pool as never,
+      });
+      const input = {
+        context: creatorRequestContext(),
+        side: "creator" as const,
+        action: "edit_application" as const,
+        collaborationId: "collab_001",
+        idempotencyKey: "edit-test",
+        payload: {
+          expectedUpdatedAt: "2026-09-05T01:00:00.000Z",
+          compensationOptionId: "compensation-paid-001",
+          whyGreatFit: "Updated pitch",
+          consent: true,
+          terms: { travelDateFrom: "2027-07-10", travelDateTo: "2027-07-12" },
+          deliverables: [{ platform: "Instagram", type: "Reel", quantity: 2 }],
+        },
+      };
+      if (status === "pending") {
+        await repository.executeLifecycleWrite!(input);
+        const update = pool.calls.find((c) => c.text.includes("application_message = $2"));
+        expect(update?.values).toContain("Updated pitch");
+        expect(update?.values).toContain("450.00");
+        expect(update?.text).not.toContain("lifecycle_status =");
+        expect(
+          pool.calls.some(
+            (c) => c.text.includes("FOR UPDATE") && c.text.includes("source_collaboration_id"),
+          ),
+        ).toBe(true);
+        expect(pool.calls.at(-1)?.text).toBe("COMMIT");
+      } else {
+        await expect(repository.executeLifecycleWrite!(input)).rejects.toThrow(
+          "Only pending applications",
+        );
+        expect(pool.calls.at(-1)?.text).toBe("ROLLBACK");
+        expect(pool.calls.some((c) => c.text.includes("UPDATE marketplace.collaborations"))).toBe(
+          false,
+        );
+      }
+    },
+  );
+
+  it.each([
+    { mutationInitiator: "hotel", expected: "Only the creator" },
+    { compensationOptionExists: false, expected: "belonging to this offer" },
+    { stale: true, expected: "This request changed" },
+    { failDeliverables: true, expected: "deliverable storage unavailable" },
+    { past: true, expected: "cannot be in the past" },
+    { timezone: null, expected: "timezone is configured" },
+  ])("rolls back rejected or failed application edits: %j", async (options) => {
+    const pool = createCreatorApplicationPool(options);
+    const repository = createPgMarketplaceCollaborationReadRepository({
+      connectionString: "postgresql://target-db",
+      pool: pool as never,
+    });
+    await expect(
+      repository.executeLifecycleWrite!({
+        context: creatorRequestContext(),
+        side: "creator",
+        action: "edit_application",
+        collaborationId: "collab_001",
+        idempotencyKey: "edit-test",
+        payload: {
+          expectedUpdatedAt: options.stale
+            ? "2026-09-04T01:00:00.000Z"
+            : "2026-09-05T01:00:00.000Z",
+          terms: {
+            travelDateFrom: options.past ? "2020-07-10" : "2027-07-10",
+            travelDateTo: "2027-07-12",
+          },
+          compensationOptionId: "compensation-paid-001",
+          whyGreatFit: "Updated",
+          consent: true,
+          deliverables: [{ platform: "Instagram", type: "Reel", quantity: 1 }],
+        },
+      }),
+    ).rejects.toThrow(options.expected);
+    expect(pool.calls.at(-1)?.text).toBe("ROLLBACK");
+  });
+
   it("derives creator identity and initiator side from auth and snapshots the selected compensation option", async () => {
     const pool = createCreatorApplicationPool();
     const repository = createPgMarketplaceCollaborationReadRepository({
@@ -453,6 +599,7 @@ describe("marketplace collaboration read routes", () => {
         compensationOptionId: "compensation-paid-001",
         whyGreatFit: "My audience is a strong fit.",
         consent: true,
+        terms: { travelDateFrom: "2026-07-01", travelDateTo: "2026-07-03" },
         deliverables: [{ platform: "instagram", type: "reel", quantity: 1 }],
       },
       headers: { authorization: "Bearer valid-token" },
@@ -532,6 +679,7 @@ describe("marketplace collaboration read routes", () => {
             compensationOptionId: "compensation-paid-001",
             whyGreatFit: "My audience is a strong fit.",
             consent: true,
+            terms: { travelDateFrom: "2026-07-01", travelDateTo: "2026-07-03" },
             deliverables: [{ platform: "instagram", type: "reel", quantity: 1 }],
           },
         }),
@@ -799,6 +947,104 @@ describe("marketplace collaboration read routes", () => {
     );
     expect(insert?.values[6]).toBe("hotel");
   });
+
+  it.each([false, true])(
+    "requires replacing expired stored dates on terms edits (mixed: %s)",
+    async (mixedDates) => {
+      for (const terms of [
+        {},
+        { travelDateTo: "2026-07-03" },
+        { travelDateFrom: "2026-07-01", travelDateTo: "2026-07-03" },
+      ]) {
+        const pool = createCreatorApplicationPool({ mixedDates });
+        const repository = createPgMarketplaceCollaborationReadRepository({
+          connectionString: "postgresql://test",
+          pool: pool as never,
+        });
+        const write = repository.executeLifecycleWrite!({
+          context: creatorRequestContext(),
+          side: "creator",
+          action: "update_terms",
+          collaborationId: "collab_001",
+          idempotencyKey: "edit-dates",
+          payload: { terms },
+        });
+        if ("travelDateFrom" in terms) {
+          await expect(write).resolves.not.toBeNull();
+          expect(
+            pool.calls.find((call) => call.text.includes("UPDATE marketplace.collaborations"))
+              ?.text,
+          ).toContain("THEN NULL ELSE COALESCE($12, preferred_date_from)");
+        } else {
+          await expect(write).rejects.toThrow("Collaboration dates cannot be in the past.");
+          expect(
+            pool.calls.some((call) => call.text.includes("UPDATE marketplace.collaborations")),
+          ).toBe(false);
+        }
+      }
+    },
+  );
+
+  it.each([
+    {
+      from: "2026-07-01",
+      to: "2026-02-01",
+      options: {},
+      message: "Collaboration dates cannot be in the past.",
+    },
+    {
+      from: "2026-07-03",
+      to: "2026-07-01",
+      options: {},
+      message: "The end date must be after the start date.",
+    },
+    {
+      from: "2026-02-01",
+      to: "2026-07-02",
+      options: {},
+      message: "Collaboration dates cannot be in the past.",
+    },
+    { from: "2026-07-01", to: "2026-07-02", options: { timezone: null }, message: "timezone" },
+    {
+      from: "2026-07-01",
+      to: "2026-07-02",
+      options: { availabilityMonths: ["February"] },
+      message: "no remaining availability",
+    },
+  ])(
+    "rejects invalid property-local applications atomically: $message",
+    async ({ from, to, options, message }) => {
+      const pool = createCreatorApplicationPool(options);
+      const repository = createPgMarketplaceCollaborationReadRepository({
+        connectionString: "postgresql://test",
+        pool: pool as never,
+      });
+      const app = buildMarketplaceCollaborationsApp({
+        repository,
+        permissions: ["marketplace.collaboration.read", "marketplace.collaboration.write"],
+      });
+      const response = await injectJson(app, {
+        method: "POST",
+        url: "/api/marketplace/collaborations",
+        headers: { authorization: "Bearer valid-token" },
+        payload: {
+          idempotencyKey: "invalid-dates",
+          offerId: "offer-001",
+          compensationOptionId: "compensation-paid-001",
+          whyGreatFit: "Travel creator",
+          consent: true,
+          terms: { travelDateFrom: from, travelDateTo: to },
+          deliverables: [{ platform: "instagram", type: "reel", quantity: 1 }],
+        },
+      });
+      expect(response.statusCode).toBe(400);
+      expect(response.body).toMatchObject({ message: expect.stringContaining(message) });
+      expect(
+        pool.calls.some((call) => call.text.includes("INSERT INTO marketplace.collaborations")),
+      ).toBe(false);
+      expect(pool.calls.some((call) => call.text === "ROLLBACK")).toBe(true);
+    },
+  );
 
   it("rejects a linked hotel offer owned by another organization", async () => {
     const pool = createCreatorApplicationPool({ hotelOfferOrganizationMatches: false });
@@ -2297,6 +2543,12 @@ function identityRepository(
 
 function createCreatorApplicationPool(
   options: {
+    mutationStatus?: string;
+    mutationInitiator?: string;
+    failDeliverables?: boolean;
+    mixedDates?: boolean;
+    timezone?: string | null;
+    availabilityMonths?: string[];
     compensationOptionExists?: boolean;
     offerStatus?: "pending" | "verified";
     creatorProfileOrganizationMatches?: boolean;
@@ -2311,6 +2563,28 @@ function createCreatorApplicationPool(
       rows = [];
     } else if (text.includes("INSERT INTO platform.idempotency_keys")) {
       rows = [{ id: "idempotency-001" }];
+    } else if (
+      text.includes("DELETE FROM marketplace.collaboration_deliverables") &&
+      options.failDeliverables
+    ) {
+      throw new Error("deliverable storage unavailable");
+    } else if (
+      text.includes('AS "lifecycleStatus"') &&
+      text.includes("FROM marketplace.collaborations collaboration")
+    ) {
+      rows = [
+        {
+          id: "collaboration-target-001",
+          propertyId: "property-001",
+          offerId: "offer-001",
+          sourceCollaborationId: "collab_001",
+          lifecycleStatus: options.mutationStatus ?? "pending",
+          initiatorSide: options.mutationInitiator ?? "creator",
+          updatedAt: "2026-09-05T01:00:00.000Z",
+        },
+      ];
+    } else if (text.includes("FROM hotel_catalog.property_public_profile_read_model")) {
+      rows = [{ timezone: options.timezone === undefined ? "Europe/Vienna" : options.timezone }];
     } else if (text.includes("FROM marketplace.creator_profiles")) {
       const crossTenantCreatorLink =
         options.creatorProfileOrganizationMatches === false &&
@@ -2347,7 +2621,7 @@ function createCreatorApplicationPool(
               {
                 compensationOptionId: "compensation-paid-001",
                 compensationType: "paid",
-                availabilityMonths: ["July", "August"],
+                availabilityMonths: options.availabilityMonths ?? ["July", "August"],
                 platforms: ["instagram"],
                 freeStayMinNights: null,
                 freeStayMaxNights: null,
@@ -2360,6 +2634,24 @@ function createCreatorApplicationPool(
                 metadata: { approvalWindowDays: 7 },
               },
             ];
+    } else if (text.includes("FROM marketplace.collaborations WHERE id")) {
+      rows = [
+        {
+          travelDateFrom: options.mixedDates ? "2026-07-01" : "2026-02-01",
+          travelDateTo: options.mixedDates ? "2026-07-03" : "2026-02-03",
+          preferredDateFrom: options.mixedDates ? "2026-02-01" : null,
+          preferredDateTo: options.mixedDates ? "2026-02-03" : null,
+        },
+      ];
+    } else if (text.includes("collaboration.id::text AS id")) {
+      rows = [
+        {
+          id: "collaboration-target-001",
+          propertyId: "property-001",
+          lifecycleStatus: "pending",
+          initiatorSide: "creator",
+        },
+      ];
     } else if (text.includes("SELECT gen_random_uuid()")) {
       rows = [{ id: "collaboration-target-001" }];
     } else if (text.includes("INSERT INTO marketplace.collaborations")) {

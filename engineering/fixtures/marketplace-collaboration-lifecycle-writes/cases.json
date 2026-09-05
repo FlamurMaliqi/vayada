@@ -595,6 +595,125 @@
         "errorCode": "idempotency_conflict",
         "idempotencyBehavior": "conflict"
       }
+    },
+    {
+      "caseId": "edit-application-pending",
+      "request": {
+        "method": "PUT",
+        "path": "/api/marketplace/collaborations/collab_688/application",
+        "action": "edit_application",
+        "side": "creator",
+        "authRef": "creatorLinked",
+        "idempotencyKey": "marketplace.collaboration.edit_application:collab_688:nonce_edit:v1",
+        "body": {
+          "expectedUpdatedAt": "2026-09-05T01:00:00.000Z",
+          "terms": { "travelDateFrom": "2027-07-10", "travelDateTo": "2027-07-12" },
+          "compensationOptionId": "compensation_free_stay_688",
+          "whyGreatFit": "Updated pitch",
+          "consent": true,
+          "deliverables": [
+            {
+              "platform": "Instagram",
+              "type": "Reel",
+              "quantity": 1
+            }
+          ]
+        }
+      },
+      "expected": {
+        "status": 200,
+        "collaborationStatus": "pending"
+      }
+    },
+    {
+      "caseId": "edit-application-closed",
+      "request": {
+        "method": "PUT",
+        "path": "/api/marketplace/collaborations/collab_688/application",
+        "action": "edit_application",
+        "side": "creator",
+        "authRef": "creatorLinked",
+        "idempotencyKey": "marketplace.collaboration.edit_application:collab_688:nonce_edit:v1",
+        "body": {
+          "expectedUpdatedAt": "2026-09-05T01:00:00.000Z",
+          "terms": { "travelDateFrom": "2027-07-10", "travelDateTo": "2027-07-12" },
+          "compensationOptionId": "compensation_free_stay_688",
+          "whyGreatFit": "Updated pitch",
+          "consent": true,
+          "deliverables": [
+            {
+              "platform": "Instagram",
+              "type": "Reel",
+              "quantity": 1
+            }
+          ]
+        }
+      },
+      "expected": {
+        "status": 409,
+        "errorCode": "invalid_transition"
+      }
+    },
+    {
+      "caseId": "edit-application-replay",
+      "request": {
+        "method": "PUT",
+        "path": "/api/marketplace/collaborations/collab_688/application",
+        "action": "edit_application",
+        "side": "creator",
+        "authRef": "creatorLinked",
+        "idempotencyKey": "marketplace.collaboration.edit_application:collab_688:nonce_edit:v1",
+        "body": {
+          "expectedUpdatedAt": "2026-09-05T01:00:00.000Z",
+          "terms": { "travelDateFrom": "2027-07-10", "travelDateTo": "2027-07-12" },
+          "compensationOptionId": "compensation_free_stay_688",
+          "whyGreatFit": "Updated pitch",
+          "consent": true,
+          "deliverables": [
+            {
+              "platform": "Instagram",
+              "type": "Reel",
+              "quantity": 1
+            }
+          ]
+        }
+      },
+      "expected": {
+        "status": 200,
+        "collaborationStatus": "pending",
+        "idempotencyBehavior": "replay",
+        "replayOf": "edit-application-pending"
+      }
+    },
+    {
+      "caseId": "edit-application-conflict",
+      "request": {
+        "method": "PUT",
+        "path": "/api/marketplace/collaborations/collab_688/application",
+        "action": "edit_application",
+        "side": "creator",
+        "authRef": "creatorLinked",
+        "idempotencyKey": "marketplace.collaboration.edit_application:collab_688:nonce_edit:v1",
+        "body": {
+          "expectedUpdatedAt": "2026-09-05T01:00:00.000Z",
+          "terms": { "travelDateFrom": "2027-07-10", "travelDateTo": "2027-07-12" },
+          "compensationOptionId": "compensation_free_stay_688",
+          "whyGreatFit": "Different payload",
+          "consent": true,
+          "deliverables": [
+            {
+              "platform": "Instagram",
+              "type": "Reel",
+              "quantity": 1
+            }
+          ]
+        }
+      },
+      "expected": {
+        "status": 409,
+        "errorCode": "idempotency_conflict",
+        "idempotencyBehavior": "conflict"
+      }
     }
   ]
 }

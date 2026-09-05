@@ -337,6 +337,7 @@ export function HotelCard({ hotel, creatorPlatforms = [], isPublic = false }: Ho
         creatorPlatforms={creatorPlatforms}
       />
       <CollaborationApplicationModal
+        propertyTimezone={hotel.propertyTimezone}
         key={hotel.id}
         isOpen={showApplicationModal}
         onClose={() => setShowApplicationModal(false)}

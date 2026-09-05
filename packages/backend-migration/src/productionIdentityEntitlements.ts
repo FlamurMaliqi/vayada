@@ -158,6 +158,10 @@ export function planIdentityEntitlements(
   const entitlements = [...unique].flatMap(([key, source]) => {
     const target = existingByKey.get(key);
     if (!target) return [source];
+    if (accessEnded(target.status) && !accessEnded(source.status)) return [target];
+    if (accessEnded(source.status) && !accessEnded(target.status))
+      return [{ ...source, updatedAt: newest([source.updatedAt, target.updatedAt]) }];
+    if (equivalentAccessEndingState(target, source)) return [target];
     if (isNewer(target, source))
       return [{ ...source, ...target, updatedAt: newest([target.updatedAt]) }];
     if (isNewer(source, target)) return [{ ...source, updatedAt: newest([source.updatedAt]) }];
@@ -225,6 +229,25 @@ function sameInstant(left: string | null, right: string | null): boolean {
 
 function entitlementStatus(status: OrganizationStatus): EntitlementStatus {
   return status === "archived" ? "expired" : status;
+}
+
+function accessEnded(status: EntitlementStatus): boolean {
+  return status === "suspended" || status === "expired";
+}
+
+function equivalentAccessEndingState(
+  target: ExistingEntitlement,
+  source: PlannedEntitlement,
+): boolean {
+  return (
+    target.status !== source.status &&
+    accessEnded(target.status) &&
+    accessEnded(source.status) &&
+    sameInstant(target.startsAt, source.startsAt) &&
+    sameInstant(target.expiresAt, source.expiresAt) &&
+    JSON.stringify(canonicalJson(target.metadata)) ===
+      JSON.stringify(canonicalJson(source.metadata))
+  );
 }
 
 function entitlementIdentity(row: ExistingEntitlement): string {

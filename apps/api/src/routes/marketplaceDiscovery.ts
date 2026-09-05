@@ -71,6 +71,7 @@ export type MarketplaceOfferReadModel = {
     countryCode?: string;
     region?: string;
     city?: string;
+    timezone?: string;
   };
   hotelCoverImageUrl: string | null;
   hotelImageUrls: string[];
@@ -456,6 +457,7 @@ export function toMarketplaceLocation(value: unknown): MarketplaceOfferReadModel
     ...(countryCode ? { countryCode } : {}),
     ...(region ? { region } : {}),
     ...(city ? { city } : {}),
+    ...(readString(location.timezone) ? { timezone: readString(location.timezone)! } : {}),
   };
 }
 
@@ -795,6 +797,7 @@ export function serializeMarketplaceOffer(
       ...(offer.hotelLocation.countryCode ? { countryCode: offer.hotelLocation.countryCode } : {}),
       ...(offer.hotelLocation.region ? { region: offer.hotelLocation.region } : {}),
       ...(offer.hotelLocation.city ? { city: offer.hotelLocation.city } : {}),
+      ...(offer.hotelLocation.timezone ? { timezone: offer.hotelLocation.timezone } : {}),
     },
     hotelCoverImageUrl: offer.hotelCoverImageUrl ?? null,
     hotelImageUrls: offer.hotelImageUrls.map((url) => url),

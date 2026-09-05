@@ -159,6 +159,44 @@ describe("production identity plan", () => {
     expect(plan.entitlements[0]).toMatchObject({ status: "expired", updatedAt: MAR });
   });
 
+  it("counts an access-ending entitlement write even when the active target is newer", () => {
+    const rows = validRows();
+    rows[0] = {
+      ...rows[0]!,
+      data: { ...rows[0]!.data, status: "rejected" },
+    };
+    const generated = buildProductionIdentityPlan(rows);
+    const existing = {
+      users: generated.users,
+      workosIdentities: generated.workosIdentities,
+      ownership: {
+        organizations: generated.organizations,
+        memberships: generated.memberships,
+        resourceLinks: generated.resourceLinks,
+      },
+      entitlements: [
+        {
+          ...generated.entitlements[0]!,
+          status: "active" as const,
+          updatedAt: MAR,
+        },
+      ],
+      privacy: {
+        userConsents: generated.userConsents,
+        cookieConsents: generated.cookieConsents,
+        consentHistory: generated.consentHistory,
+        gdprRequests: generated.gdprRequests,
+      },
+      auditEvents: generated.auditEvents,
+    };
+
+    const plan = buildProductionIdentityPlan(rows, existing);
+
+    expect(plan.blockers).toEqual([]);
+    expect(plan.entitlements[0]).toMatchObject({ status: "expired", updatedAt: MAR });
+    expect(plan.counts.pendingTargetWrites).toBe(1);
+  });
+
   it("quarantines a missing owner while preserving historical booking input", () => {
     const rows = [validRows()[1]!];
     rows.push(

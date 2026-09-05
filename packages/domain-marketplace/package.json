@@ -10,6 +10,10 @@
     ".": {
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
+    },
+    "./collaborationDates": {
+      "types": "./dist/collaborationDates.d.ts",
+      "default": "./dist/collaborationDates.js"
     }
   },
   "scripts": {
