@@ -75,6 +75,7 @@ export default function DashboardPage() {
   const [timeRange, setTimeRange] = useState<TimeRange>("today");
   const [stats, setStats] = useState<DashboardStats | null>(null);
   const [sources, setSources] = useState<BookingsBySource | null>(null);
+  const [funnelError, setFunnelError] = useState(false);
   const [funnel, setFunnel] = useState<ConversionFunnel | null>(null);
   const [sparklines, setSparklines] = useState<Sparklines | null>(null);
   const [currency, setCurrency] = useState("EUR");
@@ -101,17 +102,19 @@ export default function DashboardPage() {
     setStats(null);
     setSources(null);
     setFunnel(null);
+    setFunnelError(false);
     setSparklines(null);
     const [statsData, sourcesData, funnelData, sparklinesData] = await Promise.allSettled([
       dashboardService.getStats(range, timeZone),
       dashboardService.getBookingsBySource(range, timeZone),
-      dashboardService.getConversionFunnel(range),
+      dashboardService.getConversionFunnel(range, timeZone),
       dashboardService.getSparklines(range, timeZone),
     ]);
     if (sequence !== fetchSequence.current) return;
     if (statsData.status === "fulfilled") setStats(statsData.value);
     if (sourcesData.status === "fulfilled") setSources(sourcesData.value);
     if (funnelData.status === "fulfilled") setFunnel(funnelData.value);
+    else setFunnelError(true);
     if (sparklinesData.status === "fulfilled") setSparklines(sparklinesData.value);
     setLoading(false);
   }, []);
@@ -131,10 +134,12 @@ export default function DashboardPage() {
   }, [timeRange, propertyTimeZone, settingsLoaded, fetchData]);
 
   const selectTimeRange = (range: TimeRange) => {
+    if (range === timeRange) return;
     fetchSequence.current += 1;
     setStats(null);
     setSources(null);
     setFunnel(null);
+    setFunnelError(false);
     setSparklines(null);
     setTimeRange(range);
   };
@@ -533,38 +538,35 @@ export default function DashboardPage() {
             </svg>
           </div>
 
-          <div className="space-y-4">
-            {funnel && funnel.steps.length > 0 ? (
-              funnel.steps.map(({ label, value, percentage }) => (
-                <div key={label}>
-                  <div className="flex items-center justify-between mb-1">
-                    <span className="text-[13px] text-gray-700">{label}</span>
-                    <div className="flex items-center gap-2">
-                      <span className="text-[13px] font-semibold text-gray-900">
-                        {formatNumber(value, locale)}
-                      </span>
-                      <span className="text-[11px] text-gray-500">
-                        {formatNumber(percentage, locale)}%
-                      </span>
+          <div className="space-y-4" aria-busy={loading}>
+            {funnel && funnel.steps.some(step => step.count > 0) ? (
+              funnel.steps.map(({ stage, count, percentOfVisits, conversionPercent }) => (
+                <div key={stage} className={stage === "payment_authorized" ? "pl-3 border-l-2 border-gray-200" : ""}>
+                  <div className="flex flex-wrap items-center justify-between gap-1 mb-1">
+                    <span className="text-[13px] text-gray-700">{t(`dashboard.funnel.${stage}`)}</span>
+                    <span className="text-[13px] font-semibold text-gray-900">{formatNumber(count, locale)}</span>
+                  </div>
+                  <div className="flex flex-wrap gap-x-3 text-[11px] text-gray-500 mb-1">
+                    <span>{percentOfVisits === null ? "—" : `${formatNumber(percentOfVisits, locale)}%`} {t("dashboard.funnel.ofVisits")}</span>
+                    <span>{conversionPercent === null ? "—" : `${formatNumber(conversionPercent, locale)}%`} {t(stage === "payment_authorized" ? "dashboard.funnel.ofCardClicks" : stage === "booking_completed" ? "dashboard.funnel.ofEligibleSubmissions" : "dashboard.funnel.fromPrevious")}</span>
+                    {funnel.biggestDrop === stage && <span className="font-medium text-red-700">{t("dashboard.funnel.biggestDrop")}</span>}
+                  </div>
+                  <div className="w-full bg-gray-100 rounded-full h-4 overflow-hidden">
+                    <div className={`h-4 rounded-full transition-all ${funnel.biggestDrop === stage ? "bg-red-300" : "bg-primary-500"}`}
+                      style={{ width: `${Math.min(Math.max(percentOfVisits ?? 0, 0), 100)}%` }} />
+                  </div>
+                  {stage === "complete_booking_clicked" && (
+                    <div className="flex flex-wrap gap-x-3 text-xs text-gray-600 mt-2">
+                      {funnel.paymentMethods.map(({ method, count: methodCount }) => (
+                        <span key={method}>{t(`dashboard.funnel.method.${method}`)}: {formatNumber(methodCount, locale)} ({count ? formatNumber(Math.round(methodCount / count * 1000) / 10, locale) : 0}%)</span>
+                      ))}
                     </div>
-                  </div>
-                  <div className="w-full bg-gray-100 rounded-full h-8 overflow-hidden">
-                    <div
-                      className={`h-8 rounded-full transition-all ${
-                        label === "Completed booking"
-                          ? "bg-primary-600"
-                          : label === "Started booking"
-                            ? "bg-primary-500"
-                            : "bg-green-200"
-                      }`}
-                      style={{ width: `${Math.min(Math.max(percentage, 1), 100)}%` }}
-                    />
-                  </div>
+                  )}
                 </div>
               ))
             ) : (
               <p className="text-[13px] text-gray-500 text-center py-8">
-                {t("dashboard.bookingsBySource.noData")}
+                {loading ? t("common.loading") : funnelError ? t("dashboard.funnel.error") : t("dashboard.conversionFunnel.noData")}
               </p>
             )}
           </div>

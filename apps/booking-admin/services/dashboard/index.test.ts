@@ -158,10 +158,12 @@ describe("dashboardService target route adapter", () => {
     );
   });
 
-  it("keeps the broader conversion funnel unavailable", async () => {
-    await expect(dashboardService.getConversionFunnel()).rejects.toThrow(
-      "conversion funnel is not available",
-    );
+  it.each(["today", "week", "month"] as const)("loads the %s funnel in property-local dates", async (range) => {
+    const funnel = { steps: [], paymentMethods: [], biggestDrop: null };
+    vi.stubGlobal("fetch", vi.fn(async () => Response.json({ funnel })));
+    await expect(dashboardService.getConversionFunnel(range, "Pacific/Auckland")).resolves.toEqual(funnel);
+    expect(String(vi.mocked(fetch).mock.calls[0]?.[0])).toContain("/conversion-funnel?windowStart=");
+    expect(String(vi.mocked(fetch).mock.calls[0]?.[0])).toContain("windowEnd=2026-06-15");
   });
 });
 
