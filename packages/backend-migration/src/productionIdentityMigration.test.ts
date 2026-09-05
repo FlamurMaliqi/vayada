@@ -118,6 +118,25 @@ describe("production identity migration transaction", () => {
     expect(log.at(-1)).toBe("ROLLBACK");
     expect(log).not.toContain("COMMIT");
   });
+
+  it("rolls back when the post-write plan still has pending target writes", async () => {
+    const log: string[] = [];
+    const expected = plan();
+    const incomplete = {
+      ...expected,
+      counts: { ...expected.counts, pendingTargetWrites: 1 },
+    };
+
+    await expect(
+      runProductionIdentityTransaction(
+        new TransactionClient(log) as never,
+        { sourceRunId: RUN, mode: "apply" },
+        services(log, expected, incomplete),
+      ),
+    ).rejects.toThrow("Post-write identity verification does not match");
+    expect(log.at(-1)).toBe("ROLLBACK");
+    expect(log).not.toContain("COMMIT");
+  });
 });
 
 class TransactionClient {

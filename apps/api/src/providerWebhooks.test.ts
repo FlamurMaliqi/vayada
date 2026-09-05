@@ -406,6 +406,164 @@ describe("target provider webhook routes", () => {
     await app.close();
   });
 
+  it("attributes Channex messages to the canonical property before promotion", async () => {
+    const store = createMemoryProviderWebhookStore({
+      channex_property_123: "2f3db2bb-5d6a-4cd2-9bb7-bb344b49540f",
+    });
+    const app = buildApp({
+      providerWebhooks: {
+        secrets: { channex: "channex-secret" },
+        modes: { channex: "mutating" },
+        store,
+      },
+    });
+    const payload = channexMessagePayload({
+      propertyId: "channex_property_123",
+      sourceMessageId: "message_123",
+      threadId: "thread_123",
+    });
+
+    const response = await postChannexPayload(app, payload);
+
+    expect(response.json()).toMatchObject({ status: "promoted" });
+    expect(store.receipts[0]?.receiptKey).toBe(
+      "webhook:channex:message:2f3db2bb-5d6a-4cd2-9bb7-bb344b49540f:message_123",
+    );
+    expect(store.receipts[0]?.normalizedPreview.payload).toMatchObject({
+      propertyId: "2f3db2bb-5d6a-4cd2-9bb7-bb344b49540f",
+      providerPropertyId: "channex_property_123",
+      propertyOwnerResolved: true,
+      threadId: "thread_123",
+      sourceMessageId: "message_123",
+    });
+    await app.close();
+  });
+
+  it("keeps Channex messages observe-only when property ownership is unresolved", async () => {
+    const store = createMemoryProviderWebhookStore({});
+    const app = buildApp({
+      providerWebhooks: {
+        secrets: { channex: "channex-secret" },
+        modes: { channex: "mutating" },
+        store,
+      },
+    });
+
+    const response = await postChannexPayload(
+      app,
+      channexMessagePayload({
+        propertyId: "unknown_channex_property",
+        sourceMessageId: "message_unknown",
+        threadId: "thread_unknown",
+      }),
+    );
+
+    expect(response.json()).toMatchObject({ status: "observed", mode: "observe_only" });
+    expect(store.receipts[0]?.normalizedPreview.payload).toMatchObject({
+      propertyId: "unknown_channex_property",
+      propertyOwnerResolved: false,
+    });
+    expect(store.receipts[0]?.rawPayload).toEqual({
+      event: "message",
+      property_id: "unknown_channex_property",
+      source_message_id: "message_unknown",
+      source_thread_id: "thread_unknown",
+      content_retained: false,
+    });
+    expect(store.jobs).toHaveLength(0);
+    await app.close();
+  });
+
+  it("does not retain or promote Channex message content with conflicting property identities", async () => {
+    const store = createMemoryProviderWebhookStore({
+      channex_property_a: "2f3db2bb-5d6a-4cd2-9bb7-bb344b49540f",
+      channex_property_b: "3f3db2bb-5d6a-4cd2-9bb7-bb344b49540f",
+    });
+    const app = buildApp({
+      providerWebhooks: {
+        secrets: { channex: "channex-secret" },
+        modes: { channex: "mutating" },
+        store,
+      },
+    });
+    const payload = channexMessagePayload({
+      propertyId: "channex_property_b",
+      sourceMessageId: "message_conflicting_property",
+      threadId: "thread_conflicting_property",
+    });
+    payload["property_id"] = "channex_property_a";
+
+    const response = await postChannexPayload(app, payload);
+
+    expect(response.json()).toMatchObject({ status: "observed", mode: "observe_only" });
+    expect(store.receipts[0]?.rawPayload).toMatchObject({
+      content_retained: false,
+      source_message_id: "message_conflicting_property",
+    });
+    expect(JSON.stringify(store.receipts[0]?.rawPayload)).not.toContain("Inbound guest message");
+    expect(store.jobs).toHaveLength(0);
+    await app.close();
+  });
+
+  it("deduplicates Channex message retries without hashing guest content or signed URLs", async () => {
+    const store = createMemoryProviderWebhookStore({
+      channex_property_123: "2f3db2bb-5d6a-4cd2-9bb7-bb344b49540f",
+    });
+    const app = buildApp({
+      providerWebhooks: {
+        secrets: { channex: "channex-secret" },
+        modes: { channex: "mutating" },
+        store,
+      },
+    });
+    const first = channexMessagePayload({
+      propertyId: "channex_property_123",
+      sourceMessageId: "message_stable_retry",
+      threadId: "thread_stable_retry",
+    });
+    const second = structuredClone(first);
+    (second["payload"] as Record<string, unknown>)["body"] = "Provider retry changed metadata";
+    (second["payload"] as Record<string, unknown>)["attachments"] = [
+      { id: "attachment_1", url: "attachments/file.pdf?signature=refreshed" },
+    ];
+
+    expect((await postChannexPayload(app, first)).statusCode).toBe(200);
+    expect((await postChannexPayload(app, second)).statusCode).toBe(200);
+    expect(store.receipts).toHaveLength(1);
+    expect(store.jobs).toHaveLength(1);
+    await app.close();
+  });
+
+  it("keeps UUID-shaped unknown Channex properties outside canonical property scope", async () => {
+    const unknownProviderPropertyId = "13720000-0000-4000-8000-000000009999";
+    const store = createMemoryProviderWebhookStore({});
+    const app = buildApp({
+      providerWebhooks: {
+        secrets: { channex: "channex-secret" },
+        modes: { channex: "mutating" },
+        store,
+      },
+    });
+
+    const response = await postChannexPayload(
+      app,
+      channexMessagePayload({
+        propertyId: unknownProviderPropertyId,
+        sourceMessageId: "message_unknown_uuid_property",
+        threadId: "thread_unknown_uuid_property",
+      }),
+    );
+
+    expect(response.json()).toMatchObject({ status: "observed", mode: "observe_only" });
+    expect(store.receipts[0]?.normalizedPreview.payload).toMatchObject({
+      propertyId: unknownProviderPropertyId,
+      providerPropertyId: unknownProviderPropertyId,
+      propertyOwnerResolved: false,
+    });
+    expect(store.jobs).toHaveLength(0);
+    await app.close();
+  });
+
   it("replays Stripe and Xendit payment and payout events without duplicate finance status jobs", async () => {
     const store = createMemoryProviderWebhookStore();
     const app = buildApp({
@@ -702,6 +860,51 @@ describe("target provider webhook routes", () => {
         sourceMessageId: "msg_shared_456",
       },
     });
+    await app.close();
+  });
+
+  it("observes incomplete Channex messages as non-content tombstones without promotion", async () => {
+    const store = createMemoryProviderWebhookStore();
+    const app = buildApp({
+      providerWebhooks: {
+        secrets: { channex: "channex-secret" },
+        modes: { channex: "mutating" },
+        store,
+        now: () => fixedNow,
+      },
+    });
+    const malformed = {
+      event: "message",
+      property_id: "prop_alpenrose",
+      payload: {
+        message_id: "msg_without_thread",
+        body: "guest secret",
+        guest_email: "guest@example.test",
+        attachments: [{ url: "attachments/private.pdf" }],
+      },
+    };
+
+    const first = await postChannexPayload(app, malformed);
+    const retry = await postChannexPayload(app, {
+      ...malformed,
+      payload: { ...malformed.payload, body: "changed guest secret" },
+    });
+
+    expect(first.json()).toMatchObject({ status: "observed", mode: "observe_only" });
+    expect(retry.json()).toMatchObject({ status: "duplicate_observed", mode: "observe_only" });
+    expect(store.receipts).toHaveLength(1);
+    expect(store.receipts[0]).toMatchObject({
+      receiptKey: "webhook:channex:message:prop_alpenrose:unknown:msg_without_thread",
+      rawPayload: {
+        event: "message",
+        property_id: "prop_alpenrose",
+        source_message_id: "msg_without_thread",
+        source_thread_id: "unknown",
+        content_retained: false,
+      },
+    });
+    expect(store.domainEvents).toHaveLength(0);
+    expect(store.jobs).toHaveLength(0);
     await app.close();
   });
 

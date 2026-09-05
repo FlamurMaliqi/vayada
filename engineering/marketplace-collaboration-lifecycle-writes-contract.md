@@ -51,7 +51,8 @@ payload and requires `expectedUpdatedAt` from the collaboration read. Only the
 owning creator may edit a creator-initiated pending request. It replaces message,
 dates, deliverables and the selected compensation snapshot atomically, retaining
 the request ID and pending status. The compensation option must belong to the
-original offer. Failures roll back all writes. This is separate from negotiating
+original offer. Edits also enforce the property-local date and current offering
+availability checks from VAY-954. Failures roll back all writes. This is separate from negotiating
 terms; it does not approve either party's terms.
 
 Lifecycle mutations lock the collaboration before reading its current state.
@@ -59,3 +60,20 @@ Responses accept `expectedUpdatedAt` and return 409 on stale versions; clients
 refresh details before retrying. Cancel supports `pendingOnly: true` for request
 withdrawal and exposes `cancelledBy` in reads. Edits use existing idempotency and
 notification records. No legacy route or database is changed.
+
+## Property-local collaboration dates (VAY-954)
+
+Creator applications require concrete ISO start/end dates, with end after start.
+Create and terms edits reject past dates with “Collaboration dates cannot be in
+the past.” Today is allowed, using the property's IANA timezone from the catalog
+public-profile read model. Missing/invalid timezone blocks the write with an
+availability error; browser or server timezone is never a fallback. Edits validate
+the merged stored/requested dates, so omitting expired dates cannot bypass validation.
+Replacing both travel dates clears superseded preferred dates; otherwise edits also
+validate the retained preferred-date pair.
+Existing idempotent replays remain replays rather than new applications.
+
+Month-only offering availability is evaluated against the remaining months of the
+current property-local year: an option containing only earlier months blocks new
+applications with an availability restriction. This intentionally tightens the
+legacy behavior; the schema has no year attached to these month names.

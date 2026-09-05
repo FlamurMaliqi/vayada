@@ -8,6 +8,7 @@ import {
   createPgMarketplaceDiscoveryReadRepository,
   findForbiddenMarketplaceDiscoveryKeys,
   toMarketplaceLocation,
+  serializeMarketplaceOffer,
   type MarketplaceCreatorPage,
   type MarketplaceCreatorReadModel,
   type MarketplaceDiscoveryError,
@@ -1001,4 +1002,16 @@ describe("pg marketplace discovery repository", () => {
     expect(sql.join("\n")).toContain("marketplace.creator_profile_is_complete");
     expect(sql.join("\n")).toContain("TRUE");
   });
+});
+
+it("preserves the catalog timezone through public offer serialization", () => {
+  const hotelLocation = toMarketplaceLocation({ city: "Vienna", timezone: "Europe/Vienna" });
+  expect(hotelLocation.timezone).toBe("Europe/Vienna");
+  const serialized = serializeMarketplaceOffer({
+    hotelLocation,
+    hotelImageUrls: [],
+    deliverables: [],
+    compensationOptions: [],
+  } as unknown as MarketplaceOfferReadModel);
+  expect(serialized.hotelLocation.timezone).toBe("Europe/Vienna");
 });
