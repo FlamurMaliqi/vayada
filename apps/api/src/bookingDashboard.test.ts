@@ -17,7 +17,6 @@ import type {
 import { afterEach, describe, expect, it } from "vitest";
 
 import { buildApp } from "./app.js";
-import { agencyPropertyAccessRepository } from "./testAuthorization.js";
 import {
   createTargetBookingDashboardMetricsReadPort,
   type BookingDashboardMetricsReadPool,
@@ -85,6 +84,20 @@ describe("Booking dashboard routes", () => {
     app = null;
   });
 
+  it("serves the funnel and validates its requested window", async () => {
+    app = buildDashboardApp();
+    const url = "/api/booking/properties/prop_alpenrose/dashboard/conversion-funnel";
+    const headers = { authorization: "Bearer valid-token" };
+    const allowed = await injectJson(app, { method: "GET", url, headers,
+      query: { windowStart: "2026-06-01", windowEnd: "2026-06-30" } });
+    expect(allowed.statusCode).toBe(200);
+    expect(allowed.body).toMatchObject({ funnel: { steps: [], paymentMethods: [], biggestDrop: null } });
+    for (const query of [{ windowStart: "2026-02-30", windowEnd: "2026-03-01" },
+      { windowStart: "2026-01-01", windowEnd: "2026-06-30" }]) {
+      expect((await injectJson(app, { method: "GET", url, headers, query })).statusCode).toBe(400);
+    }
+  });
+
   it("returns target dashboard stats from the injected Booking read port", async () => {
     const calls: unknown[] = [];
     app = buildDashboardApp({
@@ -99,6 +112,7 @@ describe("Booking dashboard routes", () => {
         async getSparklines(input) {
           return fakeSparklines(input.propertyId);
         },
+        getConversionFunnel: async () => ({ steps: [], paymentMethods: [], biggestDrop: null }),
         async getPageViewTimeline(input) {
           return fakePageViews(input.propertyId);
         },
@@ -222,6 +236,7 @@ describe("Booking dashboard routes", () => {
         getDashboardMetrics: denied,
         getSourceMix: denied,
         getSparklines: denied,
+        getConversionFunnel: denied,
         getPageViewTimeline: denied,
       },
     });
@@ -328,6 +343,7 @@ describe("Booking dashboard routes", () => {
         async getSparklines(input) {
           return fakeSparklines(input.propertyId);
         },
+        getConversionFunnel: async () => ({ steps: [], paymentMethods: [], biggestDrop: null }),
         async getPageViewTimeline(input) {
           return fakePageViews(input.propertyId);
         },
@@ -363,6 +379,7 @@ describe("Booking dashboard routes", () => {
         async getSparklines(input) {
           return fakeSparklines(input.propertyId);
         },
+        getConversionFunnel: async () => ({ steps: [], paymentMethods: [], biggestDrop: null }),
         async getPageViewTimeline(input) {
           return fakePageViews(input.propertyId);
         },
@@ -464,7 +481,7 @@ describe("Booking dashboard routes", () => {
       },
       headers: { authorization: "Bearer valid-token" },
       expectedStatus: 403,
-      expectedCode: "missing_resource_access",
+      expectedCode: "missing_permission",
     },
     {
       name: "when the Booking property alias is unresolved",
@@ -514,6 +531,12 @@ describe("Booking dashboard routes", () => {
 
       expect(response.statusCode).toBe(expectedStatus);
       expect(response.body.code).toBe(expectedCode);
+      const funnelResponse = await injectJson<{ code: string }>(app, {
+        method: "GET", url: "/api/booking/properties/prop_alpenrose/dashboard/conversion-funnel",
+        headers, query: { windowStart: "2026-06-01", windowEnd: "2026-06-30" },
+      });
+      expect(funnelResponse.statusCode).toBe(expectedStatus);
+      expect(funnelResponse.body.code).toBe(expectedCode);
     },
   );
 });
@@ -737,6 +760,18 @@ describe("target Booking dashboard metrics read port", () => {
 });
 
 function buildDashboardApp(options: DashboardAppOptions = {}): ReturnType<typeof buildApp> {
+  const propertyAccessRepository: import("@vayada/backend-authorization").PropertyAccessRepository = {
+      async findMembershipPropertyScope() {
+        return options.propertyScope === undefined
+          ? {
+              mode: "all",
+              roleKey: "hotel_owner",
+              accessOrigin: "agency",
+              assignedPropertyIds: [],
+            }
+          : options.propertyScope;
+      },
+    };
   return buildApp({
     logger: false,
     bookingDashboardMetricsReadPort: {
@@ -750,18 +785,7 @@ function buildDashboardApp(options: DashboardAppOptions = {}): ReturnType<typeof
           : options.resolvedCanonicalPropertyId;
       },
     },
-    bookingPropertyAccessRepository: {
-      async findMembershipPropertyScope() {
-        return options.propertyScope === undefined
-          ? {
-              mode: "all",
-              roleKey: "hotel_owner",
-              accessOrigin: "agency",
-              assignedPropertyIds: [],
-            }
-          : options.propertyScope;
-      },
-    },
+    bookingPropertyAccessRepository: propertyAccessRepository,
     auth: {
       verifier: createFakeVerifier(new Map([["valid-token", session]])),
       repository: createIdentityRepository(
@@ -769,7 +793,7 @@ function buildDashboardApp(options: DashboardAppOptions = {}): ReturnType<typeof
         options.linkedCanonicalPropertyId,
         options.membershipStatus,
       ),
-      propertyAccessRepository: agencyPropertyAccessRepository,
+      propertyAccessRepository,
       rolePermissionRepository: {
         async findPermissionsForRole() {
           return options.permissions ?? ["booking.analytics.read"];
@@ -853,7 +877,8 @@ function fakeReadPort(): BookingDashboardMetricsReadPort {
     async getSparklines(input) {
       return fakeSparklines(input.propertyId);
     },
-    async getPageViewTimeline(input) {
+    getConversionFunnel: async () => ({ steps: [], paymentMethods: [], biggestDrop: null }),
+        async getPageViewTimeline(input) {
       return fakePageViews(input.propertyId);
     },
   };

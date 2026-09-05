@@ -184,6 +184,26 @@ export async function registerBookingDashboardRoutes(
   );
 
   app.get<{ Params: BookingDashboardPropertyParams; Querystring: DashboardWindowQuery }>(
+    "/properties/:propertyId/dashboard/conversion-funnel",
+    async (request, reply) => {
+      const { propertyId } = request.params;
+      if (!(await enforceBookingDashboardReadPolicy(request, reply, propertyId, options))) return reply;
+      const window = parsePageViewWindowQuery(request.query);
+      if (!window.ok) return sendBookingDashboardError(reply, 400, window.error);
+      try {
+        const funnel = await metricsReadPort.getConversionFunnel({ propertyId, ...window.value });
+        if (!funnel) return sendBookingDashboardError(reply, 404, {
+          code: "read_model_not_found", category: "not_found", message: "Booking funnel was not found for this property.",
+        });
+        return { contractVersion: BOOKING_DASHBOARD_CONTRACT_VERSION, propertyId, funnel };
+      } catch (error) {
+        request.log.error({ err: error }, "Booking conversion funnel read failed");
+        return sendBookingDashboardError(reply, 500, readModelUnavailableError());
+      }
+    },
+  );
+
+  app.get<{ Params: BookingDashboardPropertyParams; Querystring: DashboardWindowQuery }>(
     "/properties/:propertyId/dashboard/page-views",
     async (request, reply) => {
       const { propertyId } = request.params;
