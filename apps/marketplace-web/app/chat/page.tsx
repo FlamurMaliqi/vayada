@@ -148,6 +148,7 @@ function ChatPageContent() {
 
           return {
             id: collab.id,
+            updatedAt: collab.updated_at,
             name: userType === "hotel" ? collab.creator_name : collab.hotel_name || "Hotel",
             time: new Date(collab.created_at).toLocaleDateString(),
             followers:
@@ -297,25 +298,39 @@ function ChatPageContent() {
 
   const handleAccept = async (id: string) => {
     try {
-      await collaborationService.respondToCollaboration(id, { status: "accepted" });
+      await collaborationService.respondToCollaboration(id, {
+        status: "accepted",
+        expectedUpdatedAt:
+          detailCollaboration?.id === id
+            ? detailCollaboration.updatedAt.toISOString()
+            : pendingRequests.find((r) => r.id === id)?.updatedAt,
+      });
       setPendingRequests((prev) => prev.filter((r) => r.id !== id));
       setDetailCollaboration(null);
       const convData = await collaborationService.getConversations();
       setConversations(convData);
     } catch (error) {
-      console.error("Error accepting collaboration:", error);
+      await handleViewDetails(id);
+      window.alert(error instanceof Error ? error.message : "Could not accept request.");
     }
   };
 
   const handleDecline = async (id: string) => {
     try {
-      await collaborationService.respondToCollaboration(id, { status: "declined" });
+      await collaborationService.respondToCollaboration(id, {
+        status: "declined",
+        expectedUpdatedAt:
+          detailCollaboration?.id === id
+            ? detailCollaboration.updatedAt.toISOString()
+            : pendingRequests.find((r) => r.id === id)?.updatedAt,
+      });
       setPendingRequests((prev) => prev.filter((r) => r.id !== id));
       setDetailCollaboration(null);
       const convData = await collaborationService.getConversations();
       setConversations(convData);
     } catch (error) {
-      console.error("Error declining collaboration:", error);
+      await handleViewDetails(id);
+      window.alert(error instanceof Error ? error.message : "Could not decline request.");
     }
   };
 
@@ -753,6 +768,11 @@ function ChatPageContent() {
         onClose={() => setDetailCollaboration(null)}
         collaboration={detailCollaboration}
         currentUserType={userType as "hotel" | "creator"}
+        onUpdated={(value) => {
+          setDetailCollaboration(value);
+          if (value.status !== "pending")
+            setPendingRequests((prev) => prev.filter((r) => r.id !== value.id));
+        }}
         onAccept={handleAccept}
         onDecline={handleDecline}
       />

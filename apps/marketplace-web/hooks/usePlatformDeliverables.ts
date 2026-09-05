@@ -1,8 +1,8 @@
 import { useState, useCallback } from "react";
 import type { PlatformDeliverable, DeliverableItem } from "@/components/marketplace/types";
 
-export function usePlatformDeliverables() {
-  const [platformDeliverables, setPlatformDeliverables] = useState<PlatformDeliverable[]>([]);
+export function usePlatformDeliverables(initial: PlatformDeliverable[] = []) {
+  const [platformDeliverables, setPlatformDeliverables] = useState<PlatformDeliverable[]>(initial);
   const [customDeliverableInput, setCustomDeliverableInput] = useState("");
 
   const handlePlatformToggle = useCallback((platform: string) => {

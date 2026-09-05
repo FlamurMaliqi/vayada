@@ -81,19 +81,27 @@ function CalendarPageContent() {
 
   const handleAccept = async (id: string) => {
     try {
-      await collaborationService.respondToCollaboration(id, { status: "accepted" });
+      await collaborationService.respondToCollaboration(id, {
+        status: "accepted",
+        expectedUpdatedAt: detailCollaboration?.updatedAt.toISOString(),
+      });
       handleViewDetails(id);
     } catch (error) {
-      console.error("Failed to accept collaboration:", error);
+      await handleViewDetails(id);
+      window.alert(error instanceof Error ? error.message : "Could not accept request.");
     }
   };
 
   const handleDecline = async (id: string) => {
     try {
-      await collaborationService.respondToCollaboration(id, { status: "declined" });
+      await collaborationService.respondToCollaboration(id, {
+        status: "declined",
+        expectedUpdatedAt: detailCollaboration?.updatedAt.toISOString(),
+      });
       handleViewDetails(id);
     } catch (error) {
-      console.error("Failed to decline collaboration:", error);
+      await handleViewDetails(id);
+      window.alert(error instanceof Error ? error.message : "Could not decline request.");
     }
   };
 
@@ -144,6 +152,10 @@ function CalendarPageContent() {
         onClose={() => setDetailCollaboration(null)}
         collaboration={detailCollaboration}
         currentUserType={userType}
+        onUpdated={(value) => {
+          setDetailCollaboration(value);
+          handleDataChanged();
+        }}
         onAccept={handleAccept}
         onDecline={handleDecline}
         onApprove={handleApprove}
