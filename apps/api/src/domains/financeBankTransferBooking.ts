@@ -40,7 +40,7 @@ export function createBankTransferBookingOperations(
       await client.query("BEGIN");
       const row = (await client.query<Destination & { bookingId: string }>(query, values)).rows[0];
       if (!row) {
-        await client.query("ROLLBACK");
+        await client.query("ROLLBACK").catch(() => undefined);
         return null;
       }
       const details = await codec.decrypt(row, row);
@@ -54,7 +54,7 @@ export function createBankTransferBookingOperations(
       await client.query("COMMIT");
       return formatBankTransferInstructions(details);
     } catch {
-      await client.query("ROLLBACK");
+      await client.query("ROLLBACK").catch(() => undefined);
       throw new Error("Bank transfer instructions unavailable.");
     } finally {
       client.release();

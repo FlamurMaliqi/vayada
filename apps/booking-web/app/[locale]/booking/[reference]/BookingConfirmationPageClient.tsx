@@ -637,7 +637,9 @@ export default function BookingConfirmationPageClient({
                   <span className="text-gray-600">{t("addons") || "Add-ons"}</span>
                   <div className="space-y-1.5 text-right">
                     {booking.addonIds.map((addonId, idx) => {
-                      const qty = (booking.addonQuantities?.[addonId] ?? 1) * (booking.addonPackageQuantities?.[addonId] ?? 1);
+                      const qty =
+                        (booking.addonQuantities?.[addonId] ?? 1) *
+                        (booking.addonPackageQuantities?.[addonId] ?? 1);
                       const name = booking.addonNames?.[idx] || addonId;
                       return (
                         <div key={addonId} className="font-medium text-gray-900">
@@ -706,13 +708,21 @@ export default function BookingConfirmationPageClient({
 
           {(isPending || isConfirmed) &&
             booking?.paymentMethod === "bank_transfer" &&
-            ["unpaid", "pending", "partially_paid"].includes(booking.paymentStatus ?? "") &&
-            booking.bankTransferDetails && (
+            ["unpaid", "pending", "partially_paid"].includes(booking.paymentStatus ?? "") && (
               <div className="mt-6 p-4 bg-blue-50 border border-blue-200 rounded-xl text-left">
                 <p className="text-sm font-semibold text-blue-900">{t("bankTransferPending")}</p>
-                <p className="text-sm text-blue-800 mt-2 whitespace-pre-line">
-                  {booking.bankTransferDetails}
-                </p>
+                {booking.bankTransferDetails ? (
+                  <p className="text-sm text-blue-800 mt-2 whitespace-pre-line">
+                    {booking.bankTransferDetails}
+                  </p>
+                ) : (
+                  <Link
+                    href={manageBookingHref}
+                    className="inline-block text-sm text-blue-800 mt-2 underline"
+                  >
+                    {t("manageBooking")}
+                  </Link>
+                )}
                 {booking.paymentDeadline && (
                   <p className="text-xs text-blue-700 mt-3">
                     {t("paymentDeadline")}:{" "}

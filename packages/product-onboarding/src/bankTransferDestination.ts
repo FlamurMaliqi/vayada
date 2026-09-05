@@ -1,3 +1,5 @@
+export class BankTransferValidationError extends Error {}
+
 export type SavedBankTransferDestination = {
   id: string;
   revision: number;
@@ -65,7 +67,7 @@ export async function saveBankTransferDestination(
       !input.details.accountHolder.trim() ||
       input.details.accountNumber.replace(/[ -]/g, "").length < 8)
   ) {
-    throw new Error(
+    throw new BankTransferValidationError(
       "Enter the complete bank details, or leave all fields empty to keep the saved account.",
     );
   }

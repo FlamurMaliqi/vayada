@@ -139,8 +139,8 @@ it.skipIf(!url)(
       repository.execute({
         ...command,
         commandId: randomUUID(),
-        propertyId: other,
-        actorId: randomUUID(),
+        propertyId: randomUUID(),
+        actorId,
       }),
     ).rejects.toThrow(/^Bank transfer destination unavailable\.$/);
     expect(await repository.read(other)).toBeNull();

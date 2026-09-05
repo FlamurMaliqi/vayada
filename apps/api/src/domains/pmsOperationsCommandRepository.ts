@@ -6318,11 +6318,15 @@ async function applyBookingAcceptanceCommandMutation(
     FROM finance.bank_transfer_bookings binding
     JOIN finance.bank_transfer_destinations destination ON destination.id=binding.destination_id
       AND destination.property_id=binding.property_id
-    WHERE binding.guest_booking_id=$1::uuid AND binding.property_id=$2::uuid AND destination.deleted_at IS NULL`,
+    WHERE binding.guest_booking_id=$1::uuid AND binding.property_id=$2::uuid AND destination.deleted_at IS NULL
+    FOR SHARE OF destination`,
     [command.guestBookingId, command.propertyId],
   );
   if (!destination.rows.length)
-    return invalidStatusTransition("bank_transfer_unavailable", "confirmed");
+    return operationalConflict(
+      "bank_transfer_unavailable",
+      "Cannot accept this booking because its bank-transfer destination is unavailable.",
+    );
   const paymentDeadlineAt = new Date(Date.parse(acceptedAt) + 24 * 60 * 60 * 1000).toISOString();
 
   const updated = await client.query(
@@ -8211,7 +8215,11 @@ function assignmentConflict(
 }
 
 function operationalConflict(
-  code: "version_conflict" | "idempotency_conflict" | "room_unavailable",
+  code:
+    | "version_conflict"
+    | "idempotency_conflict"
+    | "room_unavailable"
+    | "bank_transfer_unavailable",
   message: string,
 ): Exclude<PmsOperationalCommandResult, { ok: true }> {
   return {

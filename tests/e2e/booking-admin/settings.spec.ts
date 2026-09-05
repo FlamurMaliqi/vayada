@@ -1123,4 +1123,12 @@ test("saves direct-only transfers while retaining an existing hosted provider", 
   await response;
   expect(write).toMatchObject({ paymentSettings: { acceptedMethods: ["bank_transfer"] } });
   expect(write?.paymentSettings).not.toHaveProperty("paymentProvider");
+  await transfer.getByPlaceholder("e.g. HSBC Bank").fill("Partial replacement");
+  await transfer.getByRole("button", { name: "Save Changes", exact: true }).click();
+  await expect(
+    page.getByText(
+      "Enter the complete bank details, or leave all fields empty to keep the saved account.",
+      { exact: true },
+    ),
+  ).toBeVisible();
 });

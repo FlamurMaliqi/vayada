@@ -45,6 +45,14 @@ export function createBankTransferRepository(connectionString: string, codec?: C
   }
   return {
     read,
+    async assertConfigured() {
+      if (codec) return;
+      const active = await pool.query(
+        "SELECT 1 FROM finance.bank_transfer_destinations WHERE enabled AND deleted_at IS NULL LIMIT 1",
+      );
+      if (active.rows.length)
+        throw new Error("Bank transfer KMS configuration is required for enabled destinations.");
+    },
     async execute(command: BankTransferDestinationCommand) {
       const client = await pool.connect();
       try {
@@ -78,7 +86,7 @@ export function createBankTransferRepository(connectionString: string, codec?: C
           )
         ).rows[0];
         if (replay) {
-          await client.query("ROLLBACK");
+          await client.query("ROLLBACK").catch(() => undefined);
           return replay.fingerprint === fingerprint
             ? { status: "replayed" as const, summary: replay.summary }
             : { status: "conflict" as const };
@@ -88,7 +96,7 @@ export function createBankTransferRepository(connectionString: string, codec?: C
           (previous?.version ?? 0) !== command.expectedVersion ||
           (command.action !== "replace" && !previous)
         ) {
-          await client.query("ROLLBACK");
+          await client.query("ROLLBACK").catch(() => undefined);
           return { status: "conflict" as const };
         }
         let id = previous?.id ?? randomUUID();
@@ -157,7 +165,7 @@ export function createBankTransferRepository(connectionString: string, codec?: C
         await client.query("COMMIT");
         return { status: "applied" as const, summary };
       } catch {
-        await client.query("ROLLBACK");
+        await client.query("ROLLBACK").catch(() => undefined);
         throw new Error("Bank transfer destination unavailable.");
       } finally {
         client.release();

@@ -1,5 +1,7 @@
 "use client";
 
+import { BankTransferValidationError } from "@vayada/product-onboarding/bankTransferDestination";
+
 import {
   saveBankTransferDestination,
   type SavedBankTransferDestination,
@@ -920,8 +922,12 @@ export default function SettingsPage() {
       setPaymentSuccess(message);
       if (showPageFeedback) setFeedback({ type: "success", message });
       return propertyLink.propertyId;
-    } catch {
-      fail(t("settings.billing.errorPaymentSaveFailed"));
+    } catch (error) {
+      fail(
+        error instanceof BankTransferValidationError
+          ? error.message
+          : t("settings.billing.errorPaymentSaveFailed"),
+      );
       return null;
     } finally {
       setSavingPayment(false);
@@ -2061,7 +2067,7 @@ export default function SettingsPage() {
             </div>
           </div>
 
-          {bankDestination?.maskedAccount && (
+          {settings.bank_transfer && bankDestination?.maskedAccount && (
             <p className="text-sm text-gray-600">
               Saved account: {bankDestination.maskedAccount}. Leave bank fields empty to keep it, or
               enter complete replacement details.
@@ -2073,7 +2079,7 @@ export default function SettingsPage() {
               <div>
                 <h2 className="text-sm font-semibold text-gray-900">Direct guest bank transfers</h2>
                 <p className="text-[12px] text-gray-500 mt-0.5">
-                  Guests receive these instructions after submitting a bank-transfer booking.
+                  Guests receive these bank details after submitting a bank-transfer booking.
                 </p>
               </div>
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">

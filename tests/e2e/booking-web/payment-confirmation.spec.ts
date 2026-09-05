@@ -33,6 +33,7 @@ test("fetches protected bank instructions after submission and refresh without s
     booking,
   );
   let calls = 0;
+  let instructionsAvailable = true;
   await page.route(
     `**/api/booking-web/hotels/${SEEDED_BOOKING_SLUG}/bookings/confirmation`,
     async (route) => {
@@ -42,7 +43,10 @@ test("fetches protected bank instructions after submission and refresh without s
         confirmationToken: token,
       });
       await route.fulfill({
-        json: { ...booking, bankTransferDetails: "IBAN: DE89370400440532013000" },
+        json: {
+          ...booking,
+          bankTransferDetails: instructionsAvailable ? "IBAN: DE89370400440532013000" : null,
+        },
       });
     },
   );
@@ -54,6 +58,12 @@ test("fetches protected bank instructions after submission and refresh without s
   await page.reload();
   await expect(page.getByText("IBAN: DE89370400440532013000", { exact: true })).toBeVisible();
   expect(calls).toBe(2);
+  instructionsAvailable = false;
+  await page.reload();
+  await expect(page.getByText("IBAN: DE89370400440532013000", { exact: true })).toHaveCount(0);
+  await expect(
+    page.getByRole("link", { name: "Manage Booking", exact: true }).first(),
+  ).toBeVisible();
   expect(await page.evaluate(() => JSON.stringify(sessionStorage))).not.toContain(
     "DE89370400440532013000",
   );
@@ -65,8 +75,9 @@ test("recovers a completed card payment and survives refresh or a new tab", asyn
 }) => {
   await mockBookingApis(page);
   const telemetry: string[] = [];
-  page.on("request", request => {
-    if (request.url().endsWith("/api/booking-web/events")) telemetry.push(request.postDataJSON().eventType);
+  page.on("request", (request) => {
+    if (request.url().endsWith("/api/booking-web/events"))
+      telemetry.push(request.postDataJSON().eventType);
   });
   let createCalls = 0;
   let idempotencyKey = "";

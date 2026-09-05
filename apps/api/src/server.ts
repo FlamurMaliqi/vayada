@@ -1550,6 +1550,10 @@ const pmsInboxFollowUpReleaseWorker = pmsInboxRuntime
   : undefined;
 
 const stopPostgresTelemetry = postgresRuntime.startTelemetry(app.log);
+app.addHook("onReady", async () => {
+  await bankTransferRepository?.assertConfigured();
+});
+
 app.addHook("onClose", async () => {
   stopPostgresTelemetry();
   await postgresRuntime.close();

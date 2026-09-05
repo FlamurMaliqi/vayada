@@ -24,11 +24,12 @@ $$;
 UPDATE finance.payment_settings
 SET deposit_policy = pg_temp.without_bank_credentials(deposit_policy);
 ALTER TABLE finance.payment_settings ADD CONSTRAINT payment_policy_no_bank_credentials
-  CHECK (NOT deposit_policy ?| ARRAY['bankTransferDetails','bankTransferInstructions','bankName','accountHolder',
-    'accountNumber','bicSwift','iban','swift']);
+  CHECK (NOT jsonb_path_exists(deposit_policy,
+    '$.** ? (@.type() == "object").keyvalue() ? (@.key == "bankTransferDetails" || @.key == "bankTransferInstructions" || @.key == "bankName" || @.key == "accountHolder" || @.key == "accountNumber" || @.key == "bicSwift" || @.key == "iban" || @.key == "swift")')) NOT VALID;
+ALTER TABLE finance.payment_settings VALIDATE CONSTRAINT payment_policy_no_bank_credentials;
 UPDATE booking.guest_bookings
 SET booking_metadata = pg_temp.without_bank_credentials(booking_metadata)
-WHERE booking_metadata->>'paymentMethod'='bank_transfer';
+WHERE COALESCE(booking_metadata->>'paymentMethod', expected_payment_method)='bank_transfer';
 UPDATE platform.idempotency_keys
 SET idempotency_metadata = pg_temp.without_bank_credentials(idempotency_metadata)
 WHERE operation_scope IN ('finance','booking');
@@ -36,12 +37,12 @@ WHERE operation_scope IN ('finance','booking');
 -- Old email bodies contain concatenated account text. Replace the entire body,
 -- preserving delivery IDs and routing, rather than attempting string redaction.
 UPDATE platform.jobs
-SET payload = (payload - 'bankTransferDetails' - 'text') ||
+SET payload = (pg_temp.without_bank_credentials(payload) - 'text') ||
   jsonb_build_object('text', 'Please contact us for updated bank transfer instructions.')
-WHERE queue_name='platform.email' AND payload->'bankTransferDetails' <> 'null'::jsonb;
+WHERE queue_name='platform.email' AND pg_temp.without_bank_credentials(jsonb_strip_nulls(payload)) IS DISTINCT FROM jsonb_strip_nulls(payload);
 ALTER TABLE platform.domain_events DISABLE TRIGGER trg_platform_domain_events_append_only;
 UPDATE platform.domain_events
-SET payload = (payload - 'bankTransferDetails' - 'text') ||
+SET payload = (pg_temp.without_bank_credentials(payload) - 'text') ||
   jsonb_build_object('text', 'Please contact us for updated bank transfer instructions.')
-WHERE source_system='booking' AND payload->'bankTransferDetails' <> 'null'::jsonb;
+WHERE source_system='booking' AND pg_temp.without_bank_credentials(jsonb_strip_nulls(payload)) IS DISTINCT FROM jsonb_strip_nulls(payload);
 ALTER TABLE platform.domain_events ENABLE TRIGGER trg_platform_domain_events_append_only;

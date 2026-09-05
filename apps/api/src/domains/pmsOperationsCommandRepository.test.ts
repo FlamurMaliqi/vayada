@@ -881,6 +881,40 @@ describe("target PMS operations command repository", () => {
     });
   });
 
+  it("returns a specific conflict when the bound bank destination was deleted", async () => {
+    const { client, repository } = createRepository((text) => {
+      if (["BEGIN", "COMMIT", "ROLLBACK"].includes(text)) return ok();
+      if (text.includes("FROM platform.idempotency_keys")) return ok();
+      if (text.includes("INSERT INTO platform.idempotency_keys")) return ok([{ id: "idem" }], 1);
+      if (text.includes("FROM booking.guest_bookings booking") && text.includes("FOR UPDATE"))
+        return ok([
+          {
+            guestBookingId,
+            propertyId,
+            lifecycleStatus: "pending_payment",
+            paymentStatus: "unpaid",
+            paymentMethod: "bank_transfer",
+          },
+        ]);
+      if (text.includes("SELECT binding.destination_id")) return ok();
+      throw new Error(`Unhandled SQL: ${text}`);
+    });
+    await expect(repository.acceptBooking(baseBookingLifecycleCommand())).resolves.toMatchObject({
+      ok: false,
+      statusCode: 409,
+      code: "bank_transfer_unavailable",
+    });
+    expect(requiredCall(client, "SELECT binding.destination_id").text).toContain(
+      "FOR SHARE OF destination",
+    );
+    expect(
+      client.calls.some(
+        ({ text }) =>
+          text.includes("WITH booking_update AS") || text.includes("INSERT INTO platform.jobs"),
+      ),
+    ).toBe(false);
+  });
+
   it("rejects bank acceptance after the canonical pending-payment deadline", async () => {
     const { client, repository } = createRepository((text) => {
       if (text === "BEGIN" || text === "COMMIT" || text === "ROLLBACK") return ok();

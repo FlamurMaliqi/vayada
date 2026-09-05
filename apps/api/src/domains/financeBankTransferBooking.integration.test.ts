@@ -1,3 +1,5 @@
+import { createTargetPmsOperationsCommandRepository } from "./pmsOperationsCommandRepository.js";
+import type { PmsOperationsReadRepository } from "../routes/pmsOperations.js";
 import { randomUUID } from "node:crypto";
 import pg from "pg";
 import { expect, it, vi } from "vitest";
@@ -139,10 +141,59 @@ it.skipIf(!url)(
         'UPDATE booking.guest_bookings SET booking_metadata=booking_metadata||\'{"paymentMethod":"bank_transfer"}\' WHERE id=$1',
         [bookingId],
       );
-      await pool.query(
-        "UPDATE finance.bank_transfer_destinations SET ciphertext=NULL,deleted_at=now() WHERE id=$1",
-        [destinationId],
-      );
+      const deletion = await pool.connect();
+      const acceptancePool = new pg.Pool({ connectionString: url, application_name: bookingId });
+      const acceptance = createTargetPmsOperationsCommandRepository({
+        connectionString: url!,
+        pool: acceptancePool,
+        readRepository: {} as PmsOperationsReadRepository,
+      });
+      let result: ReturnType<typeof acceptance.acceptBooking> | undefined;
+      try {
+        await deletion.query("BEGIN");
+        await deletion.query(
+          "UPDATE finance.bank_transfer_destinations SET ciphertext=NULL,deleted_at=now() WHERE id=$1",
+          [destinationId],
+        );
+        result = acceptance.acceptBooking({
+          propertyId,
+          guestBookingId: bookingId,
+          commandId: randomUUID(),
+          idempotencyKey: randomUUID(),
+          audit: {
+            actor: { kind: "system", service: "apps/api" },
+            requestId: randomUUID(),
+            reason: "Concurrency test",
+            requestedAt: new Date().toISOString(),
+          },
+        });
+        await expect
+          .poll(async () => {
+            const waiting = await pool.query(
+              "SELECT 1 FROM pg_stat_activity WHERE application_name=$1 AND wait_event_type='Lock'",
+              [bookingId],
+            );
+            return waiting.rows.length;
+          })
+          .toBe(1);
+        await deletion.query("COMMIT");
+        await expect(result).resolves.toMatchObject({
+          ok: false,
+          code: "bank_transfer_unavailable",
+        });
+        expect(
+          (
+            await pool.query("SELECT lifecycle_status FROM booking.guest_bookings WHERE id=$1", [
+              bookingId,
+            ])
+          ).rows[0]?.lifecycle_status,
+        ).toBe("pending_payment");
+      } finally {
+        await deletion.query("ROLLBACK").catch(() => undefined);
+        deletion.release();
+        await result?.catch(() => undefined);
+        await acceptancePool.end();
+      }
       expect(await operations.confirmation({ propertyId, bookingId, tokenHash })).toBeNull();
     } finally {
       await operations.close();
