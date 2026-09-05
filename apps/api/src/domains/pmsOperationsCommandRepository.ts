@@ -8,10 +8,7 @@ import {
   type PmsRoomTypeRetirementImpact,
 } from "@vayada/domain-pms";
 
-import {
-  bankTransferDetailsFromPolicy,
-  enqueueBookingTransitionNotifications,
-} from "../jobs/bookingEmails.js";
+import { enqueueBookingTransitionNotifications } from "../jobs/bookingEmails.js";
 import type {
   StripeBookingPaymentIntent,
   StripeBookingPaymentProvider,
@@ -224,11 +221,17 @@ type BookingPaymentLifecycleRow = QueryResultRow & {
   chargeType: string | null;
 };
 type PmsOperationalTemplateOperation =
-  "checkin_checklist_template_update" | "checkout_inspection_template_update";
+  | "checkin_checklist_template_update"
+  | "checkout_inspection_template_update";
 type PmsCheckoutChargeOperation =
-  "checkout_charge_create" | "checkout_charge_mark_paid" | "checkout_charge_waive";
+  | "checkout_charge_create"
+  | "checkout_charge_mark_paid"
+  | "checkout_charge_waive";
 type PmsRoomTypeCommandOperation =
-  "room_type_create" | "room_type_location_update" | "room_type_duplicate" | "room_type_retire";
+  | "room_type_create"
+  | "room_type_location_update"
+  | "room_type_duplicate"
+  | "room_type_retire";
 type PmsRoomTypeCommand =
   | PmsRoomTypeCreateCommand
   | PmsRoomTypeUpdateCommand
@@ -252,7 +255,9 @@ type PmsLegacyRatePlanRow = {
   active: boolean;
 };
 type PmsRoomBlockCommand =
-  PmsRoomBlockCreateCommand | PmsRoomBlockUpdateCommand | PmsRoomBlockReleaseCommand;
+  | PmsRoomBlockCreateCommand
+  | PmsRoomBlockUpdateCommand
+  | PmsRoomBlockReleaseCommand;
 type PmsRoomBlockOperation = "room_block_create" | "room_block_update" | "room_block_release";
 
 type PmsRoomBlockRow = {
@@ -5937,7 +5942,9 @@ async function insertPrivateNoteAuditEvent(
     action: "pms.private_note.created" | "pms.private_note.edited" | "pms.private_note.deleted";
     auditKey: string;
     command:
-      PmsPrivateNoteCreateCommand | PmsPrivateNoteUpdateCommand | PmsPrivateNoteDeleteCommand;
+      | PmsPrivateNoteCreateCommand
+      | PmsPrivateNoteUpdateCommand
+      | PmsPrivateNoteDeleteCommand;
     keyHash: string;
     noteId: string;
     occurredAt: string;
@@ -6306,12 +6313,16 @@ async function applyBookingAcceptanceCommandMutation(
   ) {
     return invalidStatusTransition(booking.lifecycleStatus, "confirmed");
   }
-  const bankTransferDetails = bankTransferDetailsFromPolicy({
-    bankTransferInstructions: jsonObject(booking.paymentInstructions)["bankTransferDetails"],
-  });
-  if (!bankTransferDetails) {
+  const destination = await client.query(
+    `SELECT binding.destination_id
+    FROM finance.bank_transfer_bookings binding
+    JOIN finance.bank_transfer_destinations destination ON destination.id=binding.destination_id
+      AND destination.property_id=binding.property_id
+    WHERE binding.guest_booking_id=$1::uuid AND binding.property_id=$2::uuid AND destination.deleted_at IS NULL`,
+    [command.guestBookingId, command.propertyId],
+  );
+  if (!destination.rows.length)
     return invalidStatusTransition("bank_transfer_unavailable", "confirmed");
-  }
   const paymentDeadlineAt = new Date(Date.parse(acceptedAt) + 24 * 60 * 60 * 1000).toISOString();
 
   const updated = await client.query(
@@ -6382,7 +6393,6 @@ async function applyBookingAcceptanceCommandMutation(
         : { type: "system" },
     source: "apps/api-pms-booking-acceptance",
     paymentDeadlineAt,
-    bankTransferDetails,
     transition: {
       eventType: "guest_booking.accepted",
       fromStatus: "pending_payment",
