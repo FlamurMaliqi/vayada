@@ -94,8 +94,20 @@ Existing linked bookings retain their booking reference and no inquiry context.
 Only normalized fields are stored, never the source payload. These fields use
 the existing target schema and normal provenance/reconciliation guards; a
 previous import can require review rather than being silently overwritten.
-Other inquiry forms remain a separate release gate. This is not approval to
-overwrite existing target history or to apply a production migration.
+Flat legacy payloads with explicit `provider_inquiry_id`, `inquiry_id`,
+`meta.live_feed_event_id`, nonempty nested `inquiry`, or inquiry-type markers use
+the same normalization after verification. Empty metadata is not inquiry evidence.
+Require one consistent supplied inquiry identity and a supplied property UUID
+matching the thread's canonical Channex binding; missing identity is not replaced
+by a thread ID. All supplied message/thread/property/channel identities must agree.
+Supported string senders retain guest, channel or property-user classification;
+verified system inquiries use the approved inbound/read rule above. Non-system
+direction must already agree with its sender. Raw booking references, unsupported
+senders and conflicting metadata block instead of being guessed or discarded.
+This covers retained flat webhook/polling evidence, not arbitrary envelopes or
+metadata recoverable only by a provider fetch. Those forms and actual-source
+coverage remain rehearsal gates. This is not approval to overwrite existing
+target history or to apply a production migration.
 
 Before a production apply or guest Inbox acceptance, record evidence for:
 
