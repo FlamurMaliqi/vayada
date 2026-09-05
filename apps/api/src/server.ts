@@ -1,3 +1,4 @@
+import { createPmsConfirmationEmails } from "./domains/pmsConfirmationEmails.js";
 import {
   createPgIdentityRepository,
   createPgStaffInvitationAcceptanceRepository,
@@ -1208,6 +1209,10 @@ const app = buildApp({
   bookingPromoCodesRepository,
   bookingDashboardMetricsReadPort,
   bookingPropertyAccessRepository,
+  pmsConfirmationEmails:
+    pmsOperationsRepository && config.bookingEmailDelivery
+      ? createPmsConfirmationEmails(targetDatabaseUrl)
+      : undefined,
   pmsOperationsRepository,
   ...(pmsInboxRuntime?.routes ?? {}),
   pmsChannexManagement: pmsChannexManagementRepository
