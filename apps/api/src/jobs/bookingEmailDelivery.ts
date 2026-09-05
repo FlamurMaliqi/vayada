@@ -175,17 +175,21 @@ async function finishBookingEmailJob(
      )
      INSERT INTO platform.product_audit_events (
        audit_key, product, action, action_version, occurred_at,
-       tenant_scope, property_id, actor_type,
+       tenant_scope, property_id, actor_type, actor_user_id,
        target_resource_product, target_resource_type, target_resource_id,
        job_id, correlation_id, redacted_payload, private_payload,
        audit_metadata, retention_class, privacy_scope
      )
      SELECT
-       $4, 'booking', 'booking.notification.delivery_succeeded', 1, now(),
-       job.tenant_scope, job.property_id, 'system',
+       $4, 'booking', CASE WHEN job.payload ? 'resentByUserId'
+         THEN 'booking.confirmation.resent' ELSE 'booking.notification.delivery_succeeded' END, 1, now(),
+       job.tenant_scope, job.property_id,
+       CASE WHEN job.payload ? 'resentByUserId' THEN 'user' ELSE 'system' END,
+       (job.payload ->> 'resentByUserId')::uuid,
        job.resource_product, job.resource_type, job.resource_id,
        job.id, job.correlation_id,
-       jsonb_build_object('outcome', 'succeeded', 'attemptNumber', $2::integer),
+       jsonb_build_object('outcome', 'succeeded', 'attemptNumber', $2::integer,
+         'description', CASE WHEN job.payload ? 'resentByUserId' THEN 'Confirmation email resent by staff' END),
        '{}'::jsonb,
        jsonb_build_object('jobType', job.job_type, 'queueName', job.queue_name),
        'guest_pii', 'confidential'
