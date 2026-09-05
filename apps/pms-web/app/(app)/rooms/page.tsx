@@ -118,9 +118,6 @@ function formatRateRange(min: number, max: number, currency: string): string {
   return `${formatCurrency(min, currency)}–${formatCurrency(max, currency).replace(/^[^0-9]+/, "")}`;
 }
 
-const ROOM_UNIT_COMMANDS_UNSUPPORTED_MESSAGE =
-  "Individual room create, edit, and delete are not available on PMS next-stack yet.";
-
 function RoomTypeCard({
   room,
   rooms,
@@ -177,7 +174,7 @@ function RoomTypeCard({
     if (!confirmDelete) return;
     setConfirmDelete(null);
     try {
-      await individualRoomsService.delete(confirmDelete);
+      await individualRoomsService.delete(rooms.find((room) => room.id === confirmDelete)!);
       onRoomsChange();
     } catch (err: any) {
       alert(err.message || t("rooms.cannotDeleteRoom"));
@@ -201,7 +198,9 @@ function RoomTypeCard({
       return;
     }
     try {
-      await individualRoomsService.update(roomId, { roomNumber: trimmed });
+      await individualRoomsService.update(rooms.find((room) => room.id === roomId)!, {
+        roomNumber: trimmed,
+      });
       cancelRenameRoom();
       onRoomsChange();
     } catch (err: any) {
@@ -211,10 +210,10 @@ function RoomTypeCard({
 
   const handleStatusChange = async (roomId: string, status: string) => {
     try {
-      await individualRoomsService.update(roomId, { status });
+      await individualRoomsService.update(rooms.find((room) => room.id === roomId)!, { status });
       onRoomsChange();
-    } catch {
-      // ignore
+    } catch (error) {
+      alert(error instanceof Error ? error.message : "Room status could not be changed.");
     }
   };
 
@@ -454,8 +453,7 @@ function RoomTypeCard({
                       <select
                         value={r.status}
                         onChange={(e) => handleStatusChange(r.id, e.target.value)}
-                        disabled
-                        title={ROOM_UNIT_COMMANDS_UNSUPPORTED_MESSAGE}
+                        aria-label={t("rooms.statusLabel")}
                         className={`text-[11px] font-medium px-2.5 py-1 rounded-full border appearance-none cursor-pointer mr-2 disabled:cursor-not-allowed ${statusStyles[r.status] || statusStyles.available}`}
                       >
                         <option value="available">{t("rooms.statusAvailable")}</option>
@@ -464,17 +462,15 @@ function RoomTypeCard({
                       </select>
                       <button
                         onClick={() => startRenameRoom(r.id, r.roomNumber)}
-                        disabled
                         className="p-1 text-gray-300 hover:text-primary-500 transition-colors disabled:cursor-not-allowed"
-                        title={ROOM_UNIT_COMMANDS_UNSUPPORTED_MESSAGE}
+                        aria-label={t("rooms.renameRoom")}
                       >
                         <PencilIcon className="w-3.5 h-3.5" />
                       </button>
                       <button
                         onClick={() => handleDeleteRoom(r.id)}
-                        disabled
                         className="p-1 text-gray-300 hover:text-red-500 transition-colors disabled:cursor-not-allowed"
-                        title={ROOM_UNIT_COMMANDS_UNSUPPORTED_MESSAGE}
+                        aria-label={t("rooms.deleteRoom")}
                       >
                         <svg
                           className="w-3.5 h-3.5"
@@ -539,8 +535,6 @@ function RoomTypeCard({
           ) : (
             <button
               onClick={() => setAddingRoom(true)}
-              disabled
-              title={ROOM_UNIT_COMMANDS_UNSUPPORTED_MESSAGE}
               className="mt-2 ml-5 inline-flex items-center gap-1.5 text-[11px] text-gray-500 font-medium hover:text-primary-600 transition-colors disabled:cursor-not-allowed disabled:opacity-50"
             >
               <PlusIcon className="w-3.5 h-3.5" /> {t("rooms.addRoom")}
@@ -593,7 +587,7 @@ export default function RoomsPage() {
   }, []);
 
   const refreshRooms = () => {
-    individualRoomsService.list().then(setIndividualRooms).catch(console.error);
+    loadData();
   };
 
   const handleDuplicate = async (id: string) => {

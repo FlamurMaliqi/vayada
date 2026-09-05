@@ -291,7 +291,7 @@ export function createTargetPmsOperationsReadRepository(config: {
            room.floor,
            room.status,
            room.sort_order AS "sortOrder",
-           room.room_metadata AS "metadata"
+           room.room_metadata || jsonb_build_object('roomUnitsRevision', room_type.room_units_revision) AS "metadata"
          FROM pms.rooms room
          JOIN pms.room_types room_type
            ON room_type.id = room.room_type_id

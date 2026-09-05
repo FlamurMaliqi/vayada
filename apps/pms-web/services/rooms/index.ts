@@ -177,6 +177,7 @@ export type RoomTypeUpdate = Partial<RoomTypeCreate> & {
 };
 
 export interface Room {
+  roomUnitsRevision?: number;
   id: string;
   hotelId: string;
   roomTypeId: string;
@@ -409,6 +410,7 @@ function toRoom(
     hotelId: response.propertyId,
     roomTypeId: room.roomTypeId,
     roomTypeName: asString(room.metadata.roomTypeName),
+    roomUnitsRevision: asNumber(room.metadata.roomUnitsRevision),
     roomNumber: room.roomNumber,
     floor: room.floor ?? "",
     status: room.status === "retired" ? "out_of_order" : room.status,
@@ -552,13 +554,74 @@ export const individualRoomsService = {
       .map((room) => toRoom(response, room));
   },
 
-  create: (_data: RoomCreate) => unsupportedPmsNextStackFeature<Room>("Room creation"),
-
-  update: (_id: string, _data: Partial<RoomCreate>) =>
-    unsupportedPmsNextStackFeature<Room>("Room updates"),
-
-  delete: (_id: string) => unsupportedPmsNextStackFeature<void>("Room deletion"),
+  create: (data: RoomCreate) => manageIndividualRoom("create", data.roomTypeId, data),
+  update: (room: Room, data: Partial<RoomCreate>) =>
+    manageIndividualRoom("update", room.roomTypeId, data, room),
+  delete: (room: Room) => manageIndividualRoom("retire", room.roomTypeId, {}, room),
 };
+
+const pendingIndividualRooms = new Map<string, { key: string; expectedRevision: number }>();
+
+async function manageIndividualRoom(
+  action: "create" | "update" | "retire",
+  roomTypeId: string,
+  data: Partial<RoomCreate>,
+  room?: Room,
+): Promise<void> {
+  assertPmsOperationsReadModelEnabled();
+  const propertyId = await resolveSelectedPmsPropertyId("managing a physical room");
+  if (room && room.hotelId !== propertyId)
+    throw new Error("The selected property changed. Reload the rooms.");
+  const changes = {
+    ...(data.roomNumber !== undefined ? { operationalLabel: data.roomNumber.trim() } : {}),
+    ...(data.floor !== undefined ? { floor: data.floor.trim() || null } : {}),
+    ...(data.status !== undefined ? { status: data.status } : {}),
+  };
+  const fingerprint = JSON.stringify([
+    propertyId,
+    roomTypeId,
+    room?.id,
+    room?.roomUnitsRevision,
+    action,
+    changes,
+  ]);
+  let pending = pendingIndividualRooms.get(fingerprint);
+  if (!pending) {
+    let expectedRevision = room?.roomUnitsRevision;
+    if (action === "create") {
+      const capacity = parseRoomTypeCapacitySnapshot(
+        await pmsOperationsClient.get<unknown>(
+          `/api/pms/setup/properties/${encodeURIComponent(propertyId)}/room-types/${encodeURIComponent(roomTypeId)}/capacity`,
+          { ...pmsOperationsRequestOptions, cache: "no-store" },
+        ),
+      );
+      if (!capacity || capacity.propertyId !== propertyId || capacity.roomTypeId !== roomTypeId)
+        throw new Error("Room capacity is unavailable. Reload and try again.");
+      expectedRevision = capacity.roomUnitsRevision;
+    }
+    if (!expectedRevision || !Number.isSafeInteger(expectedRevision))
+      throw new Error("Room information is out of date. Reload and try again.");
+    pending = { key: randomCommandId("pms-physical-room"), expectedRevision };
+    pendingIndividualRooms.set(fingerprint, pending);
+  }
+  const path = `/api/pms/properties/${encodeURIComponent(propertyId)}/room-types/${encodeURIComponent(roomTypeId)}/physical-units${room ? `/${encodeURIComponent(room.id)}` : ""}`;
+  const body = {
+    expectedRevision: pending.expectedRevision,
+    ...(action !== "retire" ? { changes } : {}),
+  };
+  const options = canonicalPricingOptions(pending.key);
+  try {
+    if (action === "create") await pmsOperationsClient.post(path, body, options);
+    else if (action === "update") await pmsOperationsClient.put(path, body, options);
+    else await pmsOperationsClient.delete(path, { ...options, body: JSON.stringify(body) });
+    pendingIndividualRooms.delete(fingerprint);
+  } catch (error) {
+    // Definitive rejection permits a refreshed command. Transport ambiguity must replay.
+    if (error instanceof ApiErrorResponse && error.status >= 400 && error.status < 500)
+      pendingIndividualRooms.delete(fingerprint);
+    throw error;
+  }
+}
 
 export const benefitsService = {
   get: () => unsupportedPmsNextStackFeature<{ benefits: string[] }>("Room benefits"),

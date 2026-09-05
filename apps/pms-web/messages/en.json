@@ -771,6 +771,7 @@
   "rooms.roomNumberPlaceholder": "Room number (e.g. 101)",
   "rooms.floorPlaceholder": "Floor (opt)",
   "rooms.deleteRoom": "Delete room",
+  "rooms.statusLabel": "Room status",
   "rooms.renameRoom": "Rename room",
   "rooms.saveRename": "Save",
   "rooms.cancelRename": "Cancel",
