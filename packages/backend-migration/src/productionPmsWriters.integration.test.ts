@@ -139,6 +139,7 @@ describe.skipIf(!URL)("production PMS writers (PostgreSQL)", () => {
       Object.assign(inquiryThread.data, {
         channel: "airbnb",
         booking_id: null,
+        source_booking_id: null,
         status: "closed",
         unread_count: 0,
         last_message_preview: "inquiry",
@@ -152,7 +153,13 @@ describe.skipIf(!URL)("production PMS writers (PostgreSQL)", () => {
           message: "inquiry",
           meta: {
             live_feed_event_id: "historical-inquiry",
-            booking_details: { property_id: EXTERNAL_PROPERTY },
+            booking_details: {
+              property_id: EXTERNAL_PROPERTY,
+              arrival_date: "2026-09-01",
+              departure_date: "2026-09-03",
+              adults: 2,
+              children: 0,
+            },
           },
         },
       });
@@ -271,7 +278,10 @@ describe.skipIf(!URL)("production PMS writers (PostgreSQL)", () => {
 
       const inquiry = await client.query(
         `SELECT thread.attention_state, thread.unread_count, thread.last_message_direction,
-                thread.guest_booking_id, message.direction, message.sender_type, message.read_at
+                thread.guest_booking_id, message.direction, message.sender_type, message.read_at,
+                thread.conversation_context_state, thread.source_booking_id,
+                thread.inquiry_arrival_date::text, thread.inquiry_departure_date::text,
+                thread.inquiry_adults, thread.inquiry_children
            FROM pms.message_threads thread JOIN pms.messages message ON message.thread_id = thread.id
           WHERE thread.id = $1`,
         [inquiryThread.data["id"]],
@@ -282,6 +292,12 @@ describe.skipIf(!URL)("production PMS writers (PostgreSQL)", () => {
           unread_count: 1,
           last_message_direction: "inbound",
           guest_booking_id: null,
+          conversation_context_state: "inquiry",
+          source_booking_id: "historical-inquiry",
+          inquiry_arrival_date: "2026-09-01",
+          inquiry_departure_date: "2026-09-03",
+          inquiry_adults: 2,
+          inquiry_children: 0,
           direction: "inbound",
           sender_type: "system",
           read_at: null,

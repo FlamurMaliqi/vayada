@@ -73,6 +73,10 @@ function thread(context: PmsBuildContext, source: IdentitySourceRow): PmsTargetR
             ? "legacy_closed"
             : null,
       conversationContextState: bookingId ? "linked" : "unlinked",
+      inquiryArrivalDate: null,
+      inquiryDepartureDate: null,
+      inquiryAdults: null,
+      inquiryChildren: null,
       lastMessageAt: optionalIso(data["last_message_at"], "last_message_at"),
       lastMessagePreview:
         typeof data["last_message_preview"] === "string"

@@ -5,6 +5,46 @@ import { reconcileProductionPmsRecords } from "./productionPmsPlan.js";
 import type { PmsBuildContext, PmsTargetRecord } from "./productionPmsTypes.js";
 
 describe("production PMS reconciliation", () => {
+  it.each([false, true])("does not overwrite prior inquiry context (newer target: %s)", (newer) => {
+    const candidate = record(true, {
+      targetTable: "message_threads",
+      row: {
+        id: "target",
+        conversationContextState: "inquiry",
+        sourceBookingId: "inquiry-ext",
+        inquiryArrivalDate: "2026-09-01",
+        inquiryDepartureDate: "2026-09-03",
+        inquiryAdults: 2,
+        inquiryChildren: 0,
+      },
+    });
+    const context = buildContext({
+      records: [
+        {
+          ...existing(candidate, newer ? "2026-09-02T00:00:00Z" : "2026-09-01T00:00:00Z"),
+          row: {
+            ...candidate.row,
+            conversationContextState: "unlinked",
+            sourceBookingId: null,
+            inquiryArrivalDate: null,
+            inquiryDepartureDate: null,
+            inquiryAdults: null,
+            inquiryChildren: null,
+          },
+        },
+      ],
+      provenance: [link(candidate, "2026-09-01T00:00:00Z")],
+    });
+    const plan = reconcileProductionPmsRecords(context, [candidate]);
+    expect(plan.writes).toEqual([]);
+    expect(plan.provenance).toEqual([]);
+    if (newer) expect(plan.counts.preservedNewerTarget).toBe(1);
+    else
+      expect(plan.blockers).toContainEqual(
+        expect.objectContaining({ code: "TARGET_PROVENANCE_MISMATCH" }),
+      );
+  });
+
   it.each(["messages", "external_webhook_events"])(
     "does not accept residual private payloads in existing %s rows",
     (targetTable) => {

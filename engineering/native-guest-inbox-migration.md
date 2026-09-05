@@ -75,9 +75,19 @@ The first slice handles the legacy flat message-attributes shape with sender
 `system`, message `inquiry`, a `meta.live_feed_event_id` and same-property
 `meta.booking_details`. Verify retained provider identities and the canonical
 Channex property binding; incomplete/conflicting evidence blocks for review.
-Other inquiry forms and normalized inquiry context/dates/occupancy remain a
-separate release gate. This is not approval to overwrite existing target history
-or to apply a production migration.
+For that verified profile, an unlinked thread becomes `inquiry`, retaining the
+provider inquiry ID in `source_booking_id` (the target inquiry reference field).
+Preserve supplied stay dates and adult/child counts using the target intake's
+field aliases. Missing details remain null; dates must be a real, ordered pair
+and counts must be numeric integers from 0 through 100. Conflicting aliases,
+inquiry IDs, existing unlinked source references or repeated inquiry details
+block for reconciliation rather than choosing a value by extraction order.
+Existing linked bookings retain their booking reference and no inquiry context.
+Only normalized fields are stored, never the source payload. These fields use
+the existing target schema and normal provenance/reconciliation guards; a
+previous import can require review rather than being silently overwritten.
+Other inquiry forms remain a separate release gate. This is not approval to
+overwrite existing target history or to apply a production migration.
 
 Before a production apply or guest Inbox acceptance, record evidence for:
 
