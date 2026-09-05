@@ -107,6 +107,16 @@ a 15-minute retry cooldown. An explicit host refresh is limited to once per
 hour per property. Enforce project quotas and request rate limits before launch;
 a billing budget notification alone is not a spending cap.
 
+Implementation refinement: refresh is request-bound (four concurrent calls,
+each limited to 5s), protected by a persisted PostgreSQL lease. The initiating
+POST awaits completion and returns 200 for ready/empty, while an existing lease
+returns 202. This avoids detached work or a new worker deployment. Store only
+place IDs and category buckets; coordinates from discovery remain transient.
+Map destinations obtain current coordinates from UI Kit when rendered. ID
+snapshots expire for display/selection after 24h; no Google coordinate cleanup
+or backup-retention assumption is needed. Missing Google configuration returns
+unavailable before claiming a lease or making a request.
+
 ## Ownership, authorization and revisions
 
 `hotel_catalog` owns nearby choices and discovery references. Shared DTOs belong
