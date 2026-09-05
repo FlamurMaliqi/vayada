@@ -342,6 +342,27 @@ function reconcile(
   prior: ProductionMigrationSourceLink | undefined,
   context: PmsBuildContext,
 ): Action {
+  const requiresEmptyPayload =
+    candidate.targetTable === "messages" ||
+    (candidate.targetTable === "external_webhook_events" &&
+      candidate.row["eventType"] === "message");
+  if (current && requiresEmptyPayload) {
+    const payload = current.row["rawPayload"];
+    if (
+      !payload ||
+      typeof payload !== "object" ||
+      Array.isArray(payload) ||
+      Object.keys(payload).length
+    ) {
+      blocker(
+        context,
+        "TARGET_MESSAGE_PAYLOAD_REQUIRES_REVIEW",
+        candidate,
+        "Existing target message payload is not empty; review privacy cleanup before migration",
+      );
+      return "block";
+    }
+  }
   if (prior) {
     if (!current) return "preserve_deletion";
     if (prior.sourceChecksum === candidate.sourceChecksum) {

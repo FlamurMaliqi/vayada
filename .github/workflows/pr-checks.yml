@@ -206,6 +206,7 @@ jobs:
           src/productionMediaMigration.integration.test.ts
           src/productionCatalogWriters.integration.test.ts
           src/productionBookingWriters.integration.test.ts
+          src/productionPmsWriters.integration.test.ts
           src/productionCutover.integration.test.ts
         env:
           TEST_DATABASE_URL: postgresql://vayada_test:vayada_test@localhost:5432/vayada_api_test
