@@ -248,6 +248,80 @@ describe.skipIf(!url)("physical-room management PostgreSQL", () => {
       ).rows[0],
     ).toEqual({ total_count: 1, available_count: 1 });
   });
+  it.each([
+    [-2, -1, true],
+    [1, 2, false],
+  ] as const)(
+    "historical versus future handed-off receipt (%i, %i)",
+    async (arrival, departure, canRetire) => {
+      expect(await repository.managePhysicalRoom(command(1))).toMatchObject({ ok: true });
+      const ids = await seedCalendar();
+      const spare = await repository.managePhysicalRoom({
+        ...command(2),
+        action: "create",
+        changes: { operationalLabel: "102" },
+      });
+      if (!spare.ok) throw new Error(JSON.stringify(spare));
+      const receiptId = randomUUID();
+      await admin.query("BEGIN");
+      await admin.query(
+        `INSERT INTO pms.inventory_reservation_receipts
+      (receipt_id,contract_version,receipt_owner,organization_id,property_id,room_type_id,check_in,check_out,room_count,quote_session_id,public_offer_key,
+       calendar_revision,materialized_revision,reserve_fingerprint_hash,reserve_idempotency_key_id,reserve_domain_event_id,reserve_outbox_event_id,reserved_at)
+      VALUES($1::uuid,'pms-inventory-reservation-lifecycle.v1','pms',$2,$3,$4,CURRENT_DATE+$5::int,CURRENT_DATE+$6::int,1,$1::uuid::text,$1::uuid::text,1,1,
+       'sha256:'||repeat('a',64),$7,$8,$9,now())`,
+        [
+          receiptId,
+          organizationId,
+          propertyId,
+          roomTypeId,
+          arrival,
+          departure,
+          ids.key,
+          ids.event,
+          ids.outbox,
+        ],
+      );
+      await admin.query(
+        `INSERT INTO pms.inventory_reservation_statuses(receipt_id,organization_id,property_id,lifecycle_state,lifecycle_revision)
+      VALUES($1,$2,$3,'reserved',1)`,
+        [receiptId, organizationId, propertyId],
+      );
+      await admin.query(
+        `UPDATE pms.inventory_reservation_statuses SET lifecycle_state='handed_off',lifecycle_revision=2,handed_off_at=now() WHERE receipt_id=$1`,
+        [receiptId],
+      );
+      await admin.query(
+        `INSERT INTO pms.inventory_days(property_id,room_type_id,stay_date,total_count,assigned_count,available_count)
+      VALUES($1,$2,CURRENT_DATE+$3::int,1,1,0)`,
+        [propertyId, roomTypeId, arrival],
+      );
+      await admin.query(
+        `INSERT INTO pms.inventory_reservation_day_watermarks
+      (receipt_id,organization_id,property_id,room_type_id,stay_date,calendar_revision,inventory_revision,generated_source_revision,
+       channel_source_revision,manual_source_revision,block_source_revision,booking_source_revision)
+      VALUES($1,$2,$3,$4,CURRENT_DATE+$5::int,1,1,1,0,0,0,1)`,
+        [receiptId, organizationId, propertyId, roomTypeId, arrival],
+      );
+      await admin.query("COMMIT");
+      const result = await repository.managePhysicalRoom({
+        ...command(3),
+        action: "retire",
+        roomUnitId: spare.response.roomUnitId,
+      });
+      expect(result.ok).toBe(canRetire);
+      if (!canRetire)
+        expect(result).toMatchObject({ ok: false, error: { code: "physical_room_protected" } });
+      expect(
+        (
+          await admin.query(
+            "SELECT lifecycle_state FROM pms.inventory_reservation_statuses WHERE receipt_id=$1",
+            [receiptId],
+          )
+        ).rows[0].lifecycle_state,
+      ).toBe("handed_off");
+    },
+  );
   async function seedCalendar() {
     const ids = (
       await admin.query(
