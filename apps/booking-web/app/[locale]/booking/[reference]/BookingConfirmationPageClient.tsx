@@ -17,7 +17,6 @@ import {
   type BookingCreateRequest,
   type BookingQuote,
 } from "@/services/api/booking";
-import { trackEvent } from "@/services/api/tracking";
 import { ApiError } from "@/services/api/client";
 import {
   clearPendingBookingCreate,
@@ -127,7 +126,6 @@ export default function BookingConfirmationPageClient({
   // challenge, replay the original create command: the backend checks the same
   // PaymentIntent and materializes the booking without charging again.
   useEffect(() => {
-    trackEvent(slug, "completed_booking");
     setHydrateError(false);
     const stored = readLastBooking();
     if (stored && stored.bookingReference === reference) {

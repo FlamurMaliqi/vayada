@@ -61,9 +61,6 @@ function BookPageContent() {
   const searchParams = useSearchParams();
   const roomId = searchParams.get("room") || "";
 
-  useEffect(() => {
-    trackEvent(slug, "started_booking");
-  }, [slug]);
 
   // Defensively coerce a same-day or invalid URL range to a valid one-night
   // window before anything downstream computes nights / pricing.
@@ -271,6 +268,7 @@ function BookPageContent() {
         rateType,
       });
       if (promoCodeParam) params.set("promoCode", promoCodeParam);
+      trackEvent(slug, "details_completed");
       router.push(`/payment?${params.toString()}`);
     } catch (err: any) {
       setSubmitError(err.message || "Something went wrong");

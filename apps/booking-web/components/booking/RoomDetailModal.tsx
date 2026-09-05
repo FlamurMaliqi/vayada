@@ -120,15 +120,22 @@ export default function RoomDetailModal({
   useEffect(() => {
     if (!open) return;
     let closedByPop = false;
-    window.history.pushState({ vayRoomModal: true }, "");
+    // Defer the history entry so React Strict Mode can replay setup without navigating back.
+    let pushed = false;
+    const pushTimer = window.setTimeout(() => {
+      window.history.pushState({ ...window.history.state, vayRoomModal: true }, "");
+      pushed = true;
+    }, 0);
     const onPop = () => {
       closedByPop = true;
       onClose();
     };
     window.addEventListener("popstate", onPop);
     return () => {
+      window.clearTimeout(pushTimer);
       window.removeEventListener("popstate", onPop);
       if (
+        pushed &&
         !navigatingAwayRef.current &&
         !closedByPop &&
         typeof window !== "undefined" &&

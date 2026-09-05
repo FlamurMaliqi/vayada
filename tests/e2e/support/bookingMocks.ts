@@ -425,6 +425,11 @@ export async function mockBookingApis(page: Page, options: MockBookingApisOption
     await route.fulfill({ json: rooms });
   });
 
+  await page.route(`**/api/booking-web/hotels/${SEEDED_BOOKING_SLUG}/checkout-config`, async (route) => {
+    await route.fulfill({ json: { addons, showAddonsStep: true, payAtPropertyEnabled: true,
+      onlineCardPayment: false, freeCancellationDays: 7, phoneRequired: true } });
+  });
+
   await page.route(`**/api/hotels/${SEEDED_BOOKING_SLUG}/addons`, async (route) => {
     await route.fulfill({ json: addons });
   });
