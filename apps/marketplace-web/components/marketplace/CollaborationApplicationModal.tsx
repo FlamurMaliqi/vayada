@@ -35,6 +35,7 @@ interface CollaborationApplicationModalProps {
   compensationOptions?: CollaborationOffering[];
   creatorPlatforms?: string[];
   isCovered?: boolean;
+  initialData?: CollaborationApplicationData;
 }
 
 export interface CollaborationApplicationData {
@@ -100,17 +101,20 @@ export function CollaborationApplicationModal({
   compensationOptions = [],
   creatorPlatforms = [],
   isCovered = false,
+  initialData,
 }: CollaborationApplicationModalProps) {
   const defaultCompensationOptionId =
     compensationOptions.length === 1 ? compensationOptions[0]?.id || "" : "";
   const [selectedCompensationOptionId, setSelectedCompensationOptionId] = useState(
-    defaultCompensationOptionId,
+    initialData?.compensationOptionId ?? defaultCompensationOptionId,
   );
-  const [whyGreatFit, setWhyGreatFit] = useState("");
-  const [travelDateFrom, setTravelDateFrom] = useState("");
-  const [travelDateTo, setTravelDateTo] = useState("");
-  const [preferredMonths, setPreferredMonths] = useState<string[]>([]);
-  const [consent, setConsent] = useState(false);
+  const [whyGreatFit, setWhyGreatFit] = useState(initialData?.whyGreatFit ?? "");
+  const [travelDateFrom, setTravelDateFrom] = useState(initialData?.travelDateFrom ?? "");
+  const [travelDateTo, setTravelDateTo] = useState(initialData?.travelDateTo ?? "");
+  const [preferredMonths, setPreferredMonths] = useState<string[]>(
+    initialData?.preferredMonths ?? [],
+  );
+  const [consent, setConsent] = useState(initialData?.consent ?? false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const submissionRef = useRef<SubmissionIdempotencyState | null>(null);
@@ -127,7 +131,7 @@ export function CollaborationApplicationModal({
     isPlatformSelected,
     getPlatformDeliverables,
     resetDeliverables,
-  } = usePlatformDeliverables();
+  } = usePlatformDeliverables(initialData?.platformDeliverables);
 
   const resetForm = () => {
     setWhyGreatFit("");
@@ -329,7 +333,7 @@ export function CollaborationApplicationModal({
         {/* Modal Header */}
         <div className="sticky top-0 bg-white border-b border-gray-200 px-6 py-4 flex items-center justify-between z-10">
           <h3 id="collaboration-application-title" className="text-2xl font-bold text-gray-900">
-            Apply for Collaboration
+            {initialData ? "Edit Request" : "Apply for Collaboration"}
           </h3>
           <button
             type="button"
@@ -520,7 +524,7 @@ export function CollaborationApplicationModal({
                 !consent
               }
             >
-              Submit Application
+              {initialData ? "Save Changes" : "Submit Application"}
             </Button>
           </div>
         </div>

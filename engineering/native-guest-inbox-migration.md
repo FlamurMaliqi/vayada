@@ -1,0 +1,57 @@
+# Native Guest Inbox migration and launch gates
+
+Status: VAY-1381 is in progress. This is not authorization to apply a production
+migration, switch callbacks, disable the existing intake, or send guest messages.
+The [Inbox contract](native-guest-inbox-contract.md) remains normative.
+
+## Historical message evidence
+
+The existing PMS migration imports typed thread/message/attachment history.
+Historical Channex `message` webhook receipts are non-replayable evidence:
+
+- Keep source identity, payload hash, timestamp, migration provenance and verified
+  property ownership; do not copy raw message JSON, headers or free-form errors.
+- Set the deterministic receipt retention deadline to receipt time plus 30 days,
+  as required by migration 0150. The imported payload is already empty. The
+  existing expiry function may later record its purge without breaking reruns.
+- Missing, ambiguous or unmappable receipt ownership produces a failed,
+  non-content migration-scoped receipt with a normalized reason. This does not
+  authorize importing a conversation across properties or weaken other ownership
+  blockers in the complete PMS plan.
+- Typed message body, sender, provider IDs and timestamps remain separate from
+  raw provider JSON. The immutable extraction snapshot/checksums remain the source
+  for subsequent reconciliation; this change does not delete that evidence.
+- Existing target message/receipt rows with nonempty raw payloads block migration
+  for a reviewed privacy cleanup. The generic writer must not silently accept
+  them or modify append-only receipt history.
+- Importing historical receipts creates no jobs, domain events or outbound sends.
+
+## Remaining release gates
+
+Before a production apply or guest Inbox acceptance, record evidence for:
+
+1. Actual source/target row counts, provider natural-key uniqueness, property and
+   booking ownership, ordering, unread totals and last-message summary parity.
+   Resolve differences explicitly; copying cached legacy thread totals is not
+   proof of parity. Review overlap with any threads already created by target
+   intake before choosing an identity reconciliation.
+2. Inquiry normalization: preserve provider inquiry identity and supplied stay
+   details, and correct historical system-inquiry direction before launch.
+3. Private attachment reconciliation, including approved unavailable/quarantine
+   dispositions. No provider URL may become a public attachment fallback.
+4. The VAY-1370 production **and** staging read-only prototype audit. Repository
+   rollback or an accepted research ticket does not prove live residue is absent.
+   Do not delete prototype definitions/history or cancel the old issue cluster
+   until its live disposition is reviewed. Templates/automations remain deferred.
+5. A production-like rehearsal on a verified extraction snapshot: deterministic
+   reruns, actionable PII-free discrepancy reports, rollback evidence and named
+   cutover ownership. Deploying migration-compatible code is not this rehearsal.
+6. A reviewed callback/worker cutover and explicit test property/conversation.
+   Verify receive, duplicate delivery, read, manual reply, attachment, close,
+   reopen, retry/failure and audit behavior in the browser. Keep the old intake
+   unchanged until that cutover is approved; prevent dual processing/sending.
+
+Run the focused mapper/reconciliation tests with one worker. PostgreSQL writer
+coverage runs in PR CI on PostgreSQL 16 and 17 against freshly applied migrations.
+If local Docker is stopped, leave it stopped and report local integration as
+unverified; do not substitute production writes for an isolated test database.

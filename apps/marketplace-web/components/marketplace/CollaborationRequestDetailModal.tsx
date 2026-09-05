@@ -1,5 +1,6 @@
 "use client";
 
+import { PendingApplicationActions } from "./PendingApplicationActions";
 import { useState } from "react";
 import Image from "next/image";
 
@@ -25,6 +26,7 @@ interface CollaborationRequestDetailModalProps {
   onDecline?: (id: string) => void;
   onApprove?: (id: string) => void;
   onRequestCancel?: () => void;
+  onUpdated?: (value: DetailedCollaboration) => void;
 }
 
 export function CollaborationRequestDetailModal({
@@ -36,6 +38,7 @@ export function CollaborationRequestDetailModal({
   onDecline,
   onApprove,
   onRequestCancel,
+  onUpdated,
 }: CollaborationRequestDetailModalProps) {
   const [currentImageIndex, setCurrentImageIndex] = useState(0);
   const [imageError, setImageError] = useState(false);
@@ -283,6 +286,12 @@ export function CollaborationRequestDetailModal({
                   )}
                 </div>
               )}
+
+            {collaboration.status === "cancelled" && (
+              <p role="status">
+                {collaboration.cancelledBy === "creator" ? "Cancelled by creator" : "Cancelled"}
+              </p>
+            )}
 
             {/* Message / Application Summary */}
             <div>
@@ -724,6 +733,13 @@ export function CollaborationRequestDetailModal({
                         Waiting for {collaboration.initiator_type === "hotel" ? "Creator" : "Hotel"}{" "}
                         response...
                       </div>
+                      {currentUserType === "creator" && onUpdated && (
+                        <PendingApplicationActions
+                          key={collaboration.id}
+                          collaboration={collaboration}
+                          onUpdated={onUpdated}
+                        />
+                      )}
                       {onRequestCancel && (
                         <Button
                           variant="ghost"

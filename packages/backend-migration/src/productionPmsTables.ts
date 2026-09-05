@@ -443,6 +443,7 @@ export const PRODUCTION_PMS_TABLES: Record<string, PmsTableDefinition> = {
     c("payloadHash", "payload_hash", "text"),
     c("rawHeaders", "raw_headers", "jsonb"),
     c("rawPayload", "raw_payload", "jsonb"),
+    c("payloadRetentionUntil", "payload_retention_until", "timestamptz"),
     c("failureReason", "failure_reason", "text"),
     c("privacyScope", "privacy_scope", "text"),
     c("aiVisible", "ai_visible", "boolean"),
