@@ -151,7 +151,8 @@ import { startPmsInboxFollowUpReleaseWorker } from "./jobs/pmsInboxFollowUpRelea
 import { createPgPmsInboxDeliveryStore } from "./jobs/pmsInboxDeliveryPg.js";
 import { createPgPmsInboxDeliveryReceiptPort } from "./jobs/pmsInboxDeliveryReceipts.js";
 import { relayPmsInboxDeliveryOutbox } from "./jobs/pmsInboxDeliveryOutbox.js";
-import { runPmsInboxDeliveryJobs } from "./jobs/pmsInboxDeliveryWorker.js";
+import { startPmsInboxDeliveryWorker } from "./jobs/pmsInboxDeliveryWorker.js";
+import { registerShutdownSignals } from "./platform/shutdown.js";
 import {
   createPgBookingLifecycleStore,
   runBookingLifecycleSchedulerJobs,
@@ -1244,6 +1245,7 @@ const app = buildApp({
       : undefined,
   pmsOperationsRepository,
   ...(pmsInboxRuntime?.routes ?? {}),
+  pmsInboxSendingEnabled: config.pmsInboxSendingEnabled,
   pmsChannexManagement: pmsChannexManagementRepository
     ? {
         repository: pmsChannexManagementRepository,
@@ -2038,32 +2040,19 @@ const bookingLifecycleTimer = setInterval(runBookingLifecycle, 60_000);
 bookingLifecycleTimer.unref();
 runBookingLifecycle();
 
-let activePmsInboxDelivery: Promise<void> | undefined;
-const runPmsInboxDelivery = () => {
-  if (!pmsInboxDeliveryStore || !pmsInboxDeliveryPool || activePmsInboxDelivery) return;
-  activePmsInboxDelivery = relayPmsInboxDeliveryOutbox(targetDatabaseUrl, {
-    pool: pmsInboxDeliveryPool,
-  })
-    .then(() =>
-      runPmsInboxDeliveryJobs(pmsInboxDeliveryStore, {
-        ...(pmsInboxChannexDelivery ? { channex: pmsInboxChannexDelivery } : {}),
-        ...(pmsInboxEmailDelivery ? { resend: pmsInboxEmailDelivery } : {}),
-      }),
-    )
-    .then((result) => {
-      if (result.failed || result.deadLettered)
-        app.log.warn({ result }, "PMS Inbox delivery completed with failures");
-    })
-    .catch((error: unknown) => app.log.warn({ err: error }, "PMS Inbox delivery failed"))
-    .finally(() => {
-      activePmsInboxDelivery = undefined;
-    });
-};
-const pmsInboxDeliveryTimer = pmsInboxDeliveryStore
-  ? setInterval(runPmsInboxDelivery, 2_000)
-  : undefined;
-pmsInboxDeliveryTimer?.unref();
-if (pmsInboxDeliveryStore) runPmsInboxDelivery();
+const pmsInboxDeliveryWorker =
+  pmsInboxDeliveryStore && pmsInboxDeliveryPool
+    ? startPmsInboxDeliveryWorker({
+        enabled: config.pmsInboxSendingEnabled,
+        store: pmsInboxDeliveryStore,
+        providers: {
+          ...(pmsInboxChannexDelivery ? { channex: pmsInboxChannexDelivery } : {}),
+          ...(pmsInboxEmailDelivery ? { resend: pmsInboxEmailDelivery } : {}),
+        },
+        relay: () => relayPmsInboxDeliveryOutbox(targetDatabaseUrl, { pool: pmsInboxDeliveryPool }),
+        warn: (details, message) => app.log.warn(details, message),
+      })
+    : undefined;
 
 const bookingEmailDelivery = config.bookingEmailDelivery
   ? createResendBookingEmailDelivery(config.bookingEmailDelivery)
@@ -2091,14 +2080,15 @@ const bookingEmailDeliveryTimer = bookingEmailDelivery
   : undefined;
 bookingEmailDeliveryTimer?.unref();
 if (bookingEmailDelivery) runBookingEmailDelivery();
+app.addHook("preClose", async () => {
+  await pmsInboxDeliveryWorker?.close();
+});
 app.addHook("onClose", async () => {
   clearInterval(bookingLifecycleTimer);
   if (bookingEmailDeliveryTimer) clearInterval(bookingEmailDeliveryTimer);
   await activeBookingLifecycleRun;
   await activeBookingEmailDelivery;
   await bookingLifecycleStore.close();
-  if (pmsInboxDeliveryTimer) clearInterval(pmsInboxDeliveryTimer);
-  await activePmsInboxDelivery;
   await pmsInboxDeliveryStore?.close();
   await pmsInboxDeliveryPool?.end();
 });
@@ -2142,6 +2132,8 @@ if (authSessionHandoffRepository) {
     await activeHandoffCleanup;
   });
 }
+
+registerShutdownSignals(app);
 
 try {
   await app.listen({ host: config.host, port: config.port });

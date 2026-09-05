@@ -1038,6 +1038,7 @@ export type PmsOperationsRoutesOptions = {
   inboxProviderActionPort?: PmsInboxProviderActionPort;
   inboxQuickReplyPort?: PmsInboxQuickReplyPort;
   inboxReplyPort?: PmsInboxReplyPort;
+  inboxSendingEnabled?: boolean;
   inboxStartDirectEmailPort?: PmsInboxStartDirectEmailPort;
   inboxTriagePort?: PmsInboxTriagePort;
   inboxStaffCommandPort?: PmsInboxStaffCommandPort;
@@ -1184,6 +1185,7 @@ export type PmsOperationsErrorCode =
   | "quick_reply_name_conflict"
   | "assistance_unavailable"
   | "provider_action_unavailable"
+  | "inbox_sending_paused"
   | "direct_email_not_allowed"
   | "attachment_not_found"
   | "attachment_too_large"
@@ -2600,6 +2602,7 @@ export async function registerPmsOperationsRoutes(
     async (request, reply) => {
       const input = parseInboxProviderAction(request);
       if ("error" in input) return sendPmsOperationsError(reply, input.error);
+      if (options.inboxSendingEnabled === false) return sendInboxSendingPaused(reply);
       if (!options.inboxProviderActionPort)
         return sendPmsOperationsError(
           reply,
@@ -2885,6 +2888,7 @@ export async function registerPmsOperationsRoutes(
     async (request, reply) => {
       const input = parseInboxReply(request);
       if ("error" in input) return sendPmsOperationsError(reply, input.error);
+      if (options.inboxSendingEnabled === false) return sendInboxSendingPaused(reply);
       if (!options.inboxReplyPort)
         return sendPmsOperationsError(
           reply,
@@ -4430,6 +4434,15 @@ function enforcePmsFinanceManagePolicy(
     sendPmsOperationsError(reply, contractError);
     return false;
   }
+}
+
+function sendInboxSendingPaused(reply: FastifyReply) {
+  return sendPmsOperationsError(reply, {
+    statusCode: 503,
+    code: "inbox_sending_paused",
+    category: "side_effect",
+    message: "Inbox sending is temporarily paused. This request did not submit new work.",
+  });
 }
 
 export function sendPmsOperationsError(

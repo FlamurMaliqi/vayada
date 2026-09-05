@@ -284,6 +284,7 @@ type BuildAppOptions = Pick<FastifyServerOptions, "logger" | "trustProxy"> & {
   pmsInboxProviderActionPort?: PmsInboxProviderActionPort;
   pmsInboxQuickReplyPort?: PmsInboxQuickReplyPort;
   pmsInboxReplyPort?: PmsInboxReplyPort;
+  pmsInboxSendingEnabled?: boolean;
   pmsInboxStartDirectEmailPort?: PmsInboxStartDirectEmailPort;
   pmsInboxTriagePort?: PmsInboxTriagePort;
   pmsInboxStaffCommandPort?: PmsInboxStaffCommandPort;
@@ -732,6 +733,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       inboxProviderActionPort: options.pmsInboxProviderActionPort,
       inboxQuickReplyPort: options.pmsInboxQuickReplyPort,
       inboxReplyPort: options.pmsInboxReplyPort,
+      inboxSendingEnabled: options.pmsInboxSendingEnabled,
       inboxStartDirectEmailPort: options.pmsInboxStartDirectEmailPort,
       inboxTriagePort: options.pmsInboxTriagePort,
       inboxStaffCommandPort: options.pmsInboxStaffCommandPort,
