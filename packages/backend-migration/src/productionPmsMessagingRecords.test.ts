@@ -65,6 +65,31 @@ describe("production PMS messaging", () => {
     );
   });
 
+  it("keeps typed message history without copying arbitrary provider payloads", () => {
+    const sourceRows = rows();
+    sourceRows.find((entry) => entry.sourceTable === "messages")!.data["raw_payload"] = {
+      body: "duplicated private content",
+      authorization: "Bearer secret",
+      nested: { attachments: [{ url: "https://provider.example/file?token=secret" }] },
+    };
+    const context = createProductionPmsContext({
+      sourceRunId: "run",
+      completedAt: "2026-08-30T00:00:00Z",
+      rows: sourceRows,
+      target: target([MEDIA]),
+    });
+    const record = buildPmsMessagingRecords(context).find(
+      (entry) => entry.targetTable === "messages",
+    )!;
+    expect(context.blockers).toEqual([]);
+    expect(record.row).toMatchObject({
+      sourceMessageId: "message-ext",
+      body: "Hello",
+      rawPayload: {},
+    });
+    expect(JSON.stringify(record)).not.toMatch(/duplicated private|secret|provider\.example/);
+  });
+
   it("retains legacy direct email as a non-provider manual thread", () => {
     const sourceRows = rows();
     sourceRows.find((row) => row.sourceTable === "message_threads")!.data["source"] = "direct";

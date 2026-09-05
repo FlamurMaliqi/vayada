@@ -16,7 +16,7 @@ import {
   requiredText,
   uuid,
 } from "./productionBookingValues.js";
-import { jsonMap, pmsRecord } from "./productionPmsValues.js";
+import { pmsRecord } from "./productionPmsValues.js";
 
 export function buildPmsMessagingRecords(context: PmsBuildContext): PmsTargetRecord[] {
   const records: PmsTargetRecord[] = [];
@@ -104,7 +104,9 @@ function message(context: PmsBuildContext, source: IdentitySourceRow): PmsTarget
       sentAt,
       receivedAt,
       readAt,
-      rawPayload: jsonMap(data["raw_payload"], "raw_payload"),
+      // Typed message fields and source checksums preserve history without copying
+      // arbitrary credentials, guest metadata, or expiring provider attachment URLs.
+      rawPayload: {},
       piiRetentionUntil: retentionDate(context, parent, receivedAt),
     }),
   ];
