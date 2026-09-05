@@ -78,7 +78,11 @@ export function createPmsConfirmationEmails(connectionString: string) {
         client.release();
       }
     },
-    async status(propertyId: string, guestBookingId: string, jobId: string) {
+    async status(
+      propertyId: string,
+      guestBookingId: string,
+      jobId: string,
+    ): Promise<{ status: string } | null> {
       const result = await pool.query<{ status: string }>(
         `SELECT status FROM platform.jobs WHERE id = $1::uuid AND property_id = $2::uuid
          AND resource_id = $3 AND queue_name = $4 AND job_key LIKE 'booking.confirmation.resend:%'`,
