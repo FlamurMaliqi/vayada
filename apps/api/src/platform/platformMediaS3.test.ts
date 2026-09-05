@@ -83,6 +83,37 @@ describe("S3 platform profile media adapter", () => {
     expect(signingOptions?.signableHeaders).toEqual(new Set(["content-type"]));
   });
 
+  it("validates and privately imports provider attachments without retaining their URL", async () => {
+    const { client, send } = fakeS3(async () => ({}));
+    const adapter = createAdapter(client);
+    const bytes = Buffer.from("%PDF-1.7\nVayada inbound attachment");
+
+    const prepared = await adapter.preparePrivateAttachment({
+      mediaId: "13720000-0000-5000-8000-000000000001",
+      bytes,
+      contentType: "application/pdf",
+    });
+    expect(prepared).toMatchObject({
+      ok: true,
+      bucketName,
+      contentType: "application/pdf",
+      sizeBytes: bytes.length,
+      storageKey: expect.stringMatching(/^private\/media\/.+\/provider_original\/.+\.pdf$/),
+    });
+    if (!prepared.ok) throw new Error("Expected a prepared attachment");
+    expect(send).not.toHaveBeenCalled();
+    await adapter.uploadPrivateAttachment({ prepared, bytes });
+    expect(send).toHaveBeenCalledWith(expect.any(PutObjectCommand));
+
+    await expect(
+      adapter.preparePrivateAttachment({
+        mediaId: "13720000-0000-5000-8000-000000000002",
+        bytes: Buffer.from("not a pdf"),
+        contentType: "application/pdf",
+      }),
+    ).resolves.toEqual({ ok: false, code: "media_type_mismatch" });
+  });
+
   it("signs files up to the Inbox attachment limit while rejecting larger uploads", async () => {
     vi.mocked(getSignedUrl).mockResolvedValue("https://signed-upload.example/offer");
     const { client } = fakeS3(async () => ({}));

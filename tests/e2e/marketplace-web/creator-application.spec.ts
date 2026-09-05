@@ -4,6 +4,7 @@ import { corsHeaders, fulfillCorsPreflight } from "./utils/cors";
 test.use({ timezoneId: "America/Los_Angeles" });
 
 test("creator selects one compensation option when applying", async ({ page }) => {
+  await page.clock.setFixedTime(new Date("2026-09-01T00:30:00Z"));
   await primeCreatorSession(page);
   await mockCreatorProfile(page);
   await routeJson(page, /\/api\/marketplace\/offers(?:\?|$)/, {
@@ -16,7 +17,11 @@ test("creator selects one compensation option when applying", async ({ page }) =
         hotelName: "Marketplace Alpenrose",
         hotelSlug: "marketplace-alpenrose",
         hotelAccommodationType: "hotel",
-        hotelLocation: { displayText: "Innsbruck, Austria", countryCode: "AT" },
+        hotelLocation: {
+          displayText: "Innsbruck, Austria",
+          countryCode: "AT",
+          timezone: "Europe/Vienna",
+        },
         hotelCoverImageUrl: null,
         hotelImageUrls: [],
         deliverables: [],
@@ -195,6 +200,10 @@ test("creator selects one compensation option when applying", async ({ page }) =
     .locator("..")
     .click();
   await expect(fromDate).toHaveValue("");
+  await expect(
+    page.getByRole("alert").filter({ hasText: "no remaining availability" }),
+  ).toBeVisible();
+  await expect(page.getByRole("button", { name: "Submit Application" })).toBeDisabled();
   await paidChoice.locator("..").click();
   await expect(page.getByRole("button", { name: "Sep", exact: true })).not.toHaveClass(
     /bg-primary-600/,
@@ -206,13 +215,23 @@ test("creator selects one compensation option when applying", async ({ page }) =
   await page.getByText("YouTube", { exact: true }).last().click();
   const youtubeVideoRow = page.getByText("YouTube Video", { exact: true }).locator("..");
   await youtubeVideoRow.getByRole("button").last().click();
-  await fromDate.fill("2027-01-10");
+  await expect(fromDate).toHaveAttribute("min", "2026-09-01");
+  const toDate = page.locator('input[type="date"]').last();
+  await expect(toDate).toHaveAttribute("min", "2026-09-01");
+  await fromDate.fill("2026-08-31");
+  await toDate.fill("2026-09-02");
   const contactConsent = page.getByRole("checkbox", {
     name: /I consent to sharing my contact information with the hotel/,
   });
   await expect(contactConsent).not.toBeChecked();
   await contactConsent.locator("..").click();
   await expect(contactConsent).toBeChecked();
+  await page.getByRole("button", { name: "Submit Application" }).click();
+
+  await expect(page.getByText("Collaboration dates cannot be in the past.")).toBeVisible();
+  expect(submissionAttempts).toBe(0);
+  await fromDate.fill("2027-01-10");
+  await toDate.fill("2027-01-12");
   await page.getByRole("button", { name: "Submit Application" }).click();
 
   const availabilityError = page.getByText(
@@ -236,7 +255,8 @@ test("creator selects one compensation option when applying", async ({ page }) =
   await page.getByRole("button", { name: "Increase YouTube Video quantity" }).click();
   await expect(september).toHaveClass(/bg-primary-600/);
   await expect(contactConsent).not.toBeChecked();
-  await page.locator('input[type="date"]').first().fill("2027-09-01");
+  await page.locator('input[type="date"]').first().fill("2026-09-01");
+  await page.locator('input[type="date"]').last().fill("2026-09-03");
   await page.getByText(/I consent to sharing my contact information/).click();
   await expect(contactConsent).toBeChecked();
   const submitApplication = page.getByRole("button", { name: "Submit Application" });
@@ -284,7 +304,8 @@ test("creator selects one compensation option when applying", async ({ page }) =
       paidAmount: "900",
       currency: "EUR",
       affiliateEnabled: false,
-      travelDateFrom: "2027-09-01",
+      travelDateFrom: "2026-09-01",
+      travelDateTo: "2026-09-03",
     },
     deliverables: [{ platform: "YouTube", type: "YouTube Video", quantity: 1 }],
   });

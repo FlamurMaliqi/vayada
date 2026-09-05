@@ -13,7 +13,8 @@ const stripeAccountHash = `sha256:${createHash("sha256").update("acct_1").digest
 
 describe("provider webhook booking settlement", () => {
   it("atomically settles a target card booking and enqueues the PMS handoff", async () => {
-    const query = vi.fn(async (sql: string, _values?: readonly unknown[]) => {
+    const query = vi.fn(async (sql: string, values?: readonly unknown[]) => {
+      void values;
       if (sql.includes("FOR UPDATE OF payment, booking")) {
         return {
           rows: [
@@ -121,7 +122,8 @@ describe("provider webhook booking settlement", () => {
   });
 
   it("promotes canonical Stripe readiness without silently publishing a gain", async () => {
-    const query = vi.fn(async (sql: string, _values?: readonly unknown[]) => {
+    const query = vi.fn(async (sql: string, values?: readonly unknown[]) => {
+      void values;
       if (sql.includes('SELECT property_id::text AS "propertyId"')) {
         return { rows: [{ propertyId: "property-1" }] };
       }
@@ -406,5 +408,68 @@ describe("provider webhook booking settlement", () => {
     ).toBe(false);
     expect(query.mock.calls.some(([sql]) => sql.includes("INSERT INTO platform.jobs"))).toBe(false);
     expect(JSON.stringify(input.normalizedPreview)).not.toContain("acct_1");
+  });
+
+  it("promotes Channex message work into the canonical property scope", async () => {
+    const propertyId = "2f3db2bb-5d6a-4cd2-9bb7-bb344b49540f";
+    const input: ProviderWebhookPromotionInput = {
+      provider: "channex",
+      receiptId: "13720000-0000-4000-8000-000000000101",
+      receiptKey: "webhook:channex:message:scope",
+      receiptKeyHash: "receipt-hash",
+      payloadHash: "payload-hash",
+      rawPayload: { property_id: "provider-property" },
+      normalizedPreview: {
+        domainEventKey: "channex.message.ingest:scope:v1",
+        domainEventType: "channex.message.ingest",
+        resourceProduct: "pms",
+        resourceType: "channel_message",
+        resourceId: "provider-message",
+        jobKey: "channex.ingest-message:scope:v1",
+        queueName: "pms.channex.webhooks",
+        jobType: "channex.ingest-message",
+        payload: {
+          provider: "channex",
+          propertyId,
+          providerPropertyId: "provider-property",
+          propertyOwnerResolved: true,
+          threadId: "provider-thread",
+          sourceMessageId: "provider-message",
+          rawPayload: { body: "private guest text" },
+        },
+      },
+    };
+    const query = vi.fn(async (sql: string, values?: readonly unknown[]) => {
+      void values;
+      if (sql.includes("SELECT delivery_status") && sql.includes("FOR UPDATE"))
+        return { rows: [{ delivery_status: "observed" }] };
+      if (sql.includes("INSERT INTO platform.domain_events"))
+        return { rows: [{ id: "13720000-0000-4000-8000-000000000102" }] };
+      if (sql.includes("INSERT INTO platform.jobs"))
+        return { rows: [{ id: "13720000-0000-4000-8000-000000000103" }] };
+      if (sql.includes("UPDATE platform.external_webhook_events"))
+        return { rows: [{ id: input.receiptId }], rowCount: 1 };
+      return { rows: [], rowCount: 1 };
+    });
+    const pool = {
+      async connect() {
+        return { query, release() {} };
+      },
+    };
+
+    await expect(promoteReceipt(pool as never, input)).resolves.toMatchObject({
+      status: "promoted",
+      jobIds: ["13720000-0000-4000-8000-000000000103"],
+    });
+    const domainCall = query.mock.calls.find(([sql]) =>
+      sql.includes("INSERT INTO platform.domain_events"),
+    )!;
+    const jobCall = query.mock.calls.find(([sql]) => sql.includes("INSERT INTO platform.jobs"))!;
+    expect(domainCall[0]).toContain("property_id");
+    expect(domainCall[1]).toEqual(expect.arrayContaining(["property", propertyId]));
+    expect(String(domainCall[1])).not.toContain("private guest text");
+    expect(jobCall[0]).toContain("property_id");
+    expect(jobCall[1]).toEqual(expect.arrayContaining(["property", propertyId]));
+    expect(String(jobCall[1])).not.toContain("private guest text");
   });
 });

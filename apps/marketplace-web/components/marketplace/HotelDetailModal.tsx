@@ -624,6 +624,7 @@ export function HotelDetailModal({
 
       {/* Collaboration Application Modal */}
       <CollaborationApplicationModal
+        propertyTimezone={hotel.propertyTimezone}
         key={hotel.id}
         isOpen={showApplicationModal}
         onClose={() => setShowApplicationModal(false)}
