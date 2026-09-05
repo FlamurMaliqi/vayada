@@ -97,6 +97,50 @@ describe("production migration parity", () => {
     );
   });
 
+  it.each([
+    { reasons: ["identical"], warningCount: 0 },
+    { reasons: ["target_newer"], warningCount: 1 },
+    { reasons: ["target_owner_revision"], warningCount: 1 },
+    { reasons: ["target_removed"], warningCount: 1 },
+    {
+      reasons: ["identical", "target_newer", "target_owner_revision", "target_removed"],
+      warningCount: 3,
+    },
+  ] as const)(
+    "warns only for genuine Catalog preservation: $reasons",
+    async ({ reasons, warningCount }) => {
+      const reports = domainReports();
+      reports.catalog.preservedTarget = reasons.map((reason, index) => ({
+        entity: "property_profiles",
+        key: `profile-${index}`,
+        reason,
+        sourceUpdatedAt: "2026-08-01T00:00:00.000Z",
+        targetUpdatedAt: reason === "target_removed" ? null : "2026-08-01T00:00:00.000Z",
+      }));
+      reports.catalog.counts.preservedTarget = reasons.length;
+
+      for (const warningBudget of [0, 1]) {
+        const report = await runProductionParity(
+          { ...config(), warningBudget },
+          services({ reports }),
+        );
+        const warnings = report.findings.filter((row) => row.severity === "warn");
+        expect(report.decision).toBe(
+          warningCount === 0 ? "go" : warningBudget === 0 ? "no-go" : "review",
+        );
+        if (warningCount === 0) expect(warnings).toEqual([]);
+        else
+          expect(warnings).toEqual([
+            expect.objectContaining({
+              code: "PRESERVED_NEWER_TARGET_STATE",
+              owner: "catalog",
+              actual: String(warningCount),
+            }),
+          ]);
+      }
+    },
+  );
+
   it("hard-fails unresolved financial, PII, and raw-media evidence", async () => {
     const reports = domainReports();
     reports.finance.blockers.push({
