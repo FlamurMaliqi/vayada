@@ -1542,6 +1542,7 @@ describe("Booking Web public bootstrap parity", () => {
     const calls: string[] = [];
     let termsText: string | null = "Hotel Alpenrose booking terms.";
     let paypalConfigured = true;
+    let paymentsEnabled = true;
     const pool = {
       async query(text: string) {
         calls.push(text);
@@ -1565,7 +1566,7 @@ describe("Booking Web public bootstrap parity", () => {
                 phoneRequired: false,
                 termsText,
                 cancellationPolicyText: "Free cancellation until seven days before arrival.",
-                paymentsEnabled: true,
+                paymentsEnabled,
                 onlineCardReady: false,
                 acceptedMethods: [
                   "card",
@@ -1576,6 +1577,7 @@ describe("Booking Web public bootstrap parity", () => {
                   "paypal",
                   "pay_at_property",
                 ].filter((method) => paypalConfigured || method !== "paypal"),
+                bankTransferReady: true,
                 depositPolicy: {
                   bankTransferInstructions: "Bank: Vayada Bank\nIBAN: DE123",
                   paypalEmail: paypalConfigured ? "payments@alpenrose.test" : "",
@@ -1636,6 +1638,12 @@ describe("Booking Web public bootstrap parity", () => {
       paypalEnabled: true,
       paypalPaymentWindowHours: 48,
     });
+    paymentsEnabled = false;
+    await expect(adapter.getCheckoutConfig("hotel-alpenrose")).resolves.toMatchObject({
+      paymentsEnabled: false,
+      onlineCardPayment: false,
+    });
+    paymentsEnabled = true;
     paypalConfigured = false;
     await expect(
       adapter.getPaymentInstructions("hotel-alpenrose", "B-PAYPAL-1"),
@@ -1721,7 +1729,9 @@ describe("Booking Web public bootstrap parity", () => {
                       addonIds: ["spa_partner"],
                       addonQuantities: { spa_partner: 2 },
                       addonDates: {},
-                      ...(packageCount > 1 ? { addonPackageQuantities: { spa_partner: packageCount } } : {}),
+                      ...(packageCount > 1
+                        ? { addonPackageQuantities: { spa_partner: packageCount } }
+                        : {}),
                     },
                     addonPurchases: [
                       {
@@ -1946,9 +1956,42 @@ describe("Booking Web public bootstrap parity", () => {
       ),
     ).rejects.toThrow("Checkout pricing evidence is invalid");
 
-    const packageRequest = { ...request, addonPackageQuantities: { spa_partner: 2 }, expectedTotalAmount: 120.5, balanceAmount: 120.5 };
-    await expect(createAdapter(false, "41.00", "request", "10.25", false, false, false, false, 2).adapter.createBooking("hotel-alpenrose", packageRequest, context)).resolves.toMatchObject({ bookingReference: "B-OPTIONAL" });
-    await expect(createAdapter(false, "41.00", "request", "10.25", false, false, false, false, 2).adapter.createBooking("hotel-alpenrose", { ...packageRequest, addonPackageQuantities: { spa_partner: 1 } }, context)).rejects.toThrow("Booking add-ons changed");
+    const packageRequest = {
+      ...request,
+      addonPackageQuantities: { spa_partner: 2 },
+      expectedTotalAmount: 120.5,
+      balanceAmount: 120.5,
+    };
+    await expect(
+      createAdapter(
+        false,
+        "41.00",
+        "request",
+        "10.25",
+        false,
+        false,
+        false,
+        false,
+        2,
+      ).adapter.createBooking("hotel-alpenrose", packageRequest, context),
+    ).resolves.toMatchObject({ bookingReference: "B-OPTIONAL" });
+    await expect(
+      createAdapter(
+        false,
+        "41.00",
+        "request",
+        "10.25",
+        false,
+        false,
+        false,
+        false,
+        2,
+      ).adapter.createBooking(
+        "hotel-alpenrose",
+        { ...packageRequest, addonPackageQuantities: { spa_partner: 1 } },
+        context,
+      ),
+    ).rejects.toThrow("Booking add-ons changed");
 
     const optionalPhone = createAdapter(false);
     await expect(
@@ -2627,7 +2670,7 @@ describe("Booking Web public bootstrap parity", () => {
     );
   });
 
-  it("creates a pending bank-transfer booking without emailing details before host acceptance", async () => {
+  it("binds bank-transfer bookings without persisting raw instructions", async () => {
     const propertyId = "a9fccec2-eb4c-4c35-bfd3-02a748c2e117";
     const guestBookingId = "b9fccec2-eb4c-4c35-bfd3-02a748c2e951";
     const calls: Array<{ text: string; values: readonly unknown[] | undefined }> = [];
@@ -2682,6 +2725,7 @@ describe("Booking Web public bootstrap parity", () => {
                 phoneRequired: true,
                 paymentsEnabled: true,
                 acceptedMethods: ["bank_transfer"],
+                bankTransferReady: true,
                 depositPolicy: {
                   bankTransferInstructions: "IBAN: DE89370400440532013000",
                 },
@@ -2746,7 +2790,9 @@ describe("Booking Web public bootstrap parity", () => {
       },
       async end() {},
     };
+    const bind = vi.fn(async () => undefined);
     const adapter = createTargetBookingWebCheckoutAdapter({
+      bankTransfers: { bind, confirmation: async () => null, email: async () => null },
       connectionString: "postgres://unused",
       inventoryReservationPort: createTargetPmsInventoryReservationPort(),
       billingConfigReadPortFactory: () => ({
@@ -2801,6 +2847,8 @@ describe("Booking Web public bootstrap parity", () => {
       },
     });
 
+    expect(bind).toHaveBeenCalledWith(expect.anything(), propertyId, guestBookingId);
+    expect(JSON.stringify(calls)).not.toContain("DE89370400440532013000");
     const quoteRead = calls.find((call) => call.text.includes("FROM booking.quote_sessions"));
     expect(quoteRead?.text).toContain("profile.freshness_status = 'fresh'");
     expect(quoteRead?.text).toContain("profile.public_setup_completeness ->> 'status' = 'ready'");
@@ -2816,9 +2864,6 @@ describe("Booking Web public bootstrap parity", () => {
     expect(JSON.parse(String(bookingInsert?.values?.[18]))).toMatchObject({
       paymentMethod: "bank_transfer",
       pendingExpiresAt: "2026-09-02T10:00:00.000Z",
-      paymentInstructions: {
-        bankTransferDetails: "IBAN: DE89370400440532013000",
-      },
     });
     expect(
       calls.some((call) => call.values?.includes("email.booking-reserved-pending-payment")),

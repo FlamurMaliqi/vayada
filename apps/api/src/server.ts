@@ -1,4 +1,5 @@
 import { createPmsConfirmationEmails } from "./domains/pmsConfirmationEmails.js";
+import { createBankTransferBookingOperations } from "./domains/financeBankTransferBooking.js";
 import { createPgPlatformMarketplaceAccountsRepository } from "./domains/platformMarketplaceAccountsRepository.js";
 import {
   createPgIdentityRepository,
@@ -36,6 +37,8 @@ import { createPgHotelCatalogCurrentOwnerEvidencePorts } from "./domains/hotelCa
 import { createPgHotelCatalogStep1Repository } from "./domains/hotelCatalogStep1Repository.js";
 import { createPgMarketplaceHotelCollaborationPreferencesRepository } from "./domains/marketplaceHotelCollaborationPreferencesRepository.js";
 import { createPgFinanceOtaCommissionRuleRepository } from "./domains/financeOtaCommissionRuleRepository.js";
+import { createBankTransferCodec } from "./domains/financeBankTransferCodec.js";
+import { createBankTransferRepository } from "./domains/financeBankTransferRepository.js";
 import { createPgFinanceExpenseCategoryRepository } from "./domains/financeExpenseCategoryRepository.js";
 import { createPgFinanceManualExpenseRepository } from "./domains/financeManualExpenseRepository.js";
 import { createPgFinanceRecurringExpenseRuleRepository } from "./domains/financeRecurringExpenseRuleRepository.js";
@@ -355,7 +358,27 @@ const stripeBookingPaymentProvider = config.stripeSubscriptions.secretKey
   ? createStripeBookingPaymentProvider({ secretKey: config.stripeSubscriptions.secretKey })
   : undefined;
 
+const bankTransferKms =
+  config.financeSource === "target" && config.financeBankTransferKms
+    ? createAwsFinanceFolioKms({ region: config.financeBankTransferKms.region })
+    : undefined;
+const bankTransferCodec =
+  bankTransferKms && config.financeBankTransferKms
+    ? createBankTransferCodec({
+        ...config.financeBankTransferKms,
+        kms: { ...bankTransferKms.write, ...bankTransferKms.decrypt },
+      })
+    : undefined;
+const bankTransferRepository =
+  config.financeSource === "target"
+    ? createBankTransferRepository(targetDatabaseUrl, bankTransferCodec)
+    : undefined;
+const bankTransferBookings = bankTransferCodec
+  ? createBankTransferBookingOperations(targetDatabaseUrl, bankTransferCodec)
+  : undefined;
+
 const bookingWebCheckoutAdapter = createTargetBookingWebCheckoutAdapter({
+  bankTransfers: bankTransferBookings,
   connectionString: targetDatabaseUrl,
   inventoryReservationPort: createTargetPmsInventoryReservationPort(),
   billingConfigReadPortFactory: (executor) =>
@@ -1311,6 +1334,7 @@ const app = buildApp({
   pmsInventoryPublicOfferProjector: routePmsInventoryPublicOfferProjector,
   bookingGuestPiiPort,
   financeRepository,
+  financeBankTransfer: bankTransferRepository ? { repository: bankTransferRepository } : undefined,
   financeSubscriptionService,
   financeOtaCommissionSettingsRepository,
   financeExpenses: financeExpenseRuntime
@@ -1526,6 +1550,10 @@ const pmsInboxFollowUpReleaseWorker = pmsInboxRuntime
   : undefined;
 
 const stopPostgresTelemetry = postgresRuntime.startTelemetry(app.log);
+app.addHook("onReady", async () => {
+  await bankTransferRepository?.assertConfigured();
+});
+
 app.addHook("onClose", async () => {
   stopPostgresTelemetry();
   await postgresRuntime.close();
@@ -1557,6 +1585,9 @@ app.addHook("onClose", async () => {
     financeOtaCommissionSettingsRepository?.close(),
     financeExpenseRuntime?.close(),
     financeFolioRuntime?.close(),
+    bankTransferRepository?.close(),
+    bankTransferBookings?.close(),
+    bankTransferKms?.close(),
     bookingDesignMediaAdapter?.close?.(),
     pmsRoomPublicationRuntime?.commandRepository.close(),
     pmsRoomPublicationRuntime?.readModel.close(),
@@ -2040,7 +2071,11 @@ const bookingEmailDelivery = config.bookingEmailDelivery
 let activeBookingEmailDelivery: Promise<void> | undefined;
 const runBookingEmailDelivery = () => {
   if (!bookingEmailDelivery || activeBookingEmailDelivery) return;
-  activeBookingEmailDelivery = runBookingEmailDeliveryJobs(targetDatabaseUrl, bookingEmailDelivery)
+  activeBookingEmailDelivery = runBookingEmailDeliveryJobs(
+    targetDatabaseUrl,
+    bookingEmailDelivery,
+    { bankTransfers: bankTransferBookings },
+  )
     .then((result) => {
       if (result.failed > 0) {
         app.log.warn({ failed: result.failed }, "Booking email delivery completed with failures");

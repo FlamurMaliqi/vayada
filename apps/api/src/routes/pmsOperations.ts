@@ -775,7 +775,11 @@ export type PmsOperationalCommandResult =
   | {
       ok: false;
       statusCode: 409;
-      code: "version_conflict" | "idempotency_conflict" | "room_unavailable";
+      code:
+        | "version_conflict"
+        | "idempotency_conflict"
+        | "room_unavailable"
+        | "bank_transfer_unavailable";
       message: string;
     };
 
@@ -1154,6 +1158,7 @@ export type PmsOperationsErrorCode =
   | "invalid_body"
   | "invalid_date_range"
   | "invalid_status_transition"
+  | "bank_transfer_unavailable"
   | "invalid_guest_pii"
   | "finance_bridge_required"
   | PmsAssignmentCommandConflictCode

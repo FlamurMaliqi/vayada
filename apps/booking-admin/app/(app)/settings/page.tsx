@@ -1,5 +1,13 @@
 "use client";
 
+import { BankTransferValidationError } from "@vayada/product-onboarding/bankTransferDestination";
+
+import {
+  saveBankTransferDestination,
+  type SavedBankTransferDestination,
+  type BankTransferSaveAttempt,
+} from "@vayada/product-onboarding/bankTransferDestination";
+import { apiClient, omitHotelContext } from "@/services/api/client";
 import { useEffect, useState, useCallback, useRef } from "react";
 import { getBookingHotelPropertyLink } from "@/services/api/bookingPropertyLinkClient";
 import {
@@ -309,6 +317,8 @@ export default function SettingsPage() {
   const [paymentError, setPaymentError] = useState("");
   const [paymentSuccess, setPaymentSuccess] = useState("");
   const [savingPayment, setSavingPayment] = useState(false);
+  const bankSaveAttempt = useRef<BankTransferSaveAttempt>({});
+  const [bankDestination, setBankDestination] = useState<SavedBankTransferDestination | null>(null);
   const [paymentSettingsLoaded, setPaymentSettingsLoaded] = useState(false);
   const [billingPropertyId, setBillingPropertyId] = useState<string | null>(null);
   const [financePlanStatus, setFinancePlanStatus] = useState<FinancePlanStatus | null>(null);
@@ -413,12 +423,14 @@ export default function SettingsPage() {
         "paypalPaymentWindowHours",
         24,
       ),
-      payout_bank_name: paymentPolicyText(ps.depositPolicy, "bankName"),
-      payout_account_holder: paymentPolicyText(ps.depositPolicy, "accountHolder"),
+      payout_bank_name: "",
+      payout_account_holder: "",
+      payout_iban: "",
       payout_account_type: "account_number",
-      payout_account_number: paymentPolicyText(ps.depositPolicy, "accountNumber"),
-      payout_swift: paymentPolicyText(ps.depositPolicy, "bicSwift"),
+      payout_account_number: "",
+      payout_swift: "",
     }));
+    setBankDestination(res.bankDestination ?? null);
     setPaymentSettingsLoaded(true);
   }, []);
 
@@ -840,7 +852,10 @@ export default function SettingsPage() {
         fail("Localization settings did not load. Retry Localization before saving payments.");
         return null;
       }
-      if (paymentProvider === "xendit" || paymentProvider === "vayada") {
+      if (
+        settings.online_card_payment &&
+        (paymentProvider === "xendit" || paymentProvider === "vayada")
+      ) {
         fail(`${paymentProvider === "xendit" ? "Xendit" : "vayada Payments"} is coming soon.`);
         return null;
       }
@@ -850,6 +865,30 @@ export default function SettingsPage() {
         return null;
       }
       const propertyLink = await getBookingHotelPropertyLink({ hotelId });
+      const destination = await saveBankTransferDestination(
+        {
+          get: (path) => apiClient.get(path, omitHotelContext),
+          put: (path, body) => apiClient.put(path, body, omitHotelContext),
+        },
+        {
+          propertyId: propertyLink.propertyId,
+          enabled: settings.bank_transfer ?? false,
+          saved: bankDestination,
+          attempt: bankSaveAttempt.current,
+          details: {
+            accountHolder: settings.payout_account_holder ?? "",
+            accountType: settings.payout_account_type ?? "iban",
+            accountNumber:
+              (settings.payout_account_type === "account_number"
+                ? settings.payout_account_number
+                : settings.payout_iban) ?? "",
+            bankName: settings.payout_bank_name ?? "",
+            bicSwift: settings.payout_swift ?? "",
+            instructions: "",
+          },
+        },
+      );
+      setBankDestination(destination ?? null);
       await updateFinancePaymentSettings({
         propertyId: propertyLink.propertyId,
         body: buildFinancePaymentSettingsBody({
@@ -871,12 +910,24 @@ export default function SettingsPage() {
           commandPrefix: `settings-payment-settings-${hotelId}`,
         }),
       });
+      setSettings((previous) => ({
+        ...previous,
+        payout_account_holder: "",
+        payout_account_number: "",
+        payout_iban: "",
+        payout_bank_name: "",
+        payout_swift: "",
+      }));
       const message = t("settings.billing.paymentSettingsSaved");
       setPaymentSuccess(message);
       if (showPageFeedback) setFeedback({ type: "success", message });
       return propertyLink.propertyId;
-    } catch {
-      fail(t("settings.billing.errorPaymentSaveFailed"));
+    } catch (error) {
+      fail(
+        error instanceof BankTransferValidationError
+          ? error.message
+          : t("settings.billing.errorPaymentSaveFailed"),
+      );
       return null;
     } finally {
       setSavingPayment(false);
@@ -2016,15 +2067,19 @@ export default function SettingsPage() {
             </div>
           </div>
 
-          {/* Payout Details */}
-          {(settings.pay_at_property_enabled || settings.bank_transfer) && (
+          {settings.bank_transfer && bankDestination?.maskedAccount && (
+            <p className="text-sm text-gray-600">
+              Saved account: {bankDestination.maskedAccount}. Leave bank fields empty to keep it, or
+              enter complete replacement details.
+            </p>
+          )}
+          {/* Direct-transfer details */}
+          {settings.bank_transfer && (
             <div className="bg-white rounded-lg border border-gray-200 p-4 md:p-5 space-y-3">
               <div>
-                <h2 className="text-sm font-semibold text-gray-900">
-                  {t("settings.billing.payoutDetails")}
-                </h2>
+                <h2 className="text-sm font-semibold text-gray-900">Direct guest bank transfers</h2>
                 <p className="text-[12px] text-gray-500 mt-0.5">
-                  {t("settings.billing.payoutDetailsDesc")}
+                  Guests receive these bank details after submitting a bank-transfer booking.
                 </p>
               </div>
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
