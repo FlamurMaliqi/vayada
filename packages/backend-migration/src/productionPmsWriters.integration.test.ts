@@ -146,6 +146,9 @@ describe.skipIf(!URL)("production PMS writers (PostgreSQL)", () => {
           ...inquiryThread.data,
           id: previewThreadId,
           source_thread_id: "preview-thread",
+          channel: "airbnb",
+          booking_id: null,
+          source_booking_id: null,
           last_message_preview: [...previewBody].slice(0, 200).join(""),
         },
       });
@@ -159,6 +162,18 @@ describe.skipIf(!URL)("production PMS writers (PostgreSQL)", () => {
           thread_id: previewThreadId,
           source_message_id: "preview-message",
           body: previewBody,
+          raw_payload: {
+            sender: "guest",
+            message: previewBody,
+            property_id: EXTERNAL_PROPERTY,
+            provider_inquiry_id: "explicit-inquiry",
+            inquiry: {
+              arrival_date: "2026-09-01",
+              departure_date: "2026-09-03",
+              adults: 2,
+              children: 0,
+            },
+          },
         },
       });
       Object.assign(inquiryThread.data, {
@@ -303,7 +318,11 @@ describe.skipIf(!URL)("production PMS writers (PostgreSQL)", () => {
 
       const preview = await client.query(
         `SELECT thread.last_message_preview, char_length(thread.last_message_preview) AS length,
-                message.body, thread.last_message_preview = left(message.body, 280) AS matches_target
+                message.body, thread.last_message_preview = left(message.body, 280) AS matches_target,
+                thread.conversation_context_state, thread.source_booking_id, thread.guest_booking_id,
+                thread.inquiry_arrival_date::text, thread.inquiry_departure_date::text,
+                thread.inquiry_adults, thread.inquiry_children, thread.unread_count,
+                message.direction, message.sender_type, message.read_at
            FROM pms.message_threads thread JOIN pms.messages message ON message.thread_id = thread.id
           WHERE thread.id = $1 AND message.id = $2`,
         [previewThreadId, previewMessageId],
@@ -314,6 +333,17 @@ describe.skipIf(!URL)("production PMS writers (PostgreSQL)", () => {
           length: 280,
           body: previewBody,
           matches_target: true,
+          conversation_context_state: "inquiry",
+          source_booking_id: "explicit-inquiry",
+          guest_booking_id: null,
+          inquiry_arrival_date: "2026-09-01",
+          inquiry_departure_date: "2026-09-03",
+          inquiry_adults: 2,
+          inquiry_children: 0,
+          unread_count: 1,
+          direction: "inbound",
+          sender_type: "guest",
+          read_at: null,
         },
       ]);
 

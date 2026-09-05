@@ -10,10 +10,7 @@ import { pmsMessageSummary } from "./productionPmsMessagingParity.js";
 import type { PmsBuildContext, PmsTargetRecord } from "./productionPmsTypes.js";
 
 /** Approved inquiry conversion, after validating the unmodified source summaries. */
-export function normalizePmsSystemInquiries(
-  context: PmsBuildContext,
-  records: PmsTargetRecord[],
-): void {
+export function normalizePmsInquiries(context: PmsBuildContext, records: PmsTargetRecord[]): void {
   const sourceMessages = new Map(
     (context.rowsByTable.get("messages") ?? []).map((row) => [
       String(row.data["id"]).toLowerCase(),
@@ -41,13 +38,26 @@ export function normalizePmsSystemInquiries(
     const raw = optionalObject(sourceMessages.get(message.targetId)?.["raw_payload"]);
     const sender = raw["sender"];
     const sourceBody = raw["message"];
-    if (
-      typeof sender !== "string" ||
-      sender.trim().toLowerCase() !== "system" ||
-      (String(message.row["body"]).trim().toLowerCase() !== "inquiry" &&
-        !(typeof sourceBody === "string" && sourceBody.trim().toLowerCase() === "inquiry"))
-    )
-      continue;
+    const senderKind = typeof sender === "string" ? sender.trim().toLowerCase() : "";
+    const systemNotice =
+      senderKind === "system" &&
+      (String(message.row["body"]).trim().toLowerCase() === "inquiry" ||
+        (typeof sourceBody === "string" && sourceBody.trim().toLowerCase() === "inquiry"));
+    const inquiryValue = raw["inquiry"];
+    const explicitInquiry =
+      [
+        raw["provider_inquiry_id"],
+        raw["inquiry_id"],
+        optionalObject(raw["meta"])["live_feed_event_id"],
+      ].some((value) => value != null && value !== "") ||
+      (inquiryValue != null &&
+        (typeof inquiryValue !== "object" ||
+          Array.isArray(inquiryValue) ||
+          Object.keys(optionalObject(inquiryValue)).length > 0)) ||
+      ["message_type", "conversation_type"].some(
+        (field) => typeof raw[field] === "string" && raw[field].toLowerCase().includes("inquiry"),
+      );
+    if (!systemNotice && !explicitInquiry) continue;
     const thread = threads.get(threadId);
     try {
       if (
@@ -55,66 +65,101 @@ export function normalizePmsSystemInquiries(
         thread.row["source"] !== "channex" ||
         thread.row["providerChannel"] !== "airbnb"
       )
-        throw new Error("system inquiry requires a verified Airbnb thread");
+        throw new Error("inquiry requires a verified Airbnb thread");
       if (
-        requiredText(raw["message"], "inquiry message") !== String(message.row["body"]).trim() ||
+        typeof sourceBody !== "string" ||
+        sourceBody.trim() !== String(message.row["body"]).trim() ||
         optionalText(raw["booking_id"], "inquiry booking_id")
       )
-        throw new Error("system inquiry payload conflicts with retained message classification");
-      const meta = optionalObject(raw["meta"]);
-      const inquiryId = requiredText(meta["live_feed_event_id"], "inquiry identity");
-      const details = optionalObject(meta["booking_details"]);
+        throw new Error("inquiry payload conflicts with retained message classification");
+      const senderType = ["guest", "system", "channel"].includes(senderKind)
+        ? senderKind
+        : ["property", "property_user", "host", "hotel"].includes(senderKind)
+          ? "property_user"
+          : null;
+      if (
+        !senderType ||
+        (senderType !== "system" &&
+          message.row["direction"] !== (senderType === "guest" ? "inbound" : "outbound"))
+      )
+        throw new Error("inquiry sender conflicts with retained direction or is unsupported");
+      const meta = raw["meta"] == null ? {} : jsonObject(raw["meta"], "inquiry meta");
+      const inquiry = raw["inquiry"] == null ? {} : jsonObject(raw["inquiry"], "inquiry");
+      const inquiryIds = [
+        raw["provider_inquiry_id"],
+        raw["inquiry_id"],
+        inquiry["id"],
+        meta["live_feed_event_id"],
+      ]
+        .map((value) => optionalText(value, "inquiry identity"))
+        .filter((value) => value !== null);
+      const inquiryId = requiredText(inquiryIds[0], "inquiry identity");
+      if (inquiryIds.some((id) => id !== inquiryId)) throw new Error("inquiry identities conflict");
+      const details =
+        meta["booking_details"] == null
+          ? {}
+          : jsonObject(meta["booking_details"], "inquiry booking_details");
       const hotelId = uuid(sourceThreads.get(threadId)?.["hotel_id"], "inquiry hotel_id");
-      const propertyId = uuid(details["property_id"], "inquiry property_id");
+      const propertyIds = [
+        details["property_id"],
+        raw["property_id"],
+        inquiry["property_id"],
+        meta["property_id"],
+      ]
+        .filter((value) => value != null)
+        .map((value) => uuid(value, "inquiry property_id"));
+      const propertyId = uuid(propertyIds[0], "inquiry property_id");
       const binding = context.connectionByHotel.get(hotelId);
       if (!binding || uuid(binding.data["channex_property_id"], "inquiry binding") !== propertyId)
-        throw new Error("system inquiry property does not match its canonical Channex binding");
+        throw new Error("inquiry property does not match its canonical Channex binding");
+      if (propertyIds.some((id) => id !== propertyId))
+        throw new Error("inquiry property identities conflict");
+      for (const field of ["channel", "provider", "ota_name", "source"]) {
+        const channel = optionalText(raw[field], `inquiry ${field}`);
+        if (
+          channel &&
+          !["airbnb", "abnb"].includes(channel.replace(/[^a-z0-9]/gi, "").toLowerCase())
+        )
+          throw new Error("inquiry channel conflicts with its Airbnb thread");
+      }
       for (const [field, expected] of [
         ["id", message.row["sourceMessageId"]],
+        ["message_id", message.row["sourceMessageId"]],
+        ["source_message_id", message.row["sourceMessageId"]],
         ["message_thread_id", thread.row["sourceThreadId"]],
-        ["inquiry_id", inquiryId],
-        ["provider_inquiry_id", inquiryId],
+        ["thread_id", thread.row["sourceThreadId"]],
       ] as const) {
         const supplied = optionalText(raw[field], `inquiry ${field}`);
         if (supplied && supplied !== expected)
-          throw new Error(`system inquiry ${field} conflicts with retained identity`);
+          throw new Error(`inquiry ${field} conflicts with retained identity`);
       }
-      if (
-        raw["property_id"] != null &&
-        uuid(raw["property_id"], "inquiry property_id") !== propertyId
-      )
-        throw new Error("system inquiry property identities conflict");
-      const inquiry = raw["inquiry"] == null ? {} : jsonObject(raw["inquiry"], "inquiry");
-      const nestedId = optionalText(inquiry["id"], "inquiry id");
-      if (nestedId && nestedId !== inquiryId)
-        throw new Error("system inquiry id conflicts with retained identity");
       for (const field of ["channel_booking_id", "source_booking_id"])
         if (optionalText(raw[field], `inquiry ${field}`))
-          throw new Error("system inquiry payload contains a booking reference");
+          throw new Error("inquiry payload contains a booking reference");
       const stay = inquiryStay([details, meta, inquiry, raw]);
       if (!thread.row["guestBookingId"]) {
         if (thread.row["sourceBookingId"] && thread.row["sourceBookingId"] !== inquiryId)
-          throw new Error("system inquiry conflicts with the thread source reference");
+          throw new Error("inquiry conflicts with the thread source reference");
         for (const [field, value] of Object.entries(stay)) {
           const previous = thread.row[field];
           if (previous != null && value != null && previous !== value)
-            throw new Error(`system inquiry ${field} conflicts across retained messages`);
+            throw new Error(`inquiry ${field} conflicts across retained messages`);
         }
         thread.row["conversationContextState"] = "inquiry";
         thread.row["sourceBookingId"] = inquiryId;
         for (const [field, value] of Object.entries(stay))
           if (value != null) thread.row[field] = value;
       }
-      message.row["direction"] = "inbound";
-      message.row["senderType"] = "system";
+      if (senderType === "system") message.row["direction"] = "inbound";
+      message.row["senderType"] = senderType;
       changedThreads.add(threadId);
     } catch (error) {
       addPmsBlocker(
         context,
-        "INBOX_SYSTEM_INQUIRY_REQUIRES_REVIEW",
+        systemNotice ? "INBOX_SYSTEM_INQUIRY_REQUIRES_REVIEW" : "INBOX_INQUIRY_REQUIRES_REVIEW",
         "pms.messages",
         message.sourceId,
-        `Property ${message.row["propertyId"]}: ${error instanceof Error ? error.message : "invalid system inquiry evidence"}`,
+        `Property ${message.row["propertyId"]}: ${error instanceof Error ? error.message : "invalid inquiry evidence"}`,
       );
     }
   }
@@ -138,7 +183,7 @@ function inquiryStay(sources: Record<string, unknown>[]) {
     inquiryDate,
   );
   if ((arrival === null) !== (departure === null) || (arrival && departure && arrival >= departure))
-    throw new Error("system inquiry dates must be an ordered pair");
+    throw new Error("inquiry dates must be an ordered pair");
   return {
     inquiryArrivalDate: arrival,
     inquiryDepartureDate: departure,
@@ -163,7 +208,7 @@ function supplied<T>(
       if (value == null || value === "") continue;
       const parsed = parse(value);
       if (result !== null && result !== parsed)
-        throw new Error(`system inquiry ${fields[0]} aliases conflict`);
+        throw new Error(`inquiry ${fields[0]} aliases conflict`);
       result = parsed;
     }
   }
@@ -172,15 +217,15 @@ function supplied<T>(
 
 function inquiryDate(value: unknown): string {
   if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(value))
-    throw new Error("system inquiry date must be YYYY-MM-DD");
+    throw new Error("inquiry date must be YYYY-MM-DD");
   const parsed = new Date(`${value}T00:00:00Z`);
   if (!Number.isFinite(parsed.valueOf()) || parsed.toISOString().slice(0, 10) !== value)
-    throw new Error("system inquiry date must be a real calendar date");
+    throw new Error("inquiry date must be a real calendar date");
   return value;
 }
 
 function inquiryCount(value: unknown): number {
   if (typeof value !== "number" || !Number.isInteger(value) || value < 0 || value > 100)
-    throw new Error("system inquiry count must be an integer from 0 through 100");
+    throw new Error("inquiry count must be an integer from 0 through 100");
   return value;
 }
