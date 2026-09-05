@@ -16,7 +16,7 @@ import {
 } from "@/lib/constants/booking";
 import { bookingImageSizes } from "@/components/booking/imageSizes";
 
-const AMENITIES_PREVIEW_COUNT = 6;
+const AMENITIES_PREVIEW_COUNT = 8;
 
 interface RoomDetailModalProps {
   room: RoomType;
@@ -182,7 +182,6 @@ export default function RoomDetailModal({
   const visibleAmenities = showAllAmenities
     ? room.amenities
     : room.amenities.slice(0, AMENITIES_PREVIEW_COUNT);
-  const remainingAmenities = Math.max(room.amenities.length - AMENITIES_PREVIEW_COUNT, 0);
   const amenitiesId = `room-amenities-${room.id}`;
 
   // Rate option buttons — shared between mobile scroll body and desktop sticky footer
@@ -571,7 +570,7 @@ export default function RoomDetailModal({
                       </span>
                     ))}
                   </div>
-                  {remainingAmenities > 0 && (
+                  {room.amenities.length > AMENITIES_PREVIEW_COUNT && (
                     <button
                       type="button"
                       onClick={() => setShowAllAmenities((expanded) => !expanded)}
@@ -581,7 +580,7 @@ export default function RoomDetailModal({
                     >
                       {showAllAmenities
                         ? t("showLess")
-                        : t("viewFullAmenities", { count: remainingAmenities })}
+                        : t("viewFullAmenities", { count: room.amenities.length })}
                       <svg
                         className={`w-4 h-4 transition-transform ${showAllAmenities ? "rotate-180" : ""}`}
                         fill="none"
