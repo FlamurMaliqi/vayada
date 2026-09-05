@@ -77,6 +77,7 @@ export function GoogleNearbyPlace({
         element = document.createElement("gmp-place-details-compact") as PlaceElement;
         element.setAttribute("orientation", "horizontal");
         element.style.width = "100%";
+        element.style.colorScheme = "light";
         const request = document.createElement("gmp-place-details-place-request");
         request.setAttribute("place", placeId);
         const config = document.createElement("gmp-place-content-config");
@@ -229,7 +230,7 @@ export function NearbyMap({
         ref={target}
         role="region"
         aria-label="Map of our surroundings"
-        className="h-72 w-full rounded-xl bg-gray-100"
+        className="h-72 w-full rounded-2xl bg-gray-100 md:h-[440px]"
       />
       {failed && (
         <p className="mt-2 text-sm text-gray-500">
@@ -290,17 +291,20 @@ export default function NearbyPreview({
       : [];
   });
   return (
-    <section aria-label={guest ? "Our surroundings" : "Guest preview"} className="space-y-6">
+    <section
+      aria-label={guest ? "Our surroundings" : "Guest preview"}
+      className="space-y-6 text-left"
+    >
       <div>
-        <h2 className="text-xl font-semibold text-gray-950">Around us</h2>
-        <p className="mt-1 text-sm text-gray-500">
+        <h2 className="text-2xl font-semibold tracking-tight text-gray-950">Around us</h2>
+        <p className="mt-2 text-sm leading-relaxed text-gray-600">
           {preview.location.mode === "approximate"
-            ? "Our approximate area is shown. The exact address stays private."
+            ? "Discover places to eat, explore and enjoy around us."
             : "Explore our neighborhood and the places we recommend."}
         </p>
       </div>
-      <div className="grid items-start gap-6 lg:grid-cols-2">
-        <div className="lg:sticky lg:top-24">
+      <div className="grid items-start gap-8 md:grid-cols-2 lg:gap-10">
+        <div className="min-w-0 md:sticky md:top-24">
           <NearbyMap
             apiKey={apiKey}
             location={preview.location}
@@ -311,11 +315,13 @@ export default function NearbyPreview({
               cards.current[key]?.focus({ preventScroll: true });
             }}
           />
-          <p className="mt-2 text-xs text-gray-500">
-            Place details load when you open this section. Recommendations are provided by us.
-          </p>
+          {preview.location.mode === "approximate" && (
+            <p className="mt-3 text-xs leading-relaxed text-gray-500">
+              Our approximate area is shown. The exact address stays private.
+            </p>
+          )}
         </div>
-        <div className="min-w-0 space-y-6">
+        <div className="min-w-0 space-y-8">
           {!visible.length && (
             <p className="text-sm text-gray-600">Nearby places are unavailable right now.</p>
           )}
@@ -328,30 +334,40 @@ export default function NearbyPreview({
               return null;
             return (
               <section key={category} aria-label={nearbyCategoryLabels[category]}>
-                <h3 className="mb-3 font-semibold text-gray-900">
+                <h3 className="mb-3 text-base font-semibold text-gray-900">
                   {nearbyCategoryLabels[category]}
                 </h3>
-                <ul className="space-y-4">
+                <ul className="space-y-3">
                   {places.map((place: NearbyPublicPlace) => (
                     <li
                       key={place.source === "google" ? place.placeId : place.id}
-                      className={`rounded-xl border bg-white p-4 ${selected === id(place) ? "border-blue-600 ring-2 ring-blue-100" : "border-gray-200"}`}
+                      className={`scroll-mt-28 rounded-2xl border bg-white p-4 ${selected === id(place) ? "border-gray-900 ring-1 ring-gray-900" : "border-gray-200"}`}
                     >
-                      <p className="mb-2 text-xs font-semibold text-blue-700">
-                        {place.favorite ? "Recommended by us" : "Nearby"}
-                      </p>
-                      <button
-                        type="button"
-                        ref={(node) => {
-                          cards.current[id(place)] = node;
-                        }}
-                        aria-pressed={selected === id(place)}
-                        onClick={() => setSelected(id(place))}
-                        className="mb-3 rounded text-left text-sm font-medium text-blue-700 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-4"
-                      >
-                        {displayed.indexOf(place) + 1}. Select{" "}
-                        {place.source === "custom" ? place.name : "nearby place"} on map
-                      </button>
+                      <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+                        <button
+                          type="button"
+                          ref={(node) => {
+                            cards.current[id(place)] = node;
+                          }}
+                          aria-label={`${displayed.indexOf(place) + 1}. Highlight on map: ${place.source === "custom" ? place.name : "nearby place"}`}
+                          aria-pressed={selected === id(place)}
+                          onClick={() => setSelected(id(place))}
+                          className="inline-flex min-h-11 items-center gap-2 rounded-full bg-gray-50 px-3 text-sm font-medium text-gray-700 hover:bg-gray-100 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-4"
+                        >
+                          <span
+                            className="flex h-6 w-6 items-center justify-center rounded-full bg-gray-900 text-xs text-white"
+                            aria-hidden="true"
+                          >
+                            {displayed.indexOf(place) + 1}
+                          </span>
+                          Highlight on map
+                        </button>
+                        {place.favorite && (
+                          <span className="text-xs font-medium text-gray-600">
+                            Recommended by us
+                          </span>
+                        )}
+                      </div>
                       {place.source === "google" ? (
                         <GoogleNearbyPlace
                           apiKey={apiKey}
@@ -373,7 +389,7 @@ export default function NearbyPreview({
                       )}
                       {(place.source === "custom" || positions[place.placeId]) && (
                         <a
-                          className="mt-2 inline-block text-sm text-blue-700 underline"
+                          className="mt-3 inline-flex min-h-11 items-center rounded-full border border-gray-200 px-4 text-sm font-medium text-gray-900 hover:bg-gray-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-4"
                           href={
                             place.source === "custom"
                               ? `https://www.google.com/maps/dir/?api=1&destination=${place.latitude},${place.longitude}`
@@ -385,7 +401,11 @@ export default function NearbyPreview({
                           Directions
                         </a>
                       )}
-                      {place.note && <p className="mt-3 text-sm text-gray-600">{place.note}</p>}
+                      {place.note && (
+                        <p className="mt-3 border-l-2 border-gray-200 pl-3 text-sm leading-relaxed text-gray-600">
+                          {place.note}
+                        </p>
+                      )}
                     </li>
                   ))}
                 </ul>
@@ -393,7 +413,7 @@ export default function NearbyPreview({
                   candidates.filter((place) => place.category === category).length > 5 && (
                     <button
                       type="button"
-                      className="mt-3 text-sm font-medium text-blue-700"
+                      className="mt-3 min-h-11 rounded-full border border-gray-200 px-4 text-sm font-medium text-gray-900 hover:bg-gray-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-4"
                       onClick={() => setExpanded((current) => [...current, category])}
                     >
                       Show more {nearbyCategoryLabels[category].toLowerCase()}

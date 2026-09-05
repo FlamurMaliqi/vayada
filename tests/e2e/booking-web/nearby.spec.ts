@@ -132,16 +132,18 @@ for (const mobile of [false, true])
     ).toBe(0);
     await page.getByRole("button", { name: "Explore our surroundings" }).click();
     const section = page.getByRole("region", { name: "Our surroundings", exact: true });
-    await expect(section.getByRole("heading", { name: "Our favorite beach", exact: true })).toBeVisible();
+    await expect(
+      section.getByRole("heading", { name: "Our favorite beach", exact: true }),
+    ).toBeVisible();
     await expect(section.getByText("Recommended by us", { exact: true })).toHaveCount(1);
     for (const category of ["Beaches & nature", "Food & drink", "Things to do", "Transport"])
       await expect(section.getByRole("heading", { name: category, exact: true })).toBeVisible();
-    const select = section.getByRole("button", { name: /Select Our favorite beach on map/ });
+    const select = section.getByRole("button", { name: /Highlight on map: Our favorite beach/ });
     await select.focus();
     await page.keyboard.press("Enter");
     await expect(select).toHaveAttribute("aria-pressed", "true");
     await section.getByRole("button", { name: "Map marker Airport", exact: true }).click();
-    const airport = section.getByRole("button", { name: /Select Airport on map/ });
+    const airport = section.getByRole("button", { name: /Highlight on map: Airport/ });
     await expect(airport).toBeFocused();
     await expect(airport).toHaveAttribute("aria-pressed", "true");
     expect(
@@ -170,7 +172,9 @@ test("map failure keeps readable recommendations and room selection", async ({ p
   await expect(
     page.getByText("Map unavailable. Explore the places in the list below."),
   ).toBeVisible();
-  await expect(page.getByRole("heading", { name: "Our favorite beach", exact: true })).toBeVisible();
+  await expect(
+    page.getByRole("heading", { name: "Our favorite beach", exact: true }),
+  ).toBeVisible();
   await expect(page.getByRole("button", { name: /Select This Rate/i }).first()).toBeVisible();
 });
 test("hidden location never mounts Google or exposes directions", async ({ page }) => {
@@ -199,7 +203,9 @@ test("a pending refresh can be checked without reloading the booking page", asyn
   );
   await page.getByRole("button", { name: "Explore our surroundings" }).click();
   await page.getByRole("button", { name: "Check for updated places" }).click();
-  await expect(page.getByRole("heading", { name: "Our favorite beach", exact: true })).toBeVisible();
+  await expect(
+    page.getByRole("heading", { name: "Our favorite beach", exact: true }),
+  ).toBeVisible();
   await expect(page.getByRole("button", { name: "Check for updated places" })).toHaveCount(0);
   expect(reads).toBe(2);
 });
