@@ -231,6 +231,10 @@ function moveAddon(addons: AddonItem[], sourceAddonId: string, targetAddonId: st
 
 export default function BookingFlowPage() {
   const [activeTab, setActiveTab] = useState<Tab>("rooms");
+  useEffect(() => {
+    const tab = new URLSearchParams(window.location.search).get("tab");
+    if (["rooms", "addons", "benefits", "guest-form"].includes(tab ?? "")) setActiveTab(tab as Tab);
+  }, []);
   const [loading, setLoading] = useState(true);
   const [feedback, setFeedback] = useState<{ type: "success" | "error"; message: string } | null>(
     null,
