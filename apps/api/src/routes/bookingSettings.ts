@@ -1,3 +1,4 @@
+import { parseBookingPromotions, type BookingPromotion } from "@vayada/domain-booking";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import type {
   PmsInventoryPublicOfferProjectionPort,
@@ -329,6 +330,7 @@ export type BookingDesignSettingsResponse = {
 };
 
 export type BookingLastMinuteSettingsResponse = {
+  promotions?: BookingPromotion[];
   enabled: boolean;
   stackWithPromo: boolean;
   tiers: BookingLastMinuteTier[];
@@ -498,7 +500,10 @@ type BookingSettingsQueryClient = {
 };
 
 export type BookingSettingsWriteErrorCategory =
-  "authentication" | "authorization" | "validation" | "write_model";
+  | "authentication"
+  | "authorization"
+  | "validation"
+  | "write_model";
 
 export type BookingSettingsWriteErrorCode =
   | "unauthenticated"
@@ -523,7 +528,9 @@ export type BookingSettingsWriteError = {
 
 export type BookingAddonSettingsErrorCategory = "authentication" | "authorization" | "read_model";
 export type BookingGuestFormSettingsErrorCategory =
-  "authentication" | "authorization" | "read_model";
+  | "authentication"
+  | "authorization"
+  | "read_model";
 
 export type BookingAddonSettingsErrorCode =
   | "unauthenticated"
@@ -544,15 +551,23 @@ export type BookingGuestFormSettingsErrorCode =
   | "read_model_unavailable";
 
 export type BookingBenefitsSettingsErrorCategory =
-  "authentication" | "authorization" | "read_model";
+  | "authentication"
+  | "authorization"
+  | "read_model";
 
 export type BookingLocalizationSettingsErrorCategory =
-  "authentication" | "authorization" | "read_model";
+  | "authentication"
+  | "authorization"
+  | "read_model";
 
 export type BookingRoomFilterSettingsErrorCategory =
-  "authentication" | "authorization" | "read_model";
+  | "authentication"
+  | "authorization"
+  | "read_model";
 export type BookingLastMinuteSettingsErrorCategory =
-  "authentication" | "authorization" | "read_model";
+  | "authentication"
+  | "authorization"
+  | "read_model";
 
 export type BookingBenefitsSettingsErrorCode =
   | "unauthenticated"
@@ -2110,9 +2125,15 @@ export function createPgTargetBookingSettingsRepository(config: {
       return row ? toTargetDesignSettings(row) : null;
     },
     async updateLastMinuteSettingsByHotelId(hotelId, settings) {
-      const row = await updateSettings(hotelId, `last_minute_discount = $2::jsonb`, [
-        JSON.stringify(settings),
-      ]);
+      const row = await updateSettings(
+        hotelId,
+        `last_minute_discount = $2::jsonb${
+          settings.promotions === undefined
+            ? " || CASE WHEN settings.last_minute_discount ? 'promotions' THEN jsonb_build_object('promotions', settings.last_minute_discount->'promotions') ELSE '{}'::jsonb END"
+            : ""
+        }`,
+        [JSON.stringify(settings)],
+      );
       return row ? toTargetLastMinuteSettings(row) : null;
     },
     async close() {
@@ -2909,14 +2930,25 @@ export async function registerBookingSettingsRoutes(
         request,
         reply,
         parseBody: parseLastMinuteSettingsWriteBody,
-        write: (hotelId, settings) =>
-          writeRepository.updateLastMinuteSettingsByHotelId
+        write: async (hotelId, settings) => {
+          if (settings.promotions === undefined) {
+            const current = await repository.findLastMinuteSettingsByHotelId?.(hotelId);
+            if (
+              isPlainRecord(current?.lastMinuteDiscount) &&
+              current.lastMinuteDiscount.promotions !== undefined
+            )
+              throw new BookingPromotionsConflictError("Manage automatic discounts from Promos.");
+          }
+          return writeRepository.updateLastMinuteSettingsByHotelId
             ? writeRepository.updateLastMinuteSettingsByHotelId(hotelId, settings)
-            : Promise.resolve(null),
+            : null;
+        },
         toResponse: toLastMinuteSettingsResponse,
       }),
   );
 }
+
+class BookingPromotionsConflictError extends Error {}
 
 type ValidationResult<T> = { ok: true; value: T } | { ok: false; details: string[] };
 
@@ -3070,6 +3102,14 @@ async function handleBookingSettingsWrite<TBody, TStored>(input: {
   try {
     stored = await input.write(hotelId, parsed.value, context);
   } catch (error) {
+    if (error instanceof BookingPromotionsConflictError) {
+      return input.reply.code(409).send({
+        statusCode: 409,
+        code: "promotion_settings_conflict",
+        category: "write_model",
+        message: error.message,
+      });
+    }
     if (error instanceof BookingContactPublicationConflictError) {
       return sendBookingSettingsWriteError(input.reply, {
         statusCode: 409,
@@ -3511,10 +3551,20 @@ function isHttpUrl(value: string): boolean {
 function parseLastMinuteSettingsWriteBody(
   body: unknown,
 ): ValidationResult<UpdateBookingLastMinuteSettingsBody> {
-  const parsed = expectStrictObject(body, ["enabled", "stackWithPromo", "tiers"]);
+  const parsed = expectStrictObject(body, [
+    "enabled",
+    "stackWithPromo",
+    "tiers",
+    ...(isPlainRecord(body) && Object.hasOwn(body, "promotions") ? ["promotions"] : []),
+  ]);
   if (!parsed.ok) return parsed;
 
   const details: string[] = [];
+  const promotions =
+    parsed.value.promotions === undefined
+      ? undefined
+      : parseBookingPromotions(parsed.value.promotions);
+  if (promotions === null) return { ok: false, details: ["Invalid or duplicate promotions."] };
   const enabled = expectBoolean(parsed.value, "enabled", details);
   const stackWithPromo = expectBoolean(parsed.value, "stackWithPromo", details);
   const tiers = normalizeLastMinuteTiers(parsed.value.tiers, details);
@@ -3533,6 +3583,7 @@ function parseLastMinuteSettingsWriteBody(
       enabled,
       stackWithPromo,
       tiers,
+      ...(promotions ? { promotions } : {}),
     },
   };
 }
@@ -3614,6 +3665,10 @@ export function toLastMinuteSettingsResponse(
   const parsed = parseLastMinuteSettingsValue(settings.lastMinuteDiscount);
   return {
     ...parsed,
+    ...(isPlainRecord(settings.lastMinuteDiscount) &&
+    settings.lastMinuteDiscount.promotions !== undefined
+      ? { promotions: parseBookingPromotions(settings.lastMinuteDiscount.promotions) ?? [] }
+      : {}),
     updatedAt: toIsoString(settings.updatedAt),
   };
 }
@@ -3865,7 +3920,9 @@ type NullablePropertySettingsStringKey =
   | "cancellationPolicyText";
 
 type BooleanPropertySettingsKey =
-  "specialRequestsEnabled" | "arrivalTimeEnabled" | "guestCountEnabled";
+  | "specialRequestsEnabled"
+  | "arrivalTimeEnabled"
+  | "guestCountEnabled";
 
 function assignOptionalNullableString(
   target: UpdateBookingPropertySettingsBody,
@@ -4450,7 +4507,10 @@ type BookingSettingsAccessError = {
 };
 
 type BookingSettingsAuthorizationErrorCode =
-  "missing_permission" | "missing_entitlement" | "inactive_entitlement" | "missing_resource_access";
+  | "missing_permission"
+  | "missing_entitlement"
+  | "inactive_entitlement"
+  | "missing_resource_access";
 
 function enforceBookingSettingsPolicy(
   request: FastifyRequest,
