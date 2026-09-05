@@ -62,6 +62,23 @@ attachment rows requires an explicit reviewed backfill, not a silent rerun updat
 
 ## Remaining release gates
 
+### Approved historical inquiry read rule (2026-09-05)
+
+Verified historical Airbnb system inquiries are inbound messages from `system`.
+Keep a recorded `read_at`; when it is absent, count the inquiry as unread for
+staff review. Never invent a read timestamp or reopen a closed/no-reply-needed
+conversation. Recompute only unread totals and latest-message direction after
+the existing source consistency checks pass; preserve timestamps and source
+checksums. Historical import still creates no jobs, receipts or guest sends.
+
+The first slice handles the legacy flat message-attributes shape with sender
+`system`, message `inquiry`, a `meta.live_feed_event_id` and same-property
+`meta.booking_details`. Verify retained provider identities and the canonical
+Channex property binding; incomplete/conflicting evidence blocks for review.
+Other inquiry forms and normalized inquiry context/dates/occupancy remain a
+separate release gate. This is not approval to overwrite existing target history
+or to apply a production migration.
+
 Before a production apply or guest Inbox acceptance, record evidence for:
 
 1. Actual source/target row counts, provider natural-key uniqueness, property and

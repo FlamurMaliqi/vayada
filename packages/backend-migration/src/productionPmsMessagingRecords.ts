@@ -19,6 +19,7 @@ import {
 } from "./productionBookingValues.js";
 import { pmsRecord } from "./productionPmsValues.js";
 import { validatePmsMessagingSource } from "./productionPmsMessagingParity.js";
+import { normalizePmsSystemInquiries } from "./productionPmsSystemInquiries.js";
 
 export function buildPmsMessagingRecords(context: PmsBuildContext): PmsTargetRecord[] {
   const records: PmsTargetRecord[] = [];
@@ -29,6 +30,7 @@ export function buildPmsMessagingRecords(context: PmsBuildContext): PmsTargetRec
   for (const source of context.rowsByTable.get("message_attachments") ?? [])
     append(context, source, records, () => attachment(context, source));
   validatePmsMessagingSource(context, records);
+  if (!context.blockers.length) normalizePmsSystemInquiries(context, records);
   return records;
 }
 

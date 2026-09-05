@@ -34,23 +34,7 @@ export function validatePmsMessagingSource(
 
   for (const thread of records.filter((record) => record.targetTable === "message_threads")) {
     const messages = messagesByThread.get(thread.targetId) ?? [];
-    let latest: PmsTargetRecord | undefined;
-    let unread = 0;
-    for (const message of messages) {
-      if (message.row["direction"] === "inbound" && message.row["readAt"] === null) unread++;
-      // Same ordering as target intake: sent_at DESC, id DESC; arrival order is irrelevant.
-      const time = Date.parse(String(message.row["sentAt"]));
-      const latestTime = latest ? Date.parse(String(latest.row["sentAt"])) : -Infinity;
-      if (time > latestTime || (time === latestTime && message.targetId > latest!.targetId))
-        latest = message;
-    }
-    const expected: Record<string, unknown> = {
-      unreadCount: unread,
-      lastMessageAt: latest?.row["sentAt"] ?? null,
-      // PostgreSQL LEFT counts Unicode code points, not JavaScript UTF-16 code units.
-      lastMessagePreview: latest ? [...String(latest.row["body"])].slice(0, 280).join("") : null,
-      lastMessageDirection: latest?.row["direction"] ?? null,
-    };
+    const expected: Record<string, unknown> = pmsMessageSummary(messages);
     const fields = Object.keys(expected).filter((field) => thread.row[field] !== expected[field]);
     if (fields.length)
       mismatch(
@@ -60,6 +44,26 @@ export function validatePmsMessagingSource(
         `mismatched fields: ${fields.join(", ")}`,
       );
   }
+}
+
+export function pmsMessageSummary(messages: PmsTargetRecord[]) {
+  let latest: PmsTargetRecord | undefined;
+  let unread = 0;
+  for (const message of messages) {
+    if (message.row["direction"] === "inbound" && message.row["readAt"] === null) unread++;
+    // Same ordering as target intake: sent_at DESC, id DESC; arrival order is irrelevant.
+    const time = Date.parse(String(message.row["sentAt"]));
+    const latestTime = latest ? Date.parse(String(latest.row["sentAt"])) : -Infinity;
+    if (time > latestTime || (time === latestTime && message.targetId > latest!.targetId))
+      latest = message;
+  }
+  return {
+    unreadCount: unread,
+    lastMessageAt: latest?.row["sentAt"] ?? null,
+    // PostgreSQL LEFT counts Unicode code points, not JavaScript UTF-16 code units.
+    lastMessagePreview: latest ? [...String(latest.row["body"])].slice(0, 280).join("") : null,
+    lastMessageDirection: latest?.row["direction"] ?? null,
+  };
 }
 
 function mismatch(
