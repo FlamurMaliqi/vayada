@@ -1,5 +1,8 @@
 "use client";
 
+import { SupportButton } from "@vayada/settings-ui";
+import { apiClient } from "@/services/api/client";
+
 import { Bars3Icon, XMarkIcon } from "@heroicons/react/24/outline";
 import { useState } from "react";
 import { authService } from "@/services/auth";
@@ -14,6 +17,15 @@ export default function Navbar({ userName, userInitials }: NavbarProps) {
 
   return (
     <nav className="bg-white border-b border-gray-200 sticky top-0 z-50">
+      <SupportButton
+        product="affiliate"
+        submit={(request) =>
+          apiClient.post("/api/support", request, {
+            signal: AbortSignal.timeout(20000),
+            redirectOnUnauthorized: false,
+          })
+        }
+      />
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
         <div className="flex items-center justify-between h-16">
           <div className="flex items-center gap-4">

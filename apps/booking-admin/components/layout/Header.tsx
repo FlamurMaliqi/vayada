@@ -1,5 +1,8 @@
 "use client";
 
+import { SupportButton } from "@vayada/settings-ui";
+import { apiClient } from "@/services/api/client";
+
 import { useState, useRef, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import {
@@ -257,6 +260,12 @@ export default function Header({ onMenuToggle }: { onMenuToggle?: () => void }) 
 
       <NavigationSearch hotelId={selectedHotel?.id} />
 
+      <SupportButton
+        product="booking"
+        submit={(request) =>
+          apiClient.post("/api/support", request, { signal: AbortSignal.timeout(20000) })
+        }
+      />
       {/* Right section: Preview + Notifications + Profile */}
       <div className="flex items-center gap-2">
         {/* Preview Button */}

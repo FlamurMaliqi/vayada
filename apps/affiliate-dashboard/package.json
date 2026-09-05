@@ -23,7 +23,8 @@
     "react-hook-form": "^7.74.0",
     "swr": "^2.4.1",
     "tailwind-merge": "^2.0.0",
-    "zod": "^4.3.6"
+    "zod": "^4.3.6",
+    "@vayada/settings-ui": "*"
   },
   "devDependencies": {
     "@types/node": "^20",
