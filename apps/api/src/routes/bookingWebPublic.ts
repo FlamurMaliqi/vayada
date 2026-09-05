@@ -437,10 +437,6 @@ export async function registerBookingWebPublicRoutes(
   options: BookingWebPublicRoutesOptions,
 ): Promise<void> {
   const now = options.now ?? (() => new Date());
-  if (options.nearby) {
-    const { registerPublicNearbyRoute } = await import("./publicNearby.js");
-    await registerPublicNearbyRoute(app, options.profileRepository, options.nearby);
-  }
   const checkoutAdapter = options.checkoutAdapter;
   const affiliateAdapter =
     options.affiliateAdapter ?? createUnavailableBookingWebAffiliateAdapter();
@@ -453,6 +449,10 @@ export async function registerBookingWebPublicRoutes(
     reply.code(204);
     return reply.send();
   });
+  if (options.nearby) {
+    const { registerPublicNearbyRoute } = await import("./publicNearby.js");
+    await registerPublicNearbyRoute(app, options.profileRepository, options.nearby);
+  }
 
   if (options.calendarRepository) {
     app.addHook("onClose", async () => {
@@ -490,7 +490,7 @@ export async function registerBookingWebPublicRoutes(
 
     const response = serializePublicHotelProfileProjection(profile);
     assertPublicBookabilityPublicSafe(response);
-    reply.header("Cache-Control", "public, max-age=60, stale-while-revalidate=300");
+    reply.header("Cache-Control", "no-store");
     reply.header("X-Vayada-RateLimit-Policy", "public-booking-web-profile-read");
     return response;
   });
