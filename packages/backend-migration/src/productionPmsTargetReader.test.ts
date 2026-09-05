@@ -102,6 +102,32 @@ describe("production PMS target reader", () => {
     ).toEqual(["vay1351-run"]);
   });
 
+  it("loads attachment conflict identities across runs without broadening reusable media", async () => {
+    const calls: Array<{ sql: string; values: unknown[] | undefined }> = [];
+    const client = {
+      async query(sql: string, values?: unknown[]) {
+        calls.push({ sql, values });
+        return {
+          rows: sql.includes("SELECT DISTINCT source_row_id")
+            ? [{ sourceRowId: "attachment:source_url" }]
+            : [],
+        };
+      },
+    };
+    const prerequisites = await readProductionPmsPrerequisites(client as never, "current-run");
+    expect(prerequisites.attachmentMediaSourceIds).toEqual(["attachment:source_url"]);
+    expect(prerequisites.media).toEqual([]);
+    const conflicts = calls.find((call) => call.sql.includes("SELECT DISTINCT source_row_id"))!;
+    expect(conflicts.values).toBeUndefined();
+    expect(conflicts.sql).toContain(
+      "source_system = 'pms' AND source_table = 'message_attachments'",
+    );
+    expect(conflicts.sql).not.toMatch(/migrationRunId|lifecycle_status/);
+    const reusable = calls.find((call) => call.sql.includes('AS "mediaObjectId"'))!;
+    expect(reusable.values).toEqual(["current-run"]);
+    expect(reusable.sql).toContain("media.source_metadata ->> 'migrationRunId' = $1");
+  });
+
   it("loads UUID and composite target rows, provenance, and unique collisions", async () => {
     const calls: string[] = [];
     const client = {

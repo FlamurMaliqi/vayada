@@ -78,6 +78,8 @@ export type ProductionPmsTargetState = {
   userIds: string[];
   media?: PmsMediaReference[];
   mediaQuarantines?: PmsMediaQuarantine[];
+  /** All runs, conflict detection only; not authorization to reuse a media object. */
+  attachmentMediaSourceIds?: string[];
   /** @deprecated Retained for older plan fixtures; media gates use source-bound references. */
   mediaIds: string[];
   records: ExistingPmsTargetRecord[];

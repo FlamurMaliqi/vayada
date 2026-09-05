@@ -26,6 +26,7 @@ const EXTERNAL_ROOM = "13560000-0000-4000-8000-000000000088";
 const EXTERNAL_RATE = "13560000-0000-4000-8000-000000000089";
 const EXTERNAL_BOOKING = "13560000-0000-4000-8000-000000000090";
 const ATTACHMENT = "13560000-0000-4000-8000-000000000104";
+const UNAVAILABLE_ATTACHMENT = "13560000-0000-4000-8000-000000000109";
 const ATTACHMENT_MEDIA = "13560000-0000-4000-8000-000000000105";
 const ROOM_MEDIA = "13560000-0000-4000-8000-000000000106";
 const ROOM_SOURCE_IMAGE = "https://legacy-media-test.s3.amazonaws.com/rooms/double.jpg";
@@ -85,6 +86,40 @@ describe.skipIf(!URL)("production PMS writers (PostgreSQL)", () => {
       [PROPERTY],
     );
     expect(stored.rows[0].count).toBe(0);
+  });
+
+  it("blocks missing attachment references when a prior-run media import exists", async () => {
+    await client.query("BEGIN");
+    try {
+      await seedPrerequisites(client);
+      await client.query(
+        `UPDATE platform.media_objects SET source_metadata = source_metadata || '{"migrationRunId":"prior-run"}'::jsonb WHERE id = $1`,
+        [ATTACHMENT_MEDIA],
+      );
+      const prerequisites = await readProductionPmsPrerequisites(client, RUN);
+      expect(prerequisites.media?.some((media) => media.mediaObjectId === ATTACHMENT_MEDIA)).toBe(
+        false,
+      );
+      const source = sourceRows();
+      source.find(
+        (row) => row.sourceTable === "message_attachments" && row.data["id"] === ATTACHMENT,
+      )!.data["s3_key"] = null;
+      const plan = buildProductionPmsPlan({
+        sourceRunId: RUN,
+        snapshotAt: "2026-09-04T00:00:00Z",
+        completedAt: "2026-09-04T00:00:00Z",
+        rows: source,
+        target: { ...prerequisites, records: [], provenance: [] },
+      });
+      expect(plan.blockers).toContainEqual(
+        expect.objectContaining({
+          sourceId: ATTACHMENT,
+          message: expect.stringContaining("conflicts with"),
+        }),
+      );
+    } finally {
+      await client.query("ROLLBACK");
+    }
   });
 
   it("writes and verifies a complete inert PMS migration flow", async () => {
@@ -212,6 +247,21 @@ describe.skipIf(!URL)("production PMS writers (PostgreSQL)", () => {
       expect(verified.blockers).toEqual([]);
       expect(verified.writes).toEqual([]);
       expect(verified.checksum).toBe(plan.checksum);
+
+      const unavailable = await client.query(
+        `SELECT property_id, platform_media_object_id, s3_key, source_url, filename
+           FROM pms.message_attachments WHERE id = $1`,
+        [UNAVAILABLE_ATTACHMENT],
+      );
+      expect(unavailable.rows).toEqual([
+        {
+          property_id: PROPERTY,
+          platform_media_object_id: null,
+          s3_key: null,
+          source_url: null,
+          filename: "missing-file.pdf",
+        },
+      ]);
 
       const stored = await client.query(
         `SELECT
@@ -736,6 +786,12 @@ function messageRows(): IdentitySourceRow[] {
       s3_key: "legacy/messages/file.pdf",
       filename: "file.pdf",
       created_at: "2026-08-28T00:00:02Z",
+    }),
+    row("message_attachments", {
+      id: UNAVAILABLE_ATTACHMENT,
+      message_id: message,
+      filename: "missing-file.pdf",
+      created_at: "2026-08-28T00:00:03Z",
     }),
   ];
 }

@@ -38,6 +38,28 @@ reports contain canonical property/record IDs and field names, never message
 content or provider keys. Reconcile inconsistent source evidence explicitly.
 These are source checks, not proof of actual-target parity or inquiry semantics.
 
+## Historical attachment disposition
+
+Keep an attachment's identity, verified property/message ownership and available
+metadata when both legacy storage references are absent or blank. Store null media
+ID, storage key and source URL; the existing Inbox read model reports it as
+`unavailable` with no access path. The immutable source checksum preserves evidence.
+
+A nonempty invalid `source_url` may use the same unavailable representation only
+when the current source run's media quarantine matches its table, attachment/field
+identity, purpose, raw-value hash and `INVALID_HTTPS_URL` reason. Never copy the raw
+quarantined URL/value. Any existing media binding for an unavailable attachment,
+including prior runs and inactive objects, blocks for reconciliation rather than
+hiding an ownership/storage conflict. Cross-run source IDs are conflict evidence
+only; usable media and quarantine evidence still require the current source run.
+
+A nonempty S3 key takes precedence over an unused source URL, matching the media
+importer. Valid references still require an active property-scoped private Platform
+Media object; missing imports, failed downloads, mismatched quarantines and unsafe
+media are blockers, not automatic unavailable fallbacks. This does not backfill
+files or approve a live quarantine inventory. Later repair of immutable imported
+attachment rows requires an explicit reviewed backfill, not a silent rerun update.
+
 ## Remaining release gates
 
 Before a production apply or guest Inbox acceptance, record evidence for:

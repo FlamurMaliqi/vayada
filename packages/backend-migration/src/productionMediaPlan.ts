@@ -596,7 +596,11 @@ function pmsAttachment(context: Context, row: IdentitySourceRow): ProductionMedi
   const thread = find(context, "message_threads", uuid(message.data["thread_id"], "thread_id"));
   const hotelId = uuid(thread.data["hotel_id"], "hotel_id");
   const scope = hotelScope(context, "pms", "hotels", hotelId, "pms", "pms_hotel", "operator");
-  const s3Key = optionalText(row.data["s3_key"], "s3_key");
+  const sourceKey = row.data["s3_key"];
+  const s3Key = optionalText(
+    typeof sourceKey === "string" ? sourceKey.trim() : sourceKey,
+    "s3_key",
+  );
   const sourceUrl = row.data["source_url"];
   if (!s3Key && (sourceUrl === null || sourceUrl === undefined || sourceUrl === "")) return [];
   const value = s3Key ? s3Url(context.legacyPmsBucket, s3Key) : sourceUrl;
