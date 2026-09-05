@@ -890,6 +890,7 @@ test.describe("pms-web smoke", () => {
             ...pmsWebRoomType,
             roomTypeId: createdRoomTypeId,
             name: "Castrop Suite",
+            baseRate: { amountDecimal: "200.00", currency: "USD" },
             roomCount: 2,
           },
           commandMeta: { replayed: false },
@@ -948,6 +949,78 @@ test.describe("pms-web smoke", () => {
       },
     );
 
+    const canonicalAt = "2026-09-04T00:00:00.000Z";
+    await page.route(`**/api/pms/properties/${PMS_WEB_PROPERTY_ID}/pricing-source`, (route) =>
+      route.fulfill({
+        json: {
+          contractVersion: "pms-pricing.v1",
+          propertyId: PMS_WEB_PROPERTY_ID,
+          pricingCurrency: {
+            contractVersion: "pms-pricing.v1",
+            propertyId: PMS_WEB_PROPERTY_ID,
+            currency: "USD",
+            pricingCurrencyRevision: 1,
+            createdAt: canonicalAt,
+            updatedAt: canonicalAt,
+          },
+          flexibleRatePlans: [],
+          capturedAt: canonicalAt,
+        },
+      }),
+    );
+    await page.route(
+      `**/api/pms/setup/properties/${PMS_WEB_PROPERTY_ID}/room-types/${createdRoomTypeId}`,
+      (route) =>
+        route.fulfill({
+          json: {
+            contractVersion: "pms-room-facts.v1",
+            propertyId: PMS_WEB_PROPERTY_ID,
+            roomTypeId: createdRoomTypeId,
+            roomFactsRevision: 1,
+            lifecycle: "active",
+            facts: {
+              name: "Castrop Suite",
+              description: "Suite",
+              category: "suite",
+              occupancy: { maxGuests: 2, maxAdults: 2, maxChildren: 0 },
+              beds: [{ type: "king", quantity: 1 }],
+              bedrooms: 1,
+              bathrooms: 1,
+              bathroomType: "private",
+              size: null,
+            },
+            createdAt: canonicalAt,
+            updatedAt: canonicalAt,
+          },
+        }),
+    );
+    let savedCreatePlan: Record<string, unknown> | undefined;
+    await page.route(
+      `**/api/pms/properties/${PMS_WEB_PROPERTY_ID}/room-types/${createdRoomTypeId}/flexible-rate-plan`,
+      (route) => {
+        savedCreatePlan = route.request().postDataJSON();
+        return route.fulfill({
+          json: {
+            contractVersion: "pms-pricing.v1",
+            outcome: "created",
+            flexibleRatePlan: {
+              contractVersion: "pms-pricing.v1",
+              propertyId: PMS_WEB_PROPERTY_ID,
+              roomTypeId: createdRoomTypeId,
+              flexibleRatePlanId: "44444444-4444-4444-8444-444444444444",
+              flexibleRatePlanRevision: 1,
+              sourceRoomFactsRevision: 1,
+              baseAmount: { amountDecimal: savedCreatePlan!.baseAmountDecimal, currency: "USD" },
+              cancellationTerms: savedCreatePlan!.cancellationTerms,
+              createdAt: canonicalAt,
+              updatedAt: canonicalAt,
+            },
+            acceptedAt: canonicalAt,
+          },
+        });
+      },
+    );
+
     await page.goto("/rooms/new");
     await page.getByPlaceholder("e.g. Two-Bedroom Villa").fill("Castrop Suite");
     await page.getByRole("button", { name: "Pricing & Rates" }).click();
@@ -977,6 +1050,12 @@ test.describe("pms-web smoke", () => {
 
     await expect(page).toHaveURL(/\/rooms$/);
     expect(roomTypeCreates).toBe(1);
+    expect(savedCreatePlan).toMatchObject({
+      expectedRoomFactsRevision: 1,
+      expectedPricingCurrencyRevision: 1,
+      expectedFlexibleRatePlanRevision: 0,
+      baseAmountDecimal: "200.00",
+    });
     expect(labelWrites).toEqual([
       { expectedRevision: 1, operationalLabel: "Castrop Suite 1" },
       { expectedRevision: 2, operationalLabel: "Castrop Suite 2" },
@@ -985,6 +1064,150 @@ test.describe("pms-web smoke", () => {
     await expect(
       page.getByText("Payment settings updates is not available on PMS next-stack yet."),
     ).toHaveCount(0);
+    await assertNoLegacyCalls();
+    await assertHealthy();
+  });
+
+  test("saves a room rate through the canonical pricing owner", async ({ page }, testInfo) => {
+    const assertHealthy = watchPageHealth(page, testInfo);
+    const assertNoLegacyCalls = watchNoLegacyCalls(page, testInfo, "pms-web-operations");
+    const roomTypeId = "22222222-2222-4222-8222-222222222222";
+    let savedRate = "180.00";
+    let canonicalPlanRevision = 0;
+    let savedPlanBody: Record<string, unknown> | undefined;
+    let roomReads = 0;
+    const roomType = () => ({
+      ...pmsWebRoomType,
+      roomTypeId,
+      version: "room-type-facts-v3",
+      roomMediaRevision: 1,
+      ratePlans:
+        canonicalPlanRevision === 0
+          ? []
+          : [
+              {
+                ratePlanId: "11111111-1111-4111-8111-111111111111",
+                pricingContractVersion: "pms-pricing.v1",
+                code: "ONB15-FLEX",
+                name: "Flexible",
+                rateType: "flexible",
+                mealPlan: null,
+                baseRate: { amountDecimal: savedRate, currency: "EUR" },
+                active: true,
+              },
+            ],
+    });
+
+    await mockPmsWebAuthenticatedSession(page);
+    await mockPmsWebTargetRoutes(page);
+    await page.route(
+      `**/api/pms/properties/${PMS_WEB_PROPERTY_ID}/room-types/${roomTypeId}`,
+      (route) => {
+        roomReads += 1;
+        return route.fulfill({ json: { propertyId: PMS_WEB_PROPERTY_ID, item: roomType() } });
+      },
+    );
+    const setupPath = `**/api/pms/setup/properties/${PMS_WEB_PROPERTY_ID}/room-types/${roomTypeId}`;
+    await page.route(`${setupPath}/capacity`, (route) =>
+      route.fulfill({
+        json: {
+          contractVersion: "pms-room-facts.v1",
+          propertyId: PMS_WEB_PROPERTY_ID,
+          roomTypeId,
+          roomUnitsRevision: 2,
+          activeUnitCount: 1,
+          capturedAt: "2026-09-04T00:00:00.000Z",
+        },
+      }),
+    );
+    await page.route(`${setupPath}/units`, (route) =>
+      route.fulfill({
+        json: {
+          items: [
+            {
+              contractVersion: "pms-room-facts.v1",
+              propertyId: PMS_WEB_PROPERTY_ID,
+              roomTypeId,
+              roomUnitId: "33333333-3333-4333-8333-333333333333",
+              lifecycle: "active",
+              operationalLabel: "Alpine Suite 1",
+              operationalLabelStatus: "verified",
+            },
+          ],
+        },
+      }),
+    );
+    await page.route(`**/api/pms/properties/${PMS_WEB_PROPERTY_ID}/pricing-source`, (route) =>
+      route.fulfill({
+        json: {
+          pricingCurrency: { currency: "EUR", pricingCurrencyRevision: 4 },
+          flexibleRatePlans:
+            canonicalPlanRevision === 0
+              ? []
+              : [
+                  {
+                    roomTypeId,
+                    flexibleRatePlanId: "11111111-1111-4111-8111-111111111111",
+                    flexibleRatePlanRevision: canonicalPlanRevision,
+                    sourceRoomFactsRevision: 3,
+                    baseAmount: { amountDecimal: savedRate, currency: "EUR" },
+                    cancellationTerms: {},
+                  },
+                ],
+        },
+      }),
+    );
+    await page.route(
+      `**/api/pms/properties/${PMS_WEB_PROPERTY_ID}/room-types/${roomTypeId}/flexible-rate-plan`,
+      (route) => {
+        savedPlanBody = route.request().postDataJSON() as Record<string, unknown>;
+        savedRate = "125.00";
+        canonicalPlanRevision = 1;
+        return route.fulfill({
+          json: {
+            flexibleRatePlan: {
+              roomTypeId,
+              flexibleRatePlanId: "11111111-1111-4111-8111-111111111111",
+              flexibleRatePlanRevision: canonicalPlanRevision,
+              sourceRoomFactsRevision: 3,
+              baseAmount: { amountDecimal: savedRate, currency: "EUR" },
+              cancellationTerms: {},
+            },
+          },
+        });
+      },
+    );
+
+    await page.goto(`/rooms/${roomTypeId}`);
+    await page.getByRole("button", { name: "Pricing & Rates" }).click();
+    await expect(page.getByText("(standard plan)")).toBeVisible();
+    await expect(
+      page.getByRole("combobox").filter({ has: page.locator('option[value="EUR"]') }),
+    ).toBeDisabled();
+    await expect(page.getByText("Currency is managed in property pricing settings.")).toBeVisible();
+    const rateTable = page.getByText("Set rates per season").locator("xpath=../..");
+    await rateTable.getByRole("spinbutton").first().fill("125");
+    const readsBeforeLanguageChange = roomReads;
+    await page.getByRole("button", { name: "PO", exact: true }).click();
+    await page.getByRole("button", { name: /^Language/ }).click();
+    await page.getByRole("button", { name: "🇩🇪 Deutsch", exact: true }).click();
+    await expect(page.getByRole("button", { name: "Preise & Tarife" })).toBeVisible();
+    await page.getByRole("button", { name: "PO", exact: true }).click();
+    await page.getByRole("button", { name: /^Sprache/ }).click();
+    await page.getByRole("button", { name: "🇬🇧 English", exact: true }).click();
+    await expect(page.getByRole("button", { name: "Pricing & Rates" })).toBeVisible();
+    expect(roomReads).toBe(readsBeforeLanguageChange);
+    await expect(rateTable.getByRole("spinbutton").first()).toHaveValue("125");
+    await page.getByRole("button", { name: "Save Changes" }).click();
+    await expect(page.getByText("Room type updated successfully")).toBeVisible();
+    expect(savedPlanBody).toMatchObject({
+      expectedRoomFactsRevision: 3,
+      expectedPricingCurrencyRevision: 4,
+      expectedFlexibleRatePlanRevision: 0,
+      baseAmountDecimal: "125.00",
+    });
+    await page.getByRole("button", { name: "Pricing & Rates" }).click();
+    await expect(rateTable.getByRole("spinbutton").first()).toHaveValue("125");
     await assertNoLegacyCalls();
     await assertHealthy();
   });

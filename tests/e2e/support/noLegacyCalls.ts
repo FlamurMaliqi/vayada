@@ -121,11 +121,13 @@ const surfaceRules = {
   ],
   "pms-web-operations": [
     legacyProductionHostRule(),
+    legacyLocalServiceRule(),
     pathRule("/admin/messaging/unread-count", "legacy PMS unread-count route"),
     pathPrefixRule("/admin/bookings", "legacy PMS bookings route"),
     pathRule("/admin/hotel", "legacy PMS property profile route"),
     pathRule("/admin/hotels", "legacy PMS property list route"),
     pathRule("/admin/payment-settings", "legacy PMS payment settings route"),
+    pathPrefixRule("/admin/room-types", "legacy PMS room-types route"),
     pathRule("/admin/calendar", "legacy PMS calendar route"),
     pathRule("/admin/calendar-settings", "legacy PMS calendar settings route"),
     pathPrefixRule("/admin/channex/", "legacy PMS Channex route"),

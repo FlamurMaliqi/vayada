@@ -21,6 +21,7 @@ export default function EditRoomPage({ params }: { params: Promise<{ id: string 
   const router = useRouter();
   const [room, setRoom] = useState<RoomType | null>(null);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
@@ -38,7 +39,10 @@ export default function EditRoomPage({ params }: { params: Promise<{ id: string 
         setRoom(r);
         setForm(roomTypeUpdateForm(r));
       })
-      .catch(console.error)
+      .catch((cause) => {
+        console.error(cause);
+        setLoadError(cause instanceof Error ? cause.message : "");
+      })
       .finally(() => setLoading(false));
   }, [id]);
 
@@ -86,7 +90,20 @@ export default function EditRoomPage({ params }: { params: Promise<{ id: string 
   if (!room) {
     return (
       <div className="p-6">
-        <p className="text-gray-500">{t("rooms.edit.notFound")}</p>
+        <p className={loadError !== null ? "text-red-600" : "text-gray-500"}>
+          {loadError !== null
+            ? loadError || t("rooms.edit.failedToLoad")
+            : t("rooms.edit.notFound")}
+        </p>
+        {loadError !== null && (
+          <button
+            type="button"
+            onClick={() => window.location.reload()}
+            className="mt-3 rounded-lg border border-gray-300 px-3 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50"
+          >
+            {t("rooms.edit.retry")}
+          </button>
+        )}
       </div>
     );
   }
@@ -113,6 +130,11 @@ export default function EditRoomPage({ params }: { params: Promise<{ id: string 
       </div>
 
       <RoomTypeForm
+        key={[
+          form.canonicalPricingSnapshot?.expectedRoomFactsRevision,
+          form.canonicalPricingSnapshot?.expectedPricingCurrencyRevision,
+          form.canonicalPricingSnapshot?.expectedFlexibleRatePlanRevision,
+        ].join(":")}
         form={form}
         onChange={setForm}
         onSubmit={handleSubmit}
