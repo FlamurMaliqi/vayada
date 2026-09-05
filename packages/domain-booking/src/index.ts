@@ -138,7 +138,7 @@ export type BookingDashboardMetricsPeriodInput = {
  * Implemented by the Booking domain; consumed by Booking API dashboard routes.
  * Must never open PMS_DATABASE_URL — see engineering/booking-pms-coupling-audit.md C04.
  */
-export type BookingDashboardMetricsReadPort = {
+export type BookingDashboardMetricsReadPort = import("./conversionFunnel.js").BookingConversionFunnelReadPort & {
   getDashboardMetrics(
     input: BookingDashboardMetricsPeriodInput,
   ): Promise<BookingDashboardMetricsReadModel | null>;
@@ -652,3 +652,6 @@ function isRetryableFailure(error: PmsReservationError): boolean {
 
   return error.retryable;
 }
+
+export * from "./conversionFunnel.js";
+export * from "./bookingPromotions.js";

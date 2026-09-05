@@ -274,6 +274,12 @@ describe("Booking Web public bootstrap parity", () => {
       },
     });
 
+    for (const metadata of [{ funnelVersion: 1, funnelSequence: 0 },
+      { funnelVersion: 1, funnelSequence: 2, paymentMethod: "unknown" }]) {
+      const invalid = await app.inject({ method: "POST", url: "/api/booking-web/events",
+        payload: { hotelSlug: "hotel-alpenrose", eventType: "complete_booking_clicked", sessionId: "sid", metadata } });
+      expect(invalid.statusCode).toBe(400);
+    }
     expect(response.statusCode).toBe(204);
     expect(events).toMatchObject([
       {
@@ -3243,21 +3249,11 @@ describe("Booking Web public bootstrap parity", () => {
 
     confirmationMetadata = { ...confirmationMetadata, paymentMethod: undefined };
     await expect(
-      adapter.confirmation?.(
-        "hotel-alpenrose",
-        {
-          bookingReference: "B-CARD952",
-          confirmationToken: created.confirmationToken,
-        },
-        {
-          operation: "booking-confirmation",
-          requestId: "confirmation-fixed-clock",
-          correlationId: "fixed",
-          idempotencyKey: "confirmation-fixed-clock",
-          fingerprint: "f".repeat(64),
-          occurredAt: new Date("2026-09-01T10:01:00Z"),
-        },
-      ),
+      adapter.confirmation?.("hotel-alpenrose", {
+        bookingReference: "B-CARD952",
+        confirmationToken: created.confirmationToken,
+      }, { operation: "booking-confirmation", requestId: "manual-card-read", correlationId: "manual-card-read", idempotencyKey: "manual-card-read",
+        fingerprint: "d".repeat(64), occurredAt: new Date("2026-09-02T09:00:01.000Z") }),
     ).resolves.toMatchObject({
       roomName: "Deluxe Suite",
       paymentMethod: "manual_card",

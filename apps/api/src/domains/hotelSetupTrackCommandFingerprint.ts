@@ -6,6 +6,7 @@ export type HotelSetupTrackRequestFingerprintInput = {
   organizationId: string;
   selectedTracks: SetupTrack[];
   expectedRevision: number;
+  adminActivation?: { platformOrganizationId: string; accountUserId: string; actorUserId: string };
 };
 
 /**
@@ -20,6 +21,7 @@ export function hotelSetupTrackRequestFingerprint(
         organizationId: input.organizationId,
         selectedTracks: input.selectedTracks,
         expectedRevision: input.expectedRevision,
+        ...(input.adminActivation ? { adminActivation: input.adminActivation } : {}),
       }),
     )
     .digest("hex");

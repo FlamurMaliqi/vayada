@@ -117,6 +117,7 @@ export type BookingWebPublicCalendarResponse = {
   calendar: {
     unavailableDates: string[];
     minStayByArrival: Record<string, number>;
+    validCheckOutsByArrival?: Record<string, string[]>;
     maxStayByArrival: Record<string, number>;
   };
   freshness?: {
@@ -453,6 +454,7 @@ export function toLegacyRooms(
 export function toLegacyCalendar(data: BookingWebPublicCalendarResponse): {
   dates: string[];
   minStayByArrival: Record<string, number>;
+  validCheckOutsByArrival?: Record<string, string[]>;
   maxStayByArrival: Record<string, number>;
   availabilityUnavailable: boolean;
 } {
@@ -463,6 +465,9 @@ export function toLegacyCalendar(data: BookingWebPublicCalendarResponse): {
 
   return {
     dates: data.calendar.unavailableDates,
+    ...(data.calendar.validCheckOutsByArrival && {
+      validCheckOutsByArrival: data.calendar.validCheckOutsByArrival,
+    }),
     minStayByArrival: data.calendar.minStayByArrival,
     maxStayByArrival: data.calendar.maxStayByArrival,
     availabilityUnavailable: data.freshness?.status === "unavailable" && !hasSelectableCoverage,

@@ -85,7 +85,11 @@ export type PublicBookabilityContactChannelType =
   (typeof PUBLIC_BOOKABILITY_CONTACT_CHANNEL_TYPES)[number];
 
 export type PublicBookabilityPublicationStatus =
-  "public" | "incomplete" | "unpublished" | "stale" | "unavailable";
+  | "public"
+  | "incomplete"
+  | "unpublished"
+  | "stale"
+  | "unavailable";
 
 export type PublishPublicBookabilityProfileCommand = {
   propertyId: string;
@@ -270,6 +274,7 @@ export type PublicBookabilityQuoteRequest = {
 };
 
 export type PublicBookabilityMoneyTotals = {
+  promotion?: { name: string; discountAmount: number; discountPercent: number };
   currency: string;
   roomTotal: number;
   taxesAndFees: number;
@@ -805,6 +810,15 @@ function sanitizeOffer(
       taxesAndFees: offer.totals.taxesAndFees,
       discounts: offer.totals.discounts,
       grandTotal: offer.totals.grandTotal,
+      ...(offer.totals.promotion
+        ? {
+            promotion: {
+              name: offer.totals.promotion.name,
+              discountAmount: offer.totals.promotion.discountAmount,
+              discountPercent: offer.totals.promotion.discountPercent,
+            },
+          }
+        : {}),
     },
     policies: {
       cancellation: policy?.cancellation ?? null,
@@ -886,3 +900,5 @@ function visitPublicBookabilityValue(value: unknown, visitKey: (key: string) => 
     visitPublicBookabilityValue(child, visitKey);
   }
 }
+
+export { calendarStays, type CalendarStayDay } from "./calendarStays.js";

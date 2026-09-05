@@ -373,6 +373,7 @@ export type MarketplaceAdminHotelReviewProfile = {
   location: string;
   hostSummary: string | null;
   profileStatus: "pending" | "verified" | "rejected" | "suspended" | "archived";
+  profileComplete?: boolean;
   createdAt: string;
   updatedAt: string;
 };
@@ -466,6 +467,7 @@ export type MarketplaceAdminRepository = {
   }): Promise<MarketplaceAdminUserProfileUpdateResponse | null>;
   updateHotelProfileForUser(input: {
     userId: string;
+    propertyId?: string;
     request: MarketplaceAdminHotelProfileUpdateRequest;
     authorizationMode: MarketplaceAdminAuthorizationMode;
   }): Promise<MarketplaceAdminUserProfileUpdateResponse | null>;
@@ -477,6 +479,7 @@ export type MarketplaceAdminRepository = {
   revokeInviteCode(inviteCodeId: string): Promise<boolean>;
   readHotelReviewForUser(input: {
     hotelUserId: string;
+    propertyId?: string;
     authorizationMode: MarketplaceAdminAuthorizationMode;
   }): Promise<MarketplaceAdminHotelReviewResponse>;
   readCreatorReviewForUser(input: {
@@ -496,13 +499,16 @@ export type MarketplaceAdminRepository = {
     };
   }): Promise<MarketplaceCreatorModerationResult>;
   createOfferForUser(input: {
+    idempotencyKey?: string;
     hotelUserId: string;
+    propertyId?: string;
     audit: MarketplaceOfferWriteAudit;
     request: MarketplaceAdminCreateOfferRequest;
     authorizationMode: MarketplaceAdminAuthorizationMode;
   }): Promise<MarketplaceAdminOffer | null>;
   updateOfferForUser(input: {
     hotelUserId: string;
+    propertyId?: string;
     audit: MarketplaceOfferWriteAudit;
     offerId: string;
     request: MarketplaceAdminUpdateOfferRequest;
@@ -510,12 +516,14 @@ export type MarketplaceAdminRepository = {
   }): Promise<MarketplaceAdminOffer | null>;
   verifyOfferForUser(input: {
     hotelUserId: string;
+    propertyId?: string;
     offerId: string;
     mediaObjectIds?: string[];
     authorizationMode: MarketplaceAdminAuthorizationMode;
   }): Promise<MarketplaceAdminOffer | null>;
   deleteOfferForUser(input: {
     hotelUserId: string;
+    propertyId?: string;
     offerId: string;
     authorizationMode: MarketplaceAdminAuthorizationMode;
   }): Promise<MarketplaceAdminDeleteOfferResponse | null>;
@@ -736,7 +744,7 @@ export function createPgMarketplaceAdminRepository(config: {
     },
     async updateHotelProfileForUser(input) {
       return writeOffer(pool, async (client) => {
-        const profile = await resolveAdminHotelProfile(client, input.userId);
+        const profile = await resolveAdminHotelProfile(client, input.userId, input.propertyId);
         if (!profile) return null;
         const result = await client.query<{ updatedAt: Date | string }>(
           `UPDATE marketplace.marketplace_hotel_profiles
@@ -866,7 +874,12 @@ export function createPgMarketplaceAdminRepository(config: {
     async readHotelReviewForUser(input) {
       const profileResult = await pool.query<AdminHotelReviewRow>(ADMIN_HOTEL_REVIEW_SELECT_SQL, [
         input.hotelUserId,
+        input.propertyId ?? null,
       ]);
+      if (profileResult.rows.length > 1)
+        throw Object.assign(new Error("Choose a property before managing Marketplace."), {
+          statusCode: 409,
+        });
       const profile = profileResult.rows[0];
       if (!profile) {
         return {
@@ -895,6 +908,7 @@ export function createPgMarketplaceAdminRepository(config: {
           location: profile.location ?? "",
           hostSummary: profile.hostSummary,
           profileStatus: profile.profileStatus,
+          profileComplete: profile.profileComplete,
           createdAt: toIsoString(profile.createdAt),
           updatedAt: toIsoString(profile.updatedAt),
         },
@@ -918,9 +932,23 @@ export function createPgMarketplaceAdminRepository(config: {
     },
     async createOfferForUser(input) {
       return writeOffer(pool, async (client) => {
-        const profile = await resolveAdminHotelProfile(client, input.hotelUserId);
+        const profile = await resolveAdminHotelProfile(client, input.hotelUserId, input.propertyId);
         if (!profile) return null;
-        assertMarketplaceProfileComplete(profile);
+        if (["suspended", "archived", "rejected"].includes(profile.profileStatus))
+          throw Object.assign(new Error("Marketplace profile is unavailable for new offers."), {
+            statusCode: 409,
+          });
+        const replayKey = input.idempotencyKey
+          ? adminDraftId([
+              profile.organizationId,
+              profile.propertyId,
+              input.audit.actorUserId,
+              input.idempotencyKey,
+            ])
+          : null;
+        const requestHash = createHash("sha256")
+          .update(JSON.stringify(input.request))
+          .digest("hex");
         const offer = await client.query<{ id: string }>(
           `INSERT INTO marketplace.marketplace_offers (
              property_id,
@@ -928,18 +956,36 @@ export function createPgMarketplaceAdminRepository(config: {
              source_system,
              title,
              offer_summary,
-             offer_status
+             offer_status, id, offer_metadata
            )
-           VALUES ($1, $2, 'marketplace', $3, $4, 'verified')
+           VALUES ($1, $2, 'marketplace', $3, $4, 'draft', COALESCE($5::uuid, gen_random_uuid()), jsonb_build_object('adminCreateRequestHash', $6::text))
+           ON CONFLICT (id) DO NOTHING
            RETURNING id`,
           [
             profile.propertyId,
             profile.organizationId,
             input.request.title,
             input.request.offerSummary ?? null,
+            replayKey,
+            requestHash,
           ],
         );
         const offerId = offer.rows[0]?.id;
+        if (!offerId && replayKey) {
+          const previous = await client.query<{ id: string; requestHash: string }>(
+            `SELECT id::text AS id, offer_metadata->>'adminCreateRequestHash' AS "requestHash"
+             FROM marketplace.marketplace_offers WHERE id = $1::uuid`,
+            [replayKey],
+          );
+          if (previous.rows[0]?.requestHash !== requestHash)
+            throw Object.assign(
+              new Error(
+                "This draft request changed. Start a new draft or retry the original request.",
+              ),
+              { statusCode: 409 },
+            );
+          return readOffer(client, previous.rows[0]!.id, input.authorizationMode);
+        }
         if (!offerId) return null;
         await config.identityAccess.grantOperator({
           transaction: client,
@@ -969,7 +1015,7 @@ export function createPgMarketplaceAdminRepository(config: {
     },
     async updateOfferForUser(input) {
       return writeOffer(pool, async (client) => {
-        const profile = await resolveAdminHotelProfile(client, input.hotelUserId);
+        const profile = await resolveAdminHotelProfile(client, input.hotelUserId, input.propertyId);
         if (!profile) return null;
         const target = await resolveOfferForProfile(client, profile, input.offerId);
         if (!target) return null;
@@ -1018,11 +1064,20 @@ export function createPgMarketplaceAdminRepository(config: {
       });
     },
     async verifyOfferForUser(input) {
-      const profile = await resolveAdminHotelProfile(pool, input.hotelUserId);
+      const profile = await resolveAdminHotelProfile(pool, input.hotelUserId, input.propertyId);
       if (!profile || !["pending", "verified"].includes(profile.profileStatus)) return null;
       assertMarketplaceProfileComplete(profile);
       const target = await resolveOfferForProfile(pool, profile, input.offerId);
-      if (!target || !["pending", "verified"].includes(target.offerStatus)) return null;
+      if (!target || !["draft", "pending", "verified"].includes(target.offerStatus)) return null;
+      if (target.offerStatus === "draft") {
+        const draft = await readOffer(pool, target.offerResourceId, input.authorizationMode);
+        if (!draft?.deliverables.length || !draft.compensationOptions.length) {
+          throw Object.assign(
+            new Error("Add requested deliverables and compensation options before publishing."),
+            { statusCode: 422 },
+          );
+        }
+      }
       if (
         !(await hasEligibleOfferMedia(
           pool,
@@ -1049,6 +1104,24 @@ export function createPgMarketplaceAdminRepository(config: {
         mediaObjectIds: input.mediaObjectIds,
       });
       return writeOffer(pool, async (client) => {
+        await client.query(
+          `SELECT id FROM marketplace.marketplace_offers WHERE id = $1::uuid FOR UPDATE`,
+          [target.offerResourceId],
+        );
+        const currentOffer = await readOffer(
+          client,
+          target.offerResourceId,
+          input.authorizationMode,
+        );
+        if (
+          currentOffer?.offerStatus === "draft" &&
+          (!currentOffer.deliverables.length || !currentOffer.compensationOptions.length)
+        ) {
+          throw Object.assign(
+            new Error("Add requested deliverables and compensation options before publishing."),
+            { statusCode: 422 },
+          );
+        }
         const verifiedProfile = await client.query<{ propertyId: string }>(
           `UPDATE marketplace.marketplace_hotel_profiles
            SET marketplace_profile_status = 'verified', updated_at = now()
@@ -1061,12 +1134,13 @@ export function createPgMarketplaceAdminRepository(config: {
         );
         if (!verifiedProfile.rows[0]) return null;
         const current = await resolveOfferForProfile(client, profile, target.offerResourceId);
-        if (!current || !["pending", "verified"].includes(current.offerStatus)) return null;
+        if (!current || !["draft", "pending", "verified"].includes(current.offerStatus))
+          return null;
         const verified = await client.query<{ id: string }>(
           `UPDATE marketplace.marketplace_offers
            SET offer_status = 'verified', updated_at = now()
            WHERE id = $1::uuid
-             AND offer_status IN ('pending', 'verified')
+             AND offer_status IN ('draft', 'pending', 'verified')
            RETURNING id::text AS id`,
           [current.offerResourceId],
         );
@@ -1077,7 +1151,7 @@ export function createPgMarketplaceAdminRepository(config: {
     },
     async deleteOfferForUser(input) {
       return writeOffer(pool, async (client) => {
-        const profile = await resolveAdminHotelProfile(client, input.hotelUserId);
+        const profile = await resolveAdminHotelProfile(client, input.hotelUserId, input.propertyId);
         if (!profile) return null;
         const target = await resolveOfferForProfile(client, profile, input.offerId);
         if (!target) return null;
@@ -1203,6 +1277,7 @@ export async function registerMarketplaceAdminRoutes(
     const access = await requireMarketplaceAdminAccess(request, options);
     return repository.readHotelReviewForUser({
       hotelUserId: request.params.hotelUserId,
+      propertyId: adminPropertyId(request),
       authorizationMode: access.authorizationMode,
     });
   });
@@ -1317,6 +1392,7 @@ export async function registerMarketplaceAdminRoutes(
         if (typeof validation === "string") return sendAdminError(reply, 422, validation);
         const result = await repository.updateHotelProfileForUser({
           userId: request.params.userId,
+          propertyId: adminPropertyId(request),
           request: validation,
           authorizationMode: access.authorizationMode,
         });
@@ -1332,10 +1408,15 @@ export async function registerMarketplaceAdminRoutes(
     "/admin/users/:hotelUserId/offers",
     async (request, reply) => {
       const access = await requireMarketplaceAdminAccess(request, options);
+      const idempotencyKey = readIdempotencyKey(request);
+      if (!idempotencyKey || idempotencyKey.length > 200)
+        return sendAdminError(reply, 422, "idempotency_required");
       const validation = validateCreateOfferRequest(request.body);
       if (validation) return sendAdminError(reply, 422, validation);
       const result = await repository.createOfferForUser({
+        idempotencyKey,
         hotelUserId: request.params.hotelUserId,
+        propertyId: adminPropertyId(request),
         audit: offerWriteAudit(access.context),
         request: request.body,
         authorizationMode: access.authorizationMode,
@@ -1355,6 +1436,7 @@ export async function registerMarketplaceAdminRoutes(
       try {
         result = await repository.updateOfferForUser({
           hotelUserId: request.params.hotelUserId,
+          propertyId: adminPropertyId(request),
           audit: offerWriteAudit(access.context),
           offerId: request.params.offerId,
           request: request.body,
@@ -1379,6 +1461,7 @@ export async function registerMarketplaceAdminRoutes(
       if (typeof mediaObjectIds === "string") return sendAdminError(reply, 422, mediaObjectIds);
       const result = await repository.verifyOfferForUser({
         hotelUserId: request.params.hotelUserId,
+        propertyId: adminPropertyId(request),
         offerId: request.params.offerId,
         ...(mediaObjectIds ? { mediaObjectIds } : {}),
         authorizationMode: access.authorizationMode,
@@ -1394,6 +1477,7 @@ export async function registerMarketplaceAdminRoutes(
       const access = await requireMarketplaceAdminAccess(request, options);
       const result = await repository.deleteOfferForUser({
         hotelUserId: request.params.hotelUserId,
+        propertyId: adminPropertyId(request),
         offerId: request.params.offerId,
         authorizationMode: access.authorizationMode,
       });
@@ -1633,10 +1717,10 @@ export function validateCreateOfferRequest(
   body: MarketplaceAdminCreateOfferRequest | undefined,
 ): string | null {
   if (!body || !readNonEmptyString(body.title)) return "title_required";
-  if (!Array.isArray(body.deliverables) || body.deliverables.length === 0) {
+  if (!Array.isArray(body.deliverables)) {
     return "deliverables_required";
   }
-  if (!Array.isArray(body.compensationOptions) || body.compensationOptions.length === 0) {
+  if (!Array.isArray(body.compensationOptions)) {
     return "compensation_options_required";
   }
   if (!body.creatorRequirements) return "creator_requirements_required";
@@ -1653,8 +1737,6 @@ export function validateUpdateOfferRequest(
 ): string | null {
   if (!body) return "body_required";
   if (body.title !== undefined && !readNonEmptyString(body.title)) return "title_required";
-  if (body.deliverables?.length === 0) return "deliverables_required";
-  if (body.compensationOptions?.length === 0) return "compensation_options_required";
   return validateOfferChildren(
     body.deliverables,
     body.compensationOptions,
@@ -1775,6 +1857,10 @@ export function validateMergedOfferUpdate(
   current: MarketplaceAdminOffer,
   request: MarketplaceAdminUpdateOfferRequest,
 ): string | null {
+  if (current.offerStatus !== "draft") {
+    if (request.deliverables?.length === 0) return "deliverables_required";
+    if (request.compensationOptions?.length === 0) return "compensation_options_required";
+  }
   return validateOfferChildren(
     request.deliverables ?? current.deliverables,
     request.compensationOptions ?? current.compensationOptions,
@@ -2428,9 +2514,34 @@ async function resolveAdminCreatorProfileMedia(
   return media;
 }
 
+const ADMIN_PROPERTY_ACCESS_SQL = `      AND EXISTS (
+        SELECT 1 FROM hotel_catalog.properties available_property
+        JOIN identity.organization_resource_links catalog ON catalog.resource_id = available_property.id::text
+          AND catalog.organization_id = profile.organization_id
+          AND catalog.product = 'hotel_catalog' AND catalog.resource_type = 'property'
+          AND catalog.relationship IN ('owner', 'operator') AND catalog.status = 'active'
+        JOIN identity.organization_resource_links access ON access.resource_id = catalog.resource_id
+          AND access.organization_id = catalog.organization_id
+          AND access.product = 'marketplace' AND access.resource_type = 'hotel_profile'
+          AND access.relationship IN ('owner', 'operator') AND access.status = 'active'
+        WHERE available_property.id = profile.property_id
+          AND available_property.lifecycle_status NOT IN ('suspended', 'retired')
+      )
+      AND EXISTS (
+        SELECT 1 FROM identity.product_entitlements entitlement
+        WHERE entitlement.organization_id = profile.organization_id
+          AND entitlement.product = 'marketplace'
+          AND entitlement.entitlement_key = 'marketplace-hotel-profile'
+          AND entitlement.resource_product IS NULL AND entitlement.resource_type IS NULL AND entitlement.resource_id IS NULL
+          AND entitlement.status = 'active'
+          AND (entitlement.starts_at IS NULL OR entitlement.starts_at <= now())
+          AND (entitlement.expires_at IS NULL OR entitlement.expires_at > now())
+      )`;
+
 async function resolveAdminHotelProfile(
   client: Pick<MarketplaceAdminPool, "query">,
   hotelUserId: string,
+  propertyId?: string,
 ): Promise<AdminHotelProfile | null> {
   const result = await client.query<AdminHotelProfile>(
     `SELECT
@@ -2447,10 +2558,16 @@ async function resolveAdminHotelProfile(
        ON organization.id = membership.organization_id
       AND organization.kind = 'hotel_group'
       AND organization.status = 'active'
+     WHERE ($2::text IS NULL OR profile.property_id::text = $2)
+${ADMIN_PROPERTY_ACCESS_SQL}
      ORDER BY profile.updated_at DESC, profile.property_id ASC
-     LIMIT 1`,
-    [hotelUserId],
+     LIMIT 2`,
+    [hotelUserId, propertyId ?? null],
   );
+  if (result.rows.length > 1)
+    throw Object.assign(new Error("Choose a property before managing Marketplace."), {
+      statusCode: 409,
+    });
   return result.rows[0] ?? null;
 }
 
@@ -2482,8 +2599,10 @@ const ADMIN_HOTEL_REVIEW_SELECT_SQL = `
   JOIN hotel_catalog.properties property ON property.id = profile.property_id
   LEFT JOIN hotel_catalog.property_public_profile_read_model public_profile
     ON public_profile.property_id = profile.property_id
+  WHERE ($2::text IS NULL OR profile.property_id::text = $2)
+${ADMIN_PROPERTY_ACCESS_SQL}
   ORDER BY profile.updated_at DESC, profile.property_id ASC
-  LIMIT 1
+  LIMIT 2
 `;
 
 async function hasEligibleOfferMedia(
@@ -3820,3 +3939,22 @@ export const OFFER_SELECT_SQL = `
     LIMIT 1
   ) matching_criteria ON TRUE
 `;
+
+function adminPropertyId(request: FastifyRequest): string | undefined {
+  const value = (request.query as { propertyId?: unknown }).propertyId;
+  if (value === undefined) return undefined;
+  if (typeof value !== "string" || !value.trim())
+    throw Object.assign(new Error("Select a valid property."), { statusCode: 422 });
+  return value;
+}
+
+// UUIDv5 keeps request retries on the same row while retaining valid UUID version/variant bits.
+function adminDraftId(scope: string[]): string {
+  const digest = createHash("sha1")
+    .update(Buffer.from("6ba7b8109dad11d180b400c04fd430c8", "hex"))
+    .update(JSON.stringify(["vayada.admin.offer.draft", ...scope]))
+    .digest();
+  digest[6] = (digest[6]! & 0x0f) | 0x50;
+  digest[8] = (digest[8]! & 0x3f) | 0x80;
+  return digest.subarray(0, 16).toString("hex");
+}

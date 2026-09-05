@@ -163,3 +163,31 @@ idempotency key.
 
 Representative cases live in
 [`fixtures/marketplace-admin/cases.json`](fixtures/marketplace-admin/cases.json).
+
+## Admin-assisted activation and drafts (VAY-955)
+
+Authorized platform staff may enable Creator Marketplace on an existing hotel
+account. `platform.property.status.manage` on the active platform operator
+resource authorizes this account product-management action; offer moderation
+permission alone does not. The UI explicitly identifies the account and states
+that activation prepares its linked properties but publishes nothing.
+
+`GET /api/platform/admin/users/{userId}/marketplace-accounts` returns active
+hotel-group accounts and their directly linked canonical properties, including
+accounts without Marketplace profiles. `POST .../marketplace-accounts/{organizationId}/activate`
+accepts the observed track revision and selected tracks with Creator Marketplace
+added, plus an Idempotency-Key. The shared track command revalidates the platform
+actor and target membership inside its transaction, preserves existing track
+intent, provisions only Marketplace, and retains billing/suspension restrictions.
+Admin actor/account scope is bound to replay and audit metadata.
+
+Admin hotel review and offer commands accept an explicit propertyId. Omission
+is permitted only when exactly one eligible profile exists; ambiguous scope is
+rejected. Existing catalog facts and Marketplace profiles are reused. Multiple
+intentional offers per property remain valid.
+
+New Admin offers are private drafts. Creation supports incomplete profiles;
+publication remains a separate operation gated by the existing profile and media
+requirements. Draft retries are idempotent, and draft readiness exposes missing
+publication requirements. No action copies PMS/Booking data or publishes sibling
+properties. Existing owner onboarding and published offers retain their behavior.

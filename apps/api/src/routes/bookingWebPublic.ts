@@ -1,6 +1,9 @@
 import type { BankTransferBookingOperations } from "../domains/financeBankTransferBooking.js";
+import { FUNNEL_STAGES, FUNNEL_PAYMENT_METHODS } from "@vayada/domain-booking";
 import {
   assertPublicBookabilityPublicSafe,
+  calendarStays,
+  type CalendarStayDay,
   PUBLIC_BOOKABILITY_CONTRACT_VERSION,
   PUBLIC_BOOKABILITY_VISIBILITY,
   type PublicBookabilityDataSourceOwner,
@@ -152,11 +155,8 @@ type BookingWebAffiliateParams = BookingWebHotelParams & {
   affiliateId: string;
 };
 
-type TargetBookingWebCalendarRow = {
-  stayDate: string;
-  hasAvailability: boolean;
+type TargetBookingWebCalendarRow = CalendarStayDay & {
   hasUnavailableState: boolean;
-  minStayNights: number | null;
   maxStayNights: number | null;
   sourceFreshnessValues: string[] | null;
   freshnessStatuses: string[] | null;
@@ -389,6 +389,7 @@ export type BookingWebCalendarProjection = {
   };
   calendar: {
     unavailableDates: string[];
+    validCheckOutsByArrival?: Record<string, string[]>;
     minStayByArrival: Record<string, number>;
     maxStayByArrival: Record<string, number>;
   };
@@ -887,6 +888,18 @@ export async function registerBookingWebPublicRoutes(
     if (!hotelSlug || !eventType) {
       throw createHttpError(400, "Hotel slug and event type are required.");
     }
+    const metadata = recordBody(request.body?.metadata);
+    if (metadata["funnelVersion"] === 1) {
+      const sequence = metadata["funnelSequence"];
+      const method = metadata["paymentMethod"];
+      if (!(FUNNEL_STAGES as readonly string[]).includes(eventType) ||
+          !firstString(request.body?.sessionId, request.body?.session_id) ||
+          !Number.isSafeInteger(sequence) || Number(sequence) < 1 ||
+          (["complete_booking_clicked", "payment_authorized", "booking_completed"].includes(eventType) &&
+            !(FUNNEL_PAYMENT_METHODS as readonly unknown[]).includes(method))) {
+        throw createHttpError(400, "Invalid booking funnel event.");
+      }
+    }
     if (options.attributionSink) {
       const profile = await options.profileRepository.findProfileBySlug(hotelSlug);
       if (!profile) {
@@ -1060,7 +1073,13 @@ export function createTargetBookingWebCalendarRepository(config: {
              )
            ) AS "hasAvailability",
            BOOL_OR(offer.availability_status IN ('sold_out', 'closed', 'unavailable')) AS "hasUnavailableState",
-           MIN(COALESCE(NULLIF(offer.rate_summary ->> 'minStayNights', '')::integer, 1)) AS "minStayNights",
+           COALESCE(JSONB_AGG(DISTINCT JSONB_BUILD_OBJECT(
+             'key', JSONB_BUILD_ARRAY(offer.public_offer_key, offer.room_type_id, offer.rate_plan_id, offer.currency)::text,
+             'min', GREATEST(COALESCE(NULLIF(offer.rate_summary ->> 'minStayNights', '')::integer, 1), 1),
+             'max', NULLIF(offer.rate_summary ->> 'maxStayNights', '')::integer
+           )) FILTER (WHERE offer.sellable_publicly
+             AND offer.availability_status IN ('available', 'limited')
+             AND offer.available_rooms > 0 AND offer.freshness_status = 'fresh'), '[]'::jsonb) AS "offers",
            CASE
              WHEN BOOL_OR(NULLIF(offer.rate_summary ->> 'maxStayNights', '') IS NULL) THEN NULL
              ELSE MAX((offer.rate_summary ->> 'maxStayNights')::integer)
@@ -1126,9 +1145,6 @@ export function createTargetBookingWebCalendarRepository(config: {
         const dataSources = [
           ...new Set(result.rows.flatMap((row) => dataSourcesArray(row.dataSources))),
         ];
-        const minStayByArrival = Object.fromEntries(
-          result.rows.map((row) => [row.stayDate, Math.max(Number(row.minStayNights ?? 1), 1)]),
-        );
         const maxStayByArrival = Object.fromEntries(
           result.rows.flatMap((row) =>
             row.maxStayNights === null
@@ -1144,8 +1160,8 @@ export function createTargetBookingWebCalendarRepository(config: {
           request: { hotelSlug: hotel.slug, start, end },
           calendar: {
             unavailableDates,
-            minStayByArrival,
             maxStayByArrival,
+            ...calendarStays(result.rows, end),
           },
           freshness: targetCalendarFreshness(
             latestGeneratedAt,
@@ -1190,6 +1206,7 @@ type TargetCheckoutConfigRow = QueryResultRow & {
   defaultCurrency: string | null;
   benefits: unknown;
   showAddonsStep: boolean | null;
+  publicAddons?: unknown;
   groupAddonsByCategory: boolean | null;
   specialRequestsEnabled: boolean | null;
   arrivalTimeEnabled: boolean | null;
@@ -2511,6 +2528,16 @@ async function loadTargetCheckoutConfig(
        bs.default_currency AS "defaultCurrency",
        bs.benefits,
        bs.show_addons_step AS "showAddonsStep",
+       (SELECT COALESCE(jsonb_agg(jsonb_build_object(
+         'id', addon.id::text, 'name', addon.name, 'description', COALESCE(addon.description, ''),
+         'price', addon.price_amount, 'currency', addon.currency, 'category', COALESCE(addon.category, 'other'),
+         'image', COALESCE(addon.metadata ->> 'imageUrl', ''),
+         'perPerson', addon.pricing_model IN ('per_guest', 'per_guest_night'),
+         'perNight', addon.pricing_model IN ('per_night', 'per_guest_night')
+       ) ORDER BY addon.created_at, addon.id), '[]'::jsonb)
+       FROM booking.addon_definitions addon WHERE addon.property_id = p.id
+         AND addon.status = 'active' AND addon.public_visible
+         AND COALESCE(bs.show_addons_step, TRUE)) AS "publicAddons",
        bs.group_addons_by_category AS "groupAddonsByCategory",
        bs.special_requests_enabled AS "specialRequestsEnabled",
        bs.arrival_time_enabled AS "arrivalTimeEnabled",
@@ -2580,6 +2607,7 @@ function serializeTargetCheckoutConfig(
     ],
     requiresManualReview: row?.requiresManualReview ?? false,
     showAddonsStep: row?.showAddonsStep ?? true,
+    addons: Array.isArray(row?.publicAddons) ? row.publicAddons : [],
     groupAddonsByCategory: row?.groupAddonsByCategory ?? true,
     specialRequestsEnabled: row?.specialRequestsEnabled ?? true,
     arrivalTimeEnabled: row?.arrivalTimeEnabled ?? false,

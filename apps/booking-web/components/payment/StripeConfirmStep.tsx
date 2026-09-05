@@ -1,5 +1,6 @@
 "use client";
 
+import { trackEvent } from "@/services/api/tracking";
 import { useRef, useState } from "react";
 import { useTranslations } from "next-intl";
 import { useRouter } from "@/i18n/navigation";
@@ -100,7 +101,7 @@ export default function StripeConfirmStep({
       const confirmationUrl = new URL(`${localePrefix}/confirmation`, window.location.origin);
       confirmationUrl.searchParams.set("booking", booking.bookingReference);
       if (confirmationToken) confirmationUrl.searchParams.set("token", confirmationToken);
-      const { error: stripeError } = await stripe.confirmPayment({
+      const { error: stripeError, paymentIntent } = await stripe.confirmPayment({
         elements,
         confirmParams: { return_url: confirmationUrl.toString() },
         redirect: "if_required",
@@ -111,6 +112,10 @@ export default function StripeConfirmStep({
         confirmationStarted.current = false;
         setSubmitting(false);
         return;
+      }
+
+      if (paymentIntent && ["succeeded", "requires_capture"].includes(paymentIntent.status)) {
+        trackEvent(slug, "payment_authorized", { paymentMethod: "card" });
       }
 
       // VAY-388: pass the draft id so the backend materializes the real

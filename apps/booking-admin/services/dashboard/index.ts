@@ -26,14 +26,11 @@ export interface BookingsBySource {
   sources: SourceBreakdown[];
 }
 
-export interface FunnelStep {
-  label: string;
-  value: number;
-  percentage: number;
-}
-
 export interface ConversionFunnel {
-  steps: FunnelStep[];
+  steps: { stage: string; count: number; percentOfVisits: number | null;
+    conversionPercent: number | null; previousCount: number }[];
+  paymentMethods: { method: string; count: number }[];
+  biggestDrop: string | null;
 }
 
 export interface Sparklines {
@@ -224,9 +221,13 @@ export const dashboardService = {
     };
   },
 
-  getConversionFunnel: async (range: TimeRange = "month"): Promise<ConversionFunnel> => {
-    void range;
-    throw new Error("Booking dashboard conversion funnel is not available on the target API yet.");
+  getConversionFunnel: async (range: TimeRange, timeZone: string): Promise<ConversionFunnel> => {
+    const basePath = requireDashboardBasePath();
+    const query = rangeQuery(range, timeZone);
+    const response = await apiClient.get<{ funnel: ConversionFunnel }>(
+      `${basePath}/conversion-funnel?windowStart=${query.currentStart}&windowEnd=${query.currentEnd}`,
+    );
+    return response.funnel;
   },
 
   getSparklines: async (range: TimeRange, timeZone: string): Promise<Sparklines> => {

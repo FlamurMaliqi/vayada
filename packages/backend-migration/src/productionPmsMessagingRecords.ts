@@ -14,9 +14,11 @@ import {
   optionalText,
   optionalUuid,
   requiredText,
+  sha256,
   uuid,
 } from "./productionBookingValues.js";
 import { pmsRecord } from "./productionPmsValues.js";
+import { validatePmsMessagingSource } from "./productionPmsMessagingParity.js";
 
 export function buildPmsMessagingRecords(context: PmsBuildContext): PmsTargetRecord[] {
   const records: PmsTargetRecord[] = [];
@@ -26,6 +28,7 @@ export function buildPmsMessagingRecords(context: PmsBuildContext): PmsTargetRec
     append(context, source, records, () => message(context, source));
   for (const source of context.rowsByTable.get("message_attachments") ?? [])
     append(context, source, records, () => attachment(context, source));
+  validatePmsMessagingSource(context, records);
   return records;
 }
 
@@ -69,7 +72,10 @@ function thread(context: PmsBuildContext, source: IdentitySourceRow): PmsTargetR
             : null,
       conversationContextState: bookingId ? "linked" : "unlinked",
       lastMessageAt: optionalIso(data["last_message_at"], "last_message_at"),
-      lastMessagePreview: optionalText(data["last_message_preview"], "last_message_preview"),
+      lastMessagePreview:
+        typeof data["last_message_preview"] === "string"
+          ? data["last_message_preview"]
+          : optionalText(data["last_message_preview"], "last_message_preview"),
       lastMessageDirection: lastDirection,
       unreadCount: nonNegativeInteger(data["unread_count"], "unread_count", 0),
       createdAt,
@@ -119,26 +125,32 @@ function attachment(context: PmsBuildContext, source: IdentitySourceRow): PmsTar
   const message = find(context, "messages", messageId);
   const thread = find(context, "message_threads", uuid(message.data["thread_id"], "thread_id"));
   const propertyId = propertyForHotel(context, thread.data["hotel_id"]);
-  const legacyS3Key = optionalText(data["s3_key"], "s3_key");
-  const legacySourceUrl = optionalText(data["source_url"], "source_url");
-  if (!legacyS3Key && !legacySourceUrl)
-    throw new Error("message attachment has no source reference for the VAY-1055 gate");
+  const sourceKey = data["s3_key"];
+  const legacyS3Key = optionalText(
+    typeof sourceKey === "string" ? sourceKey.trim() : sourceKey,
+    "s3_key",
+  );
+  const unavailable = !legacyS3Key && unavailableAttachment(context, id, data["source_url"]);
+  // Match the media importer: a usable S3 key takes precedence over an unused URL.
+  if (!legacyS3Key && !unavailable) optionalText(data["source_url"], "source_url");
   const sourceField = legacyS3Key ? "s3_key" : "source_url";
-  const media = pmsMediaForSource(context, {
-    sourceTable: "message_attachments",
-    sourceRowId: `${id}:${sourceField}`,
-    purpose: "pms.messaging.attachment",
-    propertyId,
-    visibility: "private",
-  });
+  const media = unavailable
+    ? null
+    : pmsMediaForSource(context, {
+        sourceTable: "message_attachments",
+        sourceRowId: `${id}:${sourceField}`,
+        purpose: "pms.messaging.attachment",
+        propertyId,
+        visibility: "private",
+      });
   const createdAt = iso(data["created_at"], "created_at");
   return [
     pmsRecord(source, "message_attachments", id, createdAt, false, {
       id,
       propertyId,
       messageId,
-      platformMediaObjectId: media.mediaObjectId,
-      s3Key: media.storageKey,
+      platformMediaObjectId: media?.mediaObjectId ?? null,
+      s3Key: media?.storageKey ?? null,
       sourceUrl: null,
       filename: optionalText(data["filename"], "filename"),
       contentType: optionalText(data["content_type"], "content_type"),
@@ -147,6 +159,31 @@ function attachment(context: PmsBuildContext, source: IdentitySourceRow): PmsTar
       createdAt,
     }),
   ];
+}
+
+function unavailableAttachment(context: PmsBuildContext, id: string, value: unknown): boolean {
+  const missing = value == null || (typeof value === "string" && !value.trim());
+  const quarantined = context.target.mediaQuarantines?.some(
+    (entry) =>
+      entry.sourceTable === "message_attachments" &&
+      entry.sourceRowId === `${id}:source_url` &&
+      entry.sourceField === "source_url" &&
+      entry.purpose === "pms.messaging.attachment" &&
+      entry.reasonCode === "INVALID_HTTPS_URL" &&
+      entry.sourceValueSha256 === sha256({ value }),
+  );
+  if (!missing && !quarantined) return false;
+  // A quarantine is not permission to hide a contradictory media binding.
+  const sourceIds = [`${id}:s3_key`, `${id}:source_url`];
+  if (
+    context.target.attachmentMediaSourceIds?.some((sourceId) => sourceIds.includes(sourceId)) ||
+    context.target.media?.some(
+      (entry) =>
+        entry.sourceTable === "message_attachments" && sourceIds.includes(entry.sourceRowId),
+    )
+  )
+    throw new Error(`unavailable attachment ${id} conflicts with an existing media reference`);
+  return true;
 }
 
 function find(context: PmsBuildContext, table: string, id: string): IdentitySourceRow {

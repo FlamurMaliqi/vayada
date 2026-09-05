@@ -392,6 +392,20 @@ describe("production media plan", () => {
         reasonCode: "INVALID_HTTPS_URL",
       }),
     ]);
+
+    Object.assign(input.rows[2]!.data, { s3_key: " \t ", source_url: null });
+    const missing = buildProductionMediaPlan(input);
+    expect(missing.blockers).toEqual([]);
+    expect(missing.references).toEqual([]);
+    expect(missing.quarantines).toEqual([]);
+
+    input.rows[2]!.data["source_url"] = HERO;
+    const urlOnly = buildProductionMediaPlan(input);
+    expect(urlOnly.blockers).toEqual([]);
+    expect(urlOnly.quarantines).toEqual([]);
+    expect(urlOnly.references).toEqual([
+      expect.objectContaining({ sourceField: "source_url", sourceUrl: HERO }),
+    ]);
   });
 
   it("uses a safe filename fallback for a valid URL with malformed percent escapes", () => {

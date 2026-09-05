@@ -1,5 +1,6 @@
 "use client";
 
+import { trackEvent } from "@/services/api/tracking";
 import { useState } from "react";
 import Image from "next/image";
 import { useSearchParams } from "next/navigation";
@@ -11,7 +12,7 @@ import StepIndicator from "@/components/booking/StepIndicator";
 import AddonDetailModal from "@/components/booking/AddonDetailModal";
 import { bookingImageSizes } from "@/components/booking/imageSizes";
 import { ADDON_CATEGORIES } from "@/lib/constants/addons";
-import { useHotel, useAddons } from "@/contexts/HotelContext";
+import { useHotel, useAddons, useSlug } from "@/contexts/HotelContext";
 import { useCurrency } from "@/contexts/CurrencyContext";
 import { calculateNights, ensureMinOneNight } from "@/lib/utils";
 import { useBookingSteps } from "@/lib/hooks/useBookingSteps";
@@ -22,6 +23,7 @@ export default function AddonsPageClient() {
   const t = useTranslations("addons");
   const tc = useTranslations("common");
   const { hotel } = useHotel();
+  const { slug } = useSlug();
   const { addons } = useAddons();
   const { formatPrice, convertAndRound, selectedCurrency } = useCurrency();
   const [activeCategory, setActiveCategory] = useState("all");
@@ -503,6 +505,7 @@ export default function AddonsPageClient() {
                 params.delete("addons");
                 params.delete("addonDates");
               }
+              if (addons.length > 0) trackEvent(slug, "addons_step_passed");
               router.push(`/book?${params.toString()}`);
             }}
             className="px-8 py-2.5 bg-primary-600 text-white font-semibold rounded-full hover:bg-primary-700 transition-colors text-sm"

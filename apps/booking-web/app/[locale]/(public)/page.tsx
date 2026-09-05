@@ -198,6 +198,7 @@ function HomePageContent() {
   const [imageIndices, setImageIndices] = useState<Record<string, number>>({});
   const [selectedRates, setSelectedRates] = useState<Record<string, string | null>>({});
   const [detailModalIndex, setDetailModalIndex] = useState<number | null>(null);
+  const closeRoomDetails = useCallback(() => setDetailModalIndex(null), []);
   const [searching, setSearching] = useState(false);
   const [activeRoomId, setActiveRoomId] = useState<string | null>(null);
   const [hoveredRoomId, setHoveredRoomId] = useState<string | null>(null);
@@ -355,6 +356,7 @@ function HomePageContent() {
 
   const handleSelectRate = (room: RoomType, rateType: RateType, requiredRooms: number) => {
     if (pendingRateSelection || isRateNavigationPending) return;
+    trackEvent(slug, "rate_selected");
     const target = buildRateTarget(room.id, requiredRooms, rateType);
 
     setPendingRateSelection({ roomId: room.id, rateType });
@@ -801,7 +803,7 @@ function HomePageContent() {
                         setSelectedRates((prev) => ({ ...prev, [room.id]: next }))
                       }
                       onView={() => {
-                        trackEvent(slug, "viewed_room", { roomId: room.id });
+                        trackEvent(slug, "room_viewed", { roomId: room.id });
                         setDetailModalIndex(roomIndex);
                       }}
                       onSelectRate={(rateType, requiredRooms) => {
@@ -845,7 +847,7 @@ function HomePageContent() {
               room={modalRoom}
               nights={nights}
               open={true}
-              onClose={() => setDetailModalIndex(null)}
+              onClose={closeRoomDetails}
               currentIndex={detailModalIndex}
               totalRooms={filteredRooms.length}
               onPrev={() =>

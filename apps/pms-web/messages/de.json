@@ -2043,5 +2043,11 @@
   "common.done": "Fertig",
   "layout.sidebar.unavailableNamed": "{label} — noch nicht verfügbar",
   "layout.sidebar.soon": "Bald",
-  "inbox.loadingInbox": "Posteingang wird geladen"
+  "inbox.loadingInbox": "Posteingang wird geladen",
+  "dashboard.arrivalsOn": "Anreisen • {date}",
+  "dashboard.departuresOn": "Abreisen • {date}",
+  "dashboard.noArrivalsOnDate": "Keine Anreisen an diesem Datum",
+  "dashboard.noDeparturesOnDate": "Keine Abreisen an diesem Datum",
+  "dashboard.previousDay": "Vorheriger Tag",
+  "dashboard.nextDay": "Nächster Tag"
 }

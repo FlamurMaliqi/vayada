@@ -191,7 +191,7 @@ async function lockBookingPublication(client: CommandClient, propertyId: string)
   );
 }
 
-async function requireAuthorizedPlatformActor(
+export async function requireAuthorizedPlatformActor(
   client: CommandClient,
   audit: PlatformPropertyLifecycleAudit,
 ): Promise<void> {

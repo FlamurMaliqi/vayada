@@ -6,11 +6,14 @@ import {
   parseSetPhysicalRoomOperationalLabelCommand,
   parseSetPhysicalRoomOperationalLabelResult,
   type PhysicalRoomUnitReconcilePort,
+  type PhysicalRoomManagementPort,
+  type ManagePhysicalRoomCommand,
   type PhysicalRoomOperationalLabelPort,
   type ReconcilePhysicalRoomUnitsError,
   type RoomFactsCommandAudit,
   type SetPhysicalRoomOperationalLabelError,
 } from "@vayada/domain-pms";
+import { z } from "zod";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 
 import { enforceRoutePolicy } from "./policy.js";
@@ -161,6 +164,92 @@ export async function registerPmsPhysicalRoomOperationalLabelRoutes(
         : sendOperationalLabelError(reply, result.error);
     },
   );
+}
+
+const roomChanges = z
+  .object({
+    operationalLabel: z.string().trim().min(1).max(200).optional(),
+    floor: z.string().trim().max(100).nullable().optional(),
+    status: z.enum(["available", "maintenance", "out_of_order"]).optional(),
+  })
+  .strict();
+const roomRevision = z.number().int().min(1).max(2147483646);
+
+export async function registerPmsPhysicalRoomManagementRoutes(
+  app: FastifyInstance,
+  options: { commandPort: PhysicalRoomManagementPort },
+): Promise<void> {
+  for (const action of ["create", "update", "retire"] as const) {
+    const authorized = new WeakMap<FastifyRequest, AuthorizedScope>();
+    app.route<{ Params: Params & { roomUnitId?: string }; Body: unknown }>({
+      method: action === "create" ? "POST" : action === "update" ? "PUT" : "DELETE",
+      url: `/properties/:propertyId/room-types/:roomTypeId/physical-units${action === "create" ? "" : "/:roomUnitId"}`,
+      onRequest: async (request, reply) => {
+        const scope = authorizeRequest(request, reply);
+        if (scope) authorized.set(request, scope);
+      },
+      handler: async (request, reply) => {
+        const scope = requireAuthorizedScope(authorized, request);
+        const roomTypeId = readRoomTypeId(request.params, reply);
+        if (!roomTypeId) return reply;
+        const idempotencyKey = readIdempotencyKey(request);
+        const roomUnitId = request.params.roomUnitId?.toLowerCase();
+        if (
+          !idempotencyKey ||
+          (action !== "create" && (!roomUnitId || !UUID_PATTERN.test(roomUnitId)))
+        ) {
+          return invalidRequest(reply, "A valid room ID and single Idempotency-Key are required.");
+        }
+        const schema =
+          action === "retire"
+            ? z.object({ expectedRevision: roomRevision }).strict()
+            : z
+                .object({
+                  expectedRevision: roomRevision,
+                  changes:
+                    action === "create"
+                      ? roomChanges.extend({ operationalLabel: z.string().trim().min(1).max(200) })
+                      : roomChanges.refine((value) => Object.keys(value).length > 0),
+                })
+                .strict();
+        const parsed = schema.safeParse(request.body);
+        if (!parsed.success || !isExactObject(request.query, [])) {
+          return invalidRequest(reply, "The physical-room command body is invalid.");
+        }
+        const command = {
+          organizationId: scope.context.selectedOrganization.organizationId,
+          propertyId: scope.propertyId,
+          roomTypeId,
+          idempotencyKey,
+          audit: commandAudit(scope.context),
+          ...parsed.data,
+          action,
+          ...(action !== "create" ? { roomUnitId } : {}),
+        } as ManagePhysicalRoomCommand;
+        const result = await options.commandPort.managePhysicalRoom(command);
+        if (result.ok) {
+          if (
+            result.response.propertyId !== scope.propertyId ||
+            result.response.roomTypeId !== roomTypeId ||
+            result.response.roomUnitsRevision !== command.expectedRevision + 1 ||
+            (roomUnitId && result.response.roomUnitId !== roomUnitId)
+          ) {
+            return reply.status(500).send({ code: "pms_physical_room_port_contract_violation" });
+          }
+          return reply.status(action === "create" ? 201 : 200).send(result.response);
+        }
+        return reply
+          .status(
+            ["setup_scope_unavailable", "room_type_not_found", "room_unit_not_found"].includes(
+              result.error.code,
+            )
+              ? 404
+              : 409,
+          )
+          .send(result.error);
+      },
+    });
+  }
 }
 
 function authorizeRequest(request: FastifyRequest, reply: FastifyReply): AuthorizedScope | null {

@@ -382,7 +382,7 @@ test("gates legacy booking writes while keeping supported hotel actions active",
   expect(createdGuest).not.toHaveProperty("passportNumber");
 
   await page.getByRole("button", { name: "More actions" }).click();
-  await expect(page.getByRole("button", { name: /resend confirmation email/i })).toBeDisabled();
+  await expect(page.getByRole("button", { name: /resend confirmation email/i })).toBeEnabled();
 
   await expect(page.getByRole("button", { name: "Approve Change" })).toBeEnabled();
   await expect(page.getByRole("button", { name: "Decline Change" })).toBeEnabled();

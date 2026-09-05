@@ -1,3 +1,4 @@
+import { buildBookingConversionFunnel, type BookingFunnelEvent } from "@vayada/domain-booking";
 import type {
   BookingDashboardMetricsPeriodInput,
   BookingDashboardMetricsReadModel,
@@ -82,6 +83,15 @@ export function createTargetBookingDashboardMetricsReadPort(config: {
         [propertyId],
       );
       return result.rows[0]?.propertyId ?? null;
+    },
+    async getConversionFunnel(input) {
+      const result = await pool.query<{ timeZone: string | null; addonsEnabled: boolean; events: BookingFunnelEvent[] }>(
+        conversionFunnelSql(), [input.propertyId, input.windowStart, input.windowEnd],
+      );
+      const row = result.rows[0];
+      if (!row) return null;
+      if (!row.timeZone) throw new Error("Booking funnel requires a canonical property timezone");
+      return buildBookingConversionFunnel(row.events, row.addonsEnabled);
     },
     async getDashboardMetrics(input) {
       const [currentResult, previousResult, currentPageViews, previousPageViews] =
@@ -468,4 +478,40 @@ function numeric(value: string | null | undefined): number {
 function toDateString(value: string | Date | null | undefined): BookingDate | null {
   if (!value) return null;
   return value instanceof Date ? value.toISOString().slice(0, 10) : String(value).slice(0, 10);
+}
+
+function conversionFunnelSql(): string {
+  return `${bookingScopedPropertyCte()}
+  SELECT timezone.name AS "timeZone",
+    (COALESCE(settings.show_addons_step, TRUE) AND EXISTS (
+      SELECT 1 FROM booking.addon_definitions addon
+      WHERE addon.property_id = scoped.property_id AND addon.status = 'active' AND addon.public_visible
+    )) AS "addonsEnabled",
+    COALESCE((SELECT jsonb_agg(jsonb_build_object(
+      'sessionId', event.payload ->> 'sessionId',
+      'sequence', event.payload -> 'metadata' -> 'funnelSequence',
+      'stage', substring(event.event_type FROM 13),
+      'paymentMethod', event.payload -> 'metadata' ->> 'paymentMethod'
+    ) ORDER BY event.occurred_at, event.id)
+    FROM platform.domain_events event
+    WHERE property.profile_status = 'complete'
+      AND event.property_id = scoped.property_id AND event.tenant_scope = 'property'
+      AND event.source_system = 'distribution' AND event.resource_product = 'distribution'
+      AND event.resource_type = 'booking_web_hotel'
+      AND event.event_type IN ('booking_web.page_visit', 'booking_web.room_viewed',
+        'booking_web.rate_selected', 'booking_web.addons_step_passed', 'booking_web.details_completed',
+        'booking_web.complete_booking_clicked', 'booking_web.payment_authorized', 'booking_web.booking_completed')
+      AND event.event_status IN ('recorded', 'projected')
+      AND event.payload -> 'metadata' -> 'funnelVersion' = '1'::jsonb
+      AND COALESCE(event.event_metadata ->> 'trafficClass', 'human') NOT IN ('bot', 'test')
+      AND event.payload -> 'metadata' -> 'isTestData' IS DISTINCT FROM 'true'::jsonb
+      AND event.payload -> 'metadata' -> 'testData' IS DISTINCT FROM 'true'::jsonb
+      AND event.occurred_at >= ($2::date::timestamp AT TIME ZONE timezone.name)
+      AND event.occurred_at < (($3::date + 1)::timestamp AT TIME ZONE timezone.name)
+    ), '[]'::jsonb) AS events
+  FROM scoped_property scoped
+  JOIN hotel_catalog.properties property ON property.id = scoped.property_id
+  LEFT JOIN hotel_catalog.property_locations location ON location.property_id = scoped.property_id
+  LEFT JOIN pg_timezone_names timezone ON timezone.name = location.timezone
+  LEFT JOIN booking.booking_settings settings ON settings.property_id = scoped.property_id`;
 }
