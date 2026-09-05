@@ -216,7 +216,12 @@ export const registerProviderWebhookRoutes: FastifyPluginAsync<
       receiptKey: classification.receiptKey,
       reply,
       request,
-      rawPayload: payload.value,
+      rawPayload:
+        classification.family === "message" &&
+        (classification.propertyOwnerResolved === false ||
+          !channexMessageIdentityComplete(classification))
+          ? channexUnresolvedMessageTombstone(classification)
+          : payload.value,
       payloadHash: channexPayloadHash(payload.value, classification),
       store: options.store,
       normalizedPreview: previewChannexEvent(payload.value, classification),
@@ -560,9 +565,11 @@ function channexModeFor(
   classification: ChannexClassification,
 ): ProviderWebhookMode {
   const mode = modeFor(options, "channex");
-  return classification.family === "booking" &&
-    mode === "mutating" &&
-    (!options.channexBookingPromotionEnabled || classification.bookingOwnerResolved === false)
+  return mode === "mutating" &&
+    ((classification.family === "booking" && !options.channexBookingPromotionEnabled) ||
+      (["booking", "message"].includes(classification.family) &&
+        classification.propertyOwnerResolved === false) ||
+      (classification.family === "message" && !channexMessageIdentityComplete(classification)))
     ? "observe_only"
     : mode;
 }
@@ -571,6 +578,16 @@ function channexPayloadHash(
   payload: Record<string, unknown>,
   classification: ChannexClassification,
 ): string {
+  if (classification.family === "message") {
+    return sha256(
+      stableStringify({
+        eventType: classification.eventType,
+        propertyId: classification.propertyId,
+        sourceMessageId: classification.sourceMessageId ?? "unknown",
+        threadId: classification.sourceThreadId ?? "unknown",
+      }),
+    );
+  }
   if (
     classification.family !== "booking" ||
     !classification.channelBookingId ||
@@ -587,12 +604,35 @@ function channexPayloadHash(
   );
 }
 
+function channexUnresolvedMessageTombstone(
+  classification: ChannexClassification,
+): Record<string, unknown> {
+  return {
+    event: classification.eventType,
+    property_id: classification.propertyId,
+    source_message_id: classification.sourceMessageId ?? "unknown",
+    source_thread_id: classification.sourceThreadId ?? "unknown",
+    content_retained: false,
+  };
+}
+
+function channexMessageIdentityComplete(classification: ChannexClassification): boolean {
+  return Boolean(classification.sourceMessageId && classification.sourceThreadId);
+}
+
 async function resolveChannexPropertyIdentity(
   store: ProviderWebhookStore,
   classification: ChannexClassification,
 ): Promise<ChannexClassification> {
-  if (classification.family !== "booking") return classification;
+  if (!["booking", "message"].includes(classification.family)) return classification;
   const providerPropertyId = classification.propertyId;
+  if (classification.propertyIdentityConsistent === false) {
+    return {
+      ...classification,
+      providerPropertyId,
+      propertyOwnerResolved: false,
+    };
+  }
   const propertyId = store.resolveChannexPropertyId
     ? await store.resolveChannexPropertyId(providerPropertyId)
     : providerPropertyId;
@@ -600,9 +640,18 @@ async function resolveChannexPropertyIdentity(
     ...classification,
     propertyId: propertyId ?? providerPropertyId,
     providerPropertyId,
-    bookingOwnerResolved: propertyId !== null,
-    receiptKey: bookingReceiptKey(propertyId ?? providerPropertyId, classification),
+    propertyOwnerResolved: propertyId !== null,
+    receiptKey:
+      classification.family === "booking"
+        ? bookingReceiptKey(propertyId ?? providerPropertyId, classification)
+        : messageReceiptKey(propertyId ?? providerPropertyId, classification),
   };
+}
+
+function messageReceiptKey(propertyId: string, classification: ChannexClassification): string {
+  return channexMessageIdentityComplete(classification)
+    ? `webhook:channex:message:${propertyId}:${classification.sourceMessageId}`
+    : `webhook:channex:message:${propertyId}:${classification.sourceThreadId ?? "unknown"}:${classification.sourceMessageId ?? "unknown"}`;
 }
 
 function bookingReceiptKey(propertyId: string, classification: ChannexClassification): string {
@@ -729,8 +778,10 @@ type ChannexClassification = {
   receiptKey: string;
   propertyId: string;
   providerPropertyId?: string;
-  bookingOwnerResolved?: boolean;
+  propertyOwnerResolved?: boolean;
+  propertyIdentityConsistent?: boolean;
   sourceMessageId?: string;
+  sourceThreadId?: string;
   channelBookingId?: string;
   revision?: string;
   reviewId?: string;
@@ -749,30 +800,33 @@ function classifyChannexPayload(payload: Record<string, unknown>): ChannexClassi
     family: channexEventFamily(eventType),
     payload: nestedPayload,
   };
-  const propertyId =
-    optionalString(payload, "property_id") ??
-    optionalString(envelope.payload, "property_id") ??
-    optionalNestedString(envelope.payload, ["property", "id"]) ??
-    "unknown";
+  const suppliedPropertyIds = channexSuppliedPropertyIds(payload, nestedPayload);
+  const propertyId = suppliedPropertyIds[0] ?? "unknown";
+  const propertyIdentityConsistent =
+    suppliedPropertyIds.length > 0 && suppliedPropertyIds.every((value) => value === propertyId);
 
   if (envelope.family === "message") {
     const message =
-      optionalRecord(nestedPayload, "message") ?? optionalRecord(payload, "message") ?? {};
+      optionalRecord(nestedPayload, "message") ??
+      optionalRecord(nestedPayload, "data") ??
+      optionalRecord(payload, "message") ??
+      {};
     const messageId =
       optionalString(nestedPayload, "message_id") ??
       optionalString(nestedPayload, "source_message_id") ??
       optionalString(nestedPayload, "id") ??
       optionalString(message, "id") ??
       optionalString(message, "source_message_id");
-    if (messageId) {
-      return {
-        eventType,
-        family: envelope.family,
-        propertyId,
-        sourceMessageId: messageId,
-        receiptKey: `webhook:channex:message:${propertyId}:${messageId}`,
-      };
-    }
+    const sourceThreadId = channexMessageThreadId(payload);
+    return {
+      eventType,
+      family: envelope.family,
+      propertyId,
+      propertyIdentityConsistent,
+      ...(messageId ? { sourceMessageId: messageId } : {}),
+      ...(sourceThreadId === "unknown" ? {} : { sourceThreadId }),
+      receiptKey: `webhook:channex:message:${propertyId}:${sourceThreadId}:${messageId ?? "unknown"}`,
+    };
   }
 
   if (envelope.family === "booking") {
@@ -805,6 +859,7 @@ function classifyChannexPayload(payload: Record<string, unknown>): ChannexClassi
         eventType,
         family: envelope.family,
         propertyId,
+        propertyIdentityConsistent,
         channelBookingId: channelBookingId ?? revisionId,
         revision,
         receiptKey: `webhook:channex:booking:${propertyId}:${channelBookingId ?? revisionId}:${revision}`,
@@ -829,6 +884,7 @@ function classifyChannexPayload(payload: Record<string, unknown>): ChannexClassi
         eventType,
         family: envelope.family,
         propertyId,
+        propertyIdentityConsistent,
         reviewId,
         reviewRevision,
         receiptKey: `webhook:channex:${envelope.family}:${propertyId}:${reviewId}${revisionMarker}`,
@@ -840,10 +896,50 @@ function classifyChannexPayload(payload: Record<string, unknown>): ChannexClassi
     eventType,
     family: envelope.family,
     propertyId,
+    propertyIdentityConsistent,
     receiptKey: `webhook:channex:${eventType}:${propertyId}:${sha256(
       stableStringify(canonicalPayload(payload)),
     )}`,
   };
+}
+
+function channexSuppliedPropertyIds(
+  payload: Record<string, unknown>,
+  nestedPayload: Record<string, unknown>,
+): string[] {
+  const data = optionalRecord(nestedPayload, "data") ?? {};
+  const message = optionalRecord(nestedPayload, "message") ?? data;
+  const attributes = optionalRecord(message, "attributes") ?? {};
+  const meta = optionalRecord(attributes, "meta") ?? optionalRecord(message, "meta") ?? {};
+  const bookingDetails = optionalRecord(meta, "booking_details") ?? {};
+  const thread = optionalRecord(nestedPayload, "thread") ?? {};
+  const relationships = optionalRecord(message, "relationships") ?? {};
+  const relationshipProperty =
+    optionalRecord(optionalRecord(relationships, "property"), "data") ?? {};
+  return [
+    optionalString(payload, "property_id"),
+    optionalString(nestedPayload, "property_id"),
+    optionalNestedString(nestedPayload, ["property", "id"]),
+    optionalString(message, "property_id"),
+    optionalString(attributes, "property_id"),
+    optionalString(thread, "property_id"),
+    optionalString(bookingDetails, "property_id"),
+    optionalString(relationshipProperty, "id"),
+  ].filter((value): value is string => Boolean(value));
+}
+
+function channexMessageThreadId(payload: Record<string, unknown>): string {
+  const nested = optionalRecord(payload, "payload") ?? {};
+  const data = optionalRecord(nested, "data") ?? {};
+  const message = optionalRecord(nested, "message") ?? data;
+  const relationships = optionalRecord(message, "relationships") ?? {};
+  return (
+    optionalString(nested, "thread_id") ??
+    optionalString(nested, "message_thread_id") ??
+    optionalNestedString(nested, ["thread", "id"]) ??
+    optionalNestedString(relationships, ["message_thread", "data", "id"]) ??
+    "unknown"
+  );
 }
 
 function channexEventFamily(eventType: string): ChannexEventFamily {
@@ -1100,12 +1196,12 @@ function previewChannexEvent(
   classification: ChannexClassification,
   revisionSource: "webhook_hint" | "revision_feed" = "webhook_hint",
 ): ProviderWebhookNormalizedPreview {
-  if (classification.family === "message" && classification.sourceMessageId) {
-    const threadId =
-      optionalString(optionalRecord(payload, "payload"), "thread_id") ??
-      optionalString(optionalRecord(payload, "payload"), "message_thread_id") ??
-      optionalNestedString(optionalRecord(payload, "payload"), ["thread", "id"]) ??
-      "unknown";
+  if (
+    classification.family === "message" &&
+    classification.sourceMessageId &&
+    classification.sourceThreadId
+  ) {
+    const threadId = classification.sourceThreadId;
     return {
       domainEventKey: `channex.message.ingest:${classification.propertyId}:${threadId}:${classification.sourceMessageId}:v1`,
       domainEventType: "channex.message.ingest",
@@ -1118,6 +1214,8 @@ function previewChannexEvent(
       payload: {
         provider: "channex",
         propertyId: classification.propertyId,
+        providerPropertyId: classification.providerPropertyId ?? classification.propertyId,
+        propertyOwnerResolved: classification.propertyOwnerResolved === true,
         threadId,
         sourceMessageId: classification.sourceMessageId,
         rawPayload: payload,

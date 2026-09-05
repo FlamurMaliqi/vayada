@@ -73,6 +73,7 @@ export function PendingApplicationActions({
           isOpen
           onClose={() => setOfferings(null)}
           listingId={collaboration.listingId!}
+          propertyTimezone={collaboration.propertyTimezone}
           compensationOptions={offerings}
           creatorPlatforms={collaboration.creator?.platforms.map((p) => p.name)}
           initialData={{

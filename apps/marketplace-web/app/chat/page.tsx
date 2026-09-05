@@ -778,6 +778,8 @@ function ChatPageContent() {
       />
 
       <SuggestChangesModal
+        key={activeCollaboration?.id}
+        propertyTimezone={activeCollaboration?.propertyTimezone}
         isOpen={isSuggestModalOpen}
         onClose={() => setIsSuggestModalOpen(false)}
         initialCheckIn={

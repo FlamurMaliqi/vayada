@@ -256,6 +256,7 @@ interface ListingMarketplaceResponse {
   id: string;
   hotel_profile_id: string;
   hotel_name: string;
+  propertyTimezone?: string;
   hotel_picture: string | null;
   name: string;
   location: string;
@@ -414,6 +415,7 @@ export function transformListingMarketplaceResponse(apiListing: ListingMarketpla
   return {
     id: apiListing.id,
     hotelProfileId: apiListing.hotel_profile_id,
+    propertyTimezone: apiListing.propertyTimezone,
     name: apiListing.name,
     location: apiListing.location,
     description: apiListing.description,

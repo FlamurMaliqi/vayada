@@ -46,6 +46,15 @@ const IMAGE_CONTENT_TYPES = new Set([
 ]);
 const ORIGINAL_FILE_CONTENT_TYPES = new Set(["application/pdf", "image/heic", "image/heif"]);
 const UPLOAD_CONTENT_TYPES = new Set([...IMAGE_CONTENT_TYPES, ...ORIGINAL_FILE_CONTENT_TYPES]);
+const INBOX_ATTACHMENT_CONTENT_TYPES = new Set([
+  "image/jpeg",
+  "image/png",
+  "image/webp",
+  "image/gif",
+  "image/heic",
+  "image/heif",
+  "application/pdf",
+]);
 const MAX_SIGNED_FILE_SIZE_BYTES = 25 * 1024 * 1024;
 const MAX_IMAGE_PIXELS = 25_000_000;
 const MAX_RESIZABLE_IMAGE_PIXELS = 60_000_000;
@@ -86,6 +95,35 @@ export type PlatformMediaPrivateObjectReader = {
   }): Promise<Uint8Array>;
 };
 
+export type PlatformMediaPreparedInboundAttachment = {
+  ok: true;
+  bucketName: string;
+  storageKey: string;
+  contentType: string;
+  sizeBytes: number;
+  checksumSha256: string;
+  widthPx: number | null;
+  heightPx: number | null;
+};
+
+export type PlatformMediaInboundAttachmentWriter = Pick<
+  PlatformMediaObjectDeleter,
+  "deleteObject"
+> & {
+  preparePrivateAttachment(input: {
+    mediaId: string;
+    bytes: Uint8Array;
+    contentType: string;
+  }): Promise<
+    | PlatformMediaPreparedInboundAttachment
+    | { ok: false; code: "invalid_media_size" | "unsupported_media_type" | "media_type_mismatch" }
+  >;
+  uploadPrivateAttachment(input: {
+    prepared: PlatformMediaPreparedInboundAttachment;
+    bytes: Uint8Array;
+  }): Promise<void>;
+};
+
 export class PlatformMediaObjectIntegrityError extends Error {
   constructor() {
     super("Private object does not match its media record");
@@ -97,6 +135,7 @@ export type S3PlatformMediaAdapter = PlatformMediaUploadSigner &
   PlatformMediaUploadFinalizer &
   PlatformMediaPrivateDownloadSigner &
   PlatformMediaPrivateObjectReader &
+  PlatformMediaInboundAttachmentWriter &
   PlatformMediaObjectDeleter;
 
 class UploadTooLargeError extends Error {}
@@ -122,6 +161,79 @@ export function createS3PlatformMediaAdapter(
   const withImageWork = createSerialGate();
 
   return {
+    async preparePrivateAttachment(input) {
+      const contentType = normalizeContentType(input.contentType);
+      const bytes = Buffer.from(input.bytes);
+      if (bytes.length < 1 || bytes.length > MAX_SIGNED_FILE_SIZE_BYTES)
+        return { ok: false, code: "invalid_media_size" };
+      if (!INBOX_ATTACHMENT_CONTENT_TYPES.has(contentType))
+        return { ok: false, code: "unsupported_media_type" };
+
+      if (ORIGINAL_FILE_CONTENT_TYPES.has(contentType)) {
+        if (!isValidOriginalFile(bytes, contentType))
+          return { ok: false, code: "media_type_mismatch" };
+      } else {
+        try {
+          const metadata = await sharp(bytes, {
+            failOn: "error",
+            limitInputPixels: MAX_IMAGE_PIXELS,
+          })
+            .timeout({ seconds: IMAGE_OPERATION_TIMEOUT_SECONDS })
+            .metadata();
+          if (imageContentType(metadata.format) !== contentType)
+            return { ok: false, code: "media_type_mismatch" };
+          if (
+            !metadata.autoOrient.width ||
+            !metadata.autoOrient.height ||
+            metadata.autoOrient.width * metadata.autoOrient.height > MAX_IMAGE_PIXELS
+          )
+            return { ok: false, code: "unsupported_media_type" };
+        } catch {
+          return { ok: false, code: "unsupported_media_type" };
+        }
+      }
+
+      const variant = await createVariant(
+        bytes,
+        input.mediaId,
+        "provider_original",
+        publicPathPrefix,
+        "private",
+        contentType,
+      );
+      return {
+        ok: true,
+        bucketName,
+        storageKey: variant.record.storageKey,
+        contentType: variant.record.contentType,
+        sizeBytes: variant.record.sizeBytes,
+        checksumSha256: variant.record.checksumSha256!,
+        widthPx: variant.record.widthPx ?? null,
+        heightPx: variant.record.heightPx ?? null,
+      };
+    },
+
+    async uploadPrivateAttachment(input) {
+      const bytes = Buffer.from(input.bytes);
+      if (
+        input.prepared.bucketName !== bucketName ||
+        !input.prepared.storageKey.startsWith(`private/${publicPathPrefix}/`) ||
+        bytes.length !== input.prepared.sizeBytes ||
+        sha256(bytes) !== input.prepared.checksumSha256
+      ) {
+        throw new Error("Prepared provider attachment does not match the upload");
+      }
+      await s3.send(
+        new PutObjectCommand({
+          Bucket: bucketName,
+          Key: input.prepared.storageKey,
+          Body: bytes,
+          ContentType: input.prepared.contentType,
+          CacheControl: PRIVATE_CACHE_CONTROL,
+        }),
+      );
+    },
+
     async deleteObject(input) {
       await s3.send(
         new DeleteObjectCommand({

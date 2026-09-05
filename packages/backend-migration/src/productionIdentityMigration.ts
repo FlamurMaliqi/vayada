@@ -96,7 +96,11 @@ export async function runProductionIdentityTransaction(
       await services.readTarget(client, snapshot.rows),
       snapshot.sourceHorizonAt,
     );
-    if (verified.blockers.length > 0 || verified.checksum !== plan.checksum)
+    if (
+      verified.blockers.length > 0 ||
+      verified.counts.pendingTargetWrites !== 0 ||
+      verified.checksum !== plan.checksum
+    )
       throw new Error("Post-write identity verification does not match the migration plan");
 
     await client.query("COMMIT");

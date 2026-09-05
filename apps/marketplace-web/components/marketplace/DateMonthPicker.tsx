@@ -12,9 +12,11 @@ interface DateMonthPickerProps {
   onMonthToggle: (month: string) => void;
   isMonthAvailable?: (month: string) => boolean;
   dateLabel?: string;
+  minDate?: string;
 }
 
 export function DateMonthPicker({
+  minDate,
   dateFrom,
   dateTo,
   onDateFromChange,
@@ -33,6 +35,7 @@ export function DateMonthPicker({
           <div className="relative">
             <input
               type="date"
+              min={minDate}
               value={dateFrom}
               onChange={(e) => onDateFromChange(e.target.value)}
               className="w-full px-4 py-3 pl-10 rounded-lg border border-gray-300 text-gray-900 bg-white focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
@@ -47,7 +50,7 @@ export function DateMonthPicker({
               type="date"
               value={dateTo}
               onChange={(e) => onDateToChange(e.target.value)}
-              min={dateFrom}
+              min={dateFrom > (minDate ?? "") ? dateFrom : minDate}
               className="w-full px-4 py-3 pl-10 rounded-lg border border-gray-300 text-gray-900 bg-white focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
             />
             <CalendarIcon className="absolute left-3 top-1/2 transform -translate-y-1/2 w-5 h-5 text-gray-400 pointer-events-none" />
