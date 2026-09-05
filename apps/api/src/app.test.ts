@@ -3052,6 +3052,57 @@ describe("vayada-api", () => {
     );
   });
 
+  it.each([
+    ["", ["a", "b"]],
+    ["?booking_property_id=a", ["a"]],
+    ["?booking_property_id=unknown", []],
+    ["?property_ids=b&booking_property_id=a", []],
+    ["?property_ids=", []],
+  ])("filters both growth series and KPI cards: %s", async (query, expectedIds) => {
+    const inputs: string[][] = [];
+    app = buildPlatformAdminApp({
+      repository: {
+        async listBookings() {
+          return [];
+        },
+        async listGrowthProperties() {
+          return ["a", "b"].map((id) => ({
+            id,
+            name: id,
+            slug: id,
+            status: "live" as const,
+            lifecycleStatus: "active" as const,
+            lifecycleRevision: 1,
+            ownerAccountUserIds: [],
+            createdAt: "2026-01-01T00:00:00Z",
+          }));
+        },
+        async readGrowthTelemetry({ propertyIds }) {
+          inputs.push(propertyIds);
+          return {
+            pageViews: [{ key: "today", label: "Today", value: propertyIds.length * 10 }],
+            bookingRequests: [{ key: "today", label: "Today", value: propertyIds.length }],
+          };
+        },
+      },
+    });
+    const response = await injectJson<PlatformAdminGrowthDashboard>(app, {
+      method: "GET",
+      url: `/api/platform/admin/growth${query}`,
+      headers: { authorization: "Bearer platform-token" },
+    });
+    expect(response.statusCode).toBe(200);
+    expect(inputs).toEqual([expectedIds]);
+    expect(response.body.pageViews[0]?.value).toBe(expectedIds.length * 10);
+    expect(response.body.bookingRequests[0]?.value).toBe(expectedIds.length);
+    expect(response.body.metrics.find(({ key }) => key === "page_views")?.rawValue).toBe(
+      expectedIds.length * 10,
+    );
+    expect(response.body.metrics.find(({ key }) => key === "booking_requests")?.rawValue).toBe(
+      expectedIds.length,
+    );
+  });
+
   it("rejects platform admin reads without the platform resource link", async () => {
     app = buildPlatformAdminApp({ resourceAccess: false });
 

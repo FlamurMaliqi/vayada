@@ -70,6 +70,27 @@ pools as normal route integration. Before cutover, a compatibility adapter may
 read legacy sources, but the route contract is target-shaped and must hide
 legacy table names and provider secrets.
 
+## Platform Growth Reads (VAY-928)
+
+`GET /api/platform/admin/growth` reads target aggregates only. `property_ids`
+selects the outer property set; omitted means all eligible properties, an explicit
+empty list means none. `booking_property_id` narrows **both** charts and all four
+KPI cards within that set. An unknown or excluded ID produces zeros, never global
+fallback. Clearing the dropdown restores the outer set.
+
+Page views count persisted `booking_web.page_visit` events using the VAY-1284
+canonical-property and unambiguous historical-slug rules. Bots never contribute;
+the existing test-data switch also controls classified/explicit test events and
+bookings marked `isTestBooking`, `isTestData`, or `testData`. Booking requests count
+target guest bookings by creation date, regardless of later lifecycle changes.
+
+Platform reporting preserves UTC calendar boundaries across properties: 30 days,
+12 Monday-based weeks, or 12 months including the current partial bucket. Future
+evidence is excluded. Both series zero-fill every bucket, and KPI counts sum those
+same buckets. This platform convention does not change Booking Engine property-local
+timeline semantics or stored IANA identifiers. Conversion is requests/views (zero
+when there are no views), not the sequential Booking Engine funnel in VAY-1034.
+
 ## Property Lifecycle
 
 Platform property lifecycle uses the contract version
