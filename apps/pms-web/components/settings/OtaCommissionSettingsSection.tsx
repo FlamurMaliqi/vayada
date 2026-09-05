@@ -13,10 +13,12 @@ import {
   displayPercentage,
   otaCommissionFormErrors,
 } from "@/lib/settings/otaCommissions";
+import { useTranslation } from "@/lib/i18n";
 
 const inputClass =
   "w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary-500";
 export function OtaCommissionSettingsSection() {
+  const { t, locale } = useTranslation();
   const [settings, setSettings] = useState<OtaCommissionSetting[]>([]);
   const [status, setStatus] = useState<"loading" | "ready" | "error">("loading");
   const [editing, setEditing] = useState<OtaCommissionSetting | null>(null);
@@ -49,7 +51,10 @@ export function OtaCommissionSettingsSection() {
   const save = async () => {
     if (!editing) return;
     const validation = otaCommissionFormErrors(percentageRate, effectiveFrom);
-    setErrors(validation);
+    setErrors({
+      percentageRate: validation.percentageRate ? t("settings.ota.invalidPercentage") : "",
+      effectiveFrom: validation.effectiveFrom ? t("settings.ota.invalidEffectiveTime") : "",
+    });
     if (validation.percentageRate || validation.effectiveFrom) return;
     setSaving(true);
     setSaveError("");
@@ -64,11 +69,16 @@ export function OtaCommissionSettingsSection() {
       );
       const label = OTA_COMMISSION_CHANNELS.find(([channel]) => channel === persisted.channel)![1];
       setSuccess(
-        `${label} saved at ${displayPercentage(persisted.percentageRate)}%, effective ${formatDate(persisted.effectiveFrom)}, revision ${persisted.revision}.`,
+        t("settings.ota.saved", {
+          channel: label,
+          percentage: displayPercentage(persisted.percentageRate),
+          effective: formatDate(persisted.effectiveFrom, locale),
+          revision: persisted.revision,
+        }),
       );
       setEditing(null);
     } catch {
-      setSaveError("We couldn’t save this setting. Reload and try again.");
+      setSaveError(t("settings.ota.saveError"));
     } finally {
       setSaving(false);
     }
@@ -76,13 +86,13 @@ export function OtaCommissionSettingsSection() {
   return (
     <SettingsSection
       id="ota-commissions"
-      title="OTA commissions"
-      description="Set the commission expected for each booking source. Changes affect future booking economics only; existing financial records are never rewritten."
+      title={t("settings.navigation.otaCommissions")}
+      description={t("settings.ota.description")}
     >
       <SettingsCard>
         {status === "loading" && (
           <p className="text-sm text-gray-600" role="status">
-            Loading persisted OTA commission settings…
+            {t("settings.ota.loading")}
           </p>
         )}
         {status === "error" && (
@@ -90,19 +100,19 @@ export function OtaCommissionSettingsSection() {
             className="flex items-center justify-between gap-3 rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700"
             role="alert"
           >
-            <span>We couldn’t load the persisted settings. Check your access and retry.</span>
+            <span>{t("settings.ota.loadError")}</span>
             <button
               type="button"
               onClick={load}
               className="shrink-0 rounded-md border border-red-300 bg-white px-3 py-1.5 font-medium hover:bg-red-100"
             >
-              Retry
+              {t("settings.retry")}
             </button>
           </div>
         )}
         {status === "ready" && (
           <div className="space-y-4">
-            <ul className="divide-y divide-gray-100" aria-label="OTA commission channels">
+            <ul className="divide-y divide-gray-100" aria-label={t("settings.ota.channels")}>
               {OTA_COMMISSION_CHANNELS.map(([channel, label]) => {
                 const setting = settings.find((item) => item.channel === channel)!;
                 return (
@@ -114,11 +124,16 @@ export function OtaCommissionSettingsSection() {
                       <p className="text-sm font-medium text-gray-900">{label}</p>
                       {setting.status === "configured" ? (
                         <p className="text-xs text-gray-500">
-                          {displayPercentage(setting.percentageRate)}% · Effective{" "}
-                          {formatDate(setting.effectiveFrom)} · Revision {setting.revision}
+                          {t("settings.ota.configured", {
+                            percentage: displayPercentage(setting.percentageRate),
+                            effective: formatDate(setting.effectiveFrom, locale),
+                            revision: setting.revision,
+                          })}
                         </p>
                       ) : (
-                        <p className="text-xs font-medium text-amber-700">Not configured</p>
+                        <p className="text-xs font-medium text-amber-700">
+                          {t("settings.ota.notConfigured")}
+                        </p>
                       )}
                     </div>
                     <button
@@ -127,7 +142,9 @@ export function OtaCommissionSettingsSection() {
                       disabled={saving}
                       className="rounded-md border border-gray-300 bg-white px-3 py-1.5 text-sm font-medium text-gray-700 hover:bg-gray-50"
                     >
-                      {setting.status === "configured" ? "Change" : "Configure"}
+                      {setting.status === "configured"
+                        ? t("settings.ota.change")
+                        : t("rooms.configure")}
                     </button>
                   </li>
                 );
@@ -140,7 +157,7 @@ export function OtaCommissionSettingsSection() {
                 </h3>
                 <div className="mt-3 grid gap-4 md:grid-cols-2">
                   <FormRow
-                    label="Commission percentage"
+                    label={t("settings.ota.percentage")}
                     htmlFor="ota-commission-rate"
                     required
                     error={<span id="ota-commission-rate-error">{errors.percentageRate}</span>}
@@ -156,7 +173,7 @@ export function OtaCommissionSettingsSection() {
                     />
                   </FormRow>
                   <FormRow
-                    label="Effective time (your device timezone)"
+                    label={t("settings.ota.effectiveTime")}
                     htmlFor="ota-commission-effective"
                     required
                     error={<span id="ota-commission-effective-error">{errors.effectiveFrom}</span>}
@@ -184,7 +201,7 @@ export function OtaCommissionSettingsSection() {
                     disabled={saving}
                     className="rounded-lg border border-gray-300 bg-white px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-50"
                   >
-                    Cancel
+                    {t("common.cancel")}
                   </button>
                   <button
                     type="button"
@@ -192,7 +209,7 @@ export function OtaCommissionSettingsSection() {
                     disabled={saving}
                     className="rounded-lg bg-primary-600 px-4 py-2 text-sm font-medium text-white hover:bg-primary-700 disabled:opacity-50"
                   >
-                    {saving ? "Saving…" : "Save commission"}
+                    {saving ? t("common.saving") : t("settings.ota.save")}
                   </button>
                 </div>
               </div>
@@ -211,4 +228,4 @@ export function OtaCommissionSettingsSection() {
     </SettingsSection>
   );
 }
-const formatDate = (value: string) => new Date(value).toLocaleString();
+const formatDate = (value: string, locale: string) => new Date(value).toLocaleString(locale);

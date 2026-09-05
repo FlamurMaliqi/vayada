@@ -16,42 +16,13 @@ import {
   CheckinChecklistStepType,
   settingsService,
 } from "@/services/settings";
+import { useTranslation } from "@/lib/i18n";
+import {
+  defaultCheckinChecklistSteps,
+  localizeBuiltInCheckinStep,
+} from "@/lib/settings/checklistCopy";
 
 const DRAFT_STORAGE_KEY = "vayada:pms:checkin-checklist-preview";
-
-export const DEFAULT_CHECKIN_CHECKLIST_STEPS: CheckinChecklistStep[] = [
-  {
-    id: "default-verify-guest-ids",
-    label: "Verify guest IDs / passports",
-    prompt: "Confirm passport or ID details are captured for every guest.",
-    type: "checkbox",
-    required: true,
-    system: false,
-    position: 0,
-  },
-  {
-    id: "default-confirm-payment-status",
-    label: "Confirm payment / deposit status",
-    prompt: "Confirm the deposit, balance, or pay-at-property status before handover.",
-    type: "checkbox",
-    required: true,
-    system: false,
-    position: 1,
-  },
-  {
-    id: "default-room-access",
-    label: "Assign room & hand over keys/access",
-    prompt: "Make sure the guest has their room assignment and access instructions.",
-    type: "checkbox",
-    required: true,
-    system: false,
-    position: 2,
-  },
-];
-
-function defaultSteps(): CheckinChecklistStep[] {
-  return DEFAULT_CHECKIN_CHECKLIST_STEPS.map((step, position) => ({ ...step, position }));
-}
 
 function newStep(position: number): CheckinChecklistStep {
   const id =
@@ -61,52 +32,59 @@ function newStep(position: number): CheckinChecklistStep {
   return { id, label: "", prompt: "", type: "checkbox", required: false, system: false, position };
 }
 
-function typeLabel(type: CheckinChecklistStepType) {
-  if (type === "text") return "✎ Text input";
-  if (type === "amount") return "$ Amount";
-  return "☑ Checkbox";
+function typeLabel(type: CheckinChecklistStepType, t: (key: string) => string) {
+  if (type === "text") return `✎ ${t("settings.checklist.typeText")}`;
+  if (type === "amount") return `$ ${t("settings.checklist.typeAmount")}`;
+  return `☑ ${t("settings.checklist.typeCheckbox")}`;
 }
 
 export function CheckinChecklistPreview({ steps }: { steps: CheckinChecklistStep[] }) {
+  const { t } = useTranslation();
   return (
     <div className="rounded-xl border border-gray-200 bg-white shadow-sm">
       <div className="border-b border-gray-100 px-4 py-3">
         <p className="text-xs font-semibold uppercase tracking-wide text-gray-500">
-          Check-in preview
+          {t("settings.checklist.previewTitle")}
         </p>
       </div>
       <div className="max-h-[520px] space-y-2 overflow-y-auto p-4">
         {steps.length === 0 && (
           <div className="rounded-lg border border-dashed border-gray-300 p-4 text-sm text-gray-500">
-            No check-in steps configured.
+            {t("settings.checklist.previewEmpty")}
           </div>
         )}
-        {steps.map((step) => (
-          <div key={step.id} className="rounded-lg border border-gray-200 bg-white p-3">
-            <div className="flex items-start justify-between gap-3">
-              <div className="min-w-0">
-                <p className="break-words text-sm font-semibold text-gray-950">
-                  {step.label.trim() || "(unnamed step)"}
-                </p>
-                {step.prompt && <p className="mt-0.5 text-xs text-gray-500">{step.prompt}</p>}
+        {steps.map((step) => {
+          const displayStep = localizeBuiltInCheckinStep(step, t);
+          return (
+            <div key={step.id} className="rounded-lg border border-gray-200 bg-white p-3">
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <p className="break-words text-sm font-semibold text-gray-950">
+                    {displayStep.label.trim() || t("settings.checklist.unnamed")}
+                  </p>
+                  {displayStep.prompt && (
+                    <p className="mt-0.5 text-xs text-gray-500">{displayStep.prompt}</p>
+                  )}
+                </div>
+                <span className="shrink-0 rounded-full bg-white px-2 py-0.5 text-xs text-gray-500">
+                  {step.required ? t("common.required") : t("settings.checklist.optional")}
+                </span>
               </div>
-              <span className="shrink-0 rounded-full bg-white px-2 py-0.5 text-xs text-gray-500">
-                {step.required ? "Required" : "Optional"}
-              </span>
+              <div className="mt-2 flex flex-wrap gap-1.5">
+                <span className="rounded-full bg-gray-100 px-2 py-0.5 text-xs font-medium text-gray-700">
+                  {typeLabel(step.type, t)}
+                </span>
+              </div>
             </div>
-            <div className="mt-2 flex flex-wrap gap-1.5">
-              <span className="rounded-full bg-gray-100 px-2 py-0.5 text-xs font-medium text-gray-700">
-                {typeLabel(step.type)}
-              </span>
-            </div>
-          </div>
-        ))}
+          );
+        })}
       </div>
     </div>
   );
 }
 
 export function CheckinChecklistBuilder() {
+  const { t } = useTranslation();
   const [steps, setSteps] = useState<CheckinChecklistStep[]>([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -120,9 +98,9 @@ export function CheckinChecklistBuilder() {
     settingsService
       .getCheckinChecklist()
       .then((template) => setSteps(template.steps || []))
-      .catch((err) => setError(err.message || "Could not load checklist"))
+      .catch((err) => setError(err.message || t("settings.checklist.loadError")))
       .finally(() => setLoading(false));
-  }, []);
+  }, [t]);
 
   useEffect(() => {
     if (!nextFocusId.current) return;
@@ -155,7 +133,7 @@ export function CheckinChecklistBuilder() {
     setSuccess("");
     setError("");
     setErrors({});
-    const restored = defaultSteps();
+    const restored = defaultCheckinChecklistSteps();
     nextFocusId.current = restored[0]?.id ?? null;
     setSteps(restored);
   };
@@ -180,7 +158,7 @@ export function CheckinChecklistBuilder() {
   const save = async () => {
     const nextErrors: Record<string, string> = {};
     normalizedSteps.forEach((step) => {
-      if (!step.label.trim()) nextErrors[step.id] = "Add a label.";
+      if (!step.label.trim()) nextErrors[step.id] = t("settings.checklist.labelRequired");
     });
     setErrors(nextErrors);
     setError("");
@@ -191,9 +169,9 @@ export function CheckinChecklistBuilder() {
     try {
       const saved = await settingsService.updateCheckinChecklist(normalizedSteps);
       setSteps(saved.steps || []);
-      setSuccess("Checklist saved");
+      setSuccess(t("settings.checklist.saved"));
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not save checklist");
+      setError(err instanceof Error ? err.message : t("settings.checklist.saveError"));
     } finally {
       setSaving(false);
     }
@@ -204,7 +182,7 @@ export function CheckinChecklistBuilder() {
   };
 
   if (loading) {
-    return <div className="p-4 text-sm text-gray-500">Loading checklist...</div>;
+    return <div className="p-4 text-sm text-gray-500">{t("settings.checklist.loading")}</div>;
   }
 
   return (
@@ -212,10 +190,14 @@ export function CheckinChecklistBuilder() {
       <div className="mx-auto max-w-6xl space-y-5">
         <header className="flex flex-wrap items-start justify-between gap-3">
           <div>
-            <p className="text-sm text-gray-500">Settings / Check-in checklist</p>
-            <h1 className="mt-1 text-2xl font-semibold text-gray-950">Check-in checklist</h1>
+            <p className="text-sm text-gray-500">
+              {t("settings.title")} / {t("settings.navigation.checkinChecklist")}
+            </p>
+            <h1 className="mt-1 text-2xl font-semibold text-gray-950">
+              {t("settings.navigation.checkinChecklist")}
+            </h1>
             <p className="mt-1 max-w-2xl text-sm text-gray-600">
-              Customise the steps your team completes during every guest check-in.
+              {t("settings.checklist.description")}
             </p>
           </div>
           <Link
@@ -223,7 +205,7 @@ export function CheckinChecklistBuilder() {
             className="inline-flex items-center gap-2 rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm font-semibold text-gray-700 hover:bg-gray-50"
           >
             <ArrowLeftIcon className="h-4 w-4" />
-            Settings
+            {t("settings.title")}
           </Link>
         </header>
 
@@ -242,22 +224,23 @@ export function CheckinChecklistBuilder() {
           <div className="rounded-xl border border-gray-200 bg-white shadow-sm">
             <div className="border-b border-gray-100 px-4 py-3">
               <p className="text-xs font-semibold uppercase tracking-wide text-gray-500">
-                Check-in steps
+                {t("settings.checklist.stepsTitle")}
               </p>
               <p className="mt-1 text-xs text-gray-500">
-                Required steps warn staff if skipped. No steps block check-in.
+                {t("settings.checklist.stepsDescription")}
               </p>
             </div>
             <div className="space-y-3 p-4">
               {normalizedSteps.length === 0 && (
                 <div className="rounded-lg border border-dashed border-gray-300 p-4 text-sm text-gray-500">
-                  No steps configured — add your first step below.
+                  {t("settings.checklist.empty")}
                 </div>
               )}
 
               {normalizedSteps.map((step, index) => {
                 const previousStep = normalizedSteps[index - 1];
                 const nextStep = normalizedSteps[index + 1];
+                const displayStep = localizeBuiltInCheckinStep(step, t);
 
                 return (
                   <div
@@ -276,7 +259,7 @@ export function CheckinChecklistBuilder() {
                         <button
                           type="button"
                           className="flex h-9 w-9 cursor-grab items-center justify-center rounded-lg text-gray-400 hover:bg-gray-50"
-                          aria-label="Drag to reorder"
+                          aria-label={t("settings.checklist.drag")}
                         >
                           <Bars3Icon className="h-5 w-5" />
                         </button>
@@ -286,7 +269,7 @@ export function CheckinChecklistBuilder() {
                             onClick={() => previousStep && moveStep(step.id, previousStep.id)}
                             disabled={!previousStep}
                             className="flex h-4 w-7 items-center justify-center rounded text-xs text-gray-500 hover:bg-gray-50 disabled:opacity-30"
-                            aria-label="Move step up"
+                            aria-label={t("settings.checklist.moveUp")}
                           >
                             ↑
                           </button>
@@ -295,7 +278,7 @@ export function CheckinChecklistBuilder() {
                             onClick={() => nextStep && moveStep(step.id, nextStep.id)}
                             disabled={!nextStep}
                             className="flex h-4 w-7 items-center justify-center rounded text-xs text-gray-500 hover:bg-gray-50 disabled:opacity-30"
-                            aria-label="Move step down"
+                            aria-label={t("settings.checklist.moveDown")}
                           >
                             ↓
                           </button>
@@ -303,16 +286,16 @@ export function CheckinChecklistBuilder() {
                       </div>
                       <div className="space-y-2">
                         <Field
-                          value={step.label}
-                          placeholder="Label"
+                          value={displayStep.label}
+                          placeholder={t("settings.checklist.labelPlaceholder")}
                           maxLength={120}
                           error={errors[step.id]}
                           dataStepLabel={step.id}
                           onChange={(value) => updateStep(step.id, { label: value })}
                         />
                         <TextAreaField
-                          value={step.prompt ?? ""}
-                          placeholder="Help text"
+                          value={displayStep.prompt ?? ""}
+                          placeholder={t("settings.checklist.helpPlaceholder")}
                           maxLength={200}
                           onChange={(value) => updateStep(step.id, { prompt: value })}
                         />
@@ -325,15 +308,15 @@ export function CheckinChecklistBuilder() {
                         }}
                         className="rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm"
                       >
-                        <option value="checkbox">Checkbox</option>
-                        <option value="text">Text input</option>
-                        <option value="amount">Amount</option>
+                        <option value="checkbox">{t("settings.checklist.typeCheckbox")}</option>
+                        <option value="text">{t("settings.checklist.typeText")}</option>
+                        <option value="amount">{t("settings.checklist.typeAmount")}</option>
                       </select>
                       <button
                         type="button"
                         onClick={() => removeStep(step.id)}
                         className="flex h-9 w-9 items-center justify-center rounded-lg text-gray-400 hover:bg-red-50 hover:text-red-600"
-                        aria-label="Delete step"
+                        aria-label={t("settings.checklist.delete")}
                       >
                         <TrashIcon className="h-4 w-4" />
                       </button>
@@ -347,7 +330,7 @@ export function CheckinChecklistBuilder() {
                         }
                         className="h-4 w-4 rounded border-gray-300"
                       />
-                      Required
+                      {t("common.required")}
                     </label>
                   </div>
                 );
@@ -359,7 +342,7 @@ export function CheckinChecklistBuilder() {
                 className="inline-flex items-center gap-2 rounded-lg border border-dashed border-gray-300 px-3 py-2 text-sm font-semibold text-gray-600 hover:border-gray-400 hover:text-gray-900"
               >
                 <PlusIcon className="h-4 w-4" />
-                Add step
+                {t("settings.checklist.add")}
               </button>
             </div>
             <div className="flex flex-wrap items-center justify-between gap-2 border-t border-gray-100 px-4 py-3">
@@ -370,7 +353,7 @@ export function CheckinChecklistBuilder() {
                   className="inline-flex items-center gap-2 rounded-lg border border-gray-200 px-3 py-2 text-sm font-semibold text-gray-700 hover:bg-gray-50"
                 >
                   <EyeIcon className="h-4 w-4" />
-                  Preview
+                  {t("settings.checklist.preview")}
                 </Link>
                 <button
                   type="button"
@@ -378,7 +361,7 @@ export function CheckinChecklistBuilder() {
                   className="inline-flex items-center gap-2 rounded-lg border border-gray-200 px-3 py-2 text-sm font-semibold text-gray-700 hover:bg-gray-50"
                 >
                   <ArrowPathIcon className="h-4 w-4" />
-                  Restore defaults
+                  {t("settings.checklist.restoreDefaults")}
                 </button>
               </div>
               <button
@@ -388,7 +371,7 @@ export function CheckinChecklistBuilder() {
                 className="inline-flex items-center gap-2 rounded-lg bg-primary-600 px-4 py-2 text-sm font-semibold text-white hover:bg-primary-700 disabled:opacity-60"
               >
                 <CheckCircleIcon className="h-4 w-4" />
-                {saving ? "Saving..." : "Save"}
+                {saving ? t("common.saving") : t("common.save")}
               </button>
             </div>
           </div>

@@ -9,6 +9,7 @@ import BookingStaySummary, {
   bookingSettlementLabel,
   expectedPaymentMethodLabel,
 } from "@/components/bookings/BookingStaySummary";
+import { useTranslation } from "@/lib/i18n";
 
 interface CalendarRoom {
   id: string;
@@ -72,6 +73,37 @@ const datesOverlap = (aStart: string, aEnd: string, bStart: string, bEnd: string
 
 const LEGACY_BOOKING_WRITES_AVAILABLE = false;
 
+type Translate = (key: string, params?: Record<string, string | number>) => string;
+
+function bookingStatusLabel(status: string, t: Translate): string {
+  const keys: Record<string, string> = {
+    pending: "bookings.statusPending",
+    confirmed: "bookings.statusConfirmed",
+    cancelled: "bookings.statusCancelled",
+    checked_in: "bookings.statusCheckedIn",
+    in_house: "bookings.statusInHouse",
+    checked_out: "calendar.bookingDetail.statusCheckedOut",
+    completed: "calendar.bookingDetail.statusCompleted",
+    no_show: "bookings.statusNoShow",
+    declined: "bookings.statusDeclined",
+    expired: "bookings.statusExpired",
+  };
+  return keys[status] ? t(keys[status]) : status;
+}
+
+function channelLabel(channel: string | null | undefined, t: Translate): string {
+  const keys: Record<string, string> = {
+    direct: "calendar.channelDirect",
+    manual: "calendar.channelDirect",
+    airbnb: "calendar.channelAirbnb",
+    "booking.com": "calendar.channelBookingCom",
+    expedia: "calendar.channelExpedia",
+    other: "calendar.channelOther",
+  };
+  const normalized = normalizeChannelKey(channel);
+  return keys[normalized] ? t(keys[normalized]) : getChannelLabel(channel ?? "");
+}
+
 export default function BookingDetailModal({
   bookingId,
   onClose,
@@ -80,6 +112,7 @@ export default function BookingDetailModal({
   bookings = [],
   sourceAssignmentSelector,
 }: BookingDetailModalProps) {
+  const { locale, t } = useTranslation();
   const [booking, setBooking] = useState<Booking | null>(null);
   const [loading, setLoading] = useState(true);
   const [actionLoading, setActionLoading] = useState(false);
@@ -290,14 +323,20 @@ export default function BookingDetailModal({
 
   const partnerLabel = (p: CalendarBookingLite): string => {
     const name = `${p.guestFirstName ?? ""} ${p.guestLastName ?? ""}`.trim();
-    return name || "occupied";
+    return name || t("calendar.bookingDetail.occupied");
   };
 
   const roomFacts = (room: CalendarRoom) =>
     [
-      room.maxOccupancy > 0 ? `Up to ${room.maxOccupancy} guests` : "",
+      room.maxOccupancy > 0
+        ? t("calendar.bookingDetail.upToGuests", { count: room.maxOccupancy })
+        : "",
       room.size > 0 ? `${room.size} m²` : "",
-      room.baseRate > 0 ? `${formatCurrency(room.baseRate, room.currency)}/night` : "",
+      room.baseRate > 0
+        ? t("calendar.bookingDetail.perNight", {
+            amount: formatCurrency(room.baseRate, room.currency),
+          })
+        : "",
     ]
       .filter(Boolean)
       .join(" · ");
@@ -425,8 +464,8 @@ export default function BookingDetailModal({
         err?.response?.data?.detail ||
         err?.data?.detail ||
         err?.message ||
-        "Failed to move booking";
-      setMoveError(typeof detail === "string" ? detail : "Failed to move booking");
+        t("calendar.bookingDetail.moveError");
+      setMoveError(typeof detail === "string" ? detail : t("calendar.bookingDetail.moveError"));
     } finally {
       setMovingRoom(false);
     }
@@ -455,8 +494,8 @@ export default function BookingDetailModal({
         err?.response?.data?.detail ||
         err?.data?.detail ||
         err?.message ||
-        "Failed to move booking to Unassigned";
-      setMoveError(typeof detail === "string" ? detail : "Failed to move booking to Unassigned");
+        t("calendar.bookingDetail.unassignError");
+      setMoveError(typeof detail === "string" ? detail : t("calendar.bookingDetail.unassignError"));
     } finally {
       setMovingRoom(false);
     }
@@ -485,8 +524,11 @@ export default function BookingDetailModal({
       }, 1200);
     } catch (err: any) {
       const detail =
-        err?.response?.data?.detail || err?.data?.detail || err?.message || "Failed to swap rooms";
-      setMoveError(typeof detail === "string" ? detail : "Failed to swap rooms");
+        err?.response?.data?.detail ||
+        err?.data?.detail ||
+        err?.message ||
+        t("calendar.bookingDetail.swapError");
+      setMoveError(typeof detail === "string" ? detail : t("calendar.bookingDetail.swapError"));
       setView("swapConfirm");
     } finally {
       setMovingRoom(false);
@@ -500,6 +542,7 @@ export default function BookingDetailModal({
     <Modal onClose={onClose} maxWidth="lg">
       <button
         onClick={onClose}
+        aria-label={t("common.close")}
         className="absolute top-4 right-4 text-gray-400 hover:text-gray-600 z-10"
       >
         <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -521,10 +564,10 @@ export default function BookingDetailModal({
           </div>
         </div>
       ) : !booking ? (
-        <div className="p-8 text-center text-gray-500">Booking not found</div>
+        <div className="p-8 text-center text-gray-500">{t("bookings.modal.notFound")}</div>
       ) : staleAssignment ? (
         <div className="p-8 text-center text-amber-700">
-          This room assignment changed. Close this view and select the booking again.
+          {t("calendar.bookingDetail.assignmentChanged")}
         </div>
       ) : view === "roomPicker" ? (
         /* ── ROOM PICKER ── */
@@ -532,7 +575,7 @@ export default function BookingDetailModal({
           <div className="flex items-center gap-3 mb-1">
             <button
               onClick={() => setView("detail")}
-              aria-label="Back"
+              aria-label={t("calendar.bookingDetail.back")}
               className="text-gray-500 hover:text-gray-800 -ml-1 p-1 rounded hover:bg-gray-100 transition-colors"
             >
               <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -545,7 +588,9 @@ export default function BookingDetailModal({
               </svg>
             </button>
             <h2 className="text-lg font-bold text-gray-900">
-              {activeRoomId ? "Move to another room" : "Assign room"}
+              {activeRoomId
+                ? t("calendar.bookingDetail.moveToAnotherRoom")
+                : t("calendar.bookingDetail.assignRoom")}
             </h2>
           </div>
           <p className="text-sm text-gray-500 mb-4 ml-8">
@@ -556,14 +601,16 @@ export default function BookingDetailModal({
           {currentRoom && (
             <div className="mb-3">
               <p className="text-[11px] font-medium text-gray-500 uppercase tracking-wide mb-1.5">
-                Current room
+                {t("calendar.bookingDetail.currentRoom")}
               </p>
               <div className="flex items-center justify-between px-3 py-2.5 bg-gray-50 border border-gray-200 rounded-lg opacity-70">
                 <div className="flex items-center gap-2">
                   <span className="w-2 h-2 rounded-full bg-gray-300" />
                   <span className="text-sm font-medium text-gray-700">
                     #{currentRoom.roomNumber}
-                    {currentRoom.floor ? ` (Floor ${currentRoom.floor})` : ""}
+                    {currentRoom.floor
+                      ? ` (${t("calendar.bookingDetail.floor", { floor: currentRoom.floor })})`
+                      : ""}
                   </span>
                   <span className="text-xs text-gray-400">&middot; {currentRoom.roomTypeName}</span>
                 </div>
@@ -573,7 +620,7 @@ export default function BookingDetailModal({
 
           {candidates.length === 0 ? (
             <div className="py-8 text-center text-sm text-gray-500 border border-dashed border-gray-200 rounded-lg">
-              No other operational rooms are available.
+              {t("calendar.bookingDetail.noRoomsAvailable")}
             </div>
           ) : (
             <div className="space-y-1.5 max-h-96 overflow-y-auto">
@@ -584,7 +631,9 @@ export default function BookingDetailModal({
                 const groupHeading = startsGroup ? (
                   <p className="pt-2 pb-1 text-[11px] font-semibold uppercase tracking-wide text-gray-500">
                     {room.roomTypeName}
-                    {room.roomTypeId === activeRoomTypeId ? " · Same type" : ""}
+                    {room.roomTypeId === activeRoomTypeId
+                      ? ` · ${t("calendar.bookingDetail.sameType")}`
+                      : ""}
                   </p>
                 ) : null;
                 if (kind === "available") {
@@ -609,7 +658,9 @@ export default function BookingDetailModal({
                           <span className="min-w-0">
                             <span className="block text-sm font-medium truncate text-gray-900">
                               #{room.roomNumber}
-                              {room.floor ? ` (Floor ${room.floor})` : ""}
+                              {room.floor
+                                ? ` (${t("calendar.bookingDetail.floor", { floor: room.floor })})`
+                                : ""}
                             </span>
                             <span className="block text-xs text-gray-500 truncate">
                               {roomFacts(room)}
@@ -617,7 +668,9 @@ export default function BookingDetailModal({
                           </span>
                         </div>
                         <div className="flex items-center gap-2 flex-shrink-0">
-                          <span className="text-xs text-green-700">No booking overlap</span>
+                          <span className="text-xs text-green-700">
+                            {t("calendar.bookingDetail.noBookingOverlap")}
+                          </span>
                           {isSelected && (
                             <svg
                               className="w-4 h-4 text-primary-600"
@@ -651,14 +704,16 @@ export default function BookingDetailModal({
                           <span className="w-2 h-2 rounded-full flex-shrink-0 bg-amber-500" />
                           <span className="text-sm font-medium truncate text-gray-900">
                             #{room.roomNumber}
-                            {room.floor ? ` (Floor ${room.floor})` : ""}
+                            {room.floor
+                              ? ` (${t("calendar.bookingDetail.floor", { floor: room.floor })})`
+                              : ""}
                           </span>
                           <span className="text-xs text-gray-400 truncate">
                             &middot; {room.roomTypeName}
                           </span>
                         </div>
                         <span className="text-[10px] font-medium uppercase tracking-wide text-amber-700 bg-amber-50 border border-amber-200 px-1.5 py-0.5 rounded-full">
-                          Occupied
+                          {t("calendar.bookingDetail.occupied")}
                         </span>
                       </div>
                       <p className="px-3 py-1 text-xs text-gray-500 border-b border-gray-200">
@@ -683,7 +738,7 @@ export default function BookingDetailModal({
                                 <button
                                   type="button"
                                   disabled={!LEGACY_BOOKING_WRITES_AVAILABLE}
-                                  title="Room swaps are not available yet"
+                                  title={t("calendar.bookingDetail.swapsUnavailable")}
                                   onClick={() =>
                                     beginSwap(
                                       room,
@@ -693,7 +748,7 @@ export default function BookingDetailModal({
                                   }
                                   className="cursor-not-allowed rounded-md border border-gray-200 bg-white px-2.5 py-1 text-xs font-medium text-gray-400"
                                 >
-                                  Swap unavailable
+                                  {t("calendar.bookingDetail.swapUnavailable")}
                                 </button>
                               )}
                               <button
@@ -701,7 +756,7 @@ export default function BookingDetailModal({
                                 onClick={() => beginUnassign(room, entry.booking)}
                                 className="px-2.5 py-1 text-xs font-medium text-gray-700 border border-gray-300 hover:bg-white rounded-md transition-colors"
                               >
-                                Move to Unassigned
+                                {t("calendar.bookingDetail.moveToUnassigned")}
                               </button>
                             </div>
                           </li>
@@ -716,29 +771,43 @@ export default function BookingDetailModal({
 
           {isCrossType && selectedCandidate && (
             <div className="mt-4 rounded-lg border border-gray-200 bg-gray-50 p-3 text-sm">
-              <p className="font-medium text-gray-900">Rate comparison</p>
+              <p className="font-medium text-gray-900">
+                {t("calendar.bookingDetail.rateComparison")}
+              </p>
               <div className="mt-2 grid grid-cols-2 gap-2 text-xs text-gray-600">
                 <p>
-                  Original:{" "}
+                  {t("calendar.bookingDetail.original")}{" "}
                   {originalNightlyRate === null || moveNights === null
-                    ? "Unavailable"
-                    : `${formatCurrency(originalNightlyRate, booking.currency)}/night · ${formatCurrency(originalNightlyRate * moveNights, booking.currency)} total`}
+                    ? t("calendar.bookingDetail.unavailable")
+                    : t("calendar.bookingDetail.rateTotal", {
+                        rate: formatCurrency(originalNightlyRate, booking.currency),
+                        total: formatCurrency(originalNightlyRate * moveNights, booking.currency),
+                      })}
                 </p>
                 <p>
-                  New:{" "}
-                  {formatCurrency(selectedCandidate.room.baseRate, selectedCandidate.room.currency)}
-                  /night ·{" "}
+                  {t("calendar.bookingDetail.new")}{" "}
                   {moveNights !== null && moveNights > 0
-                    ? `${formatCurrency(selectedCandidate.room.baseRate * moveNights, selectedCandidate.room.currency)} total`
-                    : "total unavailable"}
+                    ? t("calendar.bookingDetail.rateTotal", {
+                        rate: formatCurrency(
+                          selectedCandidate.room.baseRate,
+                          selectedCandidate.room.currency,
+                        ),
+                        total: formatCurrency(
+                          selectedCandidate.room.baseRate * moveNights,
+                          selectedCandidate.room.currency,
+                        ),
+                      })
+                    : t("calendar.bookingDetail.totalUnavailable")}
                 </p>
               </div>
               <p className="mt-1 text-xs text-gray-600">
                 {originalNightlyRate === null || moveNights === null
-                  ? "Difference unavailable because this stay does not have complete nightly rates."
+                  ? t("calendar.bookingDetail.differenceIncompleteRates")
                   : booking.currency !== selectedCandidate.room.currency
-                    ? "Difference unavailable because the room rates use different currencies."
-                    : `Difference: ${selectedCandidate.room.baseRate - originalNightlyRate >= 0 ? "+" : ""}${formatCurrency((selectedCandidate.room.baseRate - originalNightlyRate) * moveNights, booking.currency)}`}
+                    ? t("calendar.bookingDetail.differenceCurrencies")
+                    : t("calendar.bookingDetail.difference", {
+                        amount: `${selectedCandidate.room.baseRate - originalNightlyRate >= 0 ? "+" : ""}${formatCurrency((selectedCandidate.room.baseRate - originalNightlyRate) * moveNights, booking.currency)}`,
+                      })}
               </p>
               <div className="mt-3 space-y-2">
                 <label className="flex items-start gap-2">
@@ -748,8 +817,12 @@ export default function BookingDetailModal({
                     onChange={() => setRatePolicy("preserve")}
                   />
                   <span>
-                    <span className="block font-medium text-gray-800">Keep original rate</span>
-                    <span className="text-xs text-gray-500">The guest pays the same.</span>
+                    <span className="block font-medium text-gray-800">
+                      {t("calendar.bookingDetail.keepOriginalRate")}
+                    </span>
+                    <span className="text-xs text-gray-500">
+                      {t("calendar.bookingDetail.guestPaysSame")}
+                    </span>
                   </span>
                 </label>
                 <label className="flex items-start gap-2">
@@ -760,19 +833,21 @@ export default function BookingDetailModal({
                     onChange={() => setRatePolicy("target_base")}
                   />
                   <span>
-                    <span className="block font-medium text-gray-800">Update to new rate</span>
+                    <span className="block font-medium text-gray-800">
+                      {t("calendar.bookingDetail.updateToNewRate")}
+                    </span>
                     <span className="text-xs text-gray-500">
                       {channelKey !== "manual"
                         ? isOtaMove
-                          ? "Available for manually entered bookings; OTA payments remain unchanged."
-                          : "Available only for manually entered PMS bookings; the original rate will be preserved."
+                          ? t("calendar.bookingDetail.otaRateUnchanged")
+                          : t("calendar.bookingDetail.manualBookingsOnly")
                         : !hasCompleteRateEvidence
-                          ? "Unavailable because this stay does not have complete nightly rates."
+                          ? t("calendar.bookingDetail.incompleteRates")
                           : booking.currency !== selectedCandidate.room.currency
-                            ? "Unavailable when the original and target rates use different currencies."
+                            ? t("calendar.bookingDetail.differentCurrencies")
                             : selectedCandidate.room.baseRate <= 0
-                              ? "Unavailable because the target room type has no base rate."
-                              : "Recalculates this manual booking using the target base rate."}
+                              ? t("calendar.bookingDetail.noTargetBaseRate")
+                              : t("calendar.bookingDetail.recalculateTargetRate")}
                     </span>
                   </span>
                 </label>
@@ -782,8 +857,7 @@ export default function BookingDetailModal({
 
           {isOtaMove && selectedCandidate && (
             <div className="mt-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
-              This is an internal room change. The guest&apos;s OTA confirmation will still show the
-              original room name.
+              {t("calendar.bookingDetail.otaInternalMove")}
             </div>
           )}
 
@@ -800,16 +874,17 @@ export default function BookingDetailModal({
               className="w-full px-4 py-2 text-sm font-medium text-white bg-primary-600 hover:bg-primary-700 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
             >
               {movingRoom
-                ? "Moving..."
+                ? t("calendar.bookingDetail.moving")
                 : !selectedCandidate
-                  ? "Select a room without booking overlap or move an occupant to Unassigned"
+                  ? t("calendar.bookingDetail.selectAvailableRoom")
                   : selectedCandidate.kind === "available"
-                    ? `Move to #${selectedCandidate.room.roomNumber || ""}`
-                    : "Move the occupant to Unassigned above"}
+                    ? t("calendar.bookingDetail.moveToRoom", {
+                        room: selectedCandidate.room.roomNumber || "",
+                      })
+                    : t("calendar.bookingDetail.moveOccupantAbove")}
             </button>
             <p className="mt-2 text-xs text-gray-500 text-center">
-              The original confirmation and payment are preserved; availability and linked inventory
-              are validated when you move.
+              {t("calendar.bookingDetail.movePreservesBooking")}
             </p>
           </div>
         </div>
@@ -819,7 +894,7 @@ export default function BookingDetailModal({
           <div className="flex items-center gap-3 mb-1">
             <button
               onClick={() => setView("roomPicker")}
-              aria-label="Back"
+              aria-label={t("calendar.bookingDetail.back")}
               className="text-gray-500 hover:text-gray-800 -ml-1 p-1 rounded hover:bg-gray-100 transition-colors"
             >
               <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -831,10 +906,12 @@ export default function BookingDetailModal({
                 />
               </svg>
             </button>
-            <h2 className="text-lg font-bold text-gray-900">Confirm room swap</h2>
+            <h2 className="text-lg font-bold text-gray-900">
+              {t("calendar.bookingDetail.confirmSwap")}
+            </h2>
           </div>
           <p className="text-sm text-gray-500 mb-4 ml-8">
-            Both bookings keep their confirmation numbers, payment records, and guest history.
+            {t("calendar.bookingDetail.swapPreservesBookings")}
           </p>
 
           {(() => {
@@ -861,7 +938,7 @@ export default function BookingDetailModal({
                 <p className="text-xs text-gray-500 mb-2">{dates}</p>
                 <div className="flex items-center gap-2 text-sm">
                   <span className="text-gray-600">
-                    {fromRoom ? `#${fromRoom.roomNumber}` : "Unassigned"}
+                    {fromRoom ? `#${fromRoom.roomNumber}` : t("calendar.unassigned")}
                   </span>
                   <svg
                     className="w-4 h-4 text-gray-400"
@@ -912,15 +989,15 @@ export default function BookingDetailModal({
               disabled={movingRoom}
               className="flex-1 px-4 py-2 text-sm font-medium text-gray-700 border border-gray-300 hover:bg-gray-50 rounded-lg transition-colors disabled:opacity-50"
             >
-              Back
+              {t("calendar.bookingDetail.back")}
             </button>
             <button
               onClick={handleConfirmSwap}
               disabled={!LEGACY_BOOKING_WRITES_AVAILABLE || movingRoom}
-              title="Room swaps are not available yet"
+              title={t("calendar.bookingDetail.swapsUnavailable")}
               className="flex-1 cursor-not-allowed rounded-lg border border-gray-200 bg-gray-50 px-4 py-2 text-sm font-medium text-gray-400"
             >
-              Swap unavailable
+              {t("calendar.bookingDetail.swapUnavailable")}
             </button>
           </div>
         </div>
@@ -930,7 +1007,7 @@ export default function BookingDetailModal({
           <div className="flex items-center gap-3 mb-1">
             <button
               onClick={() => setView("roomPicker")}
-              aria-label="Back"
+              aria-label={t("calendar.bookingDetail.back")}
               className="text-gray-500 hover:text-gray-800 -ml-1 p-1 rounded hover:bg-gray-100 transition-colors"
             >
               <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -942,13 +1019,16 @@ export default function BookingDetailModal({
                 />
               </svg>
             </button>
-            <h2 className="text-lg font-bold text-gray-900">Move booking to Unassigned</h2>
+            <h2 className="text-lg font-bold text-gray-900">
+              {t("calendar.bookingDetail.moveBookingToUnassigned")}
+            </h2>
           </div>
           <p className="text-sm text-gray-500 mb-4 ml-8">
-            Frees up #
-            {rooms.find((r) => r.id === pendingUnassign.occupierCurrentRoomId)?.roomNumber || ""} so
-            you can place {booking.guestFirstName} {booking.guestLastName} there. The displaced
-            booking keeps its confirmation number, payment record, and guest history.
+            {t("calendar.bookingDetail.unassignDescription", {
+              room:
+                rooms.find((r) => r.id === pendingUnassign.occupierCurrentRoomId)?.roomNumber || "",
+              guest: `${booking.guestFirstName} ${booking.guestLastName}`,
+            })}
           </p>
 
           {(() => {
@@ -979,7 +1059,7 @@ export default function BookingDetailModal({
                       d="M14 5l7 7m0 0l-7 7m7-7H3"
                     />
                   </svg>
-                  <span className="font-semibold text-amber-700">Unassigned</span>
+                  <span className="font-semibold text-amber-700">{t("calendar.unassigned")}</span>
                 </div>
               </div>
             );
@@ -997,14 +1077,16 @@ export default function BookingDetailModal({
               disabled={movingRoom}
               className="flex-1 px-4 py-2 text-sm font-medium text-gray-700 border border-gray-300 hover:bg-gray-50 rounded-lg transition-colors disabled:opacity-50"
             >
-              Back
+              {t("calendar.bookingDetail.back")}
             </button>
             <button
               onClick={handleConfirmUnassign}
               disabled={movingRoom}
               className="flex-1 px-4 py-2 text-sm font-medium text-white bg-primary-600 hover:bg-primary-700 rounded-lg transition-colors disabled:opacity-50"
             >
-              {movingRoom ? "Moving…" : "Move to Unassigned"}
+              {movingRoom
+                ? t("calendar.bookingDetail.moving")
+                : t("calendar.bookingDetail.moveToUnassigned")}
             </button>
           </div>
         </div>
@@ -1027,16 +1109,18 @@ export default function BookingDetailModal({
             </svg>
           </div>
           <p className="text-sm font-medium text-gray-900">
-            Reservation moved &mdash; {booking.guestFirstName} {booking.guestLastName} is now in #
-            {movedToRoomNumber} · {movedToRoomTypeName}
+            {t("calendar.bookingDetail.reservationMoved", {
+              guest: `${booking.guestFirstName} ${booking.guestLastName}`,
+              room: movedToRoomNumber,
+              roomType: movedToRoomTypeName,
+            })}
           </p>
           <p className="mt-2 text-xs text-gray-500">
-            Availability sync was queued for the old and new room types.
+            {t("calendar.bookingDetail.availabilitySyncQueued")}
           </p>
           {isOtaMove && (
             <p className="mt-2 rounded-md bg-amber-50 px-3 py-2 text-xs text-amber-800">
-              The PMS room changed, but the OTA confirmation keeps the original room name. Verify
-              the channel manually if its availability does not refresh.
+              {t("calendar.bookingDetail.otaMoveVerification")}
             </p>
           )}
         </div>
@@ -1044,7 +1128,7 @@ export default function BookingDetailModal({
         /* ── EDIT MODE ── */
         <div className="p-6">
           <div className="flex items-center justify-between mb-5">
-            <h2 className="text-lg font-bold text-gray-900">Edit Booking</h2>
+            <h2 className="text-lg font-bold text-gray-900">{t("bookings.modal.editBooking")}</h2>
             <span className="text-sm text-gray-500">{booking.bookingReference}</span>
           </div>
 
@@ -1052,7 +1136,9 @@ export default function BookingDetailModal({
             {/* Dates */}
             <div className="grid grid-cols-2 gap-3">
               <div>
-                <label className="block text-xs font-medium text-gray-700 mb-1">Check-in</label>
+                <label className="block text-xs font-medium text-gray-700 mb-1">
+                  {t("calendar.newBookingModal.checkInLabel")}
+                </label>
                 <input
                   type="date"
                   value={editForm.checkIn}
@@ -1061,7 +1147,9 @@ export default function BookingDetailModal({
                 />
               </div>
               <div>
-                <label className="block text-xs font-medium text-gray-700 mb-1">Check-out</label>
+                <label className="block text-xs font-medium text-gray-700 mb-1">
+                  {t("calendar.newBookingModal.checkOutLabel")}
+                </label>
                 <input
                   type="date"
                   value={editForm.checkOut}
@@ -1074,7 +1162,9 @@ export default function BookingDetailModal({
             {/* Guest Name */}
             <div className="grid grid-cols-2 gap-3">
               <div>
-                <label className="block text-xs font-medium text-gray-700 mb-1">First Name</label>
+                <label className="block text-xs font-medium text-gray-700 mb-1">
+                  {t("calendar.newBookingModal.firstNameLabel")}
+                </label>
                 <input
                   type="text"
                   value={editForm.guestFirstName}
@@ -1083,7 +1173,9 @@ export default function BookingDetailModal({
                 />
               </div>
               <div>
-                <label className="block text-xs font-medium text-gray-700 mb-1">Last Name</label>
+                <label className="block text-xs font-medium text-gray-700 mb-1">
+                  {t("calendar.newBookingModal.lastNameLabel")}
+                </label>
                 <input
                   type="text"
                   value={editForm.guestLastName}
@@ -1096,7 +1188,9 @@ export default function BookingDetailModal({
             {/* Contact */}
             <div className="grid grid-cols-2 gap-3">
               <div>
-                <label className="block text-xs font-medium text-gray-700 mb-1">Email</label>
+                <label className="block text-xs font-medium text-gray-700 mb-1">
+                  {t("calendar.newBookingModal.emailLabel")}
+                </label>
                 <input
                   type="email"
                   value={editForm.guestEmail}
@@ -1105,7 +1199,9 @@ export default function BookingDetailModal({
                 />
               </div>
               <div>
-                <label className="block text-xs font-medium text-gray-700 mb-1">Phone</label>
+                <label className="block text-xs font-medium text-gray-700 mb-1">
+                  {t("calendar.newBookingModal.phoneLabel")}
+                </label>
                 <input
                   type="tel"
                   value={editForm.guestPhone}
@@ -1118,7 +1214,9 @@ export default function BookingDetailModal({
             {/* Occupancy */}
             <div className="grid grid-cols-2 gap-3">
               <div>
-                <label className="block text-xs font-medium text-gray-700 mb-1">Adults</label>
+                <label className="block text-xs font-medium text-gray-700 mb-1">
+                  {t("calendar.newBookingModal.adultsLabel")}
+                </label>
                 <input
                   type="number"
                   min={1}
@@ -1129,7 +1227,9 @@ export default function BookingDetailModal({
                 />
               </div>
               <div>
-                <label className="block text-xs font-medium text-gray-700 mb-1">Children</label>
+                <label className="block text-xs font-medium text-gray-700 mb-1">
+                  {t("calendar.newBookingModal.childrenLabel")}
+                </label>
                 <input
                   type="number"
                   min={0}
@@ -1144,7 +1244,7 @@ export default function BookingDetailModal({
             {/* Rate */}
             <div>
               <label className="block text-xs font-medium text-gray-700 mb-1">
-                Nightly Rate ({booking.currency})
+                {t("bookings.modal.nightlyRateLabel", { currency: booking.currency })}
               </label>
               <input
                 type="number"
@@ -1159,7 +1259,7 @@ export default function BookingDetailModal({
             {/* Special Requests */}
             <div>
               <label className="block text-xs font-medium text-gray-700 mb-1">
-                Special Requests
+                {t("calendar.newBookingModal.specialRequestsLabel")}
               </label>
               <textarea
                 value={editForm.specialRequests}
@@ -1176,15 +1276,15 @@ export default function BookingDetailModal({
               onClick={() => setEditing(false)}
               className="flex-1 px-4 py-2 text-sm font-medium text-gray-700 border border-gray-300 hover:bg-gray-50 rounded-lg transition-colors"
             >
-              Cancel
+              {t("calendar.cancel")}
             </button>
             <button
               onClick={handleSaveEdit}
               disabled={!LEGACY_BOOKING_WRITES_AVAILABLE || saving}
-              title="Booking edits are not available yet"
+              title={t("calendar.bookingDetail.editsUnavailable")}
               className="flex-1 px-4 py-2 text-sm font-medium text-white bg-primary-600 hover:bg-primary-700 rounded-lg transition-colors disabled:opacity-50"
             >
-              {saving ? "Saving..." : "Save Changes"}
+              {saving ? t("common.saving") : t("bookings.modal.saveChanges")}
             </button>
           </div>
         </div>
@@ -1201,7 +1301,7 @@ export default function BookingDetailModal({
               <span
                 className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium ${channelStyle.bg} ${channelStyle.text}`}
               >
-                {getChannelLabel(booking.channel)}
+                {channelLabel(booking.channel, t)}
               </span>
               <span
                 className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium ${
@@ -1212,7 +1312,7 @@ export default function BookingDetailModal({
                       : "bg-amber-100 text-amber-700"
                 }`}
               >
-                {booking.status.charAt(0).toUpperCase() + booking.status.slice(1)}
+                {bookingStatusLabel(booking.status, t)}
               </span>
             </div>
           </div>
@@ -1226,17 +1326,23 @@ export default function BookingDetailModal({
           {/* Booked / Check-in / Check-out */}
           <div hidden={booking.numberOfRooms > 1} className="grid grid-cols-3 gap-4 mb-6">
             <div>
-              <p className="text-xs font-medium text-gray-500 uppercase tracking-wide">Booked</p>
+              <p className="text-xs font-medium text-gray-500 uppercase tracking-wide">
+                {t("calendar.bookingDetail.booked")}
+              </p>
               <p className="text-sm font-semibold text-gray-900 mt-0.5">
-                {booking.createdAt ? new Date(booking.createdAt).toLocaleDateString() : "—"}
+                {booking.createdAt ? new Date(booking.createdAt).toLocaleDateString(locale) : "—"}
               </p>
             </div>
             <div>
-              <p className="text-xs font-medium text-gray-500 uppercase tracking-wide">Check-in</p>
+              <p className="text-xs font-medium text-gray-500 uppercase tracking-wide">
+                {t("calendar.newBookingModal.checkInLabel")}
+              </p>
               <p className="text-sm font-semibold text-gray-900 mt-0.5">{booking.checkIn}</p>
             </div>
             <div>
-              <p className="text-xs font-medium text-gray-500 uppercase tracking-wide">Check-out</p>
+              <p className="text-xs font-medium text-gray-500 uppercase tracking-wide">
+                {t("calendar.newBookingModal.checkOutLabel")}
+              </p>
               <p className="text-sm font-semibold text-gray-900 mt-0.5">{booking.checkOut}</p>
             </div>
           </div>
@@ -1267,25 +1373,42 @@ export default function BookingDetailModal({
                       ))
                   ) : (
                     <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-amber-100 text-amber-700">
-                      Unassigned
+                      {t("calendar.unassigned")}
                     </span>
                   )}
                   {booking.assignedRooms.length > 0 &&
                     booking.assignedRooms.length < booking.numberOfRooms && (
                       <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-amber-100 text-amber-700">
-                        {booking.numberOfRooms - booking.assignedRooms.length} unassigned
+                        {t("calendar.bookingDetail.unassignedCount", {
+                          count: booking.numberOfRooms - booking.assignedRooms.length,
+                        })}
                       </span>
                     )}
                 </div>
               </div>
               <div className="text-right text-sm text-gray-600">
                 <p>
-                  {booking.nights} night{booking.nights !== 1 ? "s" : ""}
+                  {t(
+                    booking.nights === 1
+                      ? "calendar.bookingDetail.nightCount"
+                      : "calendar.bookingDetail.nightsCount",
+                    { count: booking.nights },
+                  )}
                 </p>
                 <p>
-                  {booking.adults} adult{booking.adults !== 1 ? "s" : ""}
+                  {t(
+                    booking.adults === 1
+                      ? "calendar.bookingDetail.adultCount"
+                      : "calendar.bookingDetail.adultsCount",
+                    { count: booking.adults },
+                  )}
                   {booking.children > 0 &&
-                    `, ${booking.children} child${booking.children !== 1 ? "ren" : ""}`}
+                    `, ${t(
+                      booking.children === 1
+                        ? "calendar.bookingDetail.childCount"
+                        : "calendar.bookingDetail.childrenCount",
+                      { count: booking.children },
+                    )}`}
                 </p>
               </div>
             </div>
@@ -1293,7 +1416,7 @@ export default function BookingDetailModal({
             {!booking.roomId && availableRooms.length > 0 && (
               <div className="mt-3 pt-3 border-t border-gray-200">
                 <label className="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1.5">
-                  Assign to Room
+                  {t("bookings.modal.assignToRoom")}
                 </label>
                 <div className="flex gap-2">
                   <select
@@ -1301,11 +1424,13 @@ export default function BookingDetailModal({
                     onChange={(e) => setSelectedRoomId(e.target.value)}
                     className="flex-1 text-sm border border-gray-300 rounded-lg px-3 py-1.5 focus:outline-none focus:ring-2 focus:ring-primary-500"
                   >
-                    <option value="">Select a room...</option>
+                    <option value="">{t("bookings.modal.selectRoom")}</option>
                     {availableRooms.map((r) => (
                       <option key={r.id} value={r.id}>
                         #{r.roomNumber}
-                        {r.floor ? ` (Floor ${r.floor})` : ""}
+                        {r.floor
+                          ? ` (${t("calendar.bookingDetail.floor", { floor: r.floor })})`
+                          : ""}
                       </option>
                     ))}
                   </select>
@@ -1314,7 +1439,7 @@ export default function BookingDetailModal({
                     disabled={!selectedRoomId || assigningRoom}
                     className="px-3 py-1.5 text-sm font-medium text-white bg-primary-600 hover:bg-primary-700 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                   >
-                    {assigningRoom ? "Assigning..." : "Assign"}
+                    {assigningRoom ? t("bookings.modal.assigning") : t("bookings.modal.assign")}
                   </button>
                 </div>
               </div>
@@ -1324,7 +1449,7 @@ export default function BookingDetailModal({
           {/* Guest Information */}
           <div className="mb-6">
             <h3 className="text-xs font-medium text-gray-500 uppercase tracking-wide mb-2">
-              Guest Information
+              {t("bookings.detail.guestInformation")}
             </h3>
             <div className="space-y-1.5">
               {booking.guestEmail ? (
@@ -1365,7 +1490,7 @@ export default function BookingDetailModal({
               ) : null}
               {!booking.guestEmail && !booking.guestPhone && (
                 <p className="text-sm text-gray-400 italic">
-                  No contact details available from booking channel
+                  {t("calendar.bookingDetail.noContactDetails")}
                 </p>
               )}
             </div>
@@ -1374,15 +1499,23 @@ export default function BookingDetailModal({
           {/* Payment Details */}
           <div className="mb-6">
             <h3 className="text-xs font-medium text-gray-500 uppercase tracking-wide mb-2">
-              Payment Details
+              {t("bookings.modal.paymentDetails")}
             </h3>
             <div className="bg-gray-50 rounded-lg p-4 space-y-2">
               {booking.numberOfRooms <= 1 && (
                 <div className="flex justify-between text-sm">
                   <span className="text-gray-600">
-                    {formatCurrency(booking.nightlyRate, booking.currency)} x {booking.nights} night
-                    {booking.nights !== 1 ? "s" : ""}
-                    {booking.numberOfRooms > 1 && ` x ${booking.numberOfRooms} rooms`}
+                    {formatCurrency(booking.nightlyRate, booking.currency)} x{" "}
+                    {t(
+                      booking.nights === 1
+                        ? "calendar.bookingDetail.nightCount"
+                        : "calendar.bookingDetail.nightsCount",
+                      { count: booking.nights },
+                    )}
+                    {booking.numberOfRooms > 1 &&
+                      ` x ${t("calendar.bookingDetail.roomsCount", {
+                        count: booking.numberOfRooms,
+                      })}`}
                   </span>
                   <span className="font-medium text-gray-900">
                     {formatCurrency(booking.totalAmount, booking.currency)}
@@ -1390,17 +1523,21 @@ export default function BookingDetailModal({
                 </div>
               )}
               <div className="flex justify-between text-sm">
-                <span className="text-gray-600">Expected payment method</span>
+                <span className="text-gray-600">
+                  {t("calendar.bookingDetail.expectedPaymentMethod")}
+                </span>
                 <span className="font-medium text-gray-900">
-                  {expectedPaymentMethodLabel(booking.expectedPaymentMethod)}
+                  {expectedPaymentMethodLabel(booking.expectedPaymentMethod, t)}
                 </span>
               </div>
               <div className="flex justify-between text-sm">
-                <span className="text-gray-600">Settlement</span>
-                <span className="font-medium text-gray-900">{bookingSettlementLabel(booking)}</span>
+                <span className="text-gray-600">{t("calendar.bookingDetail.settlement")}</span>
+                <span className="font-medium text-gray-900">
+                  {bookingSettlementLabel(booking, t)}
+                </span>
               </div>
               <div className="flex justify-between text-sm pt-2 border-t border-gray-200">
-                <span className="font-medium text-gray-900">Total Amount</span>
+                <span className="font-medium text-gray-900">{t("bookings.modal.totalAmount")}</span>
                 <span className="font-bold text-gray-900">
                   {formatCurrency(booking.totalAmount, booking.currency)}
                 </span>
@@ -1412,7 +1549,7 @@ export default function BookingDetailModal({
           {booking.specialRequests && (
             <div className="mb-6">
               <h3 className="text-xs font-medium text-gray-500 uppercase tracking-wide mb-2">
-                Special Requests
+                {t("calendar.newBookingModal.specialRequestsLabel")}
               </h3>
               <p className="text-sm text-gray-700 bg-gray-50 rounded-lg p-3">
                 {booking.specialRequests}
@@ -1423,7 +1560,7 @@ export default function BookingDetailModal({
           {booking.estimatedArrivalTime && (
             <div className="mb-6">
               <h3 className="text-xs font-medium text-gray-500 uppercase tracking-wide mb-2">
-                Estimated Arrival Time
+                {t("bookings.detail.estimatedArrivalTime")}
               </h3>
               <p className="text-sm text-gray-700 bg-gray-50 rounded-lg p-3">
                 {booking.estimatedArrivalTime}
@@ -1434,7 +1571,7 @@ export default function BookingDetailModal({
           {booking.numberOfGuests != null && (
             <div className="mb-6">
               <h3 className="text-xs font-medium text-gray-500 uppercase tracking-wide mb-2">
-                Number of Guests
+                {t("bookings.detail.numberOfGuests")}
               </h3>
               <p className="text-sm text-gray-700 bg-gray-50 rounded-lg p-3">
                 {booking.numberOfGuests}
@@ -1447,7 +1584,7 @@ export default function BookingDetailModal({
             <div className="pt-2 border-t border-gray-200">
               <div className="bg-red-50 border border-red-200 rounded-lg p-4 mb-3">
                 <p className="text-sm font-medium text-red-800">
-                  Are you sure you want to cancel this booking?
+                  {t("bookings.modal.cancelConfirm")}
                 </p>
                 <p className="text-xs text-red-600 mt-1">
                   {booking.guestFirstName} {booking.guestLastName} &middot; {booking.checkIn} &rarr;{" "}
@@ -1461,14 +1598,14 @@ export default function BookingDetailModal({
                   disabled={actionLoading}
                   className="flex-1 px-4 py-2 text-sm font-medium text-gray-700 border border-gray-300 hover:bg-gray-50 rounded-lg transition-colors disabled:opacity-50"
                 >
-                  Go Back
+                  {t("bookings.modal.goBack")}
                 </button>
                 <button
                   onClick={() => handleStatusUpdate("cancelled")}
                   disabled={actionLoading}
                   className="flex-1 px-4 py-2 text-sm font-medium text-white bg-red-600 hover:bg-red-700 rounded-lg transition-colors disabled:opacity-50"
                 >
-                  {actionLoading ? "Cancelling..." : "Yes, Cancel"}
+                  {actionLoading ? t("bookings.modal.cancelling") : t("bookings.modal.yesCancel")}
                 </button>
               </div>
             </div>
@@ -1490,7 +1627,9 @@ export default function BookingDetailModal({
                       d="M8 7h12m0 0l-4-4m4 4l-4 4M16 17H4m0 0l4 4m-4-4l4-4"
                     />
                   </svg>
-                  {activeRoomId ? "Move to another room" : "Assign room"}
+                  {activeRoomId
+                    ? t("calendar.bookingDetail.moveToAnotherRoom")
+                    : t("calendar.bookingDetail.assignRoom")}
                 </button>
               )}
               {/* Edit button — always shown for non-cancelled bookings */}
@@ -1498,10 +1637,10 @@ export default function BookingDetailModal({
                 <button
                   onClick={() => setEditing(true)}
                   disabled={!LEGACY_BOOKING_WRITES_AVAILABLE}
-                  title="Booking edits are not available yet"
+                  title={t("calendar.bookingDetail.editsUnavailable")}
                   className="w-full cursor-not-allowed rounded-lg border border-gray-200 bg-gray-50 px-4 py-2 text-sm font-medium text-gray-400"
                 >
-                  Edit booking · Not available yet
+                  {t("calendar.bookingDetail.editUnavailable")}
                 </button>
               )}
               {booking.status === "pending" && (
@@ -1509,18 +1648,18 @@ export default function BookingDetailModal({
                   <button
                     onClick={() => handleStatusUpdate("confirmed")}
                     disabled={!LEGACY_BOOKING_WRITES_AVAILABLE || actionLoading}
-                    title="Booking confirmation is not available yet"
+                    title={t("calendar.bookingDetail.confirmationUnavailable")}
                     className="flex-1 cursor-not-allowed rounded-lg border border-gray-200 bg-gray-50 px-4 py-2 text-sm font-medium text-gray-400"
                   >
-                    Confirm
+                    {t("common.confirm")}
                   </button>
                   <button
                     onClick={() => setShowCancelConfirm(true)}
                     disabled={!LEGACY_BOOKING_WRITES_AVAILABLE || actionLoading}
-                    title="Booking cancellation is not available yet"
+                    title={t("calendar.bookingDetail.cancellationUnavailable")}
                     className="flex-1 cursor-not-allowed rounded-lg border border-gray-200 bg-gray-50 px-4 py-2 text-sm font-medium text-gray-400"
                   >
-                    Cancel
+                    {t("calendar.cancel")}
                   </button>
                 </div>
               )}
@@ -1528,10 +1667,10 @@ export default function BookingDetailModal({
                 <button
                   onClick={() => setShowCancelConfirm(true)}
                   disabled={!LEGACY_BOOKING_WRITES_AVAILABLE || actionLoading}
-                  title="Booking cancellation is not available yet"
+                  title={t("calendar.bookingDetail.cancellationUnavailable")}
                   className="w-full cursor-not-allowed rounded-lg border border-gray-200 bg-gray-50 px-4 py-2 text-sm font-medium text-gray-400"
                 >
-                  Cancellation not available yet
+                  {t("calendar.bookingDetail.cancellationUnavailable")}
                 </button>
               )}
             </div>

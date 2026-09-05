@@ -317,7 +317,10 @@ export interface RoomTypeRetirementImpact {
   blockers: Array<{
     category: "reservations" | "physical_units" | "inventory" | "publication";
     code:
-      "active_reservations" | "active_physical_units" | "future_inventory" | "active_publication";
+      | "active_reservations"
+      | "active_physical_units"
+      | "future_inventory"
+      | "active_publication";
     affectedCount: number;
     action: string;
   }>;

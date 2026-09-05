@@ -4,6 +4,16 @@ import { describe, expect, it, vi } from "vitest";
 
 import { BookingEngineSection } from "./BookingEngineSection";
 
+vi.mock("@/lib/i18n", () => ({
+  useTranslation: () => ({
+    t: (key: string) =>
+      ({
+        "settings.bookingEngine.instant": "Accept bookings instantly",
+        "settings.retry": "Retry",
+      })[key] ?? key,
+  }),
+}));
+
 function props() {
   return {
     instantBook: true,

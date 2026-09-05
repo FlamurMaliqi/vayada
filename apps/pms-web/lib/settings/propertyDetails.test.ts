@@ -6,14 +6,23 @@ import { PropertySection } from "@/components/settings/PropertySection";
 
 import { canSavePmsPropertyDetails, pmsPropertyDetailsSaveError } from "./propertyDetails";
 
+vi.mock("@/lib/i18n", () => ({
+  useTranslation: () => ({
+    t: (key: string) =>
+      ({
+        "common.save": "Save",
+        "common.saving": "Saving…",
+        "settings.retry": "Retry",
+      })[key] ?? key,
+  }),
+}));
+
 describe("PMS canonical property details state", () => {
   it("blocks blank canonical fields after the profile request fails", () => {
     const failed = { loadStatus: "error" as const, timezone: "", country: "" };
 
     expect(canSavePmsPropertyDetails(failed)).toBe(false);
-    expect(pmsPropertyDetailsSaveError(failed)).toBe(
-      "Load the canonical property profile before saving.",
-    );
+    expect(pmsPropertyDetailsSaveError(failed)).toBe("profile_not_ready");
   });
 
   it("requires valid canonical fields even after the profile loads", () => {

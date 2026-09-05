@@ -19,29 +19,29 @@ export function LocalizationSection({
   return (
     <SettingsSection
       id="localization"
-      title="Localization"
-      description="Default currency and interface language."
+      title={t("settings.localization.title")}
+      description={t("settings.localization.description")}
     >
       <SettingsCard title={t("settings.currency")} description={t("settings.currencyDescription")}>
         <div id="currency" className="scroll-mt-24">
           {currencyLoadStatus === "error" ? (
             <p className="text-sm text-red-600" role="alert">
-              {currencyLoadError || "We couldn’t load the persisted property currency."}
+              {currencyLoadError || t("settings.localization.currencyLoadError")}
             </p>
           ) : currencyLoadStatus === "loading" ? (
             <p className="text-sm text-gray-500" role="status">
-              Loading persisted currency…
+              {t("settings.localization.loadingCurrency")}
             </p>
           ) : currency ? (
             <div className="flex items-center justify-between gap-4 rounded-lg border border-gray-200 bg-gray-50 px-3 py-2">
               <span className="text-sm font-medium text-gray-700">{currency}</span>
               <span className="text-[11px] font-medium text-gray-500">
-                Editing not available yet
+                {t("settings.localization.editingUnavailable")}
               </span>
             </div>
           ) : (
             <p className="text-sm text-gray-500" role="status">
-              No persisted currency is configured.
+              {t("settings.localization.noCurrency")}
             </p>
           )}
         </div>

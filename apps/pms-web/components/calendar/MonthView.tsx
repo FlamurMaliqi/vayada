@@ -14,8 +14,7 @@ import {
 } from "date-fns";
 import { CalendarRoom, CalendarBooking, CalendarBlock } from "@/services/calendar";
 import { getChannelBarColor } from "@/lib/constants/statusStyles";
-
-const WEEKDAY_HEADERS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+import { useTranslation } from "@/lib/i18n";
 
 interface MonthViewProps {
   monthStart: Date;
@@ -55,6 +54,14 @@ export default function MonthView({
   onSelectBlock,
   blockEditingAvailable = true,
 }: MonthViewProps) {
+  const { locale, t } = useTranslation();
+  const weekdayHeaders = useMemo(
+    () =>
+      Array.from({ length: 7 }, (_, index) =>
+        new Date(2024, 0, index + 7).toLocaleDateString(locale, { weekday: "short" }),
+      ),
+    [locale],
+  );
   const days = useMemo(() => {
     const gridStart = startOfWeek(startOfMonth(monthStart), { weekStartsOn: 0 });
     const gridEnd = endOfWeek(endOfMonth(monthStart), { weekStartsOn: 0 });
@@ -69,7 +76,7 @@ export default function MonthView({
     <div className="bg-white border border-gray-200 rounded-xl overflow-hidden flex-1 overflow-y-auto">
       {/* Weekday headers — sticky at top of scroll area */}
       <div className="sticky top-0 z-20 grid grid-cols-7 bg-gray-50 border-b border-gray-200">
-        {WEEKDAY_HEADERS.map((wd) => (
+        {weekdayHeaders.map((wd) => (
           <div key={wd} className="px-2 py-2 text-center text-[11px] font-medium text-gray-600">
             {wd}
           </div>
@@ -143,8 +150,8 @@ export default function MonthView({
                               onClick={() => onSelectBlock(bl)}
                               title={
                                 blockEditingAvailable || bl.protected
-                                  ? `${bl.protected ? "Linked" : "Blocked"}: ${bl.sourceSummary || bl.reason || "No reason"}\n${bl.startDate} → ${bl.endDate}`
-                                  : "Block editing is not available yet"
+                                  ? `${bl.protected ? t("rooms.linked") : t("calendar.blocked")}: ${bl.sourceSummary || bl.reason || t("calendar.blockDetail.noReason")}\n${bl.startDate} → ${bl.endDate}`
+                                  : t("calendar.blockEditingUnavailable")
                               }
                               className={`w-full flex items-center gap-1 px-1 py-0.5 rounded text-[10px] font-medium border border-dashed transition-colors truncate disabled:cursor-default ${
                                 bl.protected
@@ -166,7 +173,9 @@ export default function MonthView({
                                 />
                               </svg>
                               <span className="truncate">
-                                {bl.protected ? "Linked" : bl.reason || "Blocked"}
+                                {bl.protected
+                                  ? t("rooms.linked")
+                                  : bl.reason || t("calendar.blocked")}
                               </span>
                             </button>
                           ))}

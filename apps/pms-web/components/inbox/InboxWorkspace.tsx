@@ -71,6 +71,7 @@ import {
   inboxSourceLabel,
   propertyLocalDateTimeToIso,
 } from "./inboxFormat";
+import { useTranslation } from "@/lib/i18n";
 
 type ComposerMode = "reply" | "note";
 type Draft = {
@@ -83,13 +84,36 @@ type Drafts = Record<string, Draft>;
 type Toast = { threadId: string; version: number; guestName: string };
 
 const EMPTY_DRAFT: Draft = { reply: "", note: "", attachments: [], assisted: null };
-const ATTENTION_OPTIONS: Array<{ value: InboxAttentionState; label: string; short: string }> = [
-  { value: "needs_attention", label: "Needs attention", short: "Needs" },
-  { value: "follow_up", label: "Follow up", short: "Follow up" },
-  { value: "done", label: "Done", short: "Done" },
+const ATTENTION_OPTIONS: Array<{
+  value: InboxAttentionState;
+  labelKey: string;
+  shortKey: string;
+}> = [
+  {
+    value: "needs_attention",
+    labelKey: "inbox.attentionNeedsAttention",
+    shortKey: "inbox.attentionNeeds",
+  },
+  {
+    value: "follow_up",
+    labelKey: "inbox.attentionFollowUp",
+    shortKey: "inbox.attentionFollowUp",
+  },
+  { value: "done", labelKey: "inbox.attentionDone", shortKey: "inbox.attentionDone" },
 ];
 
+const ASSISTANCE_LANGUAGES = [
+  { value: "English", labelKey: "inbox.languageEnglish" },
+  { value: "German", labelKey: "inbox.languageGerman" },
+  { value: "Spanish", labelKey: "inbox.languageSpanish" },
+  { value: "French", labelKey: "inbox.languageFrench" },
+  { value: "Italian", labelKey: "inbox.languageItalian" },
+  { value: "Dutch", labelKey: "inbox.languageDutch" },
+  { value: "Indonesian", labelKey: "inbox.languageIndonesian" },
+] as const;
+
 export default function InboxWorkspace() {
+  const { t } = useTranslation();
   const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
@@ -263,7 +287,7 @@ export default function InboxWorkspace() {
             if (requestSequence !== directRequestSequence.current) return;
             setCanReply(false);
             setDirectOpen(false);
-            setComposerError("Reply access was removed. You can still read Inbox conversations.");
+            setComposerError(t("inbox.errorReplyAccessRemovedInbox"));
           } catch {
             clearPropertyData();
             setAccessDenied(true);
@@ -275,12 +299,12 @@ export default function InboxWorkspace() {
         if (requestSequence === directRequestSequence.current) setDirectLoading(false);
       }
     },
-    [attentionState, clearPropertyData, propertyId],
+    [attentionState, clearPropertyData, propertyId, t],
   );
 
   useEffect(() => {
     let cancelled = false;
-    void resolveSelectedPmsPropertyId("loading the Inbox")
+    void resolveSelectedPmsPropertyId(t("inbox.loadingContext"))
       .then((id) => {
         if (!cancelled) setPropertyId(id);
       })
@@ -293,7 +317,7 @@ export default function InboxWorkspace() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [t]);
 
   useEffect(() => {
     if (!propertyId) return;
@@ -466,7 +490,7 @@ export default function InboxWorkspace() {
             returnFocusThreadId.current = threadId;
             restoreQueueFocus.current = true;
             setReloadList((value) => value + 1);
-            setNotice("Conversation is no longer available.");
+            setNotice(t("inbox.noticeConversationUnavailable"));
           }
           updateUrl({ thread: null });
           if (isReadAccessDenial(parsed)) {
@@ -480,7 +504,7 @@ export default function InboxWorkspace() {
         if (!silent && requestSequence === detailRequestSequence.current) setDetailLoading(false);
       }
     },
-    [clearPropertyData, propertyId, selectedThreadId, updateUrl],
+    [clearPropertyData, propertyId, selectedThreadId, t, updateUrl],
   );
 
   useEffect(() => {
@@ -693,19 +717,14 @@ export default function InboxWorkspace() {
       await mutation();
     } catch (error) {
       const parsed = inboxError(error);
-      if (
-        await handleCommandAccessDenial(
-          parsed,
-          "Reply access was removed. You can still read this conversation.",
-        )
-      ) {
+      if (await handleCommandAccessDenial(parsed, t("inbox.errorReplyAccessRemovedReadOnly"))) {
         return;
       }
       if (targetThreadId && selectedThreadIdRef.current !== targetThreadId) {
         setReloadList((value) => value + 1);
       } else if (parsed.code === "thread_version_conflict") {
         await loadDetail();
-        setComposerError("The conversation changed. Review the latest messages and try again.");
+        setComposerError(t("inbox.errorConversationChanged"));
       } else {
         setComposerError(parsed.message || fallback);
       }
@@ -796,7 +815,7 @@ export default function InboxWorkspace() {
           });
         }
       },
-      "We couldn't mark this conversation done.",
+      t("inbox.errorMarkDone"),
       thread.id,
     );
   }
@@ -812,7 +831,7 @@ export default function InboxWorkspace() {
         updateUrl({ attentionState: "needs_attention", thread: current.threadId }, true);
         setReloadList((value) => value + 1);
       },
-      "We couldn't reopen this conversation.",
+      t("inbox.errorReopen"),
     );
   }
 
@@ -821,7 +840,7 @@ export default function InboxWorkspace() {
     const thread = detail.thread;
     const followUpInstant = propertyLocalDateTimeToIso(followUpAt, propertyTimezone);
     if (!followUpInstant || new Date(followUpInstant).getTime() <= Date.now()) {
-      setComposerError(`Choose a valid future time in ${propertyTimezone}.`);
+      setComposerError(t("inbox.errorFutureTime", { timezone: propertyTimezone }));
       return;
     }
     await handleMutation(
@@ -850,7 +869,7 @@ export default function InboxWorkspace() {
           });
         }
       },
-      "We couldn't schedule this follow-up.",
+      t("inbox.errorScheduleFollowUp"),
       thread.id,
     );
   }
@@ -869,7 +888,7 @@ export default function InboxWorkspace() {
         setThreads((items) => items.filter((item) => item.id !== thread.id));
         closeThread();
       },
-      "We couldn't reopen this conversation.",
+      t("inbox.errorReopen"),
       thread.id,
     );
   }
@@ -888,7 +907,7 @@ export default function InboxWorkspace() {
         );
         applyThreadUpdate({ assignedTo: result.assignedTo, version: result.threadVersion });
       },
-      "We couldn't update the assignee.",
+      t("inbox.errorUpdateAssignee"),
       thread.id,
     );
   }
@@ -977,9 +996,7 @@ export default function InboxWorkspace() {
         );
         if (response.delivery.state === "held") {
           if (selectedThreadIdRef.current === threadId) {
-            setComposerError(
-              "Accepted but not delivered. The draft is preserved while the route is reviewed.",
-            );
+            setComposerError(t("inbox.errorAcceptedNotDelivered"));
           }
         } else {
           const acceptedMediaIds = new Set(
@@ -1006,23 +1023,14 @@ export default function InboxWorkspace() {
       setReloadList((value) => value + 1);
     } catch (error) {
       const parsed = inboxError(error);
-      if (
-        await handleCommandAccessDenial(
-          parsed,
-          "Reply access was removed. Your unsent draft is preserved on this page.",
-        )
-      )
+      if (await handleCommandAccessDenial(parsed, t("inbox.errorReplyAccessRemovedDraftPreserved")))
         return;
       if (selectedThreadIdRef.current !== threadId) return;
       if (parsed.code === "thread_version_conflict") {
         await loadDetail();
-        setComposerError(
-          "The conversation changed. Your draft is preserved; review it and send again.",
-        );
+        setComposerError(t("inbox.errorConversationChangedDraftPreserved"));
       } else {
-        setComposerError(
-          parsed.message || "The message was not accepted. Your draft is preserved.",
-        );
+        setComposerError(parsed.message || t("inbox.errorMessageNotAccepted"));
       }
     } finally {
       setComposerBusy(false);
@@ -1068,13 +1076,10 @@ export default function InboxWorkspace() {
     } catch (error) {
       const parsed = inboxError(error);
       if (
-        !(await handleCommandAccessDenial(
-          parsed,
-          "Reply access was removed. Your unsent draft is preserved on this page.",
-        ))
+        !(await handleCommandAccessDenial(parsed, t("inbox.errorReplyAccessRemovedDraftPreserved")))
       ) {
         if (selectedThreadIdRef.current !== threadId) return;
-        setComposerError(parsed.message || "The attachment could not be prepared.");
+        setComposerError(parsed.message || t("inbox.errorAttachmentPrepare"));
       }
     } finally {
       attachmentUploadInFlight.current = false;
@@ -1092,7 +1097,9 @@ export default function InboxWorkspace() {
       if (selectedThreadIdRef.current !== threadId) return;
       if (!preview.composerUseAllowed || preview.unresolvedVariables.length) {
         setComposerError(
-          `Quick reply needs: ${preview.unresolvedVariables.join(", ")}. Your draft was not changed.`,
+          t("inbox.errorQuickReplyVariables", {
+            variables: preview.unresolvedVariables.join(", "),
+          }),
         );
         return;
       }
@@ -1100,10 +1107,7 @@ export default function InboxWorkspace() {
     } catch (error) {
       const parsed = inboxError(error);
       if (
-        !(await handleCommandAccessDenial(
-          parsed,
-          "Reply access was removed. Your unsent draft is preserved on this page.",
-        ))
+        !(await handleCommandAccessDenial(parsed, t("inbox.errorReplyAccessRemovedDraftPreserved")))
       ) {
         if (selectedThreadIdRef.current !== threadId) return;
         setComposerError(parsed.message);
@@ -1143,13 +1147,10 @@ export default function InboxWorkspace() {
     } catch (error) {
       const parsed = inboxError(error);
       if (
-        !(await handleCommandAccessDenial(
-          parsed,
-          "Reply access was removed. Your unsent draft is preserved on this page.",
-        ))
+        !(await handleCommandAccessDenial(parsed, t("inbox.errorReplyAccessRemovedDraftPreserved")))
       ) {
         if (selectedThreadIdRef.current !== threadId) return;
-        setComposerError(`${parsed.message} You can keep writing manually.`);
+        setComposerError(t("inbox.errorAssistManualFallback", { error: parsed.message }));
       }
     } finally {
       setAssistBusy(null);
@@ -1178,7 +1179,7 @@ export default function InboxWorkspace() {
         if (selectedThreadIdRef.current === threadId) await loadDetail(true);
         else setReloadList((value) => value + 1);
       },
-      "Booking.com could not be updated.",
+      t("inbox.errorBookingComUpdate"),
       threadId,
     );
   }
@@ -1197,12 +1198,7 @@ export default function InboxWorkspace() {
       setReloadList((value) => value + 1);
     } catch (error) {
       const parsed = inboxError(error);
-      if (
-        !(await handleCommandAccessDenial(
-          parsed,
-          "Reply access was removed. You can still read this conversation.",
-        ))
-      ) {
+      if (!(await handleCommandAccessDenial(parsed, t("inbox.errorReplyAccessRemovedReadOnly")))) {
         setDirectError(parsed.message);
       }
     } finally {
@@ -1225,7 +1221,7 @@ export default function InboxWorkspace() {
   return (
     <section
       className="relative h-[calc(100dvh-3rem)] min-h-0 overflow-hidden bg-white md:min-h-[480px]"
-      aria-label="Guest Inbox"
+      aria-label={t("inbox.guestInbox")}
     >
       <div className="grid h-full min-w-0 grid-cols-1 md:grid-cols-[88px_280px_minmax(0,1fr)] min-[1280px]:grid-cols-[96px_280px_minmax(420px,1fr)_272px]">
         <AttentionRail
@@ -1327,11 +1323,11 @@ export default function InboxWorkspace() {
               {canReply === false ? (
                 <div className="shrink-0 border-t border-gray-200 bg-white px-4 py-3 text-sm text-gray-600">
                   <LockClosedIcon className="mr-2 inline h-4 w-4" />
-                  Reply access is required to update or message this conversation.
+                  {t("inbox.replyAccessRequired")}
                 </div>
               ) : canReply === null ? (
                 <div className="shrink-0 border-t border-gray-200 bg-white px-4 py-4 text-sm text-gray-500">
-                  Checking reply access…
+                  {t("inbox.checkingReplyAccess")}
                 </div>
               ) : (
                 <Composer
@@ -1385,14 +1381,14 @@ export default function InboxWorkspace() {
           role="status"
           className="absolute bottom-[calc(1rem+env(safe-area-inset-bottom))] left-1/2 z-40 flex -translate-x-1/2 items-center gap-3 rounded-lg bg-gray-950 px-4 py-3 text-sm text-white shadow-xl"
         >
-          <span>{toast.guestName} marked done.</span>
+          <span>{t("inbox.markedDone", { guestName: toast.guestName })}</span>
           <button
             type="button"
             className="font-semibold text-white underline underline-offset-2"
             onClick={() => void undoDone()}
             disabled={mutationBusy === "undo"}
           >
-            Undo
+            {t("inbox.undo")}
           </button>
         </div>
       )}
@@ -1419,10 +1415,7 @@ export default function InboxWorkspace() {
           items={quickReplies}
           onItems={setQuickReplies}
           onAccessDenied={(error) =>
-            handleCommandAccessDenial(
-              error,
-              "Reply access was removed. You can still read this conversation.",
-            )
+            handleCommandAccessDenial(error, t("inbox.errorReplyAccessRemovedReadOnly"))
           }
           onClose={() => setQuickManagerOpen(false)}
         />
@@ -1454,13 +1447,14 @@ function AttentionRail({
   value: InboxAttentionState;
   onChange: (value: InboxAttentionState) => void;
 }) {
+  const { t } = useTranslation();
   return (
     <nav
-      aria-label="Inbox attention"
+      aria-label={t("inbox.attentionNavigation")}
       className="hidden border-r border-gray-200 bg-gray-50 px-2 py-4 md:block"
     >
       <p className="mb-3 px-1 text-[10px] font-semibold uppercase tracking-[0.12em] text-gray-400">
-        Attention
+        {t("inbox.attention")}
       </p>
       <div className="space-y-1">
         {ATTENTION_OPTIONS.map((option) => (
@@ -1476,7 +1470,7 @@ function AttentionRail({
                 : "text-gray-500 hover:bg-white hover:text-gray-900",
             )}
           >
-            {option.short}
+            {t(option.shortKey)}
           </button>
         ))}
       </div>
@@ -1497,12 +1491,13 @@ function QueueHeader(props: {
   attentionState: InboxAttentionState;
   onAttention: (value: InboxAttentionState) => void;
 }) {
+  const { t } = useTranslation();
   return (
     <div className="border-b border-gray-200">
       <div className="flex items-center justify-between px-4 pb-3 pt-4">
         <div>
-          <h1 className="text-xl font-bold text-gray-900">Inbox</h1>
-          <p className="mt-0.5 text-xs text-gray-500">Guest conversations</p>
+          <h1 className="text-xl font-bold text-gray-900">{t("inbox.title")}</h1>
+          <p className="mt-0.5 text-xs text-gray-500">{t("inbox.guestConversations")}</p>
         </div>
         {props.canReply && (
           <button
@@ -1510,7 +1505,7 @@ function QueueHeader(props: {
             onClick={props.onNewMessage}
             className="rounded-md bg-gray-950 px-3 py-2 text-xs font-semibold text-white hover:bg-gray-800"
           >
-            New message
+            {t("inbox.newMessage")}
           </button>
         )}
       </div>
@@ -1528,18 +1523,18 @@ function QueueHeader(props: {
                 : "text-gray-600 hover:bg-gray-100",
             )}
           >
-            {option.label}
+            {t(option.labelKey)}
           </button>
         ))}
       </div>
       <div className="space-y-2 px-3 py-3">
         <label className="relative block">
-          <span className="sr-only">Search conversations</span>
+          <span className="sr-only">{t("inbox.searchConversations")}</span>
           <MagnifyingGlassIcon className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-400" />
           <input
             value={props.search}
             onChange={(event) => props.onSearch(event.target.value)}
-            placeholder="Search conversations"
+            placeholder={t("inbox.searchConversations")}
             autoComplete="off"
             className="min-h-11 w-full rounded-md border border-gray-200 bg-white py-2 pl-9 pr-3 text-base outline-none focus:border-[#2F52F5] focus:ring-2 focus:ring-[#2F52F5]/15 sm:text-sm"
           />
@@ -1552,27 +1547,27 @@ function QueueHeader(props: {
             className={filterClass(props.unreadOnly)}
           >
             <FunnelIcon className="h-3.5 w-3.5" />
-            Unread
+            {t("inbox.unread")}
           </button>
           <select
-            aria-label="Channel"
+            aria-label={t("inbox.channel")}
             value={props.channel}
             onChange={(event) => props.onFilter("channel", event.target.value)}
             className="min-h-11 rounded-md border border-gray-200 bg-white px-2 text-base text-gray-600 outline-none focus:border-[#2F52F5] sm:text-xs md:min-h-9"
           >
-            <option value="">All channels</option>
-            <option value="ota">OTA</option>
-            <option value="email">Email</option>
+            <option value="">{t("inbox.allChannels")}</option>
+            <option value="ota">{t("inbox.channelOta")}</option>
+            <option value="email">{t("inbox.channelEmail")}</option>
           </select>
           <select
-            aria-label="Assignee"
+            aria-label={t("inbox.assignee")}
             value={props.assignee}
             onChange={(event) => props.onFilter("assignee", event.target.value)}
             className="min-h-11 min-w-0 rounded-md border border-gray-200 bg-white px-2 text-base text-gray-600 outline-none focus:border-[#2F52F5] sm:text-xs md:min-h-9"
           >
-            <option value="">Anyone</option>
-            <option value="me">Me</option>
-            <option value="unassigned">Unassigned</option>
+            <option value="">{t("inbox.anyone")}</option>
+            <option value="me">{t("inbox.me")}</option>
+            <option value="unassigned">{t("inbox.unassigned")}</option>
             {props.staff.map((member) => (
               <option key={member.id} value={member.id}>
                 {member.name || member.email}
@@ -1611,6 +1606,7 @@ const ThreadQueue = function ThreadQueue(
   },
   ref: ForwardedRef<HTMLDivElement>,
 ) {
+  const { t } = useTranslation();
   if (loading) return <QueueSkeleton />;
   if (error) return <PaneError error={error} onRetry={onRetry} />;
   if (!threads.length) return <EmptyQueue state={attentionState} />;
@@ -1624,7 +1620,11 @@ const ThreadQueue = function ThreadQueue(
             data-thread-id={thread.id}
             type="button"
             aria-current={selected ? "true" : undefined}
-            aria-label={`${inboxGuestName(thread)}, ${inboxSourceLabel(thread)}, ${thread.unreadCount} unread`}
+            aria-label={t("inbox.threadAriaLabel", {
+              guestName: inboxGuestName(thread),
+              source: inboxSourceLabel(thread),
+              unreadCount: thread.unreadCount,
+            })}
             onClick={() => onOpen(thread.id)}
             className={cn(
               "relative min-h-[108px] w-full border-b border-gray-100 px-4 py-3 text-left outline-none transition hover:bg-gray-50 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[#2F52F5]",
@@ -1662,7 +1662,7 @@ const ThreadQueue = function ThreadQueue(
             <span className="mt-2 flex min-h-4 items-center gap-2 text-[10px] text-gray-500">
               {thread.unreadCount > 0 && (
                 <span className="rounded-full bg-[#2F52F5] px-1.5 py-0.5 font-bold text-white">
-                  {thread.unreadCount} unread
+                  {t("inbox.unreadCount", { count: thread.unreadCount })}
                 </span>
               )}
               {thread.followUpAt && (
@@ -1675,7 +1675,10 @@ const ThreadQueue = function ThreadQueue(
                 <span className="truncate">{thread.assignedTo.displayName}</span>
               )}
               {thread.lastMessage.hasAttachments && (
-                <PaperClipIcon className="ml-auto h-3.5 w-3.5" aria-label="Has attachment" />
+                <PaperClipIcon
+                  className="ml-auto h-3.5 w-3.5"
+                  aria-label={t("inbox.hasAttachment")}
+                />
               )}
             </span>
           </button>
@@ -1688,7 +1691,7 @@ const ThreadQueue = function ThreadQueue(
           onClick={onLoadMore}
           className="m-3 min-h-11 w-[calc(100%-1.5rem)] rounded-md border border-gray-200 text-xs font-semibold text-gray-600 hover:bg-gray-50 disabled:opacity-50"
         >
-          {appending ? "Loading…" : "Load more conversations"}
+          {appending ? t("inbox.loading") : t("inbox.loadMoreConversations")}
         </button>
       )}
     </div>
@@ -1715,6 +1718,7 @@ function ConversationHeader(
   },
   ref: ForwardedRef<HTMLHeadingElement>,
 ) {
+  const { t } = useTranslation();
   const [moreOpen, setMoreOpen] = useState(false);
   const { triggerRef: moreTriggerRef, panelRef: morePanelRef } = usePopoverFocus(moreOpen);
   return (
@@ -1724,7 +1728,7 @@ function ConversationHeader(
           type="button"
           onClick={props.onBack}
           className="flex h-11 w-11 shrink-0 items-center justify-center rounded-md text-gray-500 hover:bg-gray-100 md:hidden"
-          aria-label="Back to Inbox"
+          aria-label={t("inbox.backToInbox")}
         >
           <ArrowLeftIcon className="h-5 w-5" />
         </button>
@@ -1746,7 +1750,9 @@ function ConversationHeader(
                 props.thread.replyRoute.state === "ready" ? "text-emerald-700" : "text-amber-700"
               }
             >
-              {props.thread.replyRoute.state === "ready" ? "Reply ready" : "Reply held"}
+              {props.thread.replyRoute.state === "ready"
+                ? t("inbox.replyReady")
+                : t("inbox.replyHeld")}
             </span>
           </p>
         </div>
@@ -1755,43 +1761,43 @@ function ConversationHeader(
           onClick={props.onContext}
           className="min-h-11 rounded-md px-2 text-xs font-semibold text-gray-600 hover:bg-gray-100 min-[1280px]:hidden"
         >
-          Guest & stay
+          {t("inbox.guestAndStay")}
         </button>
       </div>
       {props.canReply && (
         <div className="mt-3 flex items-center gap-1.5 overflow-x-auto pb-0.5">
           {props.thread.attentionState === "done" ? (
             <ActionButton
-              label="Reopen"
+              label={t("common.reopen")}
               busy={props.mutationBusy === "reopen"}
               onClick={props.onReopen}
             />
           ) : (
             <ActionButton
-              label="Done"
+              label={t("inbox.attentionDone")}
               busy={props.mutationBusy === "done"}
               onClick={props.onDone}
               icon={<CheckIcon className="h-4 w-4" />}
             />
           )}
           <ActionButton
-            label="Follow up"
+            label={t("inbox.attentionFollowUp")}
             busy={props.mutationBusy === "follow-up"}
             onClick={props.onFollowUp}
             icon={<ClockIcon className="h-4 w-4" />}
           />
           <label className="relative hidden shrink-0 sm:block">
-            <span className="sr-only">Assign conversation</span>
+            <span className="sr-only">{t("inbox.assignConversation")}</span>
             <select
               value={props.thread.assignedTo?.membershipId ?? ""}
               disabled={props.mutationBusy === "assign"}
               onChange={(event) => props.onAssign(event.target.value)}
               className="min-h-11 appearance-none rounded-md border border-gray-200 bg-white py-1.5 pl-2.5 pr-7 text-xs font-semibold text-gray-600 outline-none hover:bg-gray-50 focus:border-[#2F52F5] md:min-h-9"
             >
-              <option value="">Unassigned</option>
+              <option value="">{t("inbox.unassigned")}</option>
               {props.selfMembershipId && (
                 <option value={props.selfMembershipId}>
-                  Me
+                  {t("inbox.me")}
                   {props.staff.find((member) => member.id === props.selfMembershipId)?.name
                     ? ` · ${props.staff.find((member) => member.id === props.selfMembershipId)?.name}`
                     : ""}
@@ -1816,7 +1822,7 @@ function ConversationHeader(
             <button
               ref={moreTriggerRef}
               type="button"
-              aria-label="More conversation actions"
+              aria-label={t("inbox.moreConversationActions")}
               onClick={() => setMoreOpen((open) => !open)}
               className="flex h-11 w-11 items-center justify-center rounded-md border border-gray-200 text-gray-500 hover:bg-gray-50 md:h-9 md:w-9"
             >
@@ -1831,7 +1837,7 @@ function ConversationHeader(
                 className="absolute right-0 top-10 z-30 w-64 rounded-lg border border-gray-200 bg-white p-2 shadow-lg"
               >
                 <label className="block px-3 py-2 text-[11px] font-semibold uppercase tracking-wide text-gray-500 sm:hidden">
-                  Assignment
+                  {t("inbox.assignment")}
                   <select
                     value={props.thread.assignedTo?.membershipId ?? ""}
                     disabled={props.mutationBusy === "assign"}
@@ -1841,8 +1847,10 @@ function ConversationHeader(
                     }}
                     className="mt-1 min-h-11 w-full rounded-md border border-gray-200 bg-white px-2 text-base font-semibold normal-case tracking-normal text-gray-700 outline-none focus:border-[#2F52F5] sm:text-xs"
                   >
-                    <option value="">Unassigned</option>
-                    {props.selfMembershipId && <option value={props.selfMembershipId}>Me</option>}
+                    <option value="">{t("inbox.unassigned")}</option>
+                    {props.selfMembershipId && (
+                      <option value={props.selfMembershipId}>{t("inbox.me")}</option>
+                    )}
                     {props.staff
                       .filter((member) => member.id !== props.selfMembershipId)
                       .map((member) => (
@@ -1864,11 +1872,11 @@ function ConversationHeader(
                       className="w-full rounded-md px-3 py-2 text-left text-xs font-semibold text-gray-700 hover:bg-gray-50 disabled:text-gray-400"
                     >
                       {props.providerActionPending
-                        ? "Updating Booking.com…"
-                        : "Tell Booking.com no reply is needed"}
+                        ? t("inbox.updatingBookingCom")
+                        : t("inbox.bookingComNoReplyNeeded")}
                     </button>
                     <p className="px-3 pb-2 text-[11px] leading-4 text-gray-500">
-                      This updates Booking.com only. Marking Done is a separate Vayada action.
+                      {t("inbox.bookingComUpdateExplanation")}
                     </p>
                   </>
                 )}
@@ -1900,6 +1908,7 @@ function ConversationTimeline(
   },
   ref: ForwardedRef<HTMLDivElement>,
 ) {
+  const { t } = useTranslation();
   let lastDate = "";
   const unreadBoundaryId = props.timeline.find(
     (item): item is Extract<InboxTimelineItem, { kind: "message" }> =>
@@ -1911,7 +1920,7 @@ function ConversationTimeline(
     <div ref={ref} className="min-h-0 flex-1 overflow-y-auto px-3 py-4 sm:px-5">
       {props.summary && (
         <AssistedBlock
-          label="AI-assisted summary"
+          label={t("inbox.aiAssistedSummary")}
           response={props.summary}
           stale={Boolean(
             props.latestInboundId && props.summary.basedThroughMessageId !== props.latestInboundId,
@@ -1927,7 +1936,7 @@ function ConversationTimeline(
             onClick={props.onLoadEarlier}
             className="min-h-11 rounded-md px-3 text-xs font-semibold text-[#2F52F5] hover:bg-blue-50"
           >
-            {props.earlierLoading ? "Loading…" : "Load earlier messages"}
+            {props.earlierLoading ? t("inbox.loading") : t("inbox.loadEarlierMessages")}
           </button>
         </div>
       )}
@@ -1935,8 +1944,8 @@ function ConversationTimeline(
         <div className="flex min-h-[220px] items-center justify-center text-center">
           <div>
             <EnvelopeIcon className="mx-auto h-8 w-8 text-gray-300" />
-            <p className="mt-3 text-sm font-semibold text-gray-700">No messages yet</p>
-            <p className="mt-1 text-xs text-gray-500">Start the conversation below.</p>
+            <p className="mt-3 text-sm font-semibold text-gray-700">{t("inbox.noMessagesYet")}</p>
+            <p className="mt-1 text-xs text-gray-500">{t("inbox.startConversationBelow")}</p>
           </div>
         </div>
       ) : (
@@ -1958,11 +1967,11 @@ function ConversationTimeline(
               {item.kind === "message" && item.message.id === unreadBoundaryId && (
                 <div
                   role="separator"
-                  aria-label="Unread messages"
+                  aria-label={t("inbox.unreadMessages")}
                   className="my-4 flex items-center gap-3 text-[10px] font-semibold uppercase tracking-wider text-[#2F52F5]"
                 >
                   <span className="h-px flex-1 bg-[#C7D2FE]" />
-                  <span>Unread</span>
+                  <span>{t("inbox.unread")}</span>
                   <span className="h-px flex-1 bg-[#C7D2FE]" />
                 </div>
               )}
@@ -2005,6 +2014,7 @@ function MessageItem({
   onDismissTranslation: () => void;
   onCopyToDraft: () => void;
 }) {
+  const { t } = useTranslation();
   const outbound = message.direction === "outbound";
   return (
     <article className={cn("mb-3 flex", outbound ? "justify-end" : "justify-start")}>
@@ -2019,7 +2029,9 @@ function MessageItem({
         >
           <div className="mb-1 flex items-center gap-2 text-[11px] text-gray-500">
             <span className="font-semibold">
-              {message.sender.name || (outbound ? "Property" : "Guest")}
+              {message.sender.name === "You"
+                ? t("inbox.you")
+                : message.sender.name || (outbound ? t("inbox.property") : t("inbox.guest"))}
             </span>
             <span>{formatInboxDateTime(message.occurredAt)}</span>
           </div>
@@ -2046,7 +2058,7 @@ function MessageItem({
                   >
                     <PaperClipIcon className="h-4 w-4" />
                     <span className="min-w-0 flex-1 truncate">{attachment.filename}</span>
-                    <span>Accepted</span>
+                    <span>{t("inbox.attachmentAccepted")}</span>
                   </div>
                 ) : (
                   <div
@@ -2055,7 +2067,7 @@ function MessageItem({
                     className="flex min-h-11 items-center gap-2 rounded-md border border-gray-200 bg-gray-50 px-2.5 text-xs text-gray-400"
                   >
                     <PaperClipIcon className="h-4 w-4" />
-                    File unavailable
+                    {t("inbox.fileUnavailable")}
                   </div>
                 ),
               )}
@@ -2068,7 +2080,7 @@ function MessageItem({
               onClick={onTranslate}
               className="mt-2 text-[11px] font-semibold text-[#2F52F5] hover:underline disabled:opacity-50"
             >
-              {translateBusy ? "Translating…" : "Translate"}
+              {translateBusy ? t("inbox.translating") : t("inbox.translate")}
             </button>
           )}
         </div>
@@ -2080,7 +2092,7 @@ function MessageItem({
         )}
         {translation && (
           <AssistedBlock
-            label="AI-assisted translation"
+            label={t("inbox.aiAssistedTranslation")}
             response={translation}
             stale={false}
             onDismiss={onDismissTranslation}
@@ -2097,15 +2109,16 @@ function InternalNoteItem({
 }: {
   note: Extract<InboxTimelineItem, { kind: "internal_note" }>["note"];
 }) {
+  const { t } = useTranslation();
   return (
     <article className="mb-3 rounded-md border border-amber-200 bg-amber-50 px-3 py-2.5 text-sm text-amber-950">
       <div className="mb-1 flex items-center gap-1.5 text-[11px] font-semibold text-amber-800">
         <LockClosedIcon className="h-3.5 w-3.5" />
-        Internal note · {note.author.displayName}
+        {t("inbox.internalNoteAuthor", { author: note.author.displayName })}
         <span className="font-normal text-amber-700">{formatInboxDateTime(note.occurredAt)}</span>
       </div>
       <p className="whitespace-pre-wrap leading-6">{note.text}</p>
-      <p className="mt-1 text-[10px] text-amber-700">Visible to property staff only</p>
+      <p className="mt-1 text-[10px] text-amber-700">{t("inbox.staffOnlyVisibility")}</p>
     </article>
   );
 }
@@ -2133,6 +2146,7 @@ function Composer(props: {
   onSubmit: () => void;
   onKeyDown: (event: KeyboardEvent<HTMLTextAreaElement>) => void;
 }) {
+  const { t } = useTranslation();
   const [quickOpen, setQuickOpen] = useState(false);
   const { triggerRef: quickTriggerRef, panelRef: quickPanelRef } = usePopoverFocus(quickOpen);
   const isReply = props.mode === "reply";
@@ -2154,7 +2168,7 @@ function Composer(props: {
         isReply ? "border-gray-200 bg-white" : "border-amber-200 bg-amber-50",
       )}
     >
-      <div role="tablist" aria-label="Composer mode" className="mb-2 flex gap-1">
+      <div role="tablist" aria-label={t("inbox.composerMode")} className="mb-2 flex gap-1">
         <button
           role="tab"
           aria-selected={isReply}
@@ -2162,7 +2176,7 @@ function Composer(props: {
           onClick={() => props.onMode("reply")}
           className={composerTab(isReply)}
         >
-          Reply
+          {t("inbox.reply")}
         </button>
         <button
           role="tab"
@@ -2171,19 +2185,19 @@ function Composer(props: {
           onClick={() => props.onMode("note")}
           className={composerTab(!isReply)}
         >
-          Internal note
+          {t("inbox.internalNote")}
         </button>
       </div>
       <div className="mb-2 flex items-center gap-2 text-[11px] font-medium">
         <span
           className={isReply && props.route.state === "held" ? "text-amber-800" : "text-gray-600"}
         >
-          {isReply ? inboxRouteLabel(props.route) : "Property staff only"}
+          {isReply ? inboxRouteLabel(props.route) : t("inbox.propertyStaffOnly")}
         </span>
         {isReply && props.route.state === "ready" && (
           <span className="ml-auto text-emerald-700">
             <CheckCircleIcon className="mr-1 inline h-3.5 w-3.5" />
-            Connected
+            {t("inbox.connected")}
           </span>
         )}
       </div>
@@ -2192,14 +2206,13 @@ function Composer(props: {
           className="mb-2 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900"
           role="status"
         >
-          Send is disabled until this route is available. Vayada will not switch channels
-          automatically.
+          {t("inbox.routeUnavailable")}
           {heldRecoveryPath && (
             <Link
               href={heldRecoveryPath}
               className="ml-1 font-semibold text-amber-950 underline underline-offset-2"
             >
-              Review settings
+              {t("inbox.reviewSettings")}
             </Link>
           )}
         </div>
@@ -2213,7 +2226,7 @@ function Composer(props: {
               onClick={() => setQuickOpen((open) => !open)}
               className="toolButton"
             >
-              Quick replies <ChevronDownIcon className="h-3 w-3" />
+              {t("inbox.quickReplies")} <ChevronDownIcon className="h-3 w-3" />
             </button>
             {quickOpen && (
               <div
@@ -2239,7 +2252,7 @@ function Composer(props: {
                     </button>
                   ))
                 ) : (
-                  <p className="px-2.5 py-2 text-xs text-gray-500">No quick replies yet.</p>
+                  <p className="px-2.5 py-2 text-xs text-gray-500">{t("inbox.noQuickReplies")}</p>
                 )}
                 <button
                   type="button"
@@ -2249,7 +2262,7 @@ function Composer(props: {
                   }}
                   className="mt-1 w-full border-t border-gray-100 px-2.5 py-2 text-left text-xs font-semibold text-[#2F52F5]"
                 >
-                  Manage quick replies
+                  {t("inbox.manageQuickReplies")}
                 </button>
               </div>
             )}
@@ -2261,7 +2274,7 @@ function Composer(props: {
             className="toolButton"
           >
             <SparklesIcon className="h-3.5 w-3.5" />
-            Draft reply
+            {t("inbox.draftReply")}
           </button>
           <button
             type="button"
@@ -2269,7 +2282,7 @@ function Composer(props: {
             onClick={() => props.onAssist("translate_draft")}
             className="toolButton"
           >
-            Translate draft
+            {t("inbox.translateDraft")}
           </button>
           <button
             type="button"
@@ -2277,19 +2290,19 @@ function Composer(props: {
             onClick={() => props.onAssist("summarize")}
             className="toolButton"
           >
-            Summarize
+            {t("inbox.summarize")}
           </button>
           <select
-            aria-label="Assistance language"
+            aria-label={t("inbox.assistanceLanguage")}
             value={props.assistLanguage}
             onChange={(event) => props.onAssistLanguage(event.target.value)}
             className="min-h-11 rounded-md border border-gray-200 bg-white px-2 text-base font-semibold text-gray-600 outline-none sm:text-xs md:min-h-8"
           >
-            {["English", "German", "Spanish", "French", "Italian", "Dutch", "Indonesian"].map(
-              (language) => (
-                <option key={language}>{language}</option>
-              ),
-            )}
+            {ASSISTANCE_LANGUAGES.map(({ value, labelKey }) => (
+              <option key={value} value={value}>
+                {t(labelKey)}
+              </option>
+            ))}
           </select>
           <label
             className={cn(
@@ -2298,7 +2311,7 @@ function Composer(props: {
             )}
           >
             <PaperClipIcon className="h-3.5 w-3.5" />
-            Attach
+            {t("inbox.attach")}
             <input
               type="file"
               disabled={Boolean(props.uploadName)}
@@ -2314,7 +2327,7 @@ function Composer(props: {
           {props.uploadName && (
             <span className="rounded-md border border-gray-200 bg-gray-50 px-2 py-1 text-[11px] text-gray-600">
               <ArrowPathIcon className="mr-1 inline h-3 w-3 animate-spin" />
-              Preparing {props.uploadName}
+              {t("inbox.preparingAttachment", { filename: props.uploadName })}
             </span>
           )}
           {props.draft.attachments.map((attachment) => (
@@ -2327,7 +2340,7 @@ function Composer(props: {
               <button
                 type="button"
                 onClick={() => props.onRemoveAttachment(attachment.mediaId)}
-                aria-label={`Remove ${attachment.filename}`}
+                aria-label={t("inbox.removeAttachment", { filename: attachment.filename })}
               >
                 <XMarkIcon className="h-3.5 w-3.5" />
               </button>
@@ -2343,14 +2356,12 @@ function Composer(props: {
           )}
         >
           <SparklesIcon className="mr-1 inline h-3.5 w-3.5" />
-          {staleAssistance
-            ? "New messages arrived — refresh this assisted draft"
-            : "AI-assisted draft — review before sending"}
+          {staleAssistance ? t("inbox.assistedDraftStale") : t("inbox.assistedDraftReview")}
         </div>
       )}
       <div className="flex items-end gap-2">
         <label className="min-w-0 flex-1">
-          <span className="sr-only">{isReply ? "Reply" : "Internal note"}</span>
+          <span className="sr-only">{isReply ? t("inbox.reply") : t("inbox.internalNote")}</span>
           <textarea
             rows={2}
             value={value}
@@ -2358,7 +2369,9 @@ function Composer(props: {
               isReply ? props.onReply(event.target.value) : props.onNote(event.target.value)
             }
             onKeyDown={props.onKeyDown}
-            placeholder={isReply ? "Write a reply…" : "Add a private note for your team…"}
+            placeholder={
+              isReply ? t("inbox.writeReplyPlaceholder") : t("inbox.privateNotePlaceholder")
+            }
             className={cn(
               "max-h-36 min-h-[56px] w-full resize-y rounded-md border bg-white px-3 py-2 text-base leading-5 outline-none focus:ring-2 sm:text-sm",
               isReply
@@ -2377,7 +2390,7 @@ function Composer(props: {
           )}
         >
           {isReply && <PaperAirplaneIcon className="h-4 w-4" />}
-          {props.busy ? "Saving…" : isReply ? "Send" : "Add note"}
+          {props.busy ? t("inbox.saving") : isReply ? t("inbox.send") : t("inbox.addNote")}
         </button>
       </div>
       <div className="mt-1.5 flex min-h-4 items-start justify-between gap-2">
@@ -2390,7 +2403,7 @@ function Composer(props: {
         )}
         {isReply && (
           <p className="hidden shrink-0 text-[10px] text-gray-400 sm:block">
-            ⌘/Ctrl + Enter to send
+            {t("inbox.keyboardShortcutSend")}
           </p>
         )}
       </div>
@@ -2399,6 +2412,7 @@ function Composer(props: {
 }
 
 function ContextDrawer({ thread, onClose }: { thread: InboxThread; onClose: () => void }) {
+  const { t } = useTranslation();
   const panelRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -2412,24 +2426,24 @@ function ContextDrawer({ thread, onClose }: { thread: InboxThread; onClose: () =
       <button
         type="button"
         className="absolute inset-0 h-full w-full bg-black/40"
-        aria-label="Close guest and stay"
+        aria-label={t("inbox.closeGuestAndStay")}
         onClick={onClose}
       />
       <div
         ref={panelRef}
         role="dialog"
         aria-modal="true"
-        aria-label="Guest and stay"
+        aria-label={t("inbox.guestAndStayDialog")}
         tabIndex={-1}
         onKeyDown={(event) => trapFocus(event, panelRef.current, onClose)}
         className="absolute inset-y-0 right-0 flex w-full max-w-[400px] flex-col bg-white shadow-2xl outline-none"
       >
         <div className="flex h-16 shrink-0 items-center justify-between border-b border-gray-200 px-4">
-          <h2 className="text-sm font-bold text-gray-950">Guest & stay</h2>
+          <h2 className="text-sm font-bold text-gray-950">{t("inbox.guestAndStay")}</h2>
           <button
             type="button"
             onClick={onClose}
-            aria-label="Close guest and stay"
+            aria-label={t("inbox.closeGuestAndStay")}
             className="flex h-11 w-11 items-center justify-center rounded-md text-gray-500 hover:bg-gray-100"
           >
             <XMarkIcon className="h-5 w-5" />
@@ -2448,23 +2462,30 @@ function ConversationContext({
   thread: InboxThread;
   showHeading?: boolean;
 }) {
+  const { t } = useTranslation();
   const context = thread.conversationContext;
   return (
     <div className="h-full overflow-y-auto px-4 py-5">
-      {showHeading && <h3 className="text-sm font-bold text-gray-950">Guest & stay</h3>}
+      {showHeading && (
+        <h3 className="text-sm font-bold text-gray-950">{t("inbox.guestAndStay")}</h3>
+      )}
       <section className="mt-5 border-b border-gray-100 pb-5">
-        <p className="text-[10px] font-semibold uppercase tracking-wider text-gray-400">Guest</p>
+        <p className="text-[10px] font-semibold uppercase tracking-wider text-gray-400">
+          {t("inbox.guest")}
+        </p>
         <p className="mt-2 text-sm font-semibold text-gray-900">{inboxGuestName(thread)}</p>
         {thread.guest.email && (
           <p className="mt-1 break-all text-xs text-gray-600">{thread.guest.email}</p>
         )}
         {thread.guest.phone && <p className="mt-1 text-xs text-gray-600">{thread.guest.phone}</p>}
         {!thread.guest.email && !thread.guest.phone && (
-          <p className="mt-1 text-xs text-gray-400">Contact details are not available.</p>
+          <p className="mt-1 text-xs text-gray-400">{t("inbox.contactDetailsUnavailable")}</p>
         )}
       </section>
       <section className="border-b border-gray-100 py-5">
-        <p className="text-[10px] font-semibold uppercase tracking-wider text-gray-400">Source</p>
+        <p className="text-[10px] font-semibold uppercase tracking-wider text-gray-400">
+          {t("inbox.source")}
+        </p>
         <p className="mt-2 flex items-center gap-2 text-sm font-semibold text-gray-900">
           <SourceDot thread={thread} />
           {inboxSourceLabel(thread)}
@@ -2473,41 +2494,48 @@ function ConversationContext({
       </section>
       <section className="border-b border-gray-100 py-5">
         <p className="text-[10px] font-semibold uppercase tracking-wider text-gray-400">
-          Reservation context
+          {t("inbox.reservationContext")}
         </p>
         {context.state === "linked" ? (
           <>
-            <p className="mt-2 text-xs text-gray-600">Linked booking</p>
+            <p className="mt-2 text-xs text-gray-600">{t("inbox.linkedBooking")}</p>
             <p className="mt-1 font-mono text-sm font-semibold text-gray-900">
               {context.reference}
             </p>
             <dl className="mt-3 grid grid-cols-2 gap-x-3 gap-y-2 text-xs">
               <div>
-                <dt className="text-gray-400">Stay</dt>
+                <dt className="text-gray-400">{t("inbox.stay")}</dt>
                 <dd className="mt-0.5 text-gray-700">
                   {context.stay.checkIn} – {context.stay.checkOut}
                 </dd>
               </div>
               <div>
-                <dt className="text-gray-400">Nights</dt>
+                <dt className="text-gray-400">{t("inbox.nights")}</dt>
                 <dd className="mt-0.5 text-gray-700">{context.stay.nights}</dd>
               </div>
               <div>
-                <dt className="text-gray-400">Party</dt>
+                <dt className="text-gray-400">{t("inbox.party")}</dt>
                 <dd className="mt-0.5 text-gray-700">
-                  {partyLabel(context.stay.adults, context.stay.children)}
+                  {partyLabel(context.stay.adults, context.stay.children, t)}
                 </dd>
               </div>
               <div>
-                <dt className="text-gray-400">Status</dt>
+                <dt className="text-gray-400">{t("inbox.status")}</dt>
                 <dd className="mt-0.5 text-gray-700">{humanizeCode(context.stay.status)}</dd>
               </div>
               <div className="col-span-2">
-                <dt className="text-gray-400">Room</dt>
+                <dt className="text-gray-400">{t("inbox.room")}</dt>
                 <dd className="mt-0.5 text-gray-700">
                   {context.stay.roomName ||
-                    `${context.stay.roomCount} room${context.stay.roomCount === 1 ? "" : "s"}`}
-                  {context.stay.roomNumber ? ` · Room ${context.stay.roomNumber}` : ""}
+                    t(
+                      context.stay.roomCount === 1
+                        ? "inbox.roomCountSingle"
+                        : "inbox.roomCountPlural",
+                      { count: context.stay.roomCount },
+                    )}
+                  {context.stay.roomNumber
+                    ? t("inbox.roomNumberSuffix", { roomNumber: context.stay.roomNumber })
+                    : ""}
                 </dd>
               </div>
             </dl>
@@ -2515,33 +2543,35 @@ function ConversationContext({
               href={`/bookings/${encodeURIComponent(context.bookingId)}`}
               className="mt-3 inline-flex min-h-11 items-center text-xs font-semibold text-[#2F52F5] hover:underline"
             >
-              Open booking
+              {t("inbox.openBooking")}
             </Link>
           </>
         ) : context.state === "inquiry" ? (
           <>
-            <p className="mt-2 text-sm font-semibold text-gray-900">Inquiry — no booking yet</p>
+            <p className="mt-2 text-sm font-semibold text-gray-900">
+              {t("inbox.inquiryNoBooking")}
+            </p>
             <p className="mt-1 font-mono text-xs text-gray-500">{context.sourceReference}</p>
             {(context.arrivalDate || context.departureDate) && (
               <p className="mt-3 text-xs text-gray-600">
-                {context.arrivalDate || "Date not supplied"} –{" "}
-                {context.departureDate || "Date not supplied"}
+                {context.arrivalDate || t("inbox.dateNotSupplied")} –{" "}
+                {context.departureDate || t("inbox.dateNotSupplied")}
               </p>
             )}
             {context.adults !== null || context.children !== null ? (
               <p className="mt-2 text-xs text-gray-600">
-                {partyLabel(context.adults ?? 0, context.children ?? 0)}
+                {partyLabel(context.adults ?? 0, context.children ?? 0, t)}
               </p>
             ) : (
-              <p className="mt-2 text-xs text-gray-400">Party size not supplied</p>
+              <p className="mt-2 text-xs text-gray-400">{t("inbox.partySizeNotSupplied")}</p>
             )}
           </>
         ) : (
           <>
-            <p className="mt-2 text-sm font-semibold text-gray-900">Unlinked conversation</p>
-            <p className="mt-1 text-xs leading-5 text-gray-500">
-              No reservation match is available. Vayada has not inferred one.
+            <p className="mt-2 text-sm font-semibold text-gray-900">
+              {t("inbox.unlinkedConversation")}
             </p>
+            <p className="mt-1 text-xs leading-5 text-gray-500">{t("inbox.noReservationMatch")}</p>
             {context.sourceReference && (
               <p className="mt-2 font-mono text-xs text-gray-500">{context.sourceReference}</p>
             )}
@@ -2549,9 +2579,11 @@ function ConversationContext({
         )}
       </section>
       <section className="py-5">
-        <p className="text-[10px] font-semibold uppercase tracking-wider text-gray-400">Team</p>
+        <p className="text-[10px] font-semibold uppercase tracking-wider text-gray-400">
+          {t("inbox.team")}
+        </p>
         <p className="mt-2 text-sm text-gray-700">
-          {thread.assignedTo?.displayName ?? "Unassigned"}
+          {thread.assignedTo?.displayName ?? t("inbox.unassigned")}
         </p>
       </section>
     </div>
@@ -2571,6 +2603,7 @@ function QuickReplyManager({
   onAccessDenied: (error: ReturnType<typeof inboxError>) => Promise<boolean>;
   onClose: () => void;
 }) {
+  const { t } = useTranslation();
   const [editing, setEditing] = useState<InboxQuickReply | null>(null);
   const [name, setName] = useState("");
   const [text, setText] = useState("");
@@ -2597,7 +2630,7 @@ function QuickReplyManager({
         const current = latest.items.find((item) => item.id === editing.id) ?? null;
         setEditing(current);
       }
-      setError("This quick reply changed. Latest values were loaded; review and try again.");
+      setError(t("inbox.errorQuickReplyChanged"));
     } catch (cause) {
       const refreshError = inboxError(cause);
       if (!(await onAccessDenied(refreshError))) setError(refreshError.message);
@@ -2651,7 +2684,7 @@ function QuickReplyManager({
     <Modal
       onClose={onClose}
       maxWidth="lg"
-      ariaLabel="Manage quick replies"
+      ariaLabel={t("inbox.manageQuickReplies")}
       footer={
         <div className="flex justify-end gap-2">
           <button
@@ -2659,7 +2692,7 @@ function QuickReplyManager({
             onClick={onClose}
             className="rounded-md border border-gray-200 px-4 py-2 text-sm font-semibold text-gray-700"
           >
-            Close
+            {t("common.close")}
           </button>
           <button
             type="button"
@@ -2667,15 +2700,17 @@ function QuickReplyManager({
             onClick={() => void save()}
             className="rounded-md bg-[#2F52F5] px-4 py-2 text-sm font-semibold text-white disabled:opacity-40"
           >
-            {busy ? "Saving…" : editing ? "Save changes" : "Create quick reply"}
+            {busy
+              ? t("inbox.saving")
+              : editing
+                ? t("inbox.saveChanges")
+                : t("inbox.createQuickReply")}
           </button>
         </div>
       }
     >
-      <h2 className="text-lg font-bold text-gray-950">Quick replies</h2>
-      <p className="mt-1 text-sm text-gray-500">
-        Reusable property messages. They never send automatically.
-      </p>
+      <h2 className="text-lg font-bold text-gray-950">{t("inbox.quickReplies")}</h2>
+      <p className="mt-1 text-sm text-gray-500">{t("inbox.quickRepliesDescription")}</p>
       <div className="mt-5 grid gap-5 sm:grid-cols-[180px_1fr]">
         <div className="space-y-1">
           <button
@@ -2686,7 +2721,7 @@ function QuickReplyManager({
               !editing ? "bg-blue-50 text-[#2F52F5]" : "text-gray-700 hover:bg-gray-50",
             )}
           >
-            New quick reply
+            {t("inbox.newQuickReply")}
           </button>
           {items.map((item) => (
             <div key={item.id} className="group flex items-center">
@@ -2704,7 +2739,7 @@ function QuickReplyManager({
               </button>
               <button
                 type="button"
-                aria-label={`Archive ${item.name}`}
+                aria-label={t("inbox.archiveQuickReply", { name: item.name })}
                 disabled={busy}
                 onClick={() => void archive(item)}
                 className="p-2 text-gray-400 hover:text-rose-600"
@@ -2716,7 +2751,7 @@ function QuickReplyManager({
         </div>
         <div>
           <label className="block text-xs font-semibold text-gray-700">
-            Name
+            {t("inbox.name")}
             <input
               value={name}
               onChange={(event) => setName(event.target.value)}
@@ -2724,7 +2759,7 @@ function QuickReplyManager({
             />
           </label>
           <label className="mt-4 block text-xs font-semibold text-gray-700">
-            Reply text
+            {t("inbox.replyText")}
             <textarea
               rows={8}
               value={text}
@@ -2733,17 +2768,15 @@ function QuickReplyManager({
             />
           </label>
           <label className="mt-4 block text-xs font-semibold text-gray-700">
-            Approved variables
+            {t("inbox.approvedVariables")}
             <input
               value={variables}
               onChange={(event) => setVariables(event.target.value)}
-              placeholder="guest_name, booking_reference"
+              placeholder={t("inbox.approvedVariablesPlaceholder")}
               className="mt-1 w-full rounded-md border border-gray-200 px-3 py-2 text-base outline-none focus:border-[#2F52F5] sm:text-sm"
             />
           </label>
-          <p className="mt-2 text-xs text-gray-500">
-            Preview runs against the selected conversation before this text enters the composer.
-          </p>
+          <p className="mt-2 text-xs text-gray-500">{t("inbox.quickReplyPreviewExplanation")}</p>
           {error && (
             <p role="alert" className="mt-3 text-xs text-rose-700">
               {error}
@@ -2772,11 +2805,12 @@ function FollowUpDialog({
   onClose: () => void;
   onSubmit: () => void;
 }) {
+  const { t } = useTranslation();
   const followUpInstant = propertyLocalDateTimeToIso(value, timezone);
   return (
     <Modal
       onClose={onClose}
-      ariaLabel="Schedule follow-up"
+      ariaLabel={t("inbox.scheduleFollowUp")}
       footer={
         <div className="flex justify-end gap-2">
           <button
@@ -2784,7 +2818,7 @@ function FollowUpDialog({
             onClick={onClose}
             className="rounded-md border border-gray-200 px-4 py-2 text-sm font-semibold text-gray-700"
           >
-            Cancel
+            {t("common.cancel")}
           </button>
           <button
             type="button"
@@ -2792,29 +2826,27 @@ function FollowUpDialog({
             onClick={onSubmit}
             className="rounded-md bg-gray-950 px-4 py-2 text-sm font-semibold text-white disabled:opacity-40"
           >
-            {busy ? "Scheduling…" : "Schedule follow-up"}
+            {busy ? t("inbox.scheduling") : t("inbox.scheduleFollowUp")}
           </button>
         </div>
       }
     >
-      <h2 className="text-lg font-bold text-gray-950">Follow up later</h2>
-      <p className="mt-1 text-sm text-gray-500">
-        The conversation returns to Needs attention at this property-local time ({timezone}).
-      </p>
+      <h2 className="text-lg font-bold text-gray-950">{t("inbox.followUpLater")}</h2>
+      <p className="mt-1 text-sm text-gray-500">{t("inbox.followUpExplanation", { timezone })}</p>
       <div className="mt-5 flex gap-2">
         <button
           type="button"
           onClick={() => onChange(defaultFollowUpTime(timezone))}
           className="min-h-11 rounded-md border border-gray-200 px-3 text-sm font-semibold text-gray-700"
         >
-          Tomorrow
+          {t("inbox.tomorrow")}
         </button>
         <button
           type="button"
           onClick={() => onChange(defaultFollowUpTime(timezone, 2))}
           className="min-h-11 rounded-md border border-gray-200 px-3 text-sm font-semibold text-gray-700"
         >
-          In two days
+          {t("inbox.inTwoDays")}
         </button>
       </div>
       {error && (
@@ -2823,7 +2855,7 @@ function FollowUpDialog({
         </p>
       )}
       <label className="mt-4 block text-xs font-semibold text-gray-700">
-        Date and time
+        {t("inbox.dateAndTime")}
         <input
           type="datetime-local"
           value={value}
@@ -2853,12 +2885,13 @@ function DirectThreadDialog({
   onClose: () => void;
   onSubmit: () => void;
 }) {
+  const { t } = useTranslation();
   return (
     <Modal
       onClose={() => {
         if (!loading) onClose();
       }}
-      ariaLabel="New direct guest message"
+      ariaLabel={t("inbox.newDirectGuestMessage")}
       footer={
         <div className="flex justify-end gap-2">
           <button
@@ -2867,7 +2900,7 @@ function DirectThreadDialog({
             onClick={onClose}
             className="rounded-md border border-gray-200 px-4 py-2 text-sm font-semibold text-gray-700 disabled:opacity-50"
           >
-            Cancel
+            {t("common.cancel")}
           </button>
           <button
             type="button"
@@ -2875,15 +2908,13 @@ function DirectThreadDialog({
             onClick={onSubmit}
             className="rounded-md bg-[#2F52F5] px-4 py-2 text-sm font-semibold text-white disabled:opacity-40"
           >
-            {loading ? "Opening…" : "Open conversation"}
+            {loading ? t("inbox.opening") : t("inbox.openConversation")}
           </button>
         </div>
       }
     >
-      <h2 className="text-lg font-bold text-gray-950">New message</h2>
-      <p className="mt-1 text-sm leading-6 text-gray-500">
-        Choose an eligible direct booking. OTA reservations continue through their OTA conversation.
-      </p>
+      <h2 className="text-lg font-bold text-gray-950">{t("inbox.newMessage")}</h2>
+      <p className="mt-1 text-sm leading-6 text-gray-500">{t("inbox.directBookingExplanation")}</p>
       {error && (
         <p
           role="alert"
@@ -2894,17 +2925,17 @@ function DirectThreadDialog({
       )}
       {loading && !bookings.length ? (
         <p role="status" className="mt-5 text-sm text-gray-500">
-          Loading direct bookings…
+          {t("inbox.loadingDirectBookings")}
         </p>
       ) : bookings.length ? (
         <label className="mt-5 block text-xs font-semibold text-gray-700">
-          Direct booking
+          {t("inbox.directBooking")}
           <select
             value={value}
             onChange={(event) => onChange(event.target.value)}
             className="mt-1 w-full rounded-md border border-gray-200 bg-white px-3 py-2.5 text-base outline-none focus:border-[#2F52F5] sm:text-sm"
           >
-            <option value="">Select a booking</option>
+            <option value="">{t("inbox.selectBooking")}</option>
             {bookings.map((booking) => (
               <option key={booking.guestBookingId} value={booking.guestBookingId}>
                 {booking.primaryGuest.displayName} · {booking.bookingReference} ·{" "}
@@ -2915,7 +2946,7 @@ function DirectThreadDialog({
         </label>
       ) : (
         <p className="mt-5 rounded-md border border-gray-200 bg-gray-50 px-3 py-3 text-sm text-gray-600">
-          No eligible direct bookings were found.
+          {t("inbox.noEligibleDirectBookings")}
         </p>
       )}
     </Modal>
@@ -2923,21 +2954,21 @@ function DirectThreadDialog({
 }
 
 function InboxDenied({ onRetry }: { onRetry: () => void }) {
+  const { t } = useTranslation();
   return (
     <div className="flex h-[calc(100dvh-3rem)] items-center justify-center bg-gray-50 px-4">
       <div className="max-w-md text-center">
         <LockClosedIcon className="mx-auto h-9 w-9 text-gray-400" />
-        <h1 className="mt-4 text-lg font-bold text-gray-950">Inbox access unavailable</h1>
+        <h1 className="mt-4 text-lg font-bold text-gray-950">{t("inbox.accessUnavailable")}</h1>
         <p className="mt-2 text-sm leading-6 text-gray-600">
-          Ask your property administrator for Inbox access, or contact support if your property
-          access changed unexpectedly.
+          {t("inbox.accessUnavailableExplanation")}
         </p>
         <button
           type="button"
           onClick={onRetry}
           className="mt-5 min-h-11 rounded-md bg-gray-950 px-4 text-sm font-semibold text-white"
         >
-          Try again
+          {t("inbox.tryAgain")}
         </button>
       </div>
     </div>
@@ -2945,24 +2976,27 @@ function InboxDenied({ onRetry }: { onRetry: () => void }) {
 }
 
 function NoSelection() {
+  const { t } = useTranslation();
   return (
     <div className="flex h-full items-center justify-center px-6 text-center">
       <div>
         <EnvelopeIcon className="mx-auto h-9 w-9 text-gray-300" />
-        <h2 className="mt-4 text-sm font-semibold text-gray-800">Select a conversation</h2>
+        <h2 className="mt-4 text-sm font-semibold text-gray-800">
+          {t("inbox.selectConversation")}
+        </h2>
         <p className="mt-1 max-w-xs text-xs leading-5 text-gray-500">
-          Choose the next guest from the queue to see the shared message history and reservation
-          context.
+          {t("inbox.selectConversationExplanation")}
         </p>
       </div>
     </div>
   );
 }
 function QueueSkeleton() {
+  const { t } = useTranslation();
   return (
     <div
       role="status"
-      aria-label="Loading conversations"
+      aria-label={t("inbox.loadingConversations")}
       className="animate-pulse divide-y divide-gray-100"
     >
       {Array.from({ length: 6 }, (_, index) => (
@@ -2976,8 +3010,9 @@ function QueueSkeleton() {
   );
 }
 function ConversationSkeleton() {
+  const { t } = useTranslation();
   return (
-    <div role="status" aria-label="Loading conversation" className="h-full animate-pulse">
+    <div role="status" aria-label={t("inbox.loadingConversation")} className="h-full animate-pulse">
       <div className="h-24 border-b border-gray-200 bg-white p-4">
         <div className="h-4 w-36 rounded bg-gray-200" />
         <div className="mt-3 h-3 w-56 rounded bg-gray-100" />
@@ -2991,12 +3026,13 @@ function ConversationSkeleton() {
   );
 }
 function EmptyQueue({ state }: { state: InboxAttentionState }) {
+  const { t } = useTranslation();
   const copy =
     state === "needs_attention"
-      ? ["You're caught up", "New guest messages will appear here."]
+      ? [t("inbox.emptyCaughtUpTitle"), t("inbox.emptyCaughtUpDescription")]
       : state === "follow_up"
-        ? ["No conversations scheduled", "Follow-ups will return here until they are due."]
-        : ["No completed conversations yet", "Conversations marked Done will appear here."];
+        ? [t("inbox.emptyFollowUpTitle"), t("inbox.emptyFollowUpDescription")]
+        : [t("inbox.emptyDoneTitle"), t("inbox.emptyDoneDescription")];
   return (
     <div className="px-6 py-16 text-center">
       <CheckCircleIcon className="mx-auto h-8 w-8 text-gray-300" />
@@ -3012,19 +3048,20 @@ function PaneError({
   error: ReturnType<typeof inboxError>;
   onRetry: () => void;
 }) {
+  const { t } = useTranslation();
   return (
     <div className="m-4 rounded-lg border border-rose-200 bg-rose-50 p-4" role="alert">
-      <p className="text-sm font-semibold text-rose-900">We couldn’t load the Inbox.</p>
+      <p className="text-sm font-semibold text-rose-900">{t("inbox.loadError")}</p>
       <p className="mt-1 text-xs leading-5 text-rose-700">
         {error.message}
-        {error.requestId ? ` Request ${error.requestId}.` : ""}
+        {error.requestId ? t("inbox.requestId", { requestId: error.requestId }) : ""}
       </p>
       <button
         type="button"
         onClick={onRetry}
         className="mt-3 min-h-11 rounded-md border border-rose-300 bg-white px-3 text-xs font-semibold text-rose-800"
       >
-        Retry
+        {t("inbox.retry")}
       </button>
     </div>
   );
@@ -3037,12 +3074,13 @@ function DeliveryLabel({
   delivery: NonNullable<InboxMessage["delivery"]>;
   onCopy?: () => void;
 }) {
+  const { t } = useTranslation();
   const label =
     delivery.state === "retrying"
-      ? "Retrying automatically"
+      ? t("inbox.deliveryRetrying")
       : delivery.state === "held"
-        ? "Not delivered — review required"
-        : delivery.state.charAt(0).toUpperCase() + delivery.state.slice(1);
+        ? t("inbox.deliveryHeld")
+        : t(`inbox.delivery${delivery.state.charAt(0).toUpperCase()}${delivery.state.slice(1)}`);
   const tone =
     delivery.state === "sent"
       ? "text-emerald-700"
@@ -3057,11 +3095,11 @@ function DeliveryLabel({
       className={cn("mt-1 flex items-center gap-2 px-1 text-[10px] font-semibold", tone)}
     >
       <span>{label}</span>
-      {delivery.reasonCode && <span>· {deliveryReasonLabel(delivery.reasonCode)}</span>}
-      {delivery.providerAcknowledgedAt && <span>· Provider acknowledged</span>}
+      {delivery.reasonCode && <span>· {deliveryReasonLabel(delivery.reasonCode, t)}</span>}
+      {delivery.providerAcknowledgedAt && <span>· {t("inbox.providerAcknowledged")}</span>}
       {delivery.state === "failed" && onCopy && (
         <button type="button" onClick={onCopy} className="underline">
-          Copy to new reply
+          {t("inbox.copyToNewReply")}
         </button>
       )}
     </div>
@@ -3080,6 +3118,7 @@ function AssistedBlock({
   onDismiss: () => void;
   compact?: boolean;
 }) {
+  const { t } = useTranslation();
   return (
     <div
       className={cn(
@@ -3091,19 +3130,21 @@ function AssistedBlock({
         <SparklesIcon className="mt-0.5 h-4 w-4 shrink-0 text-violet-600" />
         <div className="min-w-0 flex-1">
           <p className="text-[11px] font-semibold text-violet-700">
-            {stale ? "New messages arrived — refresh this result" : label}
+            {stale ? t("inbox.assistedResultStale") : label}
           </p>
           <p className="mt-1 whitespace-pre-wrap leading-6">{response.assistedText}</p>
           {response.basedThroughMessageId && (
             <p className="mt-2 text-[10px] text-violet-600">
-              Based through message {response.basedThroughMessageId.slice(0, 8)}…
+              {t("inbox.basedThroughMessage", {
+                messageId: response.basedThroughMessageId.slice(0, 8),
+              })}
             </p>
           )}
         </div>
         <button
           type="button"
           onClick={onDismiss}
-          aria-label={`Dismiss ${label}`}
+          aria-label={t("inbox.dismissAssistedResult", { label })}
           className="text-violet-500"
         >
           <XMarkIcon className="h-4 w-4" />
@@ -3123,6 +3164,7 @@ function ActionButton({
   onClick: () => void;
   icon?: ReactNode;
 }) {
+  const { t } = useTranslation();
   return (
     <button
       type="button"
@@ -3131,7 +3173,7 @@ function ActionButton({
       className="flex min-h-11 shrink-0 items-center gap-1.5 rounded-md border border-gray-200 bg-white px-2.5 text-xs font-semibold text-gray-600 hover:bg-gray-50 disabled:opacity-50 md:min-h-9"
     >
       {icon}
-      {busy ? "Saving…" : label}
+      {busy ? t("inbox.saving") : label}
     </button>
   );
 }
@@ -3258,22 +3300,22 @@ function parseVariables(value: string): string[] {
     ),
   );
 }
-function deliveryReasonLabel(reason: string): string {
+function deliveryReasonLabel(reason: string, t: ReturnType<typeof useTranslation>["t"]): string {
   switch (reason) {
     case "transient_provider_failure":
-      return "Temporary provider failure";
+      return t("inbox.deliveryReasonTemporaryProviderFailure");
     case "ambiguous_provider_outcome":
-      return "Provider outcome is unknown";
+      return t("inbox.deliveryReasonUnknownProviderOutcome");
     case "access_unavailable":
-      return "Provider access is unavailable";
+      return t("inbox.deliveryReasonProviderAccessUnavailable");
     case "provider_configuration_unavailable":
-      return "Provider configuration is unavailable";
+      return t("inbox.deliveryReasonProviderConfigurationUnavailable");
     case "invalid_delivery_payload":
-      return "Message or attachment is invalid";
+      return t("inbox.deliveryReasonInvalidPayload");
     case "provider_rejected":
-      return "Provider rejected the message";
+      return t("inbox.deliveryReasonProviderRejected");
     case "retry_exhausted":
-      return "Automatic retries were exhausted";
+      return t("inbox.deliveryReasonRetriesExhausted");
     default:
       return humanizeCode(reason);
   }
@@ -3281,9 +3323,22 @@ function deliveryReasonLabel(reason: string): string {
 function humanizeCode(value: string): string {
   return value.replaceAll("_", " ").replace(/^./, (character) => character.toUpperCase());
 }
-function partyLabel(adults: number, children: number): string {
-  const adultLabel = `${adults} adult${adults === 1 ? "" : "s"}`;
-  return children ? `${adultLabel}, ${children} child${children === 1 ? "" : "ren"}` : adultLabel;
+function partyLabel(
+  adults: number,
+  children: number,
+  t: ReturnType<typeof useTranslation>["t"],
+): string {
+  const adultLabel = t(adults === 1 ? "inbox.adultCountSingle" : "inbox.adultCountPlural", {
+    count: adults,
+  });
+  return children
+    ? t("inbox.partyCounts", {
+        adults: adultLabel,
+        children: t(children === 1 ? "inbox.childCountSingle" : "inbox.childCountPlural", {
+          count: children,
+        }),
+      })
+    : adultLabel;
 }
 function isReadAccessDenial(error: ReturnType<typeof inboxError>): boolean {
   return (

@@ -3,7 +3,6 @@
 import React, { useState, useEffect, useRef } from "react";
 import Link from "next/link";
 import { XMarkIcon, PlusIcon, CheckIcon, ChevronDownIcon } from "@heroicons/react/24/outline";
-import { paymentMethodLabel } from "@vayada/locale-constants";
 import {
   RoomTypeCreate,
   RoomTypeUpdate,
@@ -23,6 +22,7 @@ import {
 } from "@/lib/utils";
 import { parseBookingAmenities } from "@/lib/parseBookingAmenities";
 import { SELECTED_PMS_PROPERTY_ID_KEY } from "@/lib/utils/pmsPropertySelectionKeys";
+import { useTranslation } from "@/lib/i18n";
 
 const BED_TYPES = [
   "King Bed",
@@ -157,6 +157,13 @@ const AMENITY_CATEGORIES = [
   },
 ];
 
+const roomOptionMessageKey = (value: string): string =>
+  `rooms.form.option.${value
+    .toLowerCase()
+    .replace(/&/g, " and ")
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/^_|_$/g, "")}`;
+
 // Clamp a raw string from a number input to [min, max], treating empty/NaN as min.
 // Used by inputs that allow a transient empty display string while typing.
 const clampNumberInput = (raw: string, min: number, max?: number): number => {
@@ -168,10 +175,10 @@ const clampNumberInput = (raw: string, min: number, max?: number): number => {
 };
 
 type RoomTab = "details" | "pricing" | "media";
-const ROOM_TABS: { key: RoomTab; label: string }[] = [
-  { key: "details", label: "Room Details" },
-  { key: "pricing", label: "Pricing & Rates" },
-  { key: "media", label: "Images & Amenities" },
+const ROOM_TABS: { key: RoomTab; labelKey: string }[] = [
+  { key: "details", labelKey: "rooms.form.tabDetails" },
+  { key: "pricing", labelKey: "rooms.form.tabPricing" },
+  { key: "media", labelKey: "rooms.form.tabMedia" },
 ];
 
 const SELECT_ARROW_STYLE = {
@@ -315,6 +322,7 @@ function PriceWarningMessage({
   currency: string;
   onDismiss: () => void;
 }) {
+  const { t } = useTranslation();
   return (
     <div className="flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 px-2.5 py-2 text-[10px] leading-snug text-amber-800">
       <span className="mt-0.5 inline-flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-amber-200 text-[10px] font-bold text-amber-800">
@@ -322,24 +330,20 @@ function PriceWarningMessage({
       </span>
       <p className="min-w-0 flex-1">
         <span className="font-semibold">{warning.label}: </span>
-        {warning.kind === "low" ? (
-          <>
-            This price is much lower than your other rates (
-            {formatCurrency(warning.baseline, currency)} usual rate). Did you mean to enter{" "}
-            {formatCurrency(warning.suggestedValue ?? warning.baseline, currency)}?
-          </>
-        ) : (
-          <>
-            This price is much higher than your other rates (
-            {formatCurrency(warning.baseline, currency)} usual rate). Are you sure?
-          </>
-        )}
+        {warning.kind === "low"
+          ? t("rooms.form.priceWarningLow", {
+              baseline: formatCurrency(warning.baseline, currency),
+              suggested: formatCurrency(warning.suggestedValue ?? warning.baseline, currency),
+            })
+          : t("rooms.form.priceWarningHigh", {
+              baseline: formatCurrency(warning.baseline, currency),
+            })}
       </p>
       <button
         type="button"
         onClick={onDismiss}
         className="shrink-0 rounded p-0.5 text-amber-700 hover:bg-amber-100 hover:text-amber-900"
-        aria-label={`Dismiss ${warning.label} price warning`}
+        aria-label={t("rooms.form.dismissPriceWarning", { label: warning.label })}
       >
         <XMarkIcon className="h-3.5 w-3.5" />
       </button>
@@ -354,6 +358,7 @@ function PartialRefundTiersEditor({
   tiers: PartialRefundTier[];
   onChange: (next: PartialRefundTier[]) => void;
 }) {
+  const { t } = useTranslation();
   const sorted = [...tiers].sort((a, b) => b.minDaysBeforeCheckIn - a.minDaysBeforeCheckIn);
   const usedDays = new Set(sorted.map((t) => t.minDaysBeforeCheckIn));
 
@@ -389,12 +394,10 @@ function PartialRefundTiersEditor({
   return (
     <div className="space-y-2">
       <div className="text-[10px] font-semibold uppercase tracking-wide text-gray-400">
-        Refund schedule
+        {t("rooms.form.refundSchedule")}
       </div>
       <div className="text-[11px] text-gray-500 leading-relaxed">
-        Set how much guests get refunded based on how many days before check-in they cancel. The
-        highest matching threshold is applied; cancellations below the lowest threshold are
-        non-refundable.
+        {t("rooms.form.refundScheduleDescription")}
       </div>
       <div className="space-y-1.5">
         {sorted.map((tier, idx) => (
@@ -402,7 +405,9 @@ function PartialRefundTiersEditor({
             key={idx}
             className="flex items-center gap-2 rounded-lg bg-white border border-gray-200 px-2.5 py-1.5"
           >
-            <span className="text-[11px] text-gray-500 shrink-0">Cancel ≥</span>
+            <span className="text-[11px] text-gray-500 shrink-0">
+              {t("rooms.form.cancelAtLeast")}
+            </span>
             <div className="inline-flex items-center gap-0 border border-gray-200 rounded-md overflow-hidden">
               <button
                 type="button"
@@ -439,7 +444,9 @@ function PartialRefundTiersEditor({
                 +
               </button>
             </div>
-            <span className="text-[11px] text-gray-500 shrink-0">days before → refund</span>
+            <span className="text-[11px] text-gray-500 shrink-0">
+              {t("rooms.form.daysBeforeRefund")}
+            </span>
             <div className="inline-flex items-center gap-0 border border-gray-200 rounded-md overflow-hidden">
               <button
                 type="button"
@@ -477,7 +484,7 @@ function PartialRefundTiersEditor({
               type="button"
               onClick={() => removeTier(idx)}
               className="ml-auto p-1 text-gray-400 hover:text-red-500 transition-colors"
-              aria-label="Remove tier"
+              aria-label={t("rooms.form.removeTier")}
             >
               <XMarkIcon className="w-3.5 h-3.5" />
             </button>
@@ -485,14 +492,12 @@ function PartialRefundTiersEditor({
         ))}
         {sorted.length === 0 && (
           <div className="rounded-lg border border-dashed border-gray-200 bg-gray-50 px-3 py-2 text-[11px] text-gray-500">
-            Partial refund requires at least one tier. Add a tier before saving.
+            {t("rooms.form.partialRefundNeedsTier")}
           </div>
         )}
       </div>
       {hasDuplicateDays && (
-        <div className="text-[11px] text-amber-600">
-          Two tiers share the same days-before threshold; please change one of them.
-        </div>
+        <div className="text-[11px] text-amber-600">{t("rooms.form.duplicateRefundThreshold")}</div>
       )}
       <div className="flex items-center justify-between">
         <button
@@ -502,22 +507,35 @@ function PartialRefundTiersEditor({
           className="inline-flex items-center gap-1 text-[11px] font-medium text-primary-600 hover:text-primary-700 disabled:text-gray-400 disabled:cursor-not-allowed"
         >
           <PlusIcon className="w-3.5 h-3.5" />
-          Add tier
+          {t("rooms.form.addTier")}
         </button>
-        {sorted.length >= 10 && <span className="text-[10px] text-gray-400">Max 10 tiers</span>}
+        {sorted.length >= 10 && (
+          <span className="text-[10px] text-gray-400">{t("rooms.form.maxRefundTiers")}</span>
+        )}
       </div>
       {sorted.length > 0 && (
         <div className="rounded-lg bg-primary-50/60 border border-primary-100 px-3 py-2 text-[11px] text-primary-700 leading-relaxed space-y-0.5">
-          <div className="font-semibold">Policy preview</div>
-          {sorted.map((t, i) => (
+          <div className="font-semibold">{t("rooms.form.policyPreview")}</div>
+          {sorted.map((tier, i) => (
             <div key={i}>
               {i === 0
-                ? `≥ ${t.minDaysBeforeCheckIn} days before check-in: ${t.refundPercent}% refund`
-                : `${sorted[i - 1].minDaysBeforeCheckIn - 1}–${t.minDaysBeforeCheckIn} days: ${t.refundPercent}% refund`}
+                ? t("rooms.form.refundPreviewFrom", {
+                    days: tier.minDaysBeforeCheckIn,
+                    percent: tier.refundPercent,
+                  })
+                : t("rooms.form.refundPreviewRange", {
+                    from: sorted[i - 1].minDaysBeforeCheckIn - 1,
+                    to: tier.minDaysBeforeCheckIn,
+                    percent: tier.refundPercent,
+                  })}
             </div>
           ))}
           {sorted[sorted.length - 1].minDaysBeforeCheckIn > 0 && (
-            <div>{`< ${sorted[sorted.length - 1].minDaysBeforeCheckIn} days: non-refundable`}</div>
+            <div>
+              {t("rooms.form.refundPreviewNonRefundable", {
+                days: sorted[sorted.length - 1].minDaysBeforeCheckIn,
+              })}
+            </div>
           )}
         </div>
       )}
@@ -525,23 +543,27 @@ function PartialRefundTiersEditor({
   );
 }
 
-const PAYMENT_METHODS: { key: string; label: string; hint: string }[] = [
+const PAYMENT_METHODS: { key: string; labelKey: string; hintKey: string }[] = [
   {
     key: "card",
-    label: "Card (online)",
-    hint: "Stripe — authorized at booking, captured on host approval",
+    labelKey: "rooms.form.paymentCard",
+    hintKey: "rooms.form.paymentCardHint",
   },
   {
     key: "pay_at_property",
-    label: paymentMethodLabel("pay_at_property"),
-    hint: "Guest pays on arrival — cash or terminal",
+    labelKey: "rooms.form.paymentAtProperty",
+    hintKey: "rooms.form.paymentAtPropertyHint",
   },
   {
     key: "bank_transfer",
-    label: paymentMethodLabel("bank_transfer"),
-    hint: "Guest wires to your account before arrival",
+    labelKey: "rooms.form.paymentBankTransfer",
+    hintKey: "rooms.form.paymentBankTransferHint",
   },
-  { key: "xendit", label: "QRIS / e-wallet (Xendit)", hint: "Indonesian local payment rails" },
+  {
+    key: "xendit",
+    labelKey: "rooms.form.paymentXendit",
+    hintKey: "rooms.form.paymentXenditHint",
+  },
 ];
 
 function RatePaymentMethodsSection({
@@ -555,9 +577,14 @@ function RatePaymentMethodsSection({
   nonRefundableEnabled: boolean;
   onChange: (next: Record<string, string[]> | null) => void;
 }) {
+  const { t } = useTranslation();
   const rates: { key: string; label: string; shown: boolean }[] = [
-    { key: "flexible", label: "Flexible rate", shown: flexibleRateEnabled },
-    { key: "nonrefundable", label: "Non-refundable rate", shown: nonRefundableEnabled },
+    { key: "flexible", label: t("rooms.form.flexibleRate"), shown: flexibleRateEnabled },
+    {
+      key: "nonrefundable",
+      label: t("rooms.form.nonRefundableRate"),
+      shown: nonRefundableEnabled,
+    },
   ];
 
   const toggle = (rateKey: string, methodKey: string) => {
@@ -580,11 +607,10 @@ function RatePaymentMethodsSection({
         </span>
         <div className="flex-1">
           <h3 className="text-[13px] font-semibold text-gray-900">
-            Allowed payment methods per rate
+            {t("rooms.form.allowedPaymentMethods")}
           </h3>
           <p className="text-[11px] text-gray-400">
-            Leave empty to accept every method the hotel has enabled. Ticking any method turns this
-            rate into an explicit allow-list.
+            {t("rooms.form.allowedPaymentMethodsDescription")}
           </p>
         </div>
         {value !== null && (
@@ -593,7 +619,7 @@ function RatePaymentMethodsSection({
             onClick={clearAll}
             className="text-[11px] text-gray-500 hover:text-gray-700 underline"
           >
-            Reset to hotel defaults
+            {t("rooms.form.resetPaymentMethods")}
           </button>
         )}
       </div>
@@ -624,8 +650,8 @@ function RatePaymentMethodsSection({
                           className="mt-0.5"
                         />
                         <span>
-                          <span className="font-medium text-gray-900 block">{m.label}</span>
-                          <span className="text-gray-500">{m.hint}</span>
+                          <span className="font-medium text-gray-900 block">{t(m.labelKey)}</span>
+                          <span className="text-gray-500">{t(m.hintKey)}</span>
                         </span>
                       </label>
                     );
@@ -635,9 +661,7 @@ function RatePaymentMethodsSection({
             );
           })}
         {!flexibleRateEnabled && !nonRefundableEnabled && (
-          <p className="text-[11px] text-gray-400">
-            Enable at least one rate type above to configure payment methods.
-          </p>
+          <p className="text-[11px] text-gray-400">{t("rooms.form.enableRateForPayments")}</p>
         )}
       </div>
     </div>
@@ -659,9 +683,14 @@ function RateDepositSection({
   currency: string;
   onChange: (next: Record<string, RateDepositSetting> | null) => void;
 }) {
+  const { t } = useTranslation();
   const rates: { key: string; label: string; shown: boolean }[] = [
-    { key: "flexible", label: "Flexible rate", shown: flexibleRateEnabled },
-    { key: "nonrefundable", label: "Non-refundable rate", shown: nonRefundableEnabled },
+    { key: "flexible", label: t("rooms.form.flexibleRate"), shown: flexibleRateEnabled },
+    {
+      key: "nonrefundable",
+      label: t("rooms.form.nonRefundableRate"),
+      shown: nonRefundableEnabled,
+    },
   ];
 
   const updateRate = (rateKey: string, patch: Partial<RateDepositSetting>) => {
@@ -680,10 +709,10 @@ function RateDepositSection({
           7
         </span>
         <div className="flex-1">
-          <h3 className="text-[13px] font-semibold text-gray-900">Deposit at booking</h3>
-          <p className="text-[11px] text-gray-400">
-            Collect a percentage now; the remaining balance is due at the property on arrival.
-          </p>
+          <h3 className="text-[13px] font-semibold text-gray-900">
+            {t("rooms.form.depositAtBooking")}
+          </h3>
+          <p className="text-[11px] text-gray-400">{t("rooms.form.depositDescription")}</p>
         </div>
       </div>
       <div className="ml-4 md:ml-9 space-y-3">
@@ -704,7 +733,7 @@ function RateDepositSection({
                     type="button"
                     onClick={() => updateRate(rate.key, { enabled: !setting.enabled })}
                     className={`relative w-10 h-[22px] rounded-full transition-colors shrink-0 ${setting.enabled ? "bg-primary-500" : "bg-gray-300"}`}
-                    aria-label={`Toggle deposit for ${rate.label}`}
+                    aria-label={t("rooms.form.toggleDeposit", { rate: rate.label })}
                   >
                     <span
                       className={`absolute top-[2px] w-[18px] h-[18px] rounded-full bg-white shadow transition-transform ${setting.enabled ? "left-[20px]" : "left-[2px]"}`}
@@ -714,10 +743,10 @@ function RateDepositSection({
                     <div className="text-[12px] font-semibold text-gray-900">{rate.label}</div>
                     <div className="text-[11px] text-gray-500">
                       {setting.enabled && percentage === 100
-                        ? "Full payment at booking"
+                        ? t("rooms.form.fullPaymentAtBooking")
                         : setting.enabled
-                          ? "Deposit required"
-                          : "No deposit"}
+                          ? t("rooms.form.depositRequired")
+                          : t("rooms.form.noDeposit")}
                     </div>
                   </div>
                   {setting.enabled && (
@@ -740,8 +769,11 @@ function RateDepositSection({
                 </div>
                 {setting.enabled && (
                   <p className="mt-3 text-[11px] text-gray-500">
-                    Guest pays {percentage}% ({formatCurrency(deposit, currency)}) at booking,{" "}
-                    {formatCurrency(balance, currency)} due at arrival.
+                    {t("rooms.form.depositSummary", {
+                      percentage,
+                      deposit: formatCurrency(deposit, currency),
+                      balance: formatCurrency(balance, currency),
+                    })}
                   </p>
                 )}
               </div>
@@ -759,14 +791,20 @@ export default function RoomTypeForm({
   saving,
   error,
   success,
-  submitLabel = "Save",
+  submitLabel,
   cancelHref = "/rooms",
-  cancelLabel = "Cancel",
+  cancelLabel,
   onCancel,
   mode = "create",
   roomTypeId,
   propertyPlan,
 }: RoomTypeFormProps) {
+  const { t, locale } = useTranslation();
+  const translateRoomOption = (value: string): string => {
+    const key = roomOptionMessageKey(value);
+    const translated = t(key);
+    return translated === key ? value : translated;
+  };
   const formRef = useRef<HTMLFormElement | null>(null);
   const skipPriceWarningConfirmRef = useRef(false);
   const previousCurrencyRef = useRef(form.currency || "EUR");
@@ -1001,17 +1039,17 @@ export default function RoomTypeForm({
     setConfirmUnusualPricesOpen(false);
   }, [form.currency]);
 
-  const MEAL_PLAN_OPTIONS: { code: MealPlanCode; label: string }[] = [
-    { code: 1, label: "Breakfast included" },
-    { code: 3, label: "Half board" },
-    { code: 4, label: "Full board" },
-    { code: 9, label: "All inclusive" },
+  const MEAL_PLAN_OPTIONS: { code: MealPlanCode; labelKey: string }[] = [
+    { code: 1, labelKey: "rooms.form.mealBreakfast" },
+    { code: 3, labelKey: "rooms.form.mealHalfBoard" },
+    { code: 4, labelKey: "rooms.form.mealFullBoard" },
+    { code: 9, labelKey: "rooms.form.mealAllInclusive" },
   ];
-  const MEAL_PLAN_LABEL: Record<MealPlanCode, string> = {
-    1: "Breakfast included",
-    3: "Half board",
-    4: "Full board",
-    9: "All inclusive",
+  const MEAL_PLAN_LABEL_KEY: Record<MealPlanCode, string> = {
+    1: "rooms.form.mealBreakfast",
+    3: "rooms.form.mealHalfBoard",
+    4: "rooms.form.mealFullBoard",
+    9: "rooms.form.mealAllInclusive",
   };
   // Standard occupancy used when projecting per-person surcharges in the
   // pricing preview. Keeps the preview footnote ("Calculated for 2 guests")
@@ -1032,20 +1070,9 @@ export default function RoomTypeForm({
   const projectedSurcharge = (mp: MealPlan): number =>
     mp.chargePer === "person" ? mp.surcharge * PREVIEW_GUESTS : mp.surcharge;
 
-  const MONTHS = [
-    "Jan",
-    "Feb",
-    "Mar",
-    "Apr",
-    "May",
-    "Jun",
-    "Jul",
-    "Aug",
-    "Sep",
-    "Oct",
-    "Nov",
-    "Dec",
-  ];
+  const MONTHS = Array.from({ length: 12 }, (_, month) =>
+    new Intl.DateTimeFormat(locale, { month: "short" }).format(new Date(2024, month, 1)),
+  );
   const DAYS_IN_MONTH = [31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
   const currency = form.currency || "EUR";
   const weekendSurchargePercent = parseInt(weekendSurcharge.replace(/[^0-9]/g, "")) || 0;
@@ -1299,7 +1326,7 @@ export default function RoomTypeForm({
                 activeTab === tab.key ? "text-gray-900" : "text-gray-400 hover:text-gray-600"
               }`}
             >
-              {tab.label}
+              {t(tab.labelKey)}
               {activeTab === tab.key && (
                 <div className="absolute bottom-0 left-0 right-0 h-[2px] bg-gray-900 rounded-full" />
               )}
@@ -1314,16 +1341,18 @@ export default function RoomTypeForm({
         <div className="bg-white rounded-xl border border-gray-200 px-4 py-5 md:px-6 md:py-6 space-y-5">
           <div className="flex items-center justify-between">
             <h3 className="text-[11px] font-bold text-gray-900 uppercase tracking-widest">
-              Room Type Basics
+              {t("rooms.form.roomTypeBasics")}
             </h3>
-            <span className="text-[11px] font-medium text-red-500">Required</span>
+            <span className="text-[11px] font-medium text-red-500">
+              {t("rooms.form.requiredLabel")}
+            </span>
           </div>
 
           {/* Room Type Name */}
           <div>
             <div className="flex items-center gap-2 mb-1.5">
               <label className="text-[12px] font-semibold text-gray-900">
-                Room Type Name <span className="text-red-500">*</span>
+                {t("rooms.form.roomTypeName")} <span className="text-red-500">*</span>
               </label>
             </div>
             <input
@@ -1331,21 +1360,19 @@ export default function RoomTypeForm({
               value={form.name || ""}
               onChange={(e) => updateForm({ name: e.target.value })}
               className="w-full px-3 py-2 bg-gray-50 border border-gray-200 rounded-lg text-[12px] focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent focus:bg-white text-gray-900"
-              placeholder="e.g. Two-Bedroom Villa"
+              placeholder={t("rooms.form.roomTypeNamePlaceholder")}
             />
-            <p className="text-[10px] text-gray-400 mt-1">
-              Shown as the bold heading on the room card and in the booking summary
-            </p>
+            <p className="text-[10px] text-gray-400 mt-1">{t("rooms.form.roomTypeNameHint")}</p>
           </div>
 
           {/* Beds */}
           <div>
             <div className="flex items-center gap-2 mb-0.5">
-              <label className="text-[12px] font-semibold text-gray-900">Beds</label>
+              <label className="text-[12px] font-semibold text-gray-900">
+                {t("rooms.form.beds")}
+              </label>
             </div>
-            <p className="text-[10px] text-gray-400 mb-2">
-              Add all bed types available in this room
-            </p>
+            <p className="text-[10px] text-gray-400 mb-2">{t("rooms.form.bedsHint")}</p>
             <div className="space-y-2">
               {beds.map((bed, idx) => (
                 <div key={idx} className="flex items-center gap-2">
@@ -1361,7 +1388,7 @@ export default function RoomTypeForm({
                   >
                     {BED_TYPES.map((bt) => (
                       <option key={bt} value={bt}>
-                        {bt}
+                        {t(`rooms.form.bedType${bt.split(" ")[0]}`)}
                       </option>
                     ))}
                   </select>
@@ -1396,7 +1423,7 @@ export default function RoomTypeForm({
               onClick={() => setBeds([...beds, { type: "King Bed", count: 1 }])}
               className="mt-3 inline-flex items-center gap-1.5 text-[12px] text-gray-700 font-medium px-3 py-1.5 border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors"
             >
-              <PlusIcon className="w-3.5 h-3.5" /> Add Bed
+              <PlusIcon className="w-3.5 h-3.5" /> {t("rooms.form.addBed")}
             </button>
           </div>
 
@@ -1406,7 +1433,7 @@ export default function RoomTypeForm({
               <div>
                 <div className="flex items-center gap-2 mb-1.5">
                   <label className="text-[12px] font-semibold text-gray-900">
-                    Total Max Occupancy <span className="text-red-500">*</span>
+                    {t("rooms.form.totalMaxOccupancy")} <span className="text-red-500">*</span>
                   </label>
                 </div>
                 <input
@@ -1432,12 +1459,14 @@ export default function RoomTypeForm({
 
               <div>
                 <div className="flex items-center gap-2 mb-1.5">
-                  <label className="text-[12px] font-semibold text-gray-900">Max Adults</label>
+                  <label className="text-[12px] font-semibold text-gray-900">
+                    {t("rooms.form.maxAdults")}
+                  </label>
                 </div>
                 <input
                   type="number"
                   min={1}
-                  placeholder="Any"
+                  placeholder={t("rooms.form.any")}
                   value={maxAdultsInput}
                   onChange={(e) => {
                     const v = e.target.value;
@@ -1464,12 +1493,14 @@ export default function RoomTypeForm({
 
               <div>
                 <div className="flex items-center gap-2 mb-1.5">
-                  <label className="text-[12px] font-semibold text-gray-900">Max Children</label>
+                  <label className="text-[12px] font-semibold text-gray-900">
+                    {t("rooms.form.maxChildren")}
+                  </label>
                 </div>
                 <input
                   type="number"
                   min={0}
-                  placeholder="Any"
+                  placeholder={t("rooms.form.any")}
                   value={maxChildrenInput}
                   onChange={(e) => {
                     const v = e.target.value;
@@ -1494,17 +1525,16 @@ export default function RoomTypeForm({
                 />
               </div>
             </div>
-            <p className="text-[10px] text-gray-400 mt-1">
-              Total occupancy still controls the room card. Adult and child limits refine booking
-              availability when set.
-            </p>
+            <p className="text-[10px] text-gray-400 mt-1">{t("rooms.form.occupancyLimitsHint")}</p>
           </div>
 
           {/* Bedrooms, Bathrooms, Room Size, Total Rooms */}
           <div className="grid grid-cols-2 md:grid-cols-4 gap-3 md:gap-4 items-start">
             <div>
               <div className="flex items-center gap-2 mb-1.5">
-                <label className="text-[12px] font-semibold text-gray-900">Bedrooms</label>
+                <label className="text-[12px] font-semibold text-gray-900">
+                  {t("rooms.form.bedrooms")}
+                </label>
               </div>
               <input
                 type="number"
@@ -1528,7 +1558,9 @@ export default function RoomTypeForm({
             </div>
             <div>
               <div className="flex items-center gap-2 mb-1.5">
-                <label className="text-[12px] font-semibold text-gray-900">Private bathrooms</label>
+                <label className="text-[12px] font-semibold text-gray-900">
+                  {t("rooms.form.privateBathrooms")}
+                </label>
               </div>
               <input
                 type="number"
@@ -1553,7 +1585,7 @@ export default function RoomTypeForm({
             <div>
               <div className="flex items-center gap-2 mb-1.5">
                 <label className="text-[12px] font-semibold text-gray-900">
-                  Room Size (m&sup2;) <span className="text-red-500">*</span>
+                  {t("rooms.form.roomSize")} <span className="text-red-500">*</span>
                 </label>
               </div>
               <input
@@ -1581,7 +1613,7 @@ export default function RoomTypeForm({
             <div>
               <div className="flex items-center gap-2 mb-1.5">
                 <label className="text-[12px] font-semibold text-gray-900">
-                  Total Rooms <span className="text-red-500">*</span>
+                  {t("rooms.form.totalRooms")} <span className="text-red-500">*</span>
                 </label>
               </div>
               <input
@@ -1605,8 +1637,8 @@ export default function RoomTypeForm({
               />
               <p className="text-[10px] text-gray-400 mt-1 pl-3">
                 {mode === "edit"
-                  ? "Changing this adds or removes generated rooms to match. Rooms with active reservations are not removed — reassign or cancel those bookings first."
-                  : "Number of rooms to create now. You can change it later — generated rooms adjust to match."}
+                  ? t("rooms.form.totalRoomsEditHint")
+                  : t("rooms.form.totalRoomsCreateHint")}
               </p>
             </div>
           </div>
@@ -1614,25 +1646,29 @@ export default function RoomTypeForm({
           {/* Room Description */}
           <div>
             <div className="flex items-center gap-2 mb-1.5">
-              <label className="text-[12px] font-semibold text-gray-900">Room Description</label>
+              <label className="text-[12px] font-semibold text-gray-900">
+                {t("rooms.form.roomDescription")}
+              </label>
             </div>
             <textarea
               value={form.description || ""}
               onChange={(e) => updateForm({ description: e.target.value })}
               rows={3}
               className="w-full px-3 py-2 bg-gray-50 border border-gray-200 rounded-lg text-[12px] focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent focus:bg-white text-gray-900 resize-vertical"
-              placeholder="The private pool is the standout feature of this villa. The air-conditioned villa has 2 bedrooms and 2 bathrooms..."
+              placeholder={t("rooms.form.roomDescriptionPlaceholder")}
             />
-            <p className="text-[10px] text-gray-400 mt-1">
-              Shown in the &quot;View Details&quot; modal when a guest clicks to see more
-            </p>
+            <p className="text-[10px] text-gray-400 mt-1">{t("rooms.form.roomDescriptionHint")}</p>
           </div>
 
           {/* Room Category Tag */}
           <div>
             <div className="flex items-center gap-2 mb-1.5">
-              <label className="text-[12px] font-semibold text-gray-900">Room Category Tag</label>
-              <span className="text-[10px] text-gray-400">(shown to guests in Booking Engine)</span>
+              <label className="text-[12px] font-semibold text-gray-900">
+                {t("rooms.form.roomCategoryTag")}
+              </label>
+              <span className="text-[10px] text-gray-400">
+                {t("rooms.form.roomCategoryTagHint")}
+              </span>
             </div>
             <select
               value={category}
@@ -1643,10 +1679,10 @@ export default function RoomTypeForm({
               className="w-full px-3 py-2 bg-gray-50 border border-gray-200 rounded-lg text-[12px] focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent focus:bg-white text-gray-900 appearance-none"
               style={SELECT_ARROW_STYLE}
             >
-              <option value="">Select category</option>
+              <option value="">{t("rooms.form.selectCategory")}</option>
               {ROOM_CATEGORIES.map((cat) => (
                 <option key={cat} value={cat}>
-                  {cat}
+                  {t(`rooms.form.category${cat}`)}
                 </option>
               ))}
             </select>
@@ -1657,15 +1693,15 @@ export default function RoomTypeForm({
             <div className="flex flex-col md:flex-row md:items-start md:justify-between gap-2 mb-3">
               <div>
                 <h3 className="text-[12px] font-bold text-gray-900 uppercase tracking-widest">
-                  Location
+                  {t("rooms.form.location")}
                 </h3>
                 <p className="text-[11px] text-gray-500 mt-1">
-                  Saved per room type. Guests see this address and pin when map view is enabled.
+                  {t("rooms.form.locationDescription")}
                 </p>
               </div>
               {!(form.latitude != null && form.longitude != null) && (
                 <span className="text-[11px] font-medium text-amber-700 bg-amber-50 border border-amber-200 rounded-full px-3 py-1">
-                  No location set - this room type won't appear on the map.
+                  {t("rooms.form.noLocation")}
                 </span>
               )}
             </div>
@@ -1674,25 +1710,24 @@ export default function RoomTypeForm({
               <div className="lg:col-span-3 space-y-3">
                 <div>
                   <label className="block text-[12px] font-semibold text-gray-900 mb-1.5">
-                    Search address
+                    {t("rooms.form.searchAddress")}
                   </label>
                   <input
                     type="text"
                     value={form.locationAddress || ""}
                     onChange={(e) => updateForm({ locationAddress: e.target.value })}
                     className="w-full px-3 py-2 bg-white border border-gray-200 rounded-lg text-[12px] focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent text-gray-900"
-                    placeholder="Street, area, city, country"
+                    placeholder={t("rooms.form.addressPlaceholder")}
                   />
                   <p className="text-[10px] text-gray-400 mt-1">
-                    Provider autocomplete/geocoding plugs in here; coordinates are stored so the
-                    Booking Engine never geocodes on page load.
+                    {t("rooms.form.geocodingDescription")}
                   </p>
                 </div>
 
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                   <div>
                     <label className="block text-[12px] font-semibold text-gray-900 mb-1.5">
-                      Latitude
+                      {t("rooms.form.latitude")}
                     </label>
                     <input
                       type="number"
@@ -1716,7 +1751,7 @@ export default function RoomTypeForm({
                   </div>
                   <div>
                     <label className="block text-[12px] font-semibold text-gray-900 mb-1.5">
-                      Longitude
+                      {t("rooms.form.longitude")}
                     </label>
                     <input
                       type="number"
@@ -1749,7 +1784,7 @@ export default function RoomTypeForm({
                     <div className="relative">
                       <div className="absolute -inset-5 rounded-full bg-primary-500/10 animate-pulse" />
                       <div className="relative rounded-full bg-primary-600 text-white text-[11px] font-bold px-3 py-1.5 shadow-lg">
-                        Pin preview
+                        {t("rooms.form.pinPreview")}
                       </div>
                     </div>
                     <div className="absolute bottom-3 left-3 right-3 rounded-lg bg-white/90 border border-gray-200 px-3 py-2 text-[11px] text-gray-600 shadow-sm">
@@ -1759,7 +1794,7 @@ export default function RoomTypeForm({
                 ) : (
                   <div className="absolute inset-0 flex items-center justify-center px-6 text-center">
                     <p className="text-[12px] font-medium text-gray-500">
-                      Enter coordinates to verify the guest-facing pin.
+                      {t("rooms.form.enterCoordinates")}
                     </p>
                   </div>
                 )}
@@ -1771,7 +1806,9 @@ export default function RoomTypeForm({
           <div className="grid grid-cols-1 md:grid-cols-3 gap-3 md:gap-4">
             <div>
               <div className="flex items-center gap-2 mb-1.5">
-                <label className="text-[12px] font-semibold text-gray-900">Sort Order</label>
+                <label className="text-[12px] font-semibold text-gray-900">
+                  {t("rooms.form.sortOrder")}
+                </label>
               </div>
               <input
                 type="number"
@@ -1788,9 +1825,7 @@ export default function RoomTypeForm({
                 min={0}
                 className="w-full px-3 py-2 bg-gray-50 border border-gray-200 rounded-lg text-[12px] focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent focus:bg-white text-gray-900"
               />
-              <p className="text-[10px] text-gray-400 mt-1">
-                Lower numbers appear first in your room list
-              </p>
+              <p className="text-[10px] text-gray-400 mt-1">{t("rooms.form.sortOrderHint")}</p>
             </div>
             <div className="flex items-end md:col-span-2">
               <label className="flex items-center gap-2 cursor-pointer">
@@ -1803,7 +1838,9 @@ export default function RoomTypeForm({
                     className={`absolute top-[2px] w-[18px] h-[18px] rounded-full bg-white shadow transition-transform ${(form.isActive ?? true) ? "left-[20px]" : "left-[2px]"}`}
                   />
                 </button>
-                <span className="text-[12px] font-semibold text-gray-900">Active</span>
+                <span className="text-[12px] font-semibold text-gray-900">
+                  {t("common.active")}
+                </span>
               </label>
             </div>
           </div>
@@ -1822,9 +1859,11 @@ export default function RoomTypeForm({
                   1
                 </span>
                 <div>
-                  <h3 className="text-[13px] font-semibold text-gray-900">When are you open?</h3>
+                  <h3 className="text-[13px] font-semibold text-gray-900">
+                    {t("rooms.form.pricingStep1Title")}
+                  </h3>
                   <p className="text-[11px] text-gray-400">
-                    Operating periods repeat every year — dates outside are automatically closed
+                    {t("rooms.form.operatingPeriodsDescription")}
                   </p>
                 </div>
               </div>
@@ -1875,7 +1914,7 @@ export default function RoomTypeForm({
                               style={{ left: "0%", width: `${end}%` }}
                             >
                               <span className="text-[9px] font-semibold text-gray-700 truncate px-1">
-                                Period {idx + 1}
+                                {t("rooms.form.periodNumber", { number: idx + 1 })}
                               </span>
                             </div>
                           </React.Fragment>
@@ -1889,7 +1928,9 @@ export default function RoomTypeForm({
                           style={{ left: `${start}%`, width: `${width}%` }}
                         >
                           <span className="text-[9px] font-semibold text-gray-700 truncate px-1">
-                            {idx === 0 && width > 90 ? "Year Round" : `Period ${idx + 1}`}
+                            {idx === 0 && width > 90
+                              ? t("rooms.form.yearRound")
+                              : t("rooms.form.periodNumber", { number: idx + 1 })}
                           </span>
                         </div>
                       );
@@ -1955,7 +1996,7 @@ export default function RoomTypeForm({
                               ))}
                             </select>
                           </div>
-                          <span className="text-[11px] text-gray-400">to</span>
+                          <span className="text-[11px] text-gray-400">{t("common.to")}</span>
                           <div className="flex items-center gap-1 flex-1 min-w-[160px]">
                             <select
                               value={toDay}
@@ -2003,7 +2044,7 @@ export default function RoomTypeForm({
                         </div>
                         {isInvalid && (
                           <p className="ml-0 mt-1 text-[10px] text-red-500">
-                            End date must be after start date
+                            {t("rooms.form.endDateAfterStart")}
                           </p>
                         )}
                       </div>
@@ -2014,7 +2055,8 @@ export default function RoomTypeForm({
                     onClick={() => setOperatingPeriods([...operatingPeriods, { from: "", to: "" }])}
                     className="inline-flex items-center gap-1.5 text-[11px] text-gray-600 font-medium px-3 py-1.5 border border-gray-300 rounded-lg hover:bg-gray-100 transition-colors"
                   >
-                    <PlusIcon className="w-3.5 h-3.5" /> Add period
+                    <PlusIcon className="w-3.5 h-3.5" />
+                    {t("rooms.form.addPeriod")}
                   </button>
                 </div>
               </div>
@@ -2028,17 +2070,15 @@ export default function RoomTypeForm({
                 </span>
                 <div>
                   <h3 className="text-[13px] font-semibold text-gray-900">
-                    How does your pricing change across the year?
+                    {t("rooms.form.pricingStep2Title")}
                   </h3>
-                  <p className="text-[11px] text-gray-400">
-                    Draw seasons on your operating period, then set a base rate per season
-                  </p>
+                  <p className="text-[11px] text-gray-400">{t("rooms.form.pricingStep2Desc")}</p>
                 </div>
               </div>
               <div className="ml-4 md:ml-9">
                 {seasons.length === 0 ? (
                   <div className="rounded-xl border border-gray-200 bg-gray-50/50 px-3 md:px-5 py-6 text-center">
-                    <p className="text-[11px] text-gray-400">No seasons yet. Add one below.</p>
+                    <p className="text-[11px] text-gray-400">{t("rooms.form.noSeasonsYet")}</p>
                   </div>
                 ) : (
                   <div className="space-y-2">
@@ -2069,7 +2109,7 @@ export default function RoomTypeForm({
                                 u[idx] = { ...u[idx], name: e.target.value };
                                 setSeasons(u);
                               }}
-                              placeholder="Season name"
+                              placeholder={t("rooms.form.seasonNamePlaceholder")}
                               className="flex-1 px-3 py-1.5 bg-white border border-gray-200 rounded-lg text-[12px] text-gray-900 focus:outline-none focus:ring-2 focus:ring-primary-500 placeholder-gray-400"
                             />
                             <div className="flex items-center gap-2 shrink-0">
@@ -2088,10 +2128,10 @@ export default function RoomTypeForm({
                                 }}
                               >
                                 <option value="">—</option>
-                                <option value="Low">Low</option>
-                                <option value="Mid">Mid</option>
-                                <option value="High">High</option>
-                                <option value="Peak">Peak</option>
+                                <option value="Low">{t("rooms.form.tierLow")}</option>
+                                <option value="Mid">{t("rooms.form.tierMid")}</option>
+                                <option value="High">{t("rooms.form.tierHigh")}</option>
+                                <option value="Peak">{t("rooms.form.tierPeak")}</option>
                               </select>
                               <button
                                 type="button"
@@ -2182,7 +2222,9 @@ export default function RoomTypeForm({
                                       ))}
                                     </select>
                                   </div>
-                                  <span className="text-[11px] text-gray-400">to</span>
+                                  <span className="text-[11px] text-gray-400">
+                                    {t("common.to")}
+                                  </span>
                                   <div className="flex items-center gap-1">
                                     <select
                                       value={sToDay}
@@ -2240,19 +2282,19 @@ export default function RoomTypeForm({
                 )}
                 {overlappingSeasonIndices.size > 0 && (
                   <p className="mt-2 text-[11px] text-red-600 font-medium">
-                    Season date ranges must not overlap. Please adjust the highlighted seasons.
+                    {t("rooms.form.seasonsOverlap")}
                   </p>
                 )}
                 {seasonGaps.length > 0 && (
                   <div className="mt-2 p-2.5 bg-amber-50 border border-amber-200 rounded-lg">
                     <p className="text-[11px] text-amber-700 font-medium mb-1">
-                      Gaps detected — the following dates have no season and therefore no price:
+                      {t("rooms.form.seasonGaps")}
                     </p>
                     <ul className="list-disc list-inside text-[11px] text-amber-600">
                       {seasonGaps.map((gap, i) => {
                         const fmt = (mmdd: string) => {
                           const [m, d] = mmdd.split("-").map(Number);
-                          return `${d} ${MONTHS[m - 1]}`;
+                          return t("rooms.form.dayAndMonth", { day: d, month: MONTHS[m - 1] });
                         };
                         const fromDoy = (() => {
                           const [m, d] = gap.from.split("-").map(Number);
@@ -2266,8 +2308,8 @@ export default function RoomTypeForm({
                         return (
                           <li key={i}>
                             {fmt(gap.from)}
-                            {gap.from !== gap.to ? ` – ${fmt(gap.to)}` : ""} ({days} day
-                            {days > 1 ? "s" : ""} uncovered)
+                            {gap.from !== gap.to ? ` – ${fmt(gap.to)}` : ""} (
+                            {t("rooms.form.daysUncovered", { count: days })})
                           </li>
                         );
                       })}
@@ -2293,7 +2335,8 @@ export default function RoomTypeForm({
                   }
                   className="mt-2 inline-flex items-center gap-1.5 text-[11px] text-gray-600 font-medium px-3 py-1.5 border border-gray-300 rounded-lg hover:bg-gray-100 transition-colors"
                 >
-                  <PlusIcon className="w-3.5 h-3.5" /> Add season
+                  <PlusIcon className="w-3.5 h-3.5" />
+                  {t("rooms.form.addSeason")}
                 </button>
 
                 {/* Set rates per season table */}
@@ -2301,10 +2344,12 @@ export default function RoomTypeForm({
                   <div className="mt-4 rounded-xl border border-gray-200 bg-white overflow-hidden">
                     <div className="px-4 py-2.5 bg-gray-50 border-b border-gray-200 flex items-center justify-between">
                       <span className="text-[11px] font-semibold text-gray-700">
-                        Set rates per season
+                        {t("rooms.form.setRatesPerSeason")}
                       </span>
                       <div className="flex items-center gap-1.5">
-                        <span className="text-[10px] text-gray-500">Currency</span>
+                        <span className="text-[10px] text-gray-500">
+                          {t("layout.header.currency")}
+                        </span>
                         <select
                           value={form.currency || "EUR"}
                           onChange={(e) =>
@@ -2332,25 +2377,25 @@ export default function RoomTypeForm({
                         <thead>
                           <tr className="border-b border-gray-100">
                             <th className="text-left px-3 py-2 text-gray-500 font-medium">
-                              Season
+                              {t("rooms.form.seasonColumn")}
                             </th>
                             <th className="text-left px-3 py-2 text-gray-500 font-medium">
-                              Flex Rate
+                              {t("rooms.form.flexRateColumn")}
                             </th>
                             <th
                               className="text-left px-2 py-2 text-gray-500 font-medium"
-                              title="Minimum number of nights per booking."
+                              title={t("rooms.form.minStayTitle")}
                             >
-                              Min
+                              {t("common.min")}
                             </th>
                             <th
                               className="text-left px-2 py-2 text-gray-500 font-medium"
-                              title="Maximum number of nights per booking. Leave empty for no limit."
+                              title={t("rooms.form.maxStayTitle")}
                             >
-                              Max
+                              {t("common.max")}
                             </th>
                             <th className="text-left px-2 py-2 text-gray-500 font-medium whitespace-nowrap">
-                              Per guest
+                              {t("rooms.form.perGuest")}
                             </th>
                           </tr>
                         </thead>
@@ -2407,7 +2452,9 @@ export default function RoomTypeForm({
                                           required
                                         />
                                         {(!season.rate || Number(season.rate) <= 0) && (
-                                          <span className="text-[10px] text-red-500">Required</span>
+                                          <span className="text-[10px] text-red-500">
+                                            {t("rooms.form.requiredLabel")}
+                                          </span>
                                         )}
                                       </div>
                                       {seasonPriceWarning && (
@@ -2499,7 +2546,7 @@ export default function RoomTypeForm({
                                             setSeasons(u);
                                           }}
                                           placeholder="—"
-                                          title="Maximum number of nights per booking. Leave empty for no limit."
+                                          title={t("rooms.form.maxStayTitle")}
                                           className="h-7 w-8 px-1 text-[11px] font-semibold text-gray-900 bg-white text-center outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-1 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
                                         />
                                         <button
@@ -2521,7 +2568,7 @@ export default function RoomTypeForm({
                                       </div>
                                       {maxStayInvalid && (
                                         <p className="text-[10px] font-medium text-red-600">
-                                          Max stay cannot be less than min stay.
+                                          {t("rooms.new.maxStayBeforeMinStay")}
                                         </p>
                                       )}
                                     </div>
@@ -2541,7 +2588,7 @@ export default function RoomTypeForm({
                                         <ChevronDownIcon
                                           className={`h-3 w-3 shrink-0 transition-transform ${isOccExpanded ? "" : "-rotate-90"}`}
                                         />
-                                        Per guest
+                                        {t("rooms.form.perGuest")}
                                       </button>
                                     ) : (
                                       <span className="text-gray-300">&mdash;</span>
@@ -2553,7 +2600,7 @@ export default function RoomTypeForm({
                                     <td colSpan={5} className="px-4 py-2.5 pl-10">
                                       <div className="space-y-1.5">
                                         <span className="text-[10px] text-gray-400 font-medium">
-                                          Rate per number of guests
+                                          {t("rooms.form.ratePerGuests")}
                                         </span>
                                         {Array.from({ length: maxOcc }, (_, i) => i + 1).map(
                                           (guestCount) => {
@@ -2568,14 +2615,17 @@ export default function RoomTypeForm({
                                               >
                                                 <span className="text-[11px] text-gray-500 w-16">
                                                   {guestCount}{" "}
-                                                  {guestCount === 1 ? "guest" : "guests"}
+                                                  {guestCount === 1
+                                                    ? t("common.guest")
+                                                    : t("common.guests")}
                                                 </span>
                                                 <span className="text-gray-400 text-[11px]">
                                                   {getCurrencySymbol(form.currency || "EUR")}
                                                 </span>
                                                 {isAnchor ? (
                                                   <span className="text-[11px] text-gray-400 px-2 py-1">
-                                                    {season.rate || "—"} (season rate)
+                                                    {season.rate || "—"} (
+                                                    {t("rooms.form.seasonRate")})
                                                   </span>
                                                 ) : (
                                                   <input
@@ -2595,7 +2645,9 @@ export default function RoomTypeForm({
                                                       setSeasons(u);
                                                     }}
                                                     className="w-20 px-2 py-1 bg-white border border-gray-200 rounded text-[11px] text-gray-900 focus:outline-none focus:ring-2 focus:ring-primary-500"
-                                                    placeholder={season.rate || "same as rate"}
+                                                    placeholder={
+                                                      season.rate || t("rooms.form.sameAsRate")
+                                                    }
                                                     min="0"
                                                   />
                                                 )}
@@ -2625,8 +2677,10 @@ export default function RoomTypeForm({
                   3
                 </span>
                 <div>
-                  <h3 className="text-[13px] font-semibold text-gray-900">What can guests book?</h3>
-                  <p className="text-[11px] text-gray-400">Select at least one rate plan</p>
+                  <h3 className="text-[13px] font-semibold text-gray-900">
+                    {t("rooms.form.pricingStep3Title")}
+                  </h3>
+                  <p className="text-[11px] text-gray-400">{t("rooms.form.pricingStep3Desc")}</p>
                 </div>
               </div>
               <div className="ml-4 md:ml-9 space-y-2.5">
@@ -2656,18 +2710,20 @@ export default function RoomTypeForm({
                       <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14" />
                       <polyline points="22 4 12 14.01 9 11.01" />
                     </svg>
-                    <span className="text-[12px] font-semibold text-gray-900">Flexible rate</span>
+                    <span className="text-[12px] font-semibold text-gray-900">
+                      {t("rooms.form.flexibleRate")}
+                    </span>
                     <span className="text-[11px] text-gray-400">
                       {flexibleCancellationType === "partial_refund"
-                        ? "(partial refund)"
-                        : "(free cancellation)"}
+                        ? t("rooms.form.partialRefundParenthetical")
+                        : t("rooms.form.freeCancellation")}
                     </span>
                   </div>
                   {flexibleRateEnabled && (
                     <div className="mt-3 ml-[52px] space-y-3">
                       <div>
                         <div className="text-[10px] font-semibold uppercase tracking-wide text-gray-400 mb-1.5">
-                          Cancellation type
+                          {t("rooms.form.cancellationType")}
                         </div>
                         <div className="inline-flex gap-2">
                           <button
@@ -2675,20 +2731,22 @@ export default function RoomTypeForm({
                             onClick={() => setFlexibleCancellationType("free")}
                             className={`px-3 py-1.5 rounded-full text-[11px] font-medium transition-colors border ${flexibleCancellationType === "free" ? "bg-primary-50 border-primary-500 text-primary-600" : "bg-white border-gray-200 text-gray-500 hover:border-gray-300"}`}
                           >
-                            Free cancellation
+                            {t("rooms.form.freeCancellation")}
                           </button>
                           <button
                             type="button"
                             onClick={() => setFlexibleCancellationType("partial_refund")}
                             className={`px-3 py-1.5 rounded-full text-[11px] font-medium transition-colors border ${flexibleCancellationType === "partial_refund" ? "bg-primary-50 border-primary-500 text-primary-600" : "bg-white border-gray-200 text-gray-500 hover:border-gray-300"}`}
                           >
-                            Partial refund
+                            {t("rooms.form.partialRefund")}
                           </button>
                         </div>
                       </div>
                       {flexibleCancellationType === "free" && (
                         <div className="flex items-center gap-3">
-                          <span className="text-[11px] text-gray-500">Cancellation policy:</span>
+                          <span className="text-[11px] text-gray-500">
+                            {t("rooms.form.cancellationPolicy")}
+                          </span>
                           <select
                             value={cancellationPolicy}
                             onChange={(e) => setCancellationPolicy(e.target.value)}
@@ -2698,13 +2756,27 @@ export default function RoomTypeForm({
                               backgroundPosition: "right 10px center",
                             }}
                           >
-                            <option>Free until 1 day before</option>
-                            <option>Free until 2 days before</option>
-                            <option>Free until 3 days before</option>
-                            <option>Free until 5 days before</option>
-                            <option>Free until 7 days before</option>
-                            <option>Free until 14 days before</option>
-                            <option>Free until 30 days before</option>
+                            <option value="Free until 1 day before">
+                              {t("rooms.form.freeUntil1Day")}
+                            </option>
+                            <option value="Free until 2 days before">
+                              {t("rooms.form.freeUntil2Days")}
+                            </option>
+                            <option value="Free until 3 days before">
+                              {t("rooms.form.freeUntil3Days")}
+                            </option>
+                            <option value="Free until 5 days before">
+                              {t("rooms.form.freeUntil5Days")}
+                            </option>
+                            <option value="Free until 7 days before">
+                              {t("rooms.form.freeUntil7Days")}
+                            </option>
+                            <option value="Free until 14 days before">
+                              {t("rooms.form.freeUntil14Days")}
+                            </option>
+                            <option value="Free until 30 days before">
+                              {t("rooms.form.freeUntil30Days")}
+                            </option>
                           </select>
                         </div>
                       )}
@@ -2757,32 +2829,44 @@ export default function RoomTypeForm({
                       <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
                       <path d="M7 11V7a5 5 0 0 1 10 0v4" />
                     </svg>
-                    <span className="text-[12px] font-semibold text-gray-900">Non-refundable</span>
+                    <span className="text-[12px] font-semibold text-gray-900">
+                      {t("rooms.nonRefundableShort")}
+                    </span>
                     <span className="text-[11px] text-gray-400">
-                      (discount for no cancellation)
+                      {t("rooms.form.nonRefundableDesc")}
                     </span>
                   </div>
                   {nonRefundableEnabled && (
                     <div className="mt-3 ml-[52px]">
                       <div className="flex items-center gap-3">
-                        <span className="text-[11px] text-gray-500">Cancellation policy:</span>
+                        <span className="text-[11px] text-gray-500">
+                          {t("rooms.form.cancellationPolicy")}
+                        </span>
                         <select
                           value={nonRefundableCancellationPolicy}
                           onChange={(e) => setNonRefundableCancellationPolicy(e.target.value)}
                           className="flex-1 px-3 py-1.5 bg-white border border-gray-200 rounded-lg text-[11px] focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent text-gray-900 appearance-none"
                           style={{ ...SELECT_ARROW_STYLE, backgroundPosition: "right 10px center" }}
                         >
-                          <option>Non-refundable from booking</option>
-                          <option>Cancel within 24 hours of booking</option>
-                          <option>Cancel within 48 hours of booking</option>
-                          <option>Cancel within 7 days of booking</option>
+                          <option value="Non-refundable from booking">
+                            {t("rooms.form.nonRefundableFromBooking")}
+                          </option>
+                          <option value="Cancel within 24 hours of booking">
+                            {t("rooms.form.cancelWithin24Hours")}
+                          </option>
+                          <option value="Cancel within 48 hours of booking">
+                            {t("rooms.form.cancelWithin48Hours")}
+                          </option>
+                          <option value="Cancel within 7 days of booking">
+                            {t("rooms.form.cancelWithin7Days")}
+                          </option>
                         </select>
                       </div>
                     </div>
                   )}
                   {nonRefundableEnabled && flexibleRateEnabled && (
                     <div className="mt-3 ml-[52px] flex items-center gap-3">
-                      <span className="text-[11px] text-gray-500">Discount:</span>
+                      <span className="text-[11px] text-gray-500">{t("rooms.form.discount")}</span>
                       <div className="inline-flex items-center gap-0 border border-gray-200 rounded-lg overflow-hidden">
                         <button
                           type="button"
@@ -2831,7 +2915,9 @@ export default function RoomTypeForm({
                           +
                         </button>
                       </div>
-                      <span className="text-[11px] text-gray-500">off flexible rate</span>
+                      <span className="text-[11px] text-gray-500">
+                        {t("rooms.form.offFlexibleRate")}
+                      </span>
                     </div>
                   )}
                 </div>
@@ -2846,11 +2932,10 @@ export default function RoomTypeForm({
                 </span>
                 <div>
                   <h3 className="text-[13px] font-semibold text-gray-900">
-                    Do you offer meal plans?
+                    {t("rooms.form.mealPlansTitle")}
                   </h3>
                   <p className="text-[11px] text-gray-400">
-                    Each meal plan creates an additional bookable rate on your booking engine and
-                    OTA channels
+                    {t("rooms.form.mealPlansDescription")}
                   </p>
                 </div>
               </div>
@@ -2863,7 +2948,7 @@ export default function RoomTypeForm({
                   const availableOptions = MEAL_PLAN_OPTIONS.filter(
                     (o) => o.code === mp.code || !usedCodes.has(o.code),
                   );
-                  const label = MEAL_PLAN_LABEL[mp.code];
+                  const label = t(MEAL_PLAN_LABEL_KEY[mp.code]);
                   const projected = projectedSurcharge(mp);
                   const baseSeasonRate = parseFloat(seasons[0]?.rate || "") || form.baseRate || 0;
                   return (
@@ -2876,7 +2961,7 @@ export default function RoomTypeForm({
                         <button
                           type="button"
                           onClick={() => removeMealPlan(idx)}
-                          aria-label="Deactivate meal plan"
+                          aria-label={t("rooms.form.deactivateMealPlan")}
                           className="relative w-10 h-[22px] rounded-full bg-primary-500 shrink-0 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-1"
                         >
                           <span className="absolute top-[2px] left-[20px] w-[18px] h-[18px] rounded-full bg-white shadow" />
@@ -2893,7 +2978,7 @@ export default function RoomTypeForm({
                         >
                           {availableOptions.map((o) => (
                             <option key={o.code} value={o.code}>
-                              {o.label}
+                              {t(o.labelKey)}
                             </option>
                           ))}
                         </select>
@@ -2901,7 +2986,7 @@ export default function RoomTypeForm({
                           type="button"
                           onClick={() => removeMealPlan(idx)}
                           className="ml-auto p-1.5 rounded-lg text-gray-400 hover:text-red-500 hover:bg-white transition-colors"
-                          aria-label="Remove meal plan"
+                          aria-label={t("rooms.form.removeMealPlan")}
                         >
                           <svg
                             className="w-4 h-4"
@@ -2924,7 +3009,7 @@ export default function RoomTypeForm({
                       <div className="flex flex-wrap items-end gap-4">
                         <div className="flex-1 min-w-[200px]">
                           <div className="text-[10px] font-semibold uppercase tracking-wide text-gray-400 mb-1">
-                            Surcharge
+                            {t("rooms.form.surcharge")}
                           </div>
                           <div className="inline-flex items-center gap-1 bg-white border border-gray-200 rounded-lg px-3 py-1.5">
                             <span className="text-[11px] text-gray-500">{symbol}</span>
@@ -2941,13 +3026,13 @@ export default function RoomTypeForm({
                               className="w-[100px] px-1 text-[12px] font-semibold text-gray-900 bg-transparent outline-none [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
                             />
                             <span className="text-[10px] text-gray-400">
-                              / {mp.chargePer} / night
+                              / {t(`rooms.form.chargePer${mp.chargePer}`)} / {t("common.night")}
                             </span>
                           </div>
                         </div>
                         <div>
                           <div className="text-[10px] font-semibold uppercase tracking-wide text-gray-400 mb-1">
-                            Charge per
+                            {t("rooms.form.chargePer")}
                           </div>
                           <div className="inline-flex bg-white border border-gray-200 rounded-lg overflow-hidden">
                             {(["person", "room"] as const).map((unit) => (
@@ -2957,7 +3042,7 @@ export default function RoomTypeForm({
                                 onClick={() => updateMealPlan(idx, { chargePer: unit })}
                                 className={`px-4 py-1.5 text-[11px] font-medium capitalize transition-colors ${mp.chargePer === unit ? "bg-primary-500 text-white" : "text-gray-600 hover:bg-gray-50"}`}
                               >
-                                {unit}
+                                {t(`rooms.form.chargePer${unit}`)}
                               </button>
                             ))}
                           </div>
@@ -2969,14 +3054,14 @@ export default function RoomTypeForm({
                         <div className="rounded-lg bg-white border border-gray-100 overflow-hidden">
                           <div className="px-3 py-2 bg-gray-50 border-b border-gray-100">
                             <div className="text-[10px] font-semibold uppercase tracking-wide text-gray-500">
-                              How pricing changes with this meal plan
+                              {t("rooms.form.mealPricingPreview")}
                             </div>
                           </div>
                           <table className="w-full text-[11px]">
                             <thead>
                               <tr className="text-left text-[10px] font-semibold uppercase tracking-wide text-gray-400">
-                                <th className="px-3 py-2">Season</th>
-                                <th className="px-3 py-2 text-right">Room only</th>
+                                <th className="px-3 py-2">{t("rooms.form.seasonColumn")}</th>
+                                <th className="px-3 py-2 text-right">{t("rooms.form.roomOnly")}</th>
                                 <th className="px-3 py-2 text-right">{label}</th>
                               </tr>
                             </thead>
@@ -2987,7 +3072,7 @@ export default function RoomTypeForm({
                                 return (
                                   <tr key={sIdx} className="border-t border-gray-100">
                                     <td className="px-3 py-2 text-gray-700">
-                                      {s.name || `Season ${sIdx + 1}`}
+                                      {s.name || t("rooms.form.seasonNumber", { number: sIdx + 1 })}
                                     </td>
                                     <td className="px-3 py-2 text-right text-gray-500">
                                       {symbol}
@@ -3003,8 +3088,12 @@ export default function RoomTypeForm({
                             </tbody>
                           </table>
                           <div className="px-3 py-2 text-[10px] text-gray-400 border-t border-gray-100">
-                            * Calculated for {PREVIEW_GUESTS} guests · {label} surcharge: {symbol}
-                            {mp.surcharge.toLocaleString()} per {mp.chargePer}
+                            {t("rooms.form.mealPricingFootnote", {
+                              guests: PREVIEW_GUESTS,
+                              label,
+                              surcharge: `${symbol}${mp.surcharge.toLocaleString()}`,
+                              unit: t(`rooms.form.chargePer${mp.chargePer}`),
+                            })}
                           </div>
                         </div>
                       )}
@@ -3030,7 +3119,7 @@ export default function RoomTypeForm({
                       <line x1="12" y1="5" x2="12" y2="19" />
                       <line x1="5" y1="12" x2="19" y2="12" />
                     </svg>
-                    Add meal plan
+                    {t("rooms.form.addMealPlan")}
                   </button>
                 )}
               </div>
@@ -3044,11 +3133,9 @@ export default function RoomTypeForm({
                 </span>
                 <div>
                   <h3 className="text-[13px] font-semibold text-gray-900">
-                    Do weekends cost more?
+                    {t("rooms.form.pricingStep4Title")}
                   </h3>
-                  <p className="text-[11px] text-gray-400">
-                    Weekend pricing applies to Friday & Saturday nights across all seasons
-                  </p>
+                  <p className="text-[11px] text-gray-400">{t("rooms.form.pricingStep4Desc")}</p>
                 </div>
               </div>
               <div className="ml-4 md:ml-9 flex flex-wrap items-center gap-2">
@@ -3086,7 +3173,7 @@ export default function RoomTypeForm({
                     onClick={() => setWeekendSurcharge("+%")}
                     className="px-4 py-1.5 rounded-full text-[11px] font-medium border transition-colors bg-white text-gray-600 border-gray-200 hover:bg-gray-50"
                   >
-                    Custom
+                    {t("common.custom")}
                   </button>
                 )}
               </div>
@@ -3100,10 +3187,10 @@ export default function RoomTypeForm({
                 </span>
                 <div>
                   <h3 className="text-[13px] font-semibold text-gray-900">
-                    Minimum advance booking
+                    {t("rooms.form.minimumAdvanceBooking")}
                   </h3>
                   <p className="text-[11px] text-gray-400">
-                    Require guests to book a minimum number of days before check-in
+                    {t("rooms.form.minimumAdvanceDescription")}
                   </p>
                 </div>
               </div>
@@ -3118,8 +3205,12 @@ export default function RoomTypeForm({
                   }
                   className="w-20 px-3 py-1.5 bg-white border border-gray-200 rounded-lg text-[12px] text-center font-medium text-gray-900 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent"
                 />
-                <span className="text-[11px] text-gray-500">days before check-in</span>
-                <span className="text-[10px] text-gray-400 ml-2">(0 = no restriction)</span>
+                <span className="text-[11px] text-gray-500">
+                  {t("rooms.form.daysBeforeCheckIn")}
+                </span>
+                <span className="text-[10px] text-gray-400 ml-2">
+                  {t("rooms.form.noAdvanceRestriction")}
+                </span>
               </div>
             </div>
 
@@ -3150,7 +3241,7 @@ export default function RoomTypeForm({
                 <div className="flex items-center gap-2">
                   <span className="text-[13px]">&#x1F4C5;</span>
                   <span className="text-[11px] font-bold text-gray-700 uppercase tracking-wider">
-                    Live Rate Preview
+                    {t("rooms.form.liveRatePreview")}
                   </span>
                 </div>
                 <div className="flex items-center gap-2">
@@ -3176,7 +3267,7 @@ export default function RoomTypeForm({
                     </svg>
                   </button>
                   <span className="text-[11px] font-semibold text-gray-700 min-w-[80px] text-center">
-                    {previewMonth.toLocaleString("default", { month: "long", year: "numeric" })}
+                    {previewMonth.toLocaleString(locale, { month: "long", year: "numeric" })}
                   </span>
                   <button
                     type="button"
@@ -3217,7 +3308,7 @@ export default function RoomTypeForm({
                         }}
                       />
                       <span className="font-medium text-gray-700">
-                        {s.name || `Season ${idx + 1}`}
+                        {s.name || t("rooms.form.seasonNumber", { number: idx + 1 })}
                       </span>
                       {s.from && s.to && (
                         <span className="text-gray-400">
@@ -3226,9 +3317,14 @@ export default function RoomTypeForm({
                       )}
                       {s.rate && (
                         <span className="text-gray-500 ml-auto text-right">
-                          {formatCurrency(parseFloat(s.rate) || 0, form.currency || "EUR")}/night
-                          {" · "}Min {s.minStay || 1}
-                          {s.maxStay && s.maxStay > 0 ? ` · Max ${s.maxStay}` : ""}
+                          {t("rooms.form.ratePerNight", {
+                            rate: formatCurrency(parseFloat(s.rate) || 0, form.currency || "EUR"),
+                          })}
+                          {" · "}
+                          {t("rooms.form.minimumShort", { value: s.minStay || 1 })}
+                          {s.maxStay && s.maxStay > 0
+                            ? ` · ${t("rooms.form.maximumShort", { value: s.maxStay })}`
+                            : ""}
                         </span>
                       )}
                     </div>
@@ -3239,10 +3335,13 @@ export default function RoomTypeForm({
               {/* Calendar grid */}
               <div className="px-3 py-3">
                 <div className="grid grid-cols-7 gap-0.5 mb-1">
-                  {["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"].map((d) => (
+                  {Array.from({ length: 7 }, (_, index) => {
+                    const date = new Date(2024, 0, index + 1);
+                    return new Intl.DateTimeFormat(locale, { weekday: "short" }).format(date);
+                  }).map((d, index) => (
                     <div
                       key={d}
-                      className={`text-center text-[9px] font-semibold py-1 ${d === "Fri" || d === "Sat" ? "text-orange-500" : "text-gray-400"}`}
+                      className={`text-center text-[9px] font-semibold py-1 ${index === 4 || index === 5 ? "text-orange-500" : "text-gray-400"}`}
                     >
                       {d}
                     </div>
@@ -3310,10 +3409,12 @@ export default function RoomTypeForm({
                           style={{ backgroundColor: cellBg }}
                           title={
                             hasDailyOverride
-                              ? `Daily override: ${formatCurrency(dailyRates[dateStr], form.currency || "EUR")} (click to edit, right-click to remove)`
+                              ? t("rooms.form.dailyOverrideTitle", {
+                                  rate: formatCurrency(dailyRates[dateStr], form.currency || "EUR"),
+                                })
                               : inGap
-                                ? "No season — click to set a daily rate"
-                                : "Click to set a daily rate override"
+                                ? t("rooms.form.noSeasonTitle")
+                                : t("rooms.form.setDailyRateTitle")
                           }
                           onClick={() => {
                             if (!inOp) return;
@@ -3383,7 +3484,7 @@ export default function RoomTypeForm({
                               )}
                               {inGap && (
                                 <span className="text-[7px] font-semibold text-red-400">
-                                  no price
+                                  {t("rooms.form.noPrice")}
                                 </span>
                               )}
                             </>
@@ -3398,13 +3499,12 @@ export default function RoomTypeForm({
 
               {/* Daily overrides hint */}
               <div className="px-4 py-2 border-t border-gray-100 bg-gray-50/50">
-                <p className="text-[9px] text-gray-400">
-                  Click a date to set a daily price override. Right-click an override to remove it.
-                </p>
+                <p className="text-[9px] text-gray-400">{t("rooms.form.dailyOverrideHint")}</p>
                 {Object.keys(dailyRates).length > 0 && (
                   <p className="text-[9px] text-amber-600 font-medium mt-0.5">
-                    {Object.keys(dailyRates).length} daily override
-                    {Object.keys(dailyRates).length !== 1 ? "s" : ""} set
+                    {t("rooms.form.dailyOverridesSet", {
+                      count: Object.keys(dailyRates).length,
+                    })}
                   </p>
                 )}
                 {visibleDailyPriceWarnings.length > 0 && (
@@ -3425,35 +3525,35 @@ export default function RoomTypeForm({
               <div className="px-4 py-2.5 border-t border-gray-100 flex items-center gap-3 flex-wrap">
                 <span className="flex items-center gap-1">
                   <span className="w-2 h-2 rounded-full" style={{ backgroundColor: "#22c55e" }} />
-                  <span className="text-[9px] text-gray-500">Low</span>
+                  <span className="text-[9px] text-gray-500">{t("rooms.form.tierLow")}</span>
                 </span>
                 <span className="flex items-center gap-1">
                   <span className="w-2 h-2 rounded-full" style={{ backgroundColor: "#eab308" }} />
-                  <span className="text-[9px] text-gray-500">Mid</span>
+                  <span className="text-[9px] text-gray-500">{t("rooms.form.tierMid")}</span>
                 </span>
                 <span className="flex items-center gap-1">
                   <span className="w-2 h-2 rounded-full" style={{ backgroundColor: "#ef4444" }} />
-                  <span className="text-[9px] text-gray-500">High</span>
+                  <span className="text-[9px] text-gray-500">{t("rooms.form.tierHigh")}</span>
                 </span>
                 <span className="flex items-center gap-1">
                   <span className="w-2 h-2 rounded-full" style={{ backgroundColor: "#991b1b" }} />
-                  <span className="text-[9px] text-gray-500">Peak</span>
+                  <span className="text-[9px] text-gray-500">{t("rooms.form.tierPeak")}</span>
                 </span>
                 {parseInt(weekendSurcharge.replace(/[^0-9]/g, "")) > 0 && (
                   <span className="flex items-center gap-1">
                     <span className="w-2 h-2 rounded-full" style={{ backgroundColor: "#fbbf24" }} />
-                    <span className="text-[9px] text-gray-500">Weekend +</span>
+                    <span className="text-[9px] text-gray-500">{t("rooms.form.weekendPlus")}</span>
                   </span>
                 )}
                 {Object.keys(dailyRates).length > 0 && (
                   <span className="flex items-center gap-1">
                     <span className="w-2 h-2 rounded-full" style={{ backgroundColor: "#f59e0b" }} />
-                    <span className="text-[9px] text-gray-500">Override</span>
+                    <span className="text-[9px] text-gray-500">{t("rooms.form.override")}</span>
                   </span>
                 )}
                 <span className="flex items-center gap-1">
                   <span className="w-2 h-2 rounded-full" style={{ backgroundColor: "#d1d5db" }} />
-                  <span className="text-[9px] text-gray-500">Closed</span>
+                  <span className="text-[9px] text-gray-500">{t("rooms.form.closed")}</span>
                 </span>
               </div>
             </div>
@@ -3477,7 +3577,7 @@ export default function RoomTypeForm({
               )}
               maxImages={propertyPlan?.limits.maxRoomPhotosPerType ?? null}
               plan={propertyPlan?.plan ?? null}
-              label="Room Images"
+              label={t("rooms.form.roomImages")}
             />
           </div>
 
@@ -3486,33 +3586,30 @@ export default function RoomTypeForm({
             <div className="flex items-center justify-between gap-2">
               <div className="flex items-center gap-2 md:gap-3 flex-wrap min-w-0">
                 <h3 className="text-[11px] font-bold text-gray-900 uppercase tracking-widest">
-                  Features
+                  {t("rooms.form.features")}
                 </h3>
                 <span className="hidden md:inline-block text-[10px] text-gray-400 px-2 py-0.5 bg-gray-100 rounded-full">
-                  &rarr; Room card tags
+                  &rarr; {t("rooms.form.roomCardTags")}
                 </span>
                 <span className="hidden md:inline-block text-[10px] text-gray-400 px-2 py-0.5 bg-gray-100 rounded-full">
-                  &rarr; Modal highlights
+                  &rarr; {t("rooms.form.modalHighlights")}
                 </span>
               </div>
               <span className="shrink-0 text-[11px] font-medium text-primary-600">
-                {(form.features || []).length} selected
+                {t("rooms.form.selectedCount", { count: (form.features || []).length })}
               </span>
             </div>
-            <p className="text-[10px] text-gray-400">
-              What makes this room special — guests see these tags directly on the room listing.
-              Choose the 3–6 most compelling highlights.
-            </p>
+            <p className="text-[10px] text-gray-400">{t("rooms.form.featuresDescription")}</p>
 
             {/* Live Preview */}
             <div className="bg-gray-50 rounded-lg border border-gray-200 px-4 py-3">
               <p className="text-[10px] font-bold text-gray-400 uppercase tracking-wider mb-1">
-                Live Preview — Room Card
+                {t("rooms.form.roomCardPreview")}
               </p>
               <p className="text-[12px] font-semibold text-gray-900">
-                {form.name || "Room name"}{" "}
+                {form.name || t("rooms.form.roomNameFallback")}{" "}
                 <span className="text-[11px] font-normal text-gray-400">
-                  &middot; Up to {form.maxOccupancy} guests
+                  &middot; {t("rooms.form.upToGuests", { count: form.maxOccupancy ?? 0 })}
                 </span>
               </p>
               {(form.features || []).length > 0 ? (
@@ -3522,18 +3619,18 @@ export default function RoomTypeForm({
                       key={f}
                       className="text-[10px] text-gray-600 border border-gray-200 bg-white rounded-full px-2 py-0.5"
                     >
-                      {f}
+                      {translateRoomOption(f)}
                     </span>
                   ))}
                   {(form.features || []).length > 5 && (
                     <span className="text-[10px] text-gray-400 border border-gray-200 bg-white rounded-full px-2 py-0.5">
-                      +{(form.features || []).length - 5} more
+                      {t("rooms.form.moreCount", { count: (form.features || []).length - 5 })}
                     </span>
                   )}
                 </div>
               ) : (
                 <p className="text-[10px] text-gray-400 mt-1 italic">
-                  Select features below to preview card tags...
+                  {t("rooms.form.featuresPreviewEmpty")}
                 </p>
               )}
             </div>
@@ -3542,7 +3639,7 @@ export default function RoomTypeForm({
             {FEATURE_CATEGORIES.map((cat) => (
               <div key={cat.name}>
                 <p className="text-[10px] font-bold text-gray-400 uppercase tracking-wider mb-2">
-                  {cat.name}
+                  {translateRoomOption(cat.name)}
                 </p>
                 <div className="flex flex-wrap gap-2">
                   {cat.items.map((item) => {
@@ -3566,7 +3663,7 @@ export default function RoomTypeForm({
                         }`}
                       >
                         <span className="text-[13px]">{item.emoji}</span>
-                        {item.label}
+                        {translateRoomOption(item.label)}
                       </button>
                     );
                   })}
@@ -3575,7 +3672,9 @@ export default function RoomTypeForm({
             ))}
 
             <p className="text-[10px] text-gray-400">
-              {(form.features || []).length} features selected &middot; First 5 shown on card
+              {t("rooms.form.featureSelectionSummary", {
+                count: (form.features || []).length,
+              })}
             </p>
           </div>
 
@@ -3584,20 +3683,17 @@ export default function RoomTypeForm({
             <div className="flex items-center justify-between gap-2">
               <div className="flex items-center gap-2 md:gap-3 flex-wrap min-w-0">
                 <h3 className="text-[11px] font-bold text-gray-900 uppercase tracking-widest">
-                  Amenities
+                  {t("rooms.form.amenities")}
                 </h3>
                 <span className="hidden md:inline-block text-[10px] text-gray-400 px-2 py-0.5 bg-gray-100 rounded-full">
-                  &rarr; Modal full list
+                  &rarr; {t("rooms.form.modalFullList")}
                 </span>
               </div>
               <span className="shrink-0 text-[11px] font-medium text-primary-600">
-                {(form.amenities || []).length} selected
+                {t("rooms.form.selectedCount", { count: (form.amenities || []).length })}
               </span>
             </div>
-            <p className="text-[10px] text-gray-400">
-              What&apos;s included — guests see these after clicking &quot;View Details&quot;. Group
-              by category for easy scanning.
-            </p>
+            <p className="text-[10px] text-gray-400">{t("rooms.form.amenitiesDescription")}</p>
 
             {/* Booking.com paste-import helper */}
             <div className="rounded-lg border border-dashed border-gray-300 bg-gray-50/60 px-3 py-2.5">
@@ -3607,7 +3703,7 @@ export default function RoomTypeForm({
                 className="w-full flex items-center justify-between text-left"
               >
                 <span className="text-[11px] font-semibold text-gray-700">
-                  Paste amenities from Booking.com
+                  {t("rooms.form.bookingAmenitiesPaste")}
                 </span>
                 <ChevronDownIcon
                   className={`w-3.5 h-3.5 text-gray-400 transition-transform ${bookingImportOpen ? "" : "-rotate-90"}`}
@@ -3616,15 +3712,13 @@ export default function RoomTypeForm({
               {bookingImportOpen && (
                 <div className="mt-2 space-y-2">
                   <p className="text-[10px] text-gray-500">
-                    Copy the amenities list from a Booking.com listing and paste it here. We&apos;ll
-                    match each item to the right category. Unmatched items can be kept as custom
-                    amenities.
+                    {t("rooms.form.bookingAmenitiesDescription")}
                   </p>
                   <textarea
                     value={bookingImportText}
                     onChange={(e) => setBookingImportText(e.target.value)}
                     rows={5}
-                    placeholder="Free WiFi&#10;Flat-screen TV&#10;Air conditioning&#10;Safety deposit box&#10;..."
+                    placeholder={t("rooms.form.bookingAmenitiesPlaceholder")}
                     className="w-full px-3 py-2 bg-white border border-gray-200 rounded-lg text-[11px] focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent text-gray-900 font-mono"
                   />
                   <div className="flex items-center gap-2">
@@ -3655,7 +3749,7 @@ export default function RoomTypeForm({
                       }}
                       className="px-3 py-1.5 bg-primary-600 hover:bg-primary-700 disabled:bg-gray-300 disabled:cursor-not-allowed text-white text-[11px] font-medium rounded-lg transition-colors"
                     >
-                      Parse &amp; add
+                      {t("rooms.form.parseAndAdd")}
                     </button>
                     {(bookingImportText || bookingImportResult) && (
                       <button
@@ -3666,7 +3760,7 @@ export default function RoomTypeForm({
                         }}
                         className="px-2 py-1.5 text-[11px] text-gray-500 hover:text-gray-700"
                       >
-                        Clear
+                        {t("common.clear")}
                       </button>
                     )}
                   </div>
@@ -3674,16 +3768,13 @@ export default function RoomTypeForm({
                     <div className="space-y-2 text-[11px]">
                       {bookingImportResult.matchedCount === 0 ? (
                         <p className="text-amber-700 font-medium">
-                          No amenities matched — map the items below to an existing amenity, add
-                          them as custom, or ignore them.
+                          {t("rooms.form.noAmenitiesMatched")}
                         </p>
                       ) : (
                         <p className="text-gray-700">
-                          Matched{" "}
-                          <span className="font-semibold text-primary-700">
-                            {bookingImportResult.matchedCount}
-                          </span>{" "}
-                          amenit{bookingImportResult.matchedCount === 1 ? "y" : "ies"}
+                          {t("rooms.form.amenitiesMatched", {
+                            count: bookingImportResult.matchedCount,
+                          })}
                           {bookingImportResult.addedCount !== bookingImportResult.matchedCount && (
                             <>
                               {" "}
@@ -3691,7 +3782,9 @@ export default function RoomTypeForm({
                               <span className="font-semibold">
                                 {bookingImportResult.addedCount}
                               </span>{" "}
-                              newly added
+                              {t("rooms.form.newlyAdded", {
+                                count: bookingImportResult.addedCount,
+                              })}
                             </>
                           )}
                           {bookingImportResult.fuzzy.length > 0 && (
@@ -3701,7 +3794,9 @@ export default function RoomTypeForm({
                               <span className="font-semibold text-blue-700">
                                 {bookingImportResult.fuzzy.length}
                               </span>{" "}
-                              fuzzy
+                              {t("rooms.form.fuzzyCount", {
+                                count: bookingImportResult.fuzzy.length,
+                              })}
                             </>
                           )}
                           {bookingImportResult.unmatched.length > 0 && (
@@ -3711,7 +3806,9 @@ export default function RoomTypeForm({
                               <span className="font-semibold text-amber-700">
                                 {bookingImportResult.unmatched.length}
                               </span>{" "}
-                              unmatched
+                              {t("rooms.form.unmatchedCount", {
+                                count: bookingImportResult.unmatched.length,
+                              })}
                             </>
                           )}
                         </p>
@@ -3720,7 +3817,7 @@ export default function RoomTypeForm({
                       {bookingImportResult.fuzzy.length > 0 && (
                         <div>
                           <p className="text-[10px] text-gray-500 mb-1">
-                            Fuzzy matches — review and remove any wrong guesses.
+                            {t("rooms.form.fuzzyMatchesDescription")}
                           </p>
                           <div className="flex flex-wrap gap-1.5">
                             {bookingImportResult.fuzzy.map((f) => {
@@ -3758,7 +3855,7 @@ export default function RoomTypeForm({
                       {bookingImportResult.unmatched.length > 0 && (
                         <div>
                           <p className="text-[10px] text-gray-500 mb-1">
-                            Add as a custom amenity, map to an existing one, or ignore.
+                            {t("rooms.form.unmatchedAmenitiesDescription")}
                           </p>
                           <div className="space-y-1.5">
                             {bookingImportResult.unmatched.map((label) => {
@@ -3800,7 +3897,8 @@ export default function RoomTypeForm({
                                     }}
                                     className="inline-flex items-center gap-1 px-2 py-0.5 text-[11px] font-medium rounded-full border bg-white text-amber-800 border-amber-300 hover:bg-amber-50"
                                   >
-                                    <PlusIcon className="w-3 h-3" /> Custom
+                                    <PlusIcon className="w-3 h-3" />
+                                    {t("common.custom")}
                                   </button>
                                   <select
                                     defaultValue=""
@@ -3821,12 +3919,12 @@ export default function RoomTypeForm({
                                     }}
                                     className="px-2 py-0.5 text-[11px] bg-white border border-gray-200 rounded-full text-gray-600 focus:outline-none focus:ring-2 focus:ring-primary-500"
                                   >
-                                    <option value="">Map to&hellip;</option>
+                                    <option value="">{t("rooms.form.mapTo")}</option>
                                     {AMENITY_CATEGORIES.map((c) => (
-                                      <optgroup key={c.name} label={c.name}>
+                                      <optgroup key={c.name} label={translateRoomOption(c.name)}>
                                         {c.items.map((it) => (
                                           <option key={it} value={it}>
-                                            {it}
+                                            {translateRoomOption(it)}
                                           </option>
                                         ))}
                                       </optgroup>
@@ -3837,7 +3935,7 @@ export default function RoomTypeForm({
                                     onClick={dropLabel}
                                     className="inline-flex items-center gap-1 px-2 py-0.5 text-[11px] text-gray-500 hover:text-gray-700"
                                   >
-                                    Ignore
+                                    {t("common.ignore")}
                                   </button>
                                 </div>
                               );
@@ -3881,9 +3979,13 @@ export default function RoomTypeForm({
                         <ChevronDownIcon
                           className={`w-3.5 h-3.5 text-gray-400 transition-transform ${isExpanded ? "" : "-rotate-90"}`}
                         />
-                        <span className="text-[12px] font-semibold text-gray-900">{cat.name}</span>
+                        <span className="text-[12px] font-semibold text-gray-900">
+                          {translateRoomOption(cat.name)}
+                        </span>
                       </div>
-                      <span className="text-[11px] text-gray-400">{selectedCount} selected</span>
+                      <span className="text-[11px] text-gray-400">
+                        {t("rooms.form.selectedCount", { count: selectedCount })}
+                      </span>
                     </button>
 
                     {isExpanded && (
@@ -3903,7 +4005,7 @@ export default function RoomTypeForm({
                           }}
                           className="text-[11px] text-primary-600 font-medium hover:text-primary-700"
                         >
-                          {allSelected ? "Deselect all" : "Select all"}
+                          {allSelected ? t("common.deselectAll") : t("common.selectAll")}
                         </button>
 
                         <div className="space-y-1.5">
@@ -3931,7 +4033,9 @@ export default function RoomTypeForm({
                                 >
                                   {isSelected && <CheckIcon className="w-2.5 h-2.5 text-white" />}
                                 </div>
-                                <span className="text-[12px] text-gray-700">{item}</span>
+                                <span className="text-[12px] text-gray-700">
+                                  {translateRoomOption(item)}
+                                </span>
                               </button>
                             );
                           })}
@@ -3997,7 +4101,7 @@ export default function RoomTypeForm({
                               }
                             }}
                             className="flex-1 px-3 py-1.5 bg-gray-50 border border-gray-200 rounded-lg text-[11px] focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent focus:bg-white text-gray-900"
-                            placeholder="+ Add custom amenity..."
+                            placeholder={t("rooms.form.addCustomAmenity")}
                           />
                           <button
                             type="button"
@@ -4059,8 +4163,9 @@ export default function RoomTypeForm({
             })()}
 
             <p className="text-[10px] text-gray-400">
-              {(form.amenities || []).length} amenities selected &middot; Shown as &quot;View Full
-              Amenities ({(form.amenities || []).length})&quot; in the room detail modal
+              {t("rooms.form.amenitySelectionSummary", {
+                count: (form.amenities || []).length,
+              })}
             </p>
           </div>
         </div>
@@ -4074,14 +4179,14 @@ export default function RoomTypeForm({
             onClick={onCancel}
             className="flex-1 md:flex-initial text-center px-4 py-2.5 md:py-2 text-[13px] md:text-[12px] font-medium text-gray-700 border border-gray-300 rounded-lg hover:bg-gray-50 bg-white transition-colors"
           >
-            {cancelLabel}
+            {cancelLabel ?? t("common.cancel")}
           </button>
         ) : (
           <Link
             href={cancelHref}
             className="flex-1 md:flex-initial text-center px-4 py-2.5 md:py-2 text-[13px] md:text-[12px] font-medium text-gray-700 border border-gray-300 rounded-lg hover:bg-gray-50 bg-white transition-colors"
           >
-            {cancelLabel}
+            {cancelLabel ?? t("common.cancel")}
           </Link>
         )}
         <button
@@ -4094,29 +4199,34 @@ export default function RoomTypeForm({
           }
           className="flex-1 md:flex-initial px-6 py-2.5 md:py-2 bg-primary-600 text-white text-[13px] md:text-[12px] font-medium rounded-lg hover:bg-primary-700 disabled:opacity-50 transition-colors"
         >
-          {saving ? "Saving..." : submitLabel}
+          {saving ? t("common.saving") : (submitLabel ?? t("common.save"))}
         </button>
       </div>
 
       {confirmUnusualPricesOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-gray-900/30 px-4">
           <div className="w-full max-w-sm rounded-xl border border-gray-200 bg-white p-4 shadow-xl">
-            <h3 className="text-[13px] font-semibold text-gray-900">Some prices look unusual</h3>
+            <h3 className="text-[13px] font-semibold text-gray-900">
+              {t("rooms.form.unusualPricesTitle")}
+            </h3>
             <p className="mt-1 text-[11px] leading-relaxed text-gray-500">
-              Some prices are unusually high or low. Save anyway?
+              {t("rooms.form.unusualPricesDescription")}
             </p>
             <div className="mt-3 max-h-40 space-y-1.5 overflow-y-auto">
               {activePriceWarnings.slice(0, 4).map((warning) => (
                 <p key={warning.id} className="text-[10px] text-amber-700">
                   <span className="font-semibold">{warning.label}</span>:{" "}
-                  {formatCurrency(warning.value, currency)} vs{" "}
-                  {formatCurrency(warning.baseline, currency)} usual rate
+                  {t("rooms.form.priceComparison", {
+                    value: formatCurrency(warning.value, currency),
+                    baseline: formatCurrency(warning.baseline, currency),
+                  })}
                 </p>
               ))}
               {activePriceWarnings.length > 4 && (
                 <p className="text-[10px] text-gray-400">
-                  +{activePriceWarnings.length - 4} more warning
-                  {activePriceWarnings.length - 4 === 1 ? "" : "s"}
+                  {t("rooms.form.moreWarnings", {
+                    count: activePriceWarnings.length - 4,
+                  })}
                 </p>
               )}
             </div>
@@ -4126,7 +4236,7 @@ export default function RoomTypeForm({
                 onClick={() => setConfirmUnusualPricesOpen(false)}
                 className="rounded-lg border border-gray-300 bg-white px-3 py-2 text-[11px] font-medium text-gray-700 hover:bg-gray-50"
               >
-                Cancel
+                {t("common.cancel")}
               </button>
               <button
                 type="button"
@@ -4136,7 +4246,7 @@ export default function RoomTypeForm({
                 }}
                 className="rounded-lg bg-primary-600 px-3 py-2 text-[11px] font-medium text-white hover:bg-primary-700"
               >
-                Save anyway
+                {t("rooms.form.saveAnyway")}
               </button>
             </div>
           </div>

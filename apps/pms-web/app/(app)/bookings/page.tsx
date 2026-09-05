@@ -38,12 +38,16 @@ const BALANCE_STYLES: Record<string, string> = {
   refunded: "bg-violet-50 text-violet-700 border-violet-200",
 };
 
-const SOURCE_ICONS: Record<string, { bg: string; letter: string; title: string }> = {
-  direct: { bg: "bg-primary-600", letter: "V", title: "Direct" },
-  airbnb: { bg: "bg-rose-500", letter: "A", title: "Airbnb" },
-  "booking.com": { bg: "bg-[#003580]", letter: "B.", title: "Booking.com" },
-  expedia: { bg: "bg-amber-400", letter: "E", title: "Expedia" },
-  channex: { bg: "bg-violet-600", letter: "C", title: "Channex" },
+const SOURCE_ICONS: Record<string, { bg: string; letter: string; titleKey: string }> = {
+  direct: { bg: "bg-primary-600", letter: "V", titleKey: "calendar.channelDirect" },
+  airbnb: { bg: "bg-rose-500", letter: "A", titleKey: "calendar.channelAirbnb" },
+  "booking.com": {
+    bg: "bg-[#003580]",
+    letter: "B.",
+    titleKey: "calendar.channelBookingCom",
+  },
+  expedia: { bg: "bg-amber-400", letter: "E", titleKey: "calendar.channelExpedia" },
+  channex: { bg: "bg-violet-600", letter: "C", titleKey: "bookings.channelChannex" },
 };
 
 function getBalanceStatus(b: Booking): string {
@@ -65,9 +69,9 @@ function getNights(checkIn: string, checkOut: string): number {
   return Math.max(1, Math.round((d2.getTime() - d1.getTime()) / (1000 * 60 * 60 * 24)));
 }
 
-function formatDate(dateStr: string): string {
+function formatDate(dateStr: string, locale: string): string {
   const d = new Date(dateStr);
-  return d.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+  return d.toLocaleDateString(locale, { month: "short", day: "numeric" });
 }
 
 function getGuestCount(b: Booking): number {
@@ -75,7 +79,7 @@ function getGuestCount(b: Booking): number {
 }
 
 export default function ReservationsPage() {
-  const { t } = useTranslation();
+  const { locale, t } = useTranslation();
   const [bookings, setBookings] = useState<Booking[]>([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
@@ -166,7 +170,7 @@ export default function ReservationsPage() {
             <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-75" />
             <span className="relative inline-flex w-2 h-2 rounded-full bg-emerald-500" />
           </span>
-          <span className="text-xs font-medium text-gray-700">Live Sync</span>
+          <span className="text-xs font-medium text-gray-700">{t("bookings.liveSync")}</span>
         </div>
       </div>
 
@@ -316,7 +320,7 @@ export default function ReservationsPage() {
                       )}
                       {b.numberOfRooms > 1 && (
                         <span className="shrink-0 px-1.5 py-0.5 rounded bg-primary-50 text-primary-700 text-[10px] font-semibold">
-                          ×{b.numberOfRooms} rooms
+                          ×{b.numberOfRooms} {t("common.rooms")}
                         </span>
                       )}
                     </div>
@@ -335,11 +339,11 @@ export default function ReservationsPage() {
                         <path d="M8 2v4" />
                         <path d="M3 10h18" />
                       </svg>
-                      <span>{formatDate(b.checkIn)}</span>
+                      <span>{formatDate(b.checkIn, locale)}</span>
                       <span className="text-gray-300">→</span>
-                      <span>{formatDate(b.checkOut)}</span>
+                      <span>{formatDate(b.checkOut, locale)}</span>
                       <span className="text-gray-400">
-                        · {nights} {nights === 1 ? "night" : "nights"}
+                        · {nights} {nights === 1 ? t("common.night") : t("common.nights")}
                       </span>
                     </div>
                   </div>
@@ -349,7 +353,7 @@ export default function ReservationsPage() {
                     <div className="flex items-center gap-2 min-w-0">
                       <span
                         className={`inline-flex w-6 h-6 items-center justify-center rounded-md text-white text-[9px] font-bold shadow-sm shrink-0 ${source.bg}`}
-                        title={source.title}
+                        title={t(source.titleKey)}
                       >
                         {source.letter}
                       </span>
@@ -367,10 +371,10 @@ export default function ReservationsPage() {
                           }`}
                         >
                           {b.paymentStatus === "captured"
-                            ? "Deposit paid"
+                            ? t("bookings.detail.depositPaid")
                             : b.paymentStatus === "refunded"
-                              ? "Deposit refunded"
-                              : "Deposit pending"}
+                              ? t("bookings.detail.depositRefunded")
+                              : t("bookings.detail.depositPending")}
                         </span>
                       )}
                     </div>
@@ -510,9 +514,9 @@ export default function ReservationsPage() {
                       {/* Stay Period */}
                       <td className="px-4 py-4">
                         <div className="flex items-center gap-1.5 text-[13px] text-gray-600">
-                          <span>{formatDate(b.checkIn)}</span>
+                          <span>{formatDate(b.checkIn, locale)}</span>
                           <span className="text-gray-300">&rarr;</span>
-                          <span>{formatDate(b.checkOut)}</span>
+                          <span>{formatDate(b.checkOut, locale)}</span>
                           <span className="flex items-center gap-0.5 text-[12px] text-gray-400 ml-2">
                             <svg
                               className="w-3.5 h-3.5"
@@ -544,10 +548,10 @@ export default function ReservationsPage() {
                             }`}
                           >
                             {b.paymentStatus === "captured"
-                              ? "Deposit paid"
+                              ? t("bookings.detail.depositPaid")
                               : b.paymentStatus === "refunded"
-                                ? "Deposit refunded"
-                                : "Deposit pending"}
+                                ? t("bookings.detail.depositRefunded")
+                                : t("bookings.detail.depositPending")}
                           </div>
                         )}
                       </td>
@@ -571,7 +575,7 @@ export default function ReservationsPage() {
                       <td className="px-4 py-4">
                         <span
                           className={`inline-flex w-7 h-7 items-center justify-center rounded-lg text-white text-[10px] font-bold shadow-sm ${source.bg}`}
-                          title={source.title}
+                          title={t(source.titleKey)}
                         >
                           {source.letter}
                         </span>

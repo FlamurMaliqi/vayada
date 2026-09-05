@@ -16,6 +16,7 @@ import {
   calculateAddOnsTotal,
   clampAddOnQuantity,
 } from "@/components/bookings/AddOnListPicker";
+import { useTranslation } from "@/lib/i18n";
 
 interface NewBookingModalProps {
   roomTypes: CalendarRoomType[];
@@ -29,11 +30,11 @@ interface NewBookingModalProps {
 }
 
 const CHANNELS = [
-  { value: "direct", label: "Direct" },
-  { value: "airbnb", label: "Airbnb" },
-  { value: "booking.com", label: "Booking.com" },
-  { value: "expedia", label: "Expedia" },
-  { value: "other", label: "Other" },
+  { value: "direct", labelKey: "calendar.newBookingModal.channelDirect" },
+  { value: "airbnb", labelKey: "calendar.newBookingModal.channelAirbnb" },
+  { value: "booking.com", labelKey: "calendar.newBookingModal.channelBookingCom" },
+  { value: "expedia", labelKey: "calendar.newBookingModal.channelExpedia" },
+  { value: "other", labelKey: "calendar.newBookingModal.channelOther" },
 ];
 
 // Direct and Other are always offered regardless of channel-manager state.
@@ -126,6 +127,7 @@ export default function NewBookingModal({
   initialCheckOut,
   connectedChannelKeys,
 }: NewBookingModalProps) {
+  const { t } = useTranslation();
   const visibleChannels = connectedChannelKeys
     ? CHANNELS.filter(
         (ch) => ALWAYS_SHOWN_CHANNELS.has(ch.value) || connectedChannelKeys.has(ch.value),
@@ -186,13 +188,13 @@ export default function NewBookingModal({
         setError(
           err instanceof Error
             ? err.message
-            : "Resolved room rates are not available on PMS next-stack yet.",
+            : t("calendar.newBookingModal.resolvedRateUnavailable"),
         );
       });
     return () => {
       cancelled = true;
     };
-  }, [selectedRoomType?.id, checkIn]);
+  }, [selectedRoomType?.id, checkIn, t]);
 
   useEffect(() => {
     if (!roomId) {
@@ -212,7 +214,7 @@ export default function NewBookingModal({
         setSelectedAddonIds((prev) => {
           const next = prev.filter((id) => availableIds.has(id));
           if (next.length !== prev.length) {
-            setAddonNotice("Unavailable add-ons were removed for the selected room.");
+            setAddonNotice(t("calendar.newBookingModal.unavailableAddonsRemoved"));
           }
           return next;
         });
@@ -225,7 +227,7 @@ export default function NewBookingModal({
         setAvailableAddons([]);
         setSelectedAddonIds([]);
         setAddonQuantities({});
-        setAddonNotice("Unavailable add-ons were removed for the selected room.");
+        setAddonNotice(t("calendar.newBookingModal.unavailableAddonsRemoved"));
       })
       .finally(() => {
         if (!cancelled) setAddonsLoading(false);
@@ -233,7 +235,7 @@ export default function NewBookingModal({
     return () => {
       cancelled = true;
     };
-  }, [roomId, checkIn, checkOut]);
+  }, [roomId, checkIn, checkOut, t]);
 
   const handleRoomChange = (newRoomId: string) => {
     setRoomId(newRoomId);
@@ -281,29 +283,27 @@ export default function NewBookingModal({
     setError("");
 
     if (!checkIn || !checkOut) {
-      setError("Please select both check-in and check-out dates");
+      setError(t("calendar.newBookingModal.errorBothDates"));
       return;
     }
     if (checkOut <= checkIn) {
-      setError("Check-out must be after check-in");
+      setError(t("calendar.newBookingModal.errorCheckOutAfter"));
       return;
     }
     if (exceedsMaxStay && maxStayLimit) {
-      setError(
-        `This room has a maximum stay of ${maxStayLimit} nights for the selected dates. Please shorten your stay.`,
-      );
+      setError(t("calendar.newBookingModal.maxStayError", { count: maxStayLimit }));
       return;
     }
     if (!guestFirstName.trim() || !guestLastName.trim()) {
-      setError("Guest first and last name are required");
+      setError(t("calendar.newBookingModal.errorNameRequired"));
       return;
     }
     if (!guestEmail.trim()) {
-      setError("Guest email is required");
+      setError(t("calendar.newBookingModal.errorEmailRequired"));
       return;
     }
     if (!roomId) {
-      setError("Please select a room");
+      setError(t("calendar.newBookingModal.errorRoomRequired"));
       return;
     }
 
@@ -337,7 +337,7 @@ export default function NewBookingModal({
         }, {}),
       });
     } catch (err: any) {
-      setError(err?.message || "Failed to create booking");
+      setError(err?.message || t("calendar.newBookingModal.failedToCreate"));
     } finally {
       setSubmitting(false);
     }
@@ -358,17 +358,24 @@ export default function NewBookingModal({
           <div className="text-xs text-gray-500 min-w-0">
             {total !== null && selectedRoomType ? (
               <>
-                <span className="text-gray-500">Total</span>{" "}
+                <span className="text-gray-500">{t("bookings.tableTotal")}</span>{" "}
                 <span className="font-semibold text-gray-900 text-sm">
                   {formatCurrency(total, selectedRoomType.currency)}
                 </span>
                 <span className="text-gray-400">
                   {" · "}
-                  {nights} night{nights !== 1 ? "s" : ""}
+                  {t(
+                    nights === 1
+                      ? "calendar.newBookingModal.nightCount"
+                      : "calendar.newBookingModal.nightsCount",
+                    { count: nights },
+                  )}
                 </span>
               </>
             ) : (
-              <span className="text-gray-400">Pick dates and rate to see total</span>
+              <span className="text-gray-400">
+                {t("calendar.newBookingModal.pickDatesForTotal")}
+              </span>
             )}
           </div>
           <div className="flex items-center gap-2 shrink-0">
@@ -377,7 +384,7 @@ export default function NewBookingModal({
               onClick={onClose}
               className="px-4 py-2 text-sm text-gray-700 hover:bg-gray-100 rounded-lg transition-colors"
             >
-              Cancel
+              {t("calendar.cancel")}
             </button>
             <button
               type="submit"
@@ -385,7 +392,9 @@ export default function NewBookingModal({
               disabled={submitting}
               className="px-4 py-2 text-sm font-medium text-white bg-primary-600 hover:bg-primary-700 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
             >
-              {submitting ? "Creating…" : "Create Booking"}
+              {submitting
+                ? t("calendar.newBookingModal.creating")
+                : t("calendar.newBookingModal.createBooking")}
             </button>
           </div>
         </div>
@@ -394,15 +403,15 @@ export default function NewBookingModal({
       {/* Header */}
       <div className="flex items-start justify-between gap-4 mb-5">
         <div className="min-w-0">
-          <h2 className="text-lg font-bold text-gray-900">New Booking</h2>
+          <h2 className="text-lg font-bold text-gray-900">{t("calendar.newBookingModal.title")}</h2>
           <p className="text-sm text-gray-500 mt-0.5">
-            Manually create a reservation for walk-ins, phone bookings, or owner stays.
+            {t("calendar.newBookingModal.description")}
           </p>
         </div>
         <button
           type="button"
           onClick={onClose}
-          aria-label="Close"
+          aria-label={t("common.close")}
           className="shrink-0 -mt-1 -mr-1 w-8 h-8 rounded-lg text-gray-400 hover:text-gray-600 hover:bg-gray-100 flex items-center justify-center transition-colors"
         >
           <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -419,10 +428,13 @@ export default function NewBookingModal({
       <form id="new-booking-form" onSubmit={handleSubmit} className="space-y-6">
         {/* Stay */}
         <section>
-          <h3 className={sectionLabelCls}>Stay</h3>
+          <h3 className={sectionLabelCls}>{t("calendar.newBookingModal.stay")}</h3>
           <div className="space-y-3">
             <div>
-              <label className={fieldLabelCls}>Room {required}</label>
+              <label className={fieldLabelCls}>
+                {t("calendar.roomColumn")}
+                {required}
+              </label>
               <select
                 value={roomId}
                 onChange={(e) => handleRoomChange(e.target.value)}
@@ -445,15 +457,20 @@ export default function NewBookingModal({
               </select>
               {selectedRoomType && (
                 <p className="mt-1.5 text-xs text-gray-500">
-                  Sleeps {selectedRoomType.maxOccupancy} ·{" "}
-                  {formatCurrency(selectedRoomType.baseRate, selectedRoomType.currency)}/night base
+                  {t("calendar.newBookingModal.roomSummary", {
+                    occupancy: selectedRoomType.maxOccupancy,
+                    rate: formatCurrency(selectedRoomType.baseRate, selectedRoomType.currency),
+                  })}
                 </p>
               )}
             </div>
 
             <div className="grid grid-cols-2 gap-3">
               <div>
-                <label className={fieldLabelCls}>Check-in {required}</label>
+                <label className={fieldLabelCls}>
+                  {t("calendar.newBookingModal.checkInLabel")}
+                  {required}
+                </label>
                 <input
                   type="date"
                   value={checkIn}
@@ -463,7 +480,10 @@ export default function NewBookingModal({
                 />
               </div>
               <div>
-                <label className={fieldLabelCls}>Check-out {required}</label>
+                <label className={fieldLabelCls}>
+                  {t("calendar.newBookingModal.checkOutLabel")}
+                  {required}
+                </label>
                 <input
                   type="date"
                   value={checkOut}
@@ -478,11 +498,16 @@ export default function NewBookingModal({
             {nights > 0 && (
               <div className="space-y-1">
                 <p className="text-xs text-gray-500">
-                  {nights} night{nights !== 1 ? "s" : ""}
+                  {t(
+                    nights === 1
+                      ? "calendar.newBookingModal.nightCount"
+                      : "calendar.newBookingModal.nightsCount",
+                    { count: nights },
+                  )}
                 </p>
                 {exceedsMaxStay && maxStayLimit && (
                   <p className="text-xs font-medium text-amber-700">
-                    This room has a maximum stay of {maxStayLimit} nights for the selected dates.
+                    {t("calendar.newBookingModal.maxStayWarning", { count: maxStayLimit })}
                   </p>
                 )}
               </div>
@@ -492,11 +517,13 @@ export default function NewBookingModal({
 
         {/* Guest */}
         <section>
-          <h3 className={sectionLabelCls}>Guest</h3>
+          <h3 className={sectionLabelCls}>{t("bookings.tableGuest")}</h3>
           <div className="space-y-3">
             <div className="grid grid-cols-2 gap-3">
               <div>
-                <label className={fieldLabelCls}>First name {required}</label>
+                <label className={fieldLabelCls}>
+                  {t("calendar.newBookingModal.firstNameLabel")} {required}
+                </label>
                 <input
                   type="text"
                   value={guestFirstName}
@@ -506,7 +533,9 @@ export default function NewBookingModal({
                 />
               </div>
               <div>
-                <label className={fieldLabelCls}>Last name {required}</label>
+                <label className={fieldLabelCls}>
+                  {t("calendar.newBookingModal.lastNameLabel")} {required}
+                </label>
                 <input
                   type="text"
                   value={guestLastName}
@@ -518,7 +547,10 @@ export default function NewBookingModal({
             </div>
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <div>
-                <label className={fieldLabelCls}>Email {required}</label>
+                <label className={fieldLabelCls}>
+                  {t("calendar.newBookingModal.emailLabel")}
+                  {required}
+                </label>
                 <input
                   type="email"
                   value={guestEmail}
@@ -529,7 +561,7 @@ export default function NewBookingModal({
                 />
               </div>
               <div>
-                <label className={fieldLabelCls}>Phone</label>
+                <label className={fieldLabelCls}>{t("calendar.newBookingModal.phoneLabel")}</label>
                 <input
                   type="tel"
                   value={guestPhone}
@@ -540,7 +572,7 @@ export default function NewBookingModal({
             </div>
             <div className="grid grid-cols-2 gap-3">
               <div>
-                <label className={fieldLabelCls}>Adults</label>
+                <label className={fieldLabelCls}>{t("calendar.newBookingModal.adultsLabel")}</label>
                 <input
                   type="number"
                   min={1}
@@ -551,7 +583,9 @@ export default function NewBookingModal({
                 />
               </div>
               <div>
-                <label className={fieldLabelCls}>Children</label>
+                <label className={fieldLabelCls}>
+                  {t("calendar.newBookingModal.childrenLabel")}
+                </label>
                 <input
                   type="number"
                   min={0}
@@ -576,8 +610,10 @@ export default function NewBookingModal({
                   />
                 </svg>
                 <p className="text-xs text-amber-700">
-                  Max occupancy is {selectedRoomType.maxOccupancy} for this room type — you have{" "}
-                  {totalGuests} guests selected.
+                  {t("calendar.newBookingModal.maxOccupancyWarning", {
+                    max: selectedRoomType.maxOccupancy,
+                    selected: totalGuests,
+                  })}
                 </p>
               </div>
             )}
@@ -586,11 +622,11 @@ export default function NewBookingModal({
 
         {/* Rate & channel */}
         <section>
-          <h3 className={sectionLabelCls}>Rate & channel</h3>
+          <h3 className={sectionLabelCls}>{t("calendar.newBookingModal.rateAndChannel")}</h3>
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <div>
               <label className={fieldLabelCls}>
-                Nightly rate
+                {t("calendar.newBookingModal.nightlyRateLabel")}
                 {selectedRoomType ? (
                   <span className="text-gray-400 font-normal"> ({selectedRoomType.currency})</span>
                 ) : null}
@@ -616,7 +652,7 @@ export default function NewBookingModal({
               {resolvedRate !== null && selectedRoomType ? (
                 <div className="mt-1.5 flex items-center justify-between gap-2 text-xs">
                   <span className="text-gray-500">
-                    Engine quote{" "}
+                    {t("calendar.newBookingModal.engineQuote")}{" "}
                     <span className="font-medium text-gray-700">
                       {formatCurrency(resolvedRate, selectedRoomType.currency)}
                     </span>
@@ -630,16 +666,18 @@ export default function NewBookingModal({
                       }}
                       className="text-xs font-medium text-primary-600 hover:text-primary-700 transition-colors"
                     >
-                      Reset
+                      {t("calendar.newBookingModal.resetRate")}
                     </button>
                   )}
                 </div>
               ) : (
-                <p className="mt-1.5 text-xs text-gray-500">Leave blank for room type default</p>
+                <p className="mt-1.5 text-xs text-gray-500">
+                  {t("calendar.newBookingModal.leaveBlankDefault")}
+                </p>
               )}
             </div>
             <div>
-              <label className={fieldLabelCls}>Channel</label>
+              <label className={fieldLabelCls}>{t("calendar.newBookingModal.channelLabel")}</label>
               <select
                 value={channel}
                 onChange={(e) => setChannel(e.target.value)}
@@ -647,7 +685,7 @@ export default function NewBookingModal({
               >
                 {visibleChannels.map((ch) => (
                   <option key={ch.value} value={ch.value}>
-                    {ch.label}
+                    {t(ch.labelKey)}
                   </option>
                 ))}
               </select>
@@ -658,14 +696,14 @@ export default function NewBookingModal({
         {/* Add-ons */}
         {availableAddons.length > 0 && (
           <section>
-            <h3 className={sectionLabelCls}>Add-ons</h3>
+            <h3 className={sectionLabelCls}>{t("bookings.detail.addons")}</h3>
             <button
               type="button"
               onClick={() => setAddonsOpen((open) => !open)}
               disabled={addonsLoading}
               className="inline-flex items-center px-3 py-2 text-sm font-medium text-primary-700 border border-primary-200 rounded-lg hover:bg-primary-50 disabled:opacity-50"
             >
-              + Add add-ons
+              {t("calendar.newBookingModal.addAddons")}
             </button>
             {addonNotice && (
               <p className="mt-2 text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
@@ -711,16 +749,16 @@ export default function NewBookingModal({
         {/* Notes */}
         <section>
           <h3 className={sectionLabelCls}>
-            Notes{" "}
+            {t("calendar.newBookingModal.notes")}{" "}
             <span className="text-gray-400 normal-case tracking-normal font-normal">
-              (optional)
+              {t("calendar.newBookingModal.optional")}
             </span>
           </h3>
           <textarea
             value={specialRequests}
             onChange={(e) => setSpecialRequests(e.target.value)}
             rows={2}
-            placeholder="Late check-in, extra crib, allergies…"
+            placeholder={t("calendar.newBookingModal.notesPlaceholder")}
             className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent resize-none"
           />
         </section>

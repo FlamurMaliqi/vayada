@@ -7,8 +7,10 @@ import Sidebar from "@/components/layout/Sidebar";
 import { authService } from "@/services/auth";
 import { resolvePmsSetupGuard } from "@/lib/utils/sharedSetupGuard";
 import { pmsSetupExitPropertyId } from "@vayada/product-onboarding";
+import { useTranslation } from "@/lib/i18n";
 
 export default function AppLayout({ children }: { children: React.ReactNode }) {
+  const { t } = useTranslation();
   const router = useRouter();
   const pathname = usePathname();
   const [isAuthorized, setIsAuthorized] = useState(false);
@@ -69,14 +71,14 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-gray-50 px-4">
         <div className="w-full max-w-sm rounded-lg border border-amber-200 bg-white p-6 text-center shadow-sm">
-          <h1 className="text-base font-semibold text-gray-950">Unable to verify setup</h1>
-          <p className="mt-2 text-sm text-gray-600">Refresh the page to try again.</p>
+          <h1 className="text-base font-semibold text-gray-950">{t("layout.setupGuardError")}</h1>
+          <p className="mt-2 text-sm text-gray-600">{t("layout.refreshToRetry")}</p>
           <button
             type="button"
             onClick={() => window.location.reload()}
             className="mt-5 rounded-md bg-gray-950 px-4 py-2 text-sm font-medium text-white hover:bg-gray-800"
           >
-            Retry
+            {t("auth.chooseProperty.retry")}
           </button>
         </div>
       </div>

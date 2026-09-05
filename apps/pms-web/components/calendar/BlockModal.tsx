@@ -3,6 +3,7 @@
 import { useMemo, useState } from "react";
 import { CalendarBooking, CalendarRoom, CalendarRoomType } from "@/services/calendar";
 import Modal from "@/components/Modal";
+import { useTranslation } from "@/lib/i18n";
 
 // Returns the YYYY-MM-DD string one day after the given YYYY-MM-DD string.
 // Parsed as local date so DST / timezone doesn't shift the result.
@@ -55,6 +56,7 @@ export default function BlockModal({
   initialStartDate,
   initialEndDate,
 }: BlockModalProps) {
+  const { t } = useTranslation();
   const [roomTypeId, setRoomTypeId] = useState(initialRoomTypeId || roomTypes[0]?.id || "");
   const [startDate, setStartDate] = useState(initialStartDate || "");
   const [endDate, setEndDate] = useState(initialEndDate || "");
@@ -115,19 +117,19 @@ export default function BlockModal({
     setError("");
 
     if (!startDate || !endDate) {
-      setError("Please select both start and end dates");
+      setError(t("calendar.blockModal.errorBothDates"));
       return;
     }
     if (endDate <= startDate) {
-      setError("End date must be after start date");
+      setError(t("calendar.blockModal.errorEndAfterStart"));
       return;
     }
     if (selectedRoomIds.length === 0) {
-      setError("Please select at least one room to block");
+      setError(t("calendar.blockModal.selectRoomError"));
       return;
     }
     if (overlappingBookings.length > 0) {
-      setError("A selected room already has a booking in this date range.");
+      setError(t("calendar.blockModal.overlapError"));
       return;
     }
 
@@ -135,7 +137,7 @@ export default function BlockModal({
     try {
       await onSubmit({ roomTypeId, roomIds: selectedRoomIds, startDate, endDate, reason });
     } catch (err: any) {
-      setError(err?.message || "Failed to create block");
+      setError(err?.message || t("calendar.blockModal.createError"));
     } finally {
       setSubmitting(false);
     }
@@ -153,15 +155,21 @@ export default function BlockModal({
           <div className="text-xs text-gray-500 min-w-0">
             {roomNights > 0 ? (
               <>
-                <span className="font-semibold text-gray-900">{roomNights}</span> room-night
-                {roomNights !== 1 ? "s" : ""}
+                <span className="font-semibold text-gray-900">{roomNights}</span>{" "}
+                {t(
+                  roomNights === 1
+                    ? "calendar.blockModal.roomNight"
+                    : "calendar.blockModal.roomNights",
+                )}
                 <span className="text-gray-400">
                   {" · "}
-                  {nights}n × {selectedRoomIds.length} room{selectedRoomIds.length !== 1 ? "s" : ""}
+                  {nights} {t(nights === 1 ? "common.night" : "common.nights")} ×{" "}
+                  {selectedRoomIds.length}{" "}
+                  {t(selectedRoomIds.length === 1 ? "common.room" : "common.rooms")}
                 </span>
               </>
             ) : (
-              <span className="text-gray-400">Pick dates and rooms</span>
+              <span className="text-gray-400">{t("calendar.blockModal.pickDatesRooms")}</span>
             )}
           </div>
           <div className="flex items-center gap-2 shrink-0">
@@ -170,7 +178,7 @@ export default function BlockModal({
               onClick={onClose}
               className="px-4 py-2 text-sm text-gray-700 hover:bg-gray-100 rounded-lg transition-colors"
             >
-              Cancel
+              {t("calendar.cancel")}
             </button>
             <button
               type="submit"
@@ -181,10 +189,13 @@ export default function BlockModal({
               className="px-4 py-2 text-sm font-medium text-white rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed bg-primary-600 hover:bg-primary-700"
             >
               {submitting
-                ? "Blocking…"
-                : selectedRoomIds.length > 1
-                  ? `Block ${selectedRoomIds.length} rooms`
-                  : "Block room"}
+                ? t("calendar.blockModal.blocking")
+                : t(
+                    selectedRoomIds.length === 1
+                      ? "calendar.blockModal.blockRoom"
+                      : "calendar.blockModal.blockRoomCount",
+                    { count: selectedRoomIds.length },
+                  )}
             </button>
           </div>
         </div>
@@ -193,13 +204,13 @@ export default function BlockModal({
       {/* Header */}
       <div className="flex items-start justify-between gap-4 mb-5">
         <div className="min-w-0">
-          <h2 className="text-lg font-bold text-gray-900">Block Rooms</h2>
-          <p className="text-sm text-gray-500 mt-0.5">Make rooms unavailable for new bookings.</p>
+          <h2 className="text-lg font-bold text-gray-900">{t("calendar.blockModal.title")}</h2>
+          <p className="text-sm text-gray-500 mt-0.5">{t("calendar.blockModal.description")}</p>
         </div>
         <button
           type="button"
           onClick={onClose}
-          aria-label="Close"
+          aria-label={t("common.close")}
           className="shrink-0 -mt-1 -mr-1 w-8 h-8 rounded-lg text-gray-400 hover:text-gray-600 hover:bg-gray-100 flex items-center justify-center transition-colors"
         >
           <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -216,10 +227,12 @@ export default function BlockModal({
       <form id="block-rooms-form" onSubmit={handleSubmit} className="space-y-5">
         {/* Dates */}
         <div>
-          <label className={sectionLabelCls}>Dates</label>
+          <label className={sectionLabelCls}>{t("calendar.blockModal.dates")}</label>
           <div className="grid grid-cols-2 gap-3">
             <div>
-              <label className="block text-xs font-medium text-gray-700 mb-1">Start</label>
+              <label className="block text-xs font-medium text-gray-700 mb-1">
+                {t("calendar.blockModal.start")}
+              </label>
               <input
                 type="date"
                 value={startDate}
@@ -229,7 +242,9 @@ export default function BlockModal({
               />
             </div>
             <div>
-              <label className="block text-xs font-medium text-gray-700 mb-1">End</label>
+              <label className="block text-xs font-medium text-gray-700 mb-1">
+                {t("calendar.blockModal.end")}
+              </label>
               <input
                 type="date"
                 value={endDate}
@@ -241,14 +256,14 @@ export default function BlockModal({
           </div>
           {nights > 0 && (
             <p className="text-xs text-gray-500 mt-2">
-              {nights} night{nights !== 1 ? "s" : ""}
+              {nights} {t(nights === 1 ? "common.night" : "common.nights")}
             </p>
           )}
         </div>
 
         {/* Room type */}
         <div>
-          <label className={sectionLabelCls}>Room type</label>
+          <label className={sectionLabelCls}>{t("calendar.blockModal.roomTypeLabel")}</label>
           <select
             value={roomTypeId}
             onChange={(e) => handleRoomTypeChange(e.target.value)}
@@ -256,7 +271,8 @@ export default function BlockModal({
           >
             {roomTypes.map((rt) => (
               <option key={rt.id} value={rt.id}>
-                {rt.name} · {rt.totalRooms} room{rt.totalRooms !== 1 ? "s" : ""}
+                {rt.name} · {rt.totalRooms}{" "}
+                {t(rt.totalRooms === 1 ? "common.room" : "common.rooms")}
               </option>
             ))}
           </select>
@@ -266,10 +282,13 @@ export default function BlockModal({
         <div>
           <div className="flex items-center justify-between mb-2">
             <label className="text-xs font-medium text-gray-500 uppercase tracking-wide">
-              Rooms
+              {t("calendar.blockModal.rooms")}
               {roomsForType.length > 0 && (
                 <span className="ml-2 text-gray-400 normal-case tracking-normal font-normal">
-                  {selectedRoomIds.length} of {roomsForType.length} selected
+                  {t("calendar.blockModal.selectedRooms", {
+                    selected: selectedRoomIds.length,
+                    total: roomsForType.length,
+                  })}
                 </span>
               )}
             </label>
@@ -279,13 +298,13 @@ export default function BlockModal({
                 onClick={toggleAll}
                 className="text-xs font-medium text-primary-600 hover:text-primary-700 transition-colors"
               >
-                {allSelected ? "Clear all" : "Select all"}
+                {allSelected ? t("common.clearAll") : t("common.selectAll")}
               </button>
             )}
           </div>
           {roomsForType.length === 0 ? (
             <p className="text-sm text-gray-500 px-3 py-3 bg-gray-50 border border-dashed border-gray-200 rounded-lg text-center">
-              No rooms configured for this room type.
+              {t("calendar.blockModal.noRooms")}
             </p>
           ) : (
             <div className="max-h-56 overflow-y-auto border border-gray-200 rounded-lg divide-y divide-gray-100">
@@ -317,7 +336,7 @@ export default function BlockModal({
                           checked ? "text-primary-700" : "text-gray-500"
                         }`}
                       >
-                        Floor {r.floor}
+                        {t("rooms.floorNumber", { floor: r.floor })}
                       </span>
                     )}
                   </label>
@@ -330,16 +349,16 @@ export default function BlockModal({
         {/* Reason */}
         <div>
           <label className={sectionLabelCls}>
-            Reason{" "}
+            {t("calendar.blockModal.reasonLabel")}{" "}
             <span className="text-gray-400 normal-case tracking-normal font-normal">
-              (optional)
+              {t("common.optionalParenthetical")}
             </span>
           </label>
           <input
             type="text"
             value={reason}
             onChange={(e) => setReason(e.target.value)}
-            placeholder="e.g. Maintenance, Renovation, Owner stay"
+            placeholder={t("calendar.blockModal.reasonExample")}
             className={inputCls}
           />
         </div>
@@ -376,8 +395,9 @@ export default function BlockModal({
                 />
               </svg>
               <p className="text-sm font-semibold text-amber-900">
-                Overlaps {overlappingBookings.length} existing booking
-                {overlappingBookings.length !== 1 ? "s" : ""}
+                {t("calendar.blockModal.overlapCount", {
+                  count: overlappingBookings.length,
+                })}
               </p>
             </div>
             <ul className="divide-y divide-amber-200">
@@ -397,12 +417,14 @@ export default function BlockModal({
               ))}
               {overlappingBookings.length > 5 && (
                 <li className="px-3 py-1.5 text-xs text-amber-700 italic">
-                  +{overlappingBookings.length - 5} more
+                  {t("calendar.blockModal.moreOverlaps", {
+                    count: overlappingBookings.length - 5,
+                  })}
                 </li>
               )}
             </ul>
             <p className="px-3 py-2 text-xs text-amber-800 border-t border-amber-200">
-              Choose different rooms or dates before creating this block.
+              {t("calendar.blockModal.chooseDifferent")}
             </p>
           </div>
         )}
