@@ -803,6 +803,58 @@ describe("AuthKit session routes", () => {
     expect(restored.json().csrfToken).toEqual(expect.any(String));
   });
 
+  it("logs sanitized OAuth diagnostics and preserves the failure redirect", async () => {
+    const warn = vi.fn();
+    let state = "";
+    app = buildAuthSessionApp({
+      allowedOrigins: ["https://marketplace.localhost"],
+      surfacePolicies: {
+        "marketplace-web": { requiredOrganizationKind: ["creator_workspace", "hotel_group"] },
+      },
+      authKitClient: createAuthKitClient({
+        getAuthorizationUrl(input) {
+          state = input.state;
+          return "https://auth.workos.test/google";
+        },
+        async authenticateWithCode() {
+          throw {
+            error: "invalid_grant",
+            status: 400,
+            requestID: "req_oauth_123",
+            errorDescription: "private@example.test secret-token",
+            rawData: { code: "secret-code" },
+          };
+        },
+      }),
+    });
+    app.addHook("onRequest", async (request) => {
+      request.log.warn = warn;
+    });
+    const start = await app.inject({
+      method: "GET",
+      url: "/auth/oauth/google/start?surface=marketplace-web&flow=signup&return_to=https%3A%2F%2Fmarketplace.localhost%2Flogin&error_return_to=https%3A%2F%2Fmarketplace.localhost%2Fsignup",
+      headers: { host: "api.localhost", "x-forwarded-proto": "https" },
+    });
+    const response = await app.inject({
+      method: "GET",
+      url: `/auth/oauth/google/callback?code=secret-code&state=${encodeURIComponent(state)}`,
+      headers: { cookie: cookieHeader(start, "vayada_oauth_state") },
+    });
+    expect(response.statusCode).toBe(302);
+    const target = new URL(response.headers.location!);
+    expect(target.origin + target.pathname).toBe("https://marketplace.localhost/signup");
+    expect(target.searchParams.get("auth_error")).toBe("Google sign-in failed. Please try again.");
+    expect(warn.mock.calls).toEqual([
+      [
+        {
+          workos: { code: "invalid_grant", status: 400, requestId: "req_oauth_123" },
+          surface: "marketplace-web",
+        },
+        "WorkOS Google code exchange failed",
+      ],
+    ]);
+  });
+
   it("signs up a Google account and redirects to onboarding without product provisioning", async () => {
     const commands: IdentityLifecycleCommand[] = [];
     const workosCalls: string[] = [];
@@ -2159,6 +2211,58 @@ describe("AuthKit session routes", () => {
     expect(commands[0]?.payload).not.toHaveProperty("organization");
     expect(commands[0]?.payload).not.toHaveProperty("membership");
     expect(workosCalls).toEqual(["user", "password", "organization", "membership", "refresh"]);
+  });
+
+  it.each([
+    [
+      "password_strength_error",
+      "This password isn't strong enough. Try several unrelated words or generate a unique password with a password manager.",
+    ],
+    ["unknown_provider_error", "Signup failed. Please check your details and try again."],
+  ])("logs safe signup diagnostics and maps %s to an actionable message", async (code, message) => {
+    const warn = vi.fn();
+    app = buildAuthSessionApp({
+      surfacePolicies: {
+        "marketplace-web": { requiredOrganizationKind: ["creator_workspace", "hotel_group"] },
+      },
+      authKitClient: createAuthKitClient({
+        async createUser() {
+          throw Object.assign(new Error("secret-password private@example.test"), {
+            code,
+            status: 422,
+            requestID: "req_workos_123",
+            rawData: { password: "secret-password", token: "secret-token" },
+            headers: { authorization: "Bearer secret-token" },
+          });
+        },
+      }),
+    });
+    app.addHook("onRequest", async (request) => {
+      request.log.warn = warn;
+    });
+    const response = await app.inject({
+      method: "POST",
+      url: "/auth/password/signup",
+      payload: {
+        email: "private@example.test",
+        password: "secret-password",
+        surface: "marketplace-web",
+      },
+    });
+    expect(response.statusCode, response.body).toBe(400);
+    expect(response.json()).toEqual({
+      state: "auth_failed",
+      message,
+    });
+    expect(warn.mock.calls).toEqual([
+      [
+        {
+          workos: { code, status: 422, requestId: "req_workos_123" },
+          surface: "marketplace-web",
+        },
+        "WorkOS password signup failed",
+      ],
+    ]);
   });
 
   it("rejects custom signup when the WorkOS email already exists", async () => {

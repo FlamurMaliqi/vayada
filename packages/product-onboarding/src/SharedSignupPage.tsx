@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import Image from "next/image";
-import { EyeIcon, EyeSlashIcon } from "@heroicons/react/24/outline";
+import { ChevronDownIcon, EyeIcon, EyeSlashIcon } from "@heroicons/react/24/outline";
 
 export type SharedSignupPageProps = {
   isSubmitting: boolean;
@@ -17,7 +17,6 @@ export type SharedSignupPageProps = {
 
 const MARKETING_BASE_URL = process.env.NEXT_PUBLIC_MARKETING_URL || "https://vayada.com";
 const PASSWORD_MIN_LENGTH = 10;
-const PASSWORD_HELP_TEXT = `At least ${PASSWORD_MIN_LENGTH} characters. Avoid weak or breached passwords.`;
 
 export default function SharedSignupPage({
   isSubmitting,
@@ -140,6 +139,8 @@ export default function SharedSignupPage({
                     }}
                     required
                     minLength={PASSWORD_MIN_LENGTH}
+                    aria-describedby={`password-requirements${passwordError ? " password-error" : ""}`}
+                    aria-invalid={Boolean(passwordError)}
                     placeholder="Enter your password"
                     autoComplete="new-password"
                     className={`w-full rounded-lg border px-4 py-2.5 pr-12 text-sm text-gray-900 focus:border-transparent focus:outline-none focus:ring-2 focus:ring-primary-500 ${
@@ -159,14 +160,36 @@ export default function SharedSignupPage({
                     )}
                   </button>
                 </div>
-                {passwordError && <p className="mt-1 text-sm text-red-600">{passwordError}</p>}
-                {!passwordError && (
-                  <p className="mt-2 h-6 text-xs leading-5 text-gray-500">{PASSWORD_HELP_TEXT}</p>
+                {passwordError && (
+                  <p id="password-error" role="alert" className="mt-1 text-sm text-red-600">
+                    {passwordError}
+                  </p>
                 )}
+                <details className="group mt-2 text-xs leading-5 text-gray-500">
+                  <summary className="flex cursor-pointer list-none items-center justify-between gap-3 rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500 [&::-webkit-details-marker]:hidden">
+                    <span id="password-requirements">
+                      At least {PASSWORD_MIN_LENGTH} characters
+                    </span>
+                    <span className="inline-flex shrink-0 items-center gap-1 font-medium text-gray-600 group-hover:text-gray-900">
+                      Password tips
+                      <ChevronDownIcon
+                        className="h-3 w-3 transition-transform group-open:rotate-180 motion-reduce:transition-none"
+                        aria-hidden="true"
+                      />
+                    </span>
+                  </summary>
+                  <div className="mt-2 space-y-1">
+                    <p>
+                      Use several unrelated words or a password manager. Avoid names and predictable
+                      sequences.
+                    </p>
+                    <p>Previously breached passwords aren’t accepted.</p>
+                  </div>
+                </details>
               </div>
 
               {submitError && (
-                <div className="rounded-lg border-2 border-red-300 bg-red-50 p-4">
+                <div role="alert" className="rounded-lg border-2 border-red-300 bg-red-50 p-4">
                   <p className="text-sm font-semibold text-red-800">{submitError}</p>
                 </div>
               )}

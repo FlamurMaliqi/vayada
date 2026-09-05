@@ -1,3 +1,4 @@
+import { workosErrorDiagnostics } from "../platform/workosErrorDiagnostics.js";
 import { createHash, createHmac, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import type {
   IdentityLifecycleCommandBus,
@@ -352,7 +353,11 @@ export const registerAuthSessionRoutes: FastifyPluginAsync<AuthSessionRouteOptio
         ipAddress: request.ip,
         userAgent: request.headers["user-agent"],
       });
-    } catch {
+    } catch (error) {
+      request.log.warn(
+        { workos: workosErrorDiagnostics(error), surface: state.value.surface },
+        "WorkOS Google code exchange failed",
+      );
       return redirectWithOAuthError(reply, state.value, "Google sign-in failed. Please try again.");
     }
 
@@ -614,6 +619,10 @@ export const registerAuthSessionRoutes: FastifyPluginAsync<AuthSessionRouteOptio
         },
       });
     } catch (error) {
+      request.log.warn(
+        { workos: workosErrorDiagnostics(error), surface: parsed.surface },
+        "WorkOS password signup failed",
+      );
       if (isConflictError(error)) {
         return reply.code(409).send({
           state: "auth_failed",
@@ -622,7 +631,10 @@ export const registerAuthSessionRoutes: FastifyPluginAsync<AuthSessionRouteOptio
       }
       return reply.code(400).send({
         state: "auth_failed",
-        message: "Signup failed. Please check your details and try again.",
+        message:
+          workosErrorDiagnostics(error).code === "password_strength_error"
+            ? "This password isn't strong enough. Try several unrelated words or generate a unique password with a password manager."
+            : "Signup failed. Please check your details and try again.",
       });
     }
 
