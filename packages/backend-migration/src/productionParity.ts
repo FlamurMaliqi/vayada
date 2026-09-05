@@ -966,7 +966,10 @@ function addPreservationWarnings(
   const preservedNewer =
     number(counts["preservedNewerTarget"]) + number(counts["preservedNewerUsers"]);
   const preservedDeletions = number(counts["preservedTargetDeletions"]);
-  const preservedCatalog = "preservedTarget" in report ? report.preservedTarget.length : 0;
+  const preservedCatalog =
+    "preservedTarget" in report
+      ? report.preservedTarget.filter((row) => row.reason !== "identical").length
+      : 0;
   for (const [count, code, message] of [
     [
       preservedNewer + preservedCatalog,
