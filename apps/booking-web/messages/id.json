@@ -104,19 +104,6 @@
       "checkingAvailability": "Memeriksa ketersediaan",
       "availabilityUnavailable": "Ketersediaan untuk tanggal ini sementara tidak dapat dimuat.",
       "availabilityUnavailableTooltip": "Ketersediaan tidak dapat dimuat"
-    },
-    "mobileView": {
-      "list": "Daftar",
-      "map": "Peta"
-    },
-    "roomMap": {
-      "noLocations": "Tidak ada lokasi tersedia",
-      "noLocationsDesc": "Tipe kamar tanpa koordinat yang disimpan masih muncul di daftar.",
-      "locations": "{count, plural, one {# lokasi} other {# lokasi}}",
-      "perNight": "/ malam",
-      "view": "Lihat →",
-      "zoomIn": "Perbesar",
-      "zoomOut": "Perkecil"
     }
   },
   "rooms": {
