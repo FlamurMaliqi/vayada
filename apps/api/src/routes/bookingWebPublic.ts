@@ -1,5 +1,7 @@
 import {
   assertPublicBookabilityPublicSafe,
+  calendarStays,
+  type CalendarStayDay,
   PUBLIC_BOOKABILITY_CONTRACT_VERSION,
   PUBLIC_BOOKABILITY_VISIBILITY,
   type PublicBookabilityDataSourceOwner,
@@ -154,11 +156,8 @@ type BookingWebAffiliateParams = BookingWebHotelParams & {
   affiliateId: string;
 };
 
-type TargetBookingWebCalendarRow = {
-  stayDate: string;
-  hasAvailability: boolean;
+type TargetBookingWebCalendarRow = CalendarStayDay & {
   hasUnavailableState: boolean;
-  minStayNights: number | null;
   maxStayNights: number | null;
   sourceFreshnessValues: string[] | null;
   freshnessStatuses: string[] | null;
@@ -391,6 +390,7 @@ export type BookingWebCalendarProjection = {
   };
   calendar: {
     unavailableDates: string[];
+    validCheckOutsByArrival?: Record<string, string[]>;
     minStayByArrival: Record<string, number>;
     maxStayByArrival: Record<string, number>;
   };
@@ -1062,7 +1062,13 @@ export function createTargetBookingWebCalendarRepository(config: {
              )
            ) AS "hasAvailability",
            BOOL_OR(offer.availability_status IN ('sold_out', 'closed', 'unavailable')) AS "hasUnavailableState",
-           MIN(COALESCE(NULLIF(offer.rate_summary ->> 'minStayNights', '')::integer, 1)) AS "minStayNights",
+           COALESCE(JSONB_AGG(DISTINCT JSONB_BUILD_OBJECT(
+             'key', JSONB_BUILD_ARRAY(offer.public_offer_key, offer.room_type_id, offer.rate_plan_id, offer.currency)::text,
+             'min', GREATEST(COALESCE(NULLIF(offer.rate_summary ->> 'minStayNights', '')::integer, 1), 1),
+             'max', NULLIF(offer.rate_summary ->> 'maxStayNights', '')::integer
+           )) FILTER (WHERE offer.sellable_publicly
+             AND offer.availability_status IN ('available', 'limited')
+             AND offer.available_rooms > 0 AND offer.freshness_status = 'fresh'), '[]'::jsonb) AS "offers",
            CASE
              WHEN BOOL_OR(NULLIF(offer.rate_summary ->> 'maxStayNights', '') IS NULL) THEN NULL
              ELSE MAX((offer.rate_summary ->> 'maxStayNights')::integer)
@@ -1128,9 +1134,6 @@ export function createTargetBookingWebCalendarRepository(config: {
         const dataSources = [
           ...new Set(result.rows.flatMap((row) => dataSourcesArray(row.dataSources))),
         ];
-        const minStayByArrival = Object.fromEntries(
-          result.rows.map((row) => [row.stayDate, Math.max(Number(row.minStayNights ?? 1), 1)]),
-        );
         const maxStayByArrival = Object.fromEntries(
           result.rows.flatMap((row) =>
             row.maxStayNights === null
@@ -1146,8 +1149,8 @@ export function createTargetBookingWebCalendarRepository(config: {
           request: { hotelSlug: hotel.slug, start, end },
           calendar: {
             unavailableDates,
-            minStayByArrival,
             maxStayByArrival,
+            ...calendarStays(result.rows, end),
           },
           freshness: targetCalendarFreshness(
             latestGeneratedAt,
