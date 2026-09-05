@@ -126,6 +126,10 @@ describe("payment settings target clients", () => {
         endpoint: "/api/finance/properties/property_target_123/payment-settings",
         options: omitHotelContext,
       },
+      {
+        endpoint: "/api/finance/properties/property_target_123/bank-transfer-destination",
+        options: omitHotelContext,
+      },
     ]);
   });
 
@@ -276,15 +280,11 @@ describe("payment settings target clients", () => {
     expect(body.idempotencyKey).toBe(body.commandId);
     expect(body.paymentSettings).toMatchObject({
       paymentsEnabled: true,
-      paymentProvider: "stripe",
       acceptedMethods: ["pay_at_property", "cash", "manual_card", "bank_transfer"],
       defaultCurrency: "CHF",
       supportedCurrencies: ["CHF"],
       requiresManualReview: false,
-      depositPolicy: {
-        bankTransferInstructions:
-          "Account holder: Hotel Alpenrose GmbH\nIBAN: DE89370400440532013000\nBank: Commerzbank\nSWIFT/BIC: COBADEFFXXX",
-      },
+      depositPolicy: { paypalEmail: "", paypalPaymentWindowHours: 24 },
     });
   });
 
@@ -304,20 +304,7 @@ describe("payment settings target clients", () => {
     expect(body.paymentSettings.acceptedMethods).toEqual(["pay_at_property", "cash"]);
   });
 
-  it("does not enable incomplete manual payment methods", () => {
-    expect(() =>
-      buildFinancePaymentSettingsBody({
-        payAtPropertyEnabled: false,
-        onlineCardPayment: false,
-        bankTransfer: true,
-        payoutAccountHolder: "Hotel One",
-        payoutAccountType: "iban",
-        payoutIban: "DE123",
-        paymentProvider: "stripe",
-        defaultCurrency: "EUR",
-      }),
-    ).toThrow("Bank name is required.");
-
+  it("validates PayPal separately from the protected bank destination", () => {
     expect(() =>
       buildFinancePaymentSettingsBody({
         payAtPropertyEnabled: false,

@@ -12,7 +12,7 @@ import {
 } from "./bookingEmails.js";
 
 describe("booking lifecycle email jobs", () => {
-  it("enqueues a bank-transfer reserved-pending-payment email with details and deadline", async () => {
+  it("enqueues a bank-transfer email without storing credentials", async () => {
     const target = createTargetEmailStore();
 
     const result = await enqueueBookingLifecycleEmailJob(
@@ -46,10 +46,9 @@ describe("booking lifecycle email jobs", () => {
     expect(payload.subject).toContain("reserved pending payment");
     expect(payload.text).toContain("We've reserved your room");
     expect(payload.text).toContain("Payment deadline: 2026-09-02T10:00:00.000Z");
-    expect(payload.text).toContain('"iban":"DE89370400440532013000"');
-    expect(payload.bankTransferDetails).toMatchObject({
-      iban: "DE89370400440532013000",
-    });
+    expect(JSON.stringify(payload)).not.toContain("DE89370400440532013000");
+    expect(payload.bankTransferDetails).toBeUndefined();
+    expect(payload.requiresBankTransferInstructions).toBe(true);
 
     expect(target.requiredCall("INSERT INTO platform.domain_events").values?.[1]).toBe(
       "booking.notification.reserved_pending_payment_requested",
@@ -59,13 +58,14 @@ describe("booking lifecycle email jobs", () => {
     );
   });
 
-  it("renders the final confirmation email without the removed extra paragraph", async () => {
+  it("renders confirmation resends without requesting protected bank instructions", async () => {
     const target = createTargetEmailStore();
 
     await enqueueBookingLifecycleEmailJob(
       target,
       bookingEmailInput({
         kind: "final_confirmation",
+        resendKey: "booking.confirmation.resend:test",
       }),
     );
 
@@ -74,6 +74,7 @@ describe("booking lifecycle email jobs", () => {
 
     const payload = JSON.parse(String(jobInsert.values?.[8]));
     expect(payload.template).toBe("booking_final_confirmation");
+    expect(payload.requiresBankTransferInstructions).toBe(false);
     expect(payload.text).toContain("We look forward to welcoming you!");
     expect(payload.text).not.toContain("You can look up your booking anytime");
     expect(payload.text.split("We look forward to welcoming you!")[1]).toBe("");

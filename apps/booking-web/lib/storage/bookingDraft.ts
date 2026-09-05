@@ -364,14 +364,17 @@ export function toConfirmationBooking(
 }
 
 export function saveLastBooking(booking: Booking): void {
-  safeSet(LAST_BOOKING_KEY, JSON.stringify(booking));
+  safeSet(LAST_BOOKING_KEY, JSON.stringify({ ...booking, bankTransferDetails: null }));
 }
 
 export function readLastBooking(): Booking | null {
   const raw = safeGet(LAST_BOOKING_KEY);
   if (!raw) return null;
   try {
-    return JSON.parse(raw) as Booking;
+    const booking = JSON.parse(raw) as Booking;
+    booking.bankTransferDetails = null;
+    saveLastBooking(booking);
+    return booking;
   } catch {
     return null;
   }

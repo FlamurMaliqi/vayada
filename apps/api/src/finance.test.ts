@@ -96,6 +96,7 @@ const paymentSettings: FinancePaymentSettingsReadModel = {
   paymentsEnabled: true,
   paymentProvider: "stripe",
   acceptedMethods: ["card", "pay_at_property", "bank_transfer"],
+  bankTransferReady: true,
   defaultCurrency: "EUR",
   supportedCurrencies: ["EUR"],
   depositPolicy: {
@@ -2175,8 +2176,8 @@ describe("finance route contracts", () => {
   it.each([
     {
       method: "bank_transfer" as const,
-      depositPolicy: { bankName: "", accountHolder: "Host", accountNumber: "DE123" },
-      message: "Bank Transfer requires bank name.",
+      depositPolicy: {},
+      message: "Bank Transfer requires an enabled destination.",
     },
     {
       method: "paypal" as const,
