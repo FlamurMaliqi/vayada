@@ -19,7 +19,8 @@ export type NearbyDiscoveryState = {
 export type NearbyClaim =
   | { status: "claimed"; token: string; origin: NearbyOrigin; profileRevision: number }
   | { status: "state"; state: NearbyDiscoveryState }
-  | { status: "revision_conflict" | "cooldown"; retryAfter?: string }
+  | { status: "revision_conflict" }
+  | { status: "cooldown"; retryAfter: string }
   | { status: "missing_property_resource_link" };
 type Row = {
   profile_revision: string;

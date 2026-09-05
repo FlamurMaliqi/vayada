@@ -6,6 +6,7 @@ import {
   type NearbyWriteError,
 } from "@vayada/domain-hotels";
 import pg from "pg";
+import { NEARBY_POLICY_VERSION } from "../integrations/googleNearbyPlaces.js";
 
 export type NearbyScope = { organizationId: string; propertyId: string };
 export type NearbySaveResult =
@@ -50,9 +51,16 @@ export function createPgPropertyNearbyRepository(
           await client.query("ROLLBACK");
           return { ok: false, code: "missing_property_resource_link" };
         }
-        // Discovery registration arrives in VAY-1476. Until then, no new Google
-        // reference is trusted; manual places and validated saved choices work.
-        const code = checkNearbyCurationWrite(parsed.value, current, new Set());
+        const discovery = await client.query<{ places: { placeId: string }[] }>(
+          `SELECT places FROM hotel_catalog.property_nearby_discovery
+           WHERE property_id=$1::uuid AND profile_revision=$2 AND policy_version=$3
+             AND status IN ('ready','empty') AND valid_until>clock_timestamp()`,
+          [scope.propertyId, current.profileRevision, NEARBY_POLICY_VERSION],
+        );
+        const trustedIds = new Set(
+          discovery.rows.flatMap((row) => row.places.map((place) => place.placeId)),
+        );
+        const code = checkNearbyCurationWrite(parsed.value, current, trustedIds);
         if (code) {
           await client.query("ROLLBACK");
           return { ok: false, code };
