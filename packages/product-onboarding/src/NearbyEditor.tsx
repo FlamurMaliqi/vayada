@@ -105,7 +105,12 @@ export default function NearbyEditor({
           <h1 className="text-2xl font-semibold text-gray-950">Location & surroundings</h1>
           <p className="mt-1 text-sm text-gray-500">{profile.profile.displayName}</p>
         </div>
-        <button className={button} type="button" onClick={() => setPreview((value) => !value)}>
+        <button
+          className={button}
+          type="button"
+          disabled={adding || editor.busy}
+          onClick={() => setPreview((value) => !value)}
+        >
           {preview ? "Back to editing" : "Preview guest view"}
         </button>
       </div>
@@ -198,7 +203,7 @@ export default function NearbyEditor({
                 </button>
               </div>
               {NEARBY_CATEGORIES.map((category) => {
-                const places = [...candidates].filter(([, value]) => value === category);
+                const places = Array.from(candidates).filter(([, value]) => value === category);
                 const custom = draft.customPlaces.filter((place) => place.category === category);
                 if (!places.length && !custom.length) return null;
                 return (
