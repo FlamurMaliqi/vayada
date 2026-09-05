@@ -42,7 +42,7 @@ const coreNavItems: NavItem[] = [
 ];
 
 const promoCodesNavItem: NavItem = {
-  label: "Promo Codes",
+  label: "Promos",
   href: "/promo-codes",
   icon: TicketIcon,
 };
@@ -68,12 +68,7 @@ export default function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
   const activeFeatureNavItems: NavItem[] = activationPropertyId
     ? activeNavModules("booking_engine", activeModuleIds).map((module) => module.navItem!)
     : [];
-  const navItems = [
-    ...coreNavItems,
-    ...activeFeatureNavItems,
-    promoCodesNavItem,
-    settingsNavItem,
-  ];
+  const navItems = [...coreNavItems, ...activeFeatureNavItems, promoCodesNavItem, settingsNavItem];
 
   const switchApp = async (
     baseUrl: string,

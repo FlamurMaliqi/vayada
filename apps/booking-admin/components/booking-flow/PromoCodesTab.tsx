@@ -316,10 +316,9 @@ export default function PromoCodesTab({
     <div className="space-y-6">
       <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
         <div>
-          <h1 className="text-2xl font-semibold tracking-tight text-gray-950">Promo Codes</h1>
+          <h1 className="text-2xl font-semibold tracking-tight text-gray-950">Promos</h1>
           <p className="mt-1 text-sm text-gray-500">
-            Targeted discounts for your direct booking engine. Prices and discounts use the property
-            currency ({propertyCurrency}).
+            Targeted discounts guests unlock by entering a code at checkout.
           </p>
         </div>
         <button

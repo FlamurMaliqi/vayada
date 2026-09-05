@@ -2,6 +2,7 @@ import { expect, test } from "@playwright/test";
 import AxeBuilder from "@axe-core/playwright";
 import {
   BOOKING_ADMIN_HOTEL_ID,
+  BOOKING_ADMIN_LAST_MINUTE_SETTINGS_PATH,
   BOOKING_ADMIN_PROMO_CODES_PATH,
   mockBookingAdminBookingFlow,
 } from "../support/bookingAdminMocks";
@@ -21,6 +22,16 @@ test.describe("booking-admin promo-code settings cutover", () => {
     const assertNoLegacyCalls = watchNoLegacyCalls(page, testInfo, "booking-admin-booking-flow");
 
     await mockBookingAdminBookingFlow(page);
+    await page.route(`**${BOOKING_ADMIN_LAST_MINUTE_SETTINGS_PATH}*`, (route) =>
+      route.fulfill({
+        json: {
+          enabled: false,
+          stackWithPromo: false,
+          tiers: [],
+          updatedAt: "2026-09-05T00:00:00Z",
+        },
+      }),
+    );
 
     const contractRequests: Array<{ method: string; pathname: string }> = [];
     const typedWrites: Array<{ method: string; pathname: string; body?: unknown }> = [];

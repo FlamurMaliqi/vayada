@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import Promotions from "@/components/booking-flow/Promotions";
 import PromoCodesTab, {
   type PromoCodeFormValues,
   type PromoRoomType,
@@ -164,6 +165,7 @@ export default function PromoCodesPage() {
         onDeletePromoCode={deletePromo}
         onTogglePromoCode={togglePromo}
       />
+      {hotelId && <Promotions hotelId={hotelId} roomTypes={roomTypes} />}
     </div>
   );
 }
