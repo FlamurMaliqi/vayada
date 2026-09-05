@@ -632,43 +632,128 @@ describe("production PMS messaging", () => {
     ).toEqual([PROPERTY, otherProperty]);
   });
 
-  it("uses sent time and UUID ties, preserves Unicode previews, and ignores arrival order", () => {
-    const sourceRows = rows();
-    const original = sourceRows.find((entry) => entry.sourceTable === "messages")!;
-    const body = " 🏨".repeat(150);
-    sourceRows.push(
-      row("messages", {
-        ...original.data,
-        id: "50000000-0000-4000-a000-000000000002",
-        source_message_id: "outbound-ext",
-        direction: "outbound",
-        body,
-        read_at: null,
+  it.each([0, 199, 200, 201, 279, 280, 281, 500])(
+    "converts only the exact legacy preview for a %i-code-point body without changing source evidence",
+    (length) => {
+      const source = rows();
+      const body = [..." 🏨e\u0301".repeat(130)].slice(0, length).join("");
+      const thread = source.find((entry) => entry.sourceTable === "message_threads")!;
+      thread.data["last_message_preview"] = [...body].slice(0, 200).join("");
+      source.find((entry) => entry.sourceTable === "messages")!.data["body"] = body;
+      const checksum = sha256(source);
+      const context = contextFor(source);
+      const records = buildPmsMessagingRecords(context);
+      expect(context.blockers).toEqual([]);
+      expect(records.find((entry) => entry.targetId === THREAD)).toMatchObject({
+        sourceChecksum: sha256(thread.data),
+        row: { lastMessagePreview: [...body].slice(0, 280).join("") },
+      });
+      expect(records.find((entry) => entry.targetId === MESSAGE)?.row["body"]).toBe(body);
+      expect(sha256(source)).toBe(checksum);
+      expect(buildPmsMessagingRecords(contextFor(source))).toEqual(records);
+    },
+  );
+
+  it.each([
+    "shorter",
+    "ellipsis",
+    "trimmed",
+    "UTF-16",
+    "stale",
+    "unread",
+    "direction",
+    "timestamp",
+    "duplicate",
+  ])("does not hide %s source inconsistencies when converting a long preview", (kind) => {
+    const source = rows();
+    const body = " 🏨".repeat(160);
+    const legacyPreview = [...body].slice(0, 200).join("");
+    const thread = source.find((entry) => entry.sourceTable === "message_threads")!;
+    const message = source.find((entry) => entry.sourceTable === "messages")!;
+    thread.data["last_message_preview"] = legacyPreview;
+    message.data["body"] = body;
+    if (kind === "shorter") thread.data["last_message_preview"] = [...body].slice(0, 199).join("");
+    if (kind === "ellipsis") thread.data["last_message_preview"] = `${legacyPreview}…`;
+    if (kind === "trimmed") thread.data["last_message_preview"] = legacyPreview.trim();
+    if (kind === "UTF-16") thread.data["last_message_preview"] = body.slice(0, 200);
+    if (kind === "stale") {
+      const stale = "private stale preview".repeat(20);
+      thread.data["last_message_preview"] = stale.slice(0, 200);
+      source.push(
+        row("messages", {
+          ...message.data,
+          id: MEDIA,
+          source_message_id: "old-ext",
+          body: stale,
+          sent_at: "2026-09-01T10:00:00Z",
+          received_at: "2026-09-01T13:00:00Z",
+        }),
+      );
+    }
+    if (kind === "unread") thread.data["unread_count"] = 1;
+    if (kind === "direction") thread.data["last_message_direction"] = "outbound";
+    if (kind === "timestamp") thread.data["last_message_at"] = "2026-09-01T12:00:00Z";
+    if (kind === "duplicate") source.push(row("messages", { ...message.data, id: MEDIA }));
+    const checksum = sha256(source);
+    const context = contextFor(source);
+    const records = buildPmsMessagingRecords(context);
+    expect(context.blockers).toContainEqual(
+      expect.objectContaining({
+        code:
+          kind === "duplicate" ? "INBOX_DUPLICATE_PROVIDER_ID" : "INBOX_THREAD_SUMMARY_MISMATCH",
       }),
     );
-    sourceRows.push(
-      row("messages", {
-        ...original.data,
-        id: "50000000-0000-4000-a000-000000000003",
-        source_message_id: "older-ext",
-        body: "older message",
-        sent_at: "2026-09-01T10:00:00Z",
-        received_at: "2026-09-01T13:00:00Z",
-        read_at: null,
-      }),
+    expect(records.find((entry) => entry.targetId === THREAD)?.row["lastMessagePreview"]).toBe(
+      thread.data["last_message_preview"],
     );
-    Object.assign(sourceRows.find((entry) => entry.sourceTable === "message_threads")!.data, {
-      last_message_direction: "outbound",
-      last_message_preview: [...body].slice(0, 280).join(""),
-      unread_count: 1,
-    });
-    const first = contextFor(sourceRows);
-    buildPmsMessagingRecords(first);
-    expect(first.blockers).toEqual([]);
-    const reordered = contextFor([...sourceRows].reverse());
-    buildPmsMessagingRecords(reordered);
-    expect(reordered.blockers).toEqual([]);
+    expect(sha256(source)).toBe(checksum);
+    expect(JSON.stringify(context.blockers)).not.toMatch(/private stale|old-ext|🏨|thread-ext/);
   });
+
+  it.each([200, 280])(
+    "uses sent time and UUID ties for %i-code-point previews regardless of arrival order",
+    (previewLength) => {
+      const sourceRows = rows();
+      const original = sourceRows.find((entry) => entry.sourceTable === "messages")!;
+      const body = " 🏨".repeat(150);
+      sourceRows.push(
+        row("messages", {
+          ...original.data,
+          id: "50000000-0000-4000-a000-000000000002",
+          source_message_id: "outbound-ext",
+          direction: "outbound",
+          body,
+          read_at: null,
+        }),
+      );
+      sourceRows.push(
+        row("messages", {
+          ...original.data,
+          id: "50000000-0000-4000-a000-000000000003",
+          source_message_id: "older-ext",
+          body: "older message",
+          sent_at: "2026-09-01T10:00:00Z",
+          received_at: "2026-09-01T13:00:00Z",
+          read_at: null,
+        }),
+      );
+      Object.assign(sourceRows.find((entry) => entry.sourceTable === "message_threads")!.data, {
+        last_message_direction: "outbound",
+        last_message_preview: [...body].slice(0, previewLength).join(""),
+        unread_count: 1,
+      });
+      const first = contextFor(sourceRows);
+      const firstRecords = buildPmsMessagingRecords(first);
+      expect(first.blockers).toEqual([]);
+      const reordered = contextFor([...sourceRows].reverse());
+      const reorderedRecords = buildPmsMessagingRecords(reordered);
+      expect(reordered.blockers).toEqual([]);
+      for (const records of [firstRecords, reorderedRecords])
+        expect(records.find((entry) => entry.targetId === THREAD)?.row["lastMessagePreview"]).toBe(
+          [...body].slice(0, 280).join(""),
+        );
+    },
+  );
 
   it("accepts empty threads only with empty summary metadata and zero unread", () => {
     const sourceRows = rows().filter(

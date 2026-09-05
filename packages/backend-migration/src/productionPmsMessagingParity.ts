@@ -1,7 +1,7 @@
 import { addPmsBlocker } from "./productionPmsContext.js";
 import type { PmsBuildContext, PmsTargetRecord } from "./productionPmsTypes.js";
 
-/** Validate normalized source candidates before the migration can write them. */
+/** Validate source candidates, then convert only proven legacy preview formatting. */
 export function validatePmsMessagingSource(
   context: PmsBuildContext,
   records: PmsTargetRecord[],
@@ -32,10 +32,20 @@ export function validatePmsMessagingSource(
       for (const record of group)
         mismatch(context, record, "INBOX_DUPLICATE_PROVIDER_ID", "provider identity is not unique");
 
+  const previews: Array<[PmsTargetRecord, string]> = [];
   for (const thread of records.filter((record) => record.targetTable === "message_threads")) {
     const messages = messagesByThread.get(thread.targetId) ?? [];
-    const expected: Record<string, unknown> = pmsMessageSummary(messages);
-    const fields = Object.keys(expected).filter((field) => thread.row[field] !== expected[field]);
+    const summary = pmsMessageSummary(messages);
+    const expected: Record<string, unknown> = summary;
+    // The legacy repository caches Python body[:200], not the target's LEFT(body, 280).
+    const legacyPreviewMatches =
+      summary.lastMessagePreview !== null &&
+      thread.row["lastMessagePreview"] === [...summary.lastMessagePreview].slice(0, 200).join("");
+    const fields = Object.keys(expected).filter(
+      (field) =>
+        thread.row[field] !== expected[field] &&
+        !(field === "lastMessagePreview" && legacyPreviewMatches),
+    );
     if (fields.length)
       mismatch(
         context,
@@ -43,7 +53,14 @@ export function validatePmsMessagingSource(
         "INBOX_THREAD_SUMMARY_MISMATCH",
         `mismatched fields: ${fields.join(", ")}`,
       );
+    else if (
+      legacyPreviewMatches &&
+      thread.row["lastMessagePreview"] !== summary.lastMessagePreview
+    )
+      previews.push([thread, summary.lastMessagePreview!]);
   }
+  if (!context.blockers.length)
+    for (const [thread, preview] of previews) thread.row["lastMessagePreview"] = preview;
 }
 
 export function pmsMessageSummary(messages: PmsTargetRecord[]) {

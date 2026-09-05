@@ -32,8 +32,16 @@ The mapper checks provider natural keys using the target schema's property/sourc
 thread identity and thread/message identity. It also checks each thread's cached
 unread count against inbound messages with no read timestamp, and its summary
 against the latest message by `sent_at DESC, id DESC` (the target intake order).
-Previews use the first 280 Unicode code points, preserving whitespace. Empty
-threads require empty summary fields and zero unread. Mismatches block apply;
+Target previews use the first 280 Unicode code points, preserving whitespace.
+The legacy repository uses `(body or "")[:200]`. Accept that exact 200-code-point
+prefix of the retained latest message as a known format conversion, or an already
+matching target preview. Only after all source consistency checks pass, derive
+the target's 280-code-point preview from the retained body; keep the original
+source rows and checksums unchanged. Do not accept arbitrary shorter prefixes,
+trimming, ellipses, or UTF-16 truncation. Legacy out-of-order inserts can leave
+stale preview/direction metadata even when `last_message_at` is correct: those
+mismatches still block and require reconciliation, not automatic repair.
+Empty threads require null summary fields and zero unread. Mismatches block apply;
 reports contain canonical property/record IDs and field names, never message
 content or provider keys. Reconcile inconsistent source evidence explicitly.
 These are source checks, not proof of actual-target parity or inquiry semantics.
