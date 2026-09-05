@@ -14,6 +14,7 @@ import {
   type PublicBookabilityQuoteProjection,
 } from "@vayada/domain-distribution";
 import {
+  bestBookingPromotion,
   evaluateSameDayBooking,
   parseAddonEconomicTerms,
   parseBookingFlexibleCancellationTerms,
@@ -1203,6 +1204,7 @@ type TargetCheckoutSameDayPolicyRow = QueryResultRow & {
 };
 
 type TargetCheckoutConfigRow = QueryResultRow & {
+  promotionSettings?: unknown;
   propertyId: string;
   acceptanceMode: "instant" | "request" | null;
   defaultCurrency: string | null;
@@ -1278,6 +1280,7 @@ type TargetCheckoutQuoteOfferRow = QueryResultRow & {
   paymentOptions: string[] | null;
   availableRooms: string | number;
   nightlyRoomAmounts: unknown;
+  promotionNightlyRoomAmounts?: unknown;
   roomTotal: string | number;
   taxesAndFees: string | number;
   discounts: string | number;
@@ -2510,6 +2513,7 @@ async function loadTargetCheckoutConfig(
        bs.acceptance_mode AS "acceptanceMode",
        bs.default_currency AS "defaultCurrency",
        bs.benefits,
+       bs.last_minute_discount AS "promotionSettings",
        bs.show_addons_step AS "showAddonsStep",
        (SELECT COALESCE(jsonb_agg(jsonb_build_object(
          'id', addon.id::text, 'name', addon.name, 'description', COALESCE(addon.description, ''),
@@ -2689,14 +2693,30 @@ async function createTargetCheckoutQuote(
         moneyToCents(discounts),
     ),
   );
-  const promo = await resolveTargetCheckoutPromo(pool, property, {
+  let promo = await resolveTargetCheckoutPromo(pool, property, {
     code: stringField(request, "promoCode"),
     checkIn,
-    roomTypeId,
+    roomTypeId: offer.roomTypeId,
     bookingTotal: bookingTotalBeforePromo,
     currency,
     occurredAt: requestedAt,
   });
+  const automatic = bestBookingPromotion({
+    settings: settings?.promotionSettings,
+    roomTypeId: offer.roomTypeId,
+    today: targetPropertyDateOnly(property.timezone, requestedAt),
+    nights: targetNightlyRoomAmounts(
+      offer.promotionNightlyRoomAmounts ?? offer.nightlyRoomAmounts,
+      checkIn,
+      checkOut,
+    ),
+    roomTotal: Math.max(0, roomTotal - discounts),
+    roomCount,
+  });
+  const promotion =
+    automatic && automatic.discountAmount > (promo?.discountAmount ?? 0) ? automatic : null;
+  if (promotion) promo = null;
+  const promotionDiscount = promotion?.discountAmount ?? 0;
   const promoDiscount = promo?.discountAmount ?? 0;
   const totalAmount = Number(
     moneyFromCents(
@@ -2704,7 +2724,8 @@ async function createTargetCheckoutQuote(
         moneyToCents(taxesAndFees) +
         moneyToCents(addonTotal) -
         moneyToCents(discounts) -
-        moneyToCents(promoDiscount),
+        moneyToCents(promoDiscount) -
+        moneyToCents(promotionDiscount),
     ),
   );
   // Manual payment methods do not capture a deposit during checkout, so the
@@ -2737,6 +2758,7 @@ async function createTargetCheckoutQuote(
     addonRequest,
     addonPurchases,
     ...(promo ? { promo } : {}),
+    ...(promotion ? { promotion } : {}),
   };
   const totals = {
     currency,
@@ -2745,6 +2767,7 @@ async function createTargetCheckoutQuote(
     discounts,
     addonTotal,
     promoDiscount,
+    ...(promotion ? { promotionDiscount } : {}),
     totalAmount,
     depositRequired,
     depositPercentage,
@@ -2837,7 +2860,7 @@ async function createTargetCheckoutQuote(
       JSON.stringify(totals),
       JSON.stringify(objectValue(offer.publicPolicy)),
       JSON.stringify(objectValue(offer.sourceFreshness)),
-      promo?.code ?? null,
+      stringField(request, "promoCode")?.toUpperCase() ?? null,
       stringField(request, "referralCode"),
       expiresAt,
       requestedAt.toISOString(),
@@ -2932,6 +2955,9 @@ async function loadTargetCheckoutOffer(
        jsonb_agg(jsonb_build_object(
          'stayDate', offer.stay_date, 'grossRoomAmount', offer.base_price_amount
        ) ORDER BY offer.stay_date) AS "nightlyRoomAmounts",
+       jsonb_agg(jsonb_build_object('stayDate', offer.stay_date,
+         'grossRoomAmount', offer.base_price_amount - offer.discounts_amount)
+         ORDER BY offer.stay_date) AS "promotionNightlyRoomAmounts",
        SUM(offer.base_price_amount) * $7::int AS "roomTotal",
        SUM(offer.taxes_and_fees_amount) * $7::int AS "taxesAndFees",
        SUM(offer.discounts_amount) * $7::int AS discounts,
@@ -3239,6 +3265,14 @@ async function loadTargetCheckoutQuoteSnapshot(
   ) {
     throw createHttpError(409, "Checkout quote pricing evidence is unavailable. Please refresh.");
   }
+  const promotion = objectValue(selectedOfferSnapshot["promotion"]);
+  const promotionDiscount = moneyString(totals["promotionDiscount"]) ?? "0";
+  if (
+    moneyToCents(promotionDiscount) !==
+      moneyToCents(moneyString(promotion["discountAmount"]) ?? "0") ||
+    (moneyToCents(promotionDiscount) > 0n && (promoCode || !stringValue(promotion["name"])))
+  )
+    throw createHttpError(409, "Checkout quote pricing evidence is unavailable. Please refresh.");
   const roomTotal = moneyString(totals["roomTotal"]);
   if (roomTotal) {
     const quotedTotal =
@@ -3246,7 +3280,8 @@ async function loadTargetCheckoutQuoteSnapshot(
       moneyToCents(moneyString(totals["taxesAndFees"]) ?? "0") +
       purchaseTotal -
       moneyToCents(moneyString(totals["discounts"]) ?? "0") -
-      moneyToCents(promoDiscount);
+      moneyToCents(promoDiscount) -
+      moneyToCents(promotionDiscount);
     if (
       moneyToCents(totalAmount) !== quotedTotal ||
       moneyToCents(totalAmount) > 999_999_999_999_999n
@@ -3349,8 +3384,21 @@ function serializeTargetCheckoutQuote(quote: TargetCheckoutQuoteSnapshot): Recor
     addonTotal: moneyNumber(quote.totals["addonTotal"]) ?? 0,
     promoCode: stringValue(objectValue(quote.selectedOfferSnapshot["promo"])["code"]),
     promoDiscount: moneyNumber(quote.totals["promoDiscount"]) ?? 0,
-    lastMinuteDiscountPercent: 0,
-    lastMinuteDiscountAmount: 0,
+    ...(quote.selectedOfferSnapshot["promotion"]
+      ? {
+          promotion: quote.selectedOfferSnapshot["promotion"],
+          promotionDiscount: moneyNumber(quote.totals["promotionDiscount"]) ?? 0,
+        }
+      : {}),
+    lastMinuteDiscountPercent:
+      objectValue(quote.selectedOfferSnapshot["promotion"])["type"] === "LAST_MINUTE"
+        ? (moneyNumber(objectValue(quote.selectedOfferSnapshot["promotion"])["discountPercent"]) ??
+          0)
+        : 0,
+    lastMinuteDiscountAmount:
+      objectValue(quote.selectedOfferSnapshot["promotion"])["type"] === "LAST_MINUTE"
+        ? (moneyNumber(quote.totals["promotionDiscount"]) ?? 0)
+        : 0,
     totalAmount,
     currency: quote.currency,
     depositRequired: false,
@@ -4413,9 +4461,24 @@ async function previewTargetDateChange(
     const roomTotal = moneyNumber(offer.roomTotal) ?? 0;
     const taxesAndFees = moneyNumber(offer.taxesAndFees) ?? 0;
     const discounts = moneyNumber(offer.discounts) ?? 0;
-    const newTotal = roundMoney(roomTotal + taxesAndFees - discounts);
+    const promotionSettings = await loadTargetCheckoutConfig(pool, property.propertyId);
+    const promotion = bestBookingPromotion({
+      settings: promotionSettings?.promotionSettings,
+      roomTypeId: offer.roomTypeId,
+      today: targetPropertyDateOnly(property.timezone, requestedAt),
+      nights: targetNightlyRoomAmounts(
+        offer.promotionNightlyRoomAmounts ?? offer.nightlyRoomAmounts,
+        checkIn,
+        checkOut,
+      ),
+      roomTotal: Math.max(0, roomTotal - discounts),
+      roomCount: Number(booking.roomCount),
+    });
+    const promotionDiscount = promotion?.discountAmount ?? 0;
+    const newTotal = roundMoney(roomTotal + taxesAndFees - discounts - promotionDiscount);
     const refreshedSelectedOffer = {
       ...selectedOffer,
+      promotion,
       publicOfferKey: offer.publicOfferKey,
       roomTypeId: offer.roomTypeId,
       ratePlanId: offer.ratePlanId,
@@ -4452,6 +4515,7 @@ async function previewTargetDateChange(
         roomTotal,
         taxesAndFees,
         discounts,
+        promotionDiscount,
         totalAmount: newTotal,
         balanceAmount: newTotal,
         generatedAt: requestedAt.toISOString(),
