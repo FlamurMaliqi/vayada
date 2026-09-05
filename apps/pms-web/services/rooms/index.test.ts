@@ -46,7 +46,12 @@ vi.mock("../api/unsupported", () => ({
   ),
 }));
 
-import { linkedInventoryGroupsService, roomsService, roomTypeUpdateForm } from ".";
+import {
+  individualRoomsService,
+  linkedInventoryGroupsService,
+  roomsService,
+  roomTypeUpdateForm,
+} from ".";
 import { ApiErrorResponse } from "../api/client";
 
 function pmsRoomTypeItem(overrides: Record<string, unknown> = {}) {
@@ -1699,5 +1704,59 @@ describe("linkedInventoryGroupsService", () => {
     ).resolves.toEqual(group);
 
     expect(mocks.post.mock.calls[1]![1].commandId).toBe(mocks.post.mock.calls[0]![1].commandId);
+  });
+});
+
+describe("individual physical room commands", () => {
+  beforeEach(() => vi.clearAllMocks());
+  const room = {
+    id: "unit-1",
+    hotelId: "property-1",
+    roomTypeId: "type-1",
+    roomUnitsRevision: 4,
+    roomNumber: "101",
+    roomTypeName: "Suite",
+    floor: "1",
+    status: "available" as const,
+    sortOrder: 1,
+    createdAt: "",
+    updatedAt: "",
+  };
+  it("uses the displayed revision and replays an ambiguous update with its original key", async () => {
+    mocks.resolvePropertyId.mockResolvedValue("property-1");
+    mocks.put.mockRejectedValueOnce(new Error("network interrupted")).mockResolvedValueOnce({});
+    await expect(individualRoomsService.update(room, { roomNumber: "102" })).rejects.toThrow(
+      "network interrupted",
+    );
+    await individualRoomsService.update(room, { roomNumber: "102" });
+    expect(mocks.put.mock.calls[0]).toEqual(mocks.put.mock.calls[1]);
+    expect(mocks.put.mock.calls[0][0]).toBe(
+      "/api/pms/properties/property-1/room-types/type-1/physical-units/unit-1",
+    );
+    expect(mocks.put.mock.calls[0][1]).toEqual({
+      expectedRevision: 4,
+      changes: { operationalLabel: "102" },
+    });
+  });
+  it("retires only the selected room and preserves structured conflicts", async () => {
+    mocks.resolvePropertyId.mockResolvedValue("property-1");
+    mocks.delete.mockRejectedValueOnce(new Error("Room is assigned"));
+    await expect(individualRoomsService.delete(room)).rejects.toThrow("Room is assigned");
+    expect(mocks.delete.mock.calls[0][0]).toContain("/physical-units/unit-1");
+    expect(JSON.parse(mocks.delete.mock.calls[0][1].body)).toEqual({ expectedRevision: 4 });
+  });
+  it("does not send a stale property's room or a room with no revision", async () => {
+    mocks.resolvePropertyId.mockResolvedValue("another-property");
+    await expect(individualRoomsService.update(room, { roomNumber: "103" })).rejects.toThrow(
+      "selected property changed",
+    );
+    mocks.resolvePropertyId.mockResolvedValue("property-1");
+    await expect(
+      individualRoomsService.update(
+        { ...room, roomUnitsRevision: undefined },
+        { roomNumber: "103" },
+      ),
+    ).rejects.toThrow("out of date");
+    expect(mocks.put).not.toHaveBeenCalled();
   });
 });
