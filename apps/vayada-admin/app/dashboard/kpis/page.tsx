@@ -291,7 +291,7 @@ export default function KpiDashboardPage() {
           </ChartPanel>
           <ChartPanel
             title="Booking requests"
-            subtitle={bookingPropertyId ? "Single property drill-down" : "All properties"}
+            subtitle={bookingPropertyId ? "Single property drill-down" : "All selected properties"}
             icon={<ChartBarIcon className="h-5 w-5" aria-hidden="true" />}
           >
             {isLoading ? (
@@ -311,7 +311,15 @@ export default function KpiDashboardPage() {
             subtitle="Cumulative live properties"
             icon={<CursorArrowRaysIcon className="h-5 w-5" aria-hidden="true" />}
           >
-            <LineChart points={data?.liveProperties || []} tone="brass" />
+            {isLoading ? (
+              <ChartLoading />
+            ) : (
+              <LineChart
+                points={error ? [] : data?.liveProperties || []}
+                tone="brass"
+                yLabel="Number of properties"
+              />
+            )}
           </ChartPanel>
         </div>
       </div>

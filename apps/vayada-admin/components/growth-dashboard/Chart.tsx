@@ -22,7 +22,7 @@ export function LineChart({
 }: {
   points: ChartPoint[];
   tone?: "lagoon" | "brass";
-  yLabel?: string;
+  yLabel: string;
 }) {
   const width = 720;
   const height = 240;
@@ -90,7 +90,7 @@ export function LineChart({
   );
 }
 
-export function BarChart({ points, yLabel }: { points: ChartPoint[]; yLabel?: string }) {
+export function BarChart({ points, yLabel }: { points: ChartPoint[]; yLabel: string }) {
   if (points.length === 0) {
     return (
       <div className="relative min-h-[260px] rounded-lg border border-gray-200 bg-white px-4 pb-8 pt-5">

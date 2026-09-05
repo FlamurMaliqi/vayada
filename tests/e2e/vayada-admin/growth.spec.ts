@@ -64,7 +64,7 @@ test("growth filters both charts, clears to totals, and ignores stale responses"
         ],
         pageViews: [{ key: "today", label: "Today", value: views }],
         bookingRequests: [{ key: "today", label: "Today", value: requests }],
-        liveProperties: [],
+        liveProperties: [{ key: "today", label: "Today", value: 3 }],
         emptyMessage: null,
       },
       headers: {
@@ -91,8 +91,9 @@ test("growth filters both charts, clears to totals, and ignores stale responses"
   await expect(views.locator("circle title")).toHaveText("Today: 0");
   await expect(requests.locator("[title]")).toHaveAttribute("style", "height: 0%;");
   await selector.selectOption("a");
-  await expect(page.getByRole("status")).toHaveCount(2);
+  await expect(page.getByRole("status")).toHaveCount(3);
   await expect(views).toHaveCount(0);
+  await expect(page.getByRole("img", { name: "Number of properties" })).toHaveCount(0);
   await selector.selectOption("");
   await expect(views.locator("circle title")).toHaveText("Today: 30");
   const staleResponse = page.waitForResponse(
@@ -106,4 +107,5 @@ test("growth filters both charts, clears to totals, and ignores stale responses"
   await expect(page.getByText("Growth unavailable", { exact: true })).toBeVisible();
   await expect(page.locator("article").getByText("—", { exact: true })).toHaveCount(2);
   await expect(views).toHaveCount(0);
+  await expect(page.getByRole("img", { name: "Number of properties" })).toHaveCount(0);
 });
