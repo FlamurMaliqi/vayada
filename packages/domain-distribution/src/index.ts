@@ -274,6 +274,7 @@ export type PublicBookabilityQuoteRequest = {
 };
 
 export type PublicBookabilityMoneyTotals = {
+  promotion?: { name: string; discountAmount: number; discountPercent: number };
   currency: string;
   roomTotal: number;
   taxesAndFees: number;
@@ -809,6 +810,15 @@ function sanitizeOffer(
       taxesAndFees: offer.totals.taxesAndFees,
       discounts: offer.totals.discounts,
       grandTotal: offer.totals.grandTotal,
+      ...(offer.totals.promotion
+        ? {
+            promotion: {
+              name: offer.totals.promotion.name,
+              discountAmount: offer.totals.promotion.discountAmount,
+              discountPercent: offer.totals.promotion.discountPercent,
+            },
+          }
+        : {}),
     },
     policies: {
       cancellation: policy?.cancellation ?? null,
