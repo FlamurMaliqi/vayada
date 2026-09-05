@@ -93,3 +93,47 @@ runtime bound to that target/release. Reuse that existing rehearsal work for the
 runtime prerequisite; retain the run and its evidence. Real location counts,
 map-specific reconciliation and live Google checks remain pending. This
 follow-up launched no task, changed no database and switched no service binding.
+
+## Real-data read-only result
+
+Executed the selected staging check on 2026-09-05 in diagnostic task
+`e3584e769d08452ba55c9d7a86e7c2f3`, using runner definition :18 and the pinned
+image above. Account, isolated RDS resource, endpoint, database, role, release,
+source run, orchestration state and parity were checked before querying.
+PostgreSQL session `default_transaction_read_only=on`, explicit read-only
+inventory transaction and bounded statement/lock timeouts protected the run.
+The existing catalog transaction ran in `dry-run` mode and rolled back.
+Independent operational review found no execution blockers. Output contains
+aggregate counts and evidence identifiers, with no credentials or source values.
+
+| Check | Observed result |
+| --- | --- |
+| Canonical properties | 341; all have an active source link |
+| Canonical locations | 341 rows; 1 complete coordinate pair, 340 missing pairs, 0 partial pairs, 0 invalid ranges |
+| Current privacy | All 341 maps hidden; 0 public coordinates and 0 public addresses |
+| PMS room source matching | 436 source rows, 436 matched target rows, 0 unmatched |
+| Room location overrides | 13 source rows contain overrides; 0 raw address/coordinate differences across matched room rows |
+| Historical Booking POIs | 221 hotel source rows contain the top-level field; 2 have nonempty arrays |
+| New nearby schema | Curation table absent on this older rehearsal release |
+| Existing catalog dry-run | 0 blockers, 0 writes, `applied=false`; all 2,806 preserved catalog records are identical |
+| Existing source quarantines | 120 source rows; reasons and location relevance were not emitted by this aggregate diagnostic |
+
+Catalog checksum:
+`839d28dfe0392360c3ce1b4762c1ccda33da589b51ade91bce74c2d0d3ed5c3b`.
+This supersedes the earlier lack of real-data counts. No corrective catalog
+backfill is indicated by this dry-run. Zero blockers does not resolve the 120
+existing quarantined source rows or establish that all source data is usable.
+Preserve the 13 room overrides and the
+2 legacy POI source rows; POI authorship/category review is still required before
+any new import. Do not infer public consent or invent coordinates for the 340
+hotels with missing pairs. Nearby display requires confirmed coordinates and
+an explicit public visibility choice through the new editor.
+
+Evidence limits: catalog totals cover all catalog entities; the room comparison
+checks address/coordinates and source IDs, not every PMS field. POI counts cover
+the top-level Booking field only. Inventory and catalog planning used separate
+read-only snapshots. This older image does not contain the new nearby schema
+or rebuilt UI, so its results do not validate the feature against the deployed
+API. The isolated app setup remains with VAY-1361. No Google configuration was
+found in local settings, `/vayada/` SSM parameter names, or Secrets Manager names
+matching google/maps/places. Live Google and rebuilt-app checks remain pending.
