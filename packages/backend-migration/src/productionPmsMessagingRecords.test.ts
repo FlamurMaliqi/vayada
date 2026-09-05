@@ -110,7 +110,160 @@ describe("production PMS messaging", () => {
       deliveryChannel: "email",
     });
   });
+
+  it.each([
+    ["unread_count", 1],
+    ["last_message_at", "2026-09-01T12:00:00Z"],
+    ["last_message_preview", "private stale preview"],
+    ["last_message_direction", "outbound"],
+  ])("blocks inconsistent %s without reporting guest content", (field, value) => {
+    const sourceRows = rows();
+    sourceRows.find((entry) => entry.sourceTable === "message_threads")!.data[field as string] =
+      value;
+    const context = contextFor(sourceRows);
+    buildPmsMessagingRecords(context);
+    expect(context.blockers).toContainEqual(
+      expect.objectContaining({
+        code: "INBOX_THREAD_SUMMARY_MISMATCH",
+        source: "pms.message_threads",
+        sourceId: THREAD,
+        message: expect.stringContaining(PROPERTY),
+      }),
+    );
+    expect(JSON.stringify(context.blockers)).not.toMatch(
+      /private stale|Hello|guest@example|thread-ext/,
+    );
+  });
+
+  it.each(["message_threads", "messages"])(
+    "blocks duplicate provider identities in %s",
+    (table) => {
+      const sourceRows = rows();
+      const original = sourceRows.find((entry) => entry.sourceTable === table)!;
+      const duplicateId = "80000000-0000-4000-a000-000000000001";
+      sourceRows.push(row(table, { ...original.data, id: duplicateId }));
+      const context = contextFor(sourceRows);
+      buildPmsMessagingRecords(context);
+      expect(
+        context.blockers
+          .filter((blocker) => blocker.code === "INBOX_DUPLICATE_PROVIDER_ID")
+          .map((blocker) => blocker.sourceId)
+          .sort(),
+      ).toEqual([String(original.data["id"]), duplicateId].sort());
+      expect(JSON.stringify(context.blockers)).not.toMatch(/thread-ext|message-ext|Hello/);
+    },
+  );
+
+  it("keeps identical provider IDs isolated by their property and thread scope", () => {
+    const sourceRows = rows();
+    const otherHotel = "10000000-0000-4000-a000-000000000002";
+    const otherProperty = "20000000-0000-4000-a000-000000000002";
+    const otherThread = "40000000-0000-4000-a000-000000000002";
+    sourceRows.push(
+      row("message_threads", {
+        ...sourceRows.find((entry) => entry.sourceTable === "message_threads")!.data,
+        id: otherThread,
+        hotel_id: otherHotel,
+        booking_id: null,
+      }),
+    );
+    sourceRows.push(
+      row("messages", {
+        ...sourceRows.find((entry) => entry.sourceTable === "messages")!.data,
+        id: "50000000-0000-4000-a000-000000000002",
+        thread_id: otherThread,
+      }),
+    );
+    const prerequisites = target([MEDIA]);
+    prerequisites.propertyLinks.push({
+      ...prerequisites.propertyLinks[0]!,
+      sourceId: otherHotel,
+      propertyId: otherProperty,
+    });
+    const context = createProductionPmsContext({
+      sourceRunId: "run",
+      completedAt: "2026-08-30T00:00:00Z",
+      rows: sourceRows,
+      target: prerequisites,
+    });
+    const records = buildPmsMessagingRecords(context);
+    expect(context.blockers).toEqual([]);
+    expect(
+      records
+        .filter((entry) => entry.targetTable === "message_threads")
+        .map((entry) => entry.row["propertyId"]),
+    ).toEqual([PROPERTY, otherProperty]);
+  });
+
+  it("uses sent time and UUID ties, preserves Unicode previews, and ignores arrival order", () => {
+    const sourceRows = rows();
+    const original = sourceRows.find((entry) => entry.sourceTable === "messages")!;
+    const body = " 🏨".repeat(150);
+    sourceRows.push(
+      row("messages", {
+        ...original.data,
+        id: "50000000-0000-4000-a000-000000000002",
+        source_message_id: "outbound-ext",
+        direction: "outbound",
+        body,
+        read_at: null,
+      }),
+    );
+    sourceRows.push(
+      row("messages", {
+        ...original.data,
+        id: "50000000-0000-4000-a000-000000000003",
+        source_message_id: "older-ext",
+        body: "older message",
+        sent_at: "2026-09-01T10:00:00Z",
+        received_at: "2026-09-01T13:00:00Z",
+        read_at: null,
+      }),
+    );
+    Object.assign(sourceRows.find((entry) => entry.sourceTable === "message_threads")!.data, {
+      last_message_direction: "outbound",
+      last_message_preview: [...body].slice(0, 280).join(""),
+      unread_count: 1,
+    });
+    const first = contextFor(sourceRows);
+    buildPmsMessagingRecords(first);
+    expect(first.blockers).toEqual([]);
+    const reordered = contextFor([...sourceRows].reverse());
+    buildPmsMessagingRecords(reordered);
+    expect(reordered.blockers).toEqual([]);
+  });
+
+  it("accepts empty threads only with empty summary metadata and zero unread", () => {
+    const sourceRows = rows().filter(
+      (entry) => !["messages", "message_attachments"].includes(entry.sourceTable),
+    );
+    const thread = sourceRows.find((entry) => entry.sourceTable === "message_threads")!;
+    Object.assign(thread.data, {
+      last_message_at: null,
+      last_message_preview: null,
+      last_message_direction: null,
+      unread_count: 0,
+    });
+    const valid = contextFor(sourceRows);
+    buildPmsMessagingRecords(valid);
+    expect(valid.blockers).toEqual([]);
+    thread.data["unread_count"] = 1;
+    const invalid = contextFor(sourceRows);
+    buildPmsMessagingRecords(invalid);
+    expect(invalid.blockers).toContainEqual(
+      expect.objectContaining({ code: "INBOX_THREAD_SUMMARY_MISMATCH" }),
+    );
+  });
 });
+
+function contextFor(sourceRows: IdentitySourceRow[]) {
+  return createProductionPmsContext({
+    sourceRunId: "run",
+    completedAt: "2026-08-30T00:00:00Z",
+    rows: sourceRows,
+    target: target([MEDIA]),
+  });
+}
 
 function rows(): IdentitySourceRow[] {
   return [
@@ -137,10 +290,10 @@ function rows(): IdentitySourceRow[] {
       guest_name: "Guest",
       guest_email: "guest@example.test",
       status: "open",
-      last_message_at: "2026-09-01T12:00:00Z",
+      last_message_at: "2026-09-01T11:59:00Z",
       last_message_preview: "Hello",
       last_message_direction: "inbound",
-      unread_count: 1,
+      unread_count: 0,
       created_at: "2026-08-20T00:00:00Z",
       updated_at: "2026-09-01T12:00:00Z",
     }),

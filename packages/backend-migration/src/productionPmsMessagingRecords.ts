@@ -17,6 +17,7 @@ import {
   uuid,
 } from "./productionBookingValues.js";
 import { pmsRecord } from "./productionPmsValues.js";
+import { validatePmsMessagingSource } from "./productionPmsMessagingParity.js";
 
 export function buildPmsMessagingRecords(context: PmsBuildContext): PmsTargetRecord[] {
   const records: PmsTargetRecord[] = [];
@@ -26,6 +27,7 @@ export function buildPmsMessagingRecords(context: PmsBuildContext): PmsTargetRec
     append(context, source, records, () => message(context, source));
   for (const source of context.rowsByTable.get("message_attachments") ?? [])
     append(context, source, records, () => attachment(context, source));
+  validatePmsMessagingSource(context, records);
   return records;
 }
 
@@ -69,7 +71,10 @@ function thread(context: PmsBuildContext, source: IdentitySourceRow): PmsTargetR
             : null,
       conversationContextState: bookingId ? "linked" : "unlinked",
       lastMessageAt: optionalIso(data["last_message_at"], "last_message_at"),
-      lastMessagePreview: optionalText(data["last_message_preview"], "last_message_preview"),
+      lastMessagePreview:
+        typeof data["last_message_preview"] === "string"
+          ? data["last_message_preview"]
+          : optionalText(data["last_message_preview"], "last_message_preview"),
       lastMessageDirection: lastDirection,
       unreadCount: nonNegativeInteger(data["unread_count"], "unread_count", 0),
       createdAt,
