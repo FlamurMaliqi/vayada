@@ -186,7 +186,17 @@ function CountdownTimer({ deadline }: { deadline: string }) {
 
 // ─── Header bar with overflow menu ───────────────────────────────────
 
-function OverflowMenu({ onPrint, onExport }: { onPrint: () => void; onExport: () => void }) {
+function OverflowMenu({
+  onPrint,
+  onExport,
+  onResend,
+  resending,
+}: {
+  onPrint: () => void;
+  onExport: () => void;
+  onResend: () => void;
+  resending: boolean;
+}) {
   const { t } = useTranslation();
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
@@ -223,13 +233,15 @@ function OverflowMenu({ onPrint, onExport }: { onPrint: () => void; onExport: ()
           </button>
           <button
             type="button"
-            disabled
-            title={t("bookings.detail.resendUnavailable")}
-            className="flex w-full cursor-not-allowed items-center justify-between px-4 py-2 text-left text-sm text-gray-400"
+            disabled={resending}
+            onClick={() => {
+              setOpen(false);
+              onResend();
+            }}
+            className="flex w-full items-center justify-between px-4 py-2 text-left text-sm text-gray-700 hover:bg-gray-50 disabled:cursor-wait disabled:opacity-50"
           >
-            <span>{t("bookings.detail.resendConfirmation")}</span>
-            <span className="rounded bg-gray-100 px-1.5 py-0.5 text-[10px] font-medium text-gray-500">
-              {t("bookings.detail.soon")}
+            <span>
+              {resending ? "Sending confirmation…" : t("bookings.detail.resendConfirmation")}
             </span>
           </button>
           <button
@@ -1207,6 +1219,10 @@ export default function BookingDetailPage({ params }: { params: Promise<{ id: st
   const [guests, setGuests] = useState<BookingAdditionalGuest[]>([]);
   const [loading, setLoading] = useState(true);
   const [updating, setUpdating] = useState(false);
+  const [resending, setResending] = useState(false);
+  const resendKey = useRef<string | null>(null);
+  const resendPending = useRef(false);
+  const [resendNotice, setResendNotice] = useState<{ error: boolean; text: string } | null>(null);
   const [error, setError] = useState("");
   const [paymentDeadlineExpired, setPaymentDeadlineExpired] = useState(false);
   const [confirmDialog, setConfirmDialog] = useState<{
@@ -1799,6 +1815,45 @@ export default function BookingDetailPage({ params }: { params: Promise<{ id: st
             </Link>
           )}
           <OverflowMenu
+            resending={resending}
+            onResend={() =>
+              setConfirmDialog({
+                message: "Resend the booking confirmation email to the guest?",
+                confirmLabel: "Resend",
+                onConfirm: async () => {
+                  if (resendPending.current) return;
+                  resendPending.current = true;
+                  resendKey.current ??= crypto.randomUUID();
+                  setConfirmDialog(null);
+                  setResending(true);
+                  setResendNotice(null);
+                  try {
+                    const sent = await bookingsService.resendConfirmation(
+                      booking.id,
+                      resendKey.current,
+                    );
+                    resendKey.current = null;
+                    if (!sent)
+                      throw new Error("Confirmation email could not be sent. Please try again.");
+                    setResendNotice({
+                      error: false,
+                      text: "Confirmation email sent successfully.",
+                    });
+                  } catch (error) {
+                    setResendNotice({
+                      error: true,
+                      text: errMessage(
+                        error,
+                        "Could not confirm email delivery. Please retry to check the request.",
+                      ),
+                    });
+                  } finally {
+                    resendPending.current = false;
+                    setResending(false);
+                  }
+                },
+              })
+            }
             onPrint={() => window.print()}
             onExport={() => {
               const blob = new Blob([JSON.stringify(booking, null, 2)], {
@@ -2949,6 +3004,26 @@ export default function BookingDetailPage({ params }: { params: Promise<{ id: st
         )}
       </div>
 
+      {resendNotice && (
+        <div
+          role={resendNotice.error ? "alert" : "status"}
+          className={`fixed bottom-6 right-6 z-50 flex max-w-md items-center gap-4 rounded-lg border bg-white p-4 shadow-lg ${resendNotice.error ? "text-red-700" : "text-green-700"}`}
+        >
+          {resendNotice.text}
+          <button
+            type="button"
+            aria-label="Dismiss notification"
+            onClick={() => setResendNotice(null)}
+          >
+            ×
+          </button>
+        </div>
+      )}
+      {resending && (
+        <div role="status" className="fixed bottom-6 right-6 rounded-lg bg-white p-4 shadow-lg">
+          Sending confirmation…
+        </div>
+      )}
       {/* Modals */}
       {confirmDialog && (
         <ConfirmDialog

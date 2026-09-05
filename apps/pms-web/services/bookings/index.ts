@@ -555,6 +555,24 @@ export interface CheckoutRecord {
 }
 
 export const bookingsService = {
+  resendConfirmation: async (id: string, idempotencyKey: string) => {
+    const endpoint = await reservationEndpoint(id, "/confirmation-email");
+    const { jobId } = await pmsOperationsClient.post<{ jobId: string }>(
+      endpoint,
+      { idempotencyKey },
+      pmsOperationsRequestOptions,
+    );
+    for (let attempt = 0; attempt < 150; attempt++) {
+      const { status } = await pmsOperationsClient.get<{ status: string }>(
+        `${endpoint}/${encodeURIComponent(jobId)}`,
+        pmsOperationsRequestOptions,
+      );
+      if (status === "succeeded") return true;
+      if (!["pending", "running"].includes(status)) return false;
+      await new Promise((resolve) => setTimeout(resolve, 2000));
+    }
+    throw new Error("Email delivery is still processing. Retry to check the same request.");
+  },
   list: async (params?: BookingListParams) => {
     return pmsOperationsBookingsReadService.list(params);
   },
