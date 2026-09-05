@@ -16,6 +16,7 @@ test("creator edits a pending request, retries failures, and cancels it", async 
     isInitiator: true,
     status: "pending",
     compensationType: "paid",
+    propertyTimezone: "Europe/Berlin",
     offerTitle: "Creator stay",
     hotelLocation: "Berlin",
     applicationMessage: "Original pitch",
