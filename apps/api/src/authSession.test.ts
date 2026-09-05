@@ -2213,7 +2213,13 @@ describe("AuthKit session routes", () => {
     expect(workosCalls).toEqual(["user", "password", "organization", "membership", "refresh"]);
   });
 
-  it("logs only safe provider diagnostics when password signup fails", async () => {
+  it.each([
+    [
+      "password_strength_error",
+      "This password isn't strong enough. Try several unrelated words or generate a unique password with a password manager.",
+    ],
+    ["unknown_provider_error", "Signup failed. Please check your details and try again."],
+  ])("logs safe signup diagnostics and maps %s to an actionable message", async (code, message) => {
     const warn = vi.fn();
     app = buildAuthSessionApp({
       surfacePolicies: {
@@ -2222,7 +2228,7 @@ describe("AuthKit session routes", () => {
       authKitClient: createAuthKitClient({
         async createUser() {
           throw Object.assign(new Error("secret-password private@example.test"), {
-            code: "password_strength_error",
+            code,
             status: 422,
             requestID: "req_workos_123",
             rawData: { password: "secret-password", token: "secret-token" },
@@ -2246,12 +2252,12 @@ describe("AuthKit session routes", () => {
     expect(response.statusCode, response.body).toBe(400);
     expect(response.json()).toEqual({
       state: "auth_failed",
-      message: "Signup failed. Please check your details and try again.",
+      message,
     });
     expect(warn.mock.calls).toEqual([
       [
         {
-          workos: { code: "password_strength_error", status: 422, requestId: "req_workos_123" },
+          workos: { code, status: 422, requestId: "req_workos_123" },
           surface: "marketplace-web",
         },
         "WorkOS password signup failed",

@@ -631,7 +631,10 @@ export const registerAuthSessionRoutes: FastifyPluginAsync<AuthSessionRouteOptio
       }
       return reply.code(400).send({
         state: "auth_failed",
-        message: "Signup failed. Please check your details and try again.",
+        message:
+          workosErrorDiagnostics(error).code === "password_strength_error"
+            ? "This password isn't strong enough. Try several unrelated words or generate a unique password with a password manager."
+            : "Signup failed. Please check your details and try again.",
       });
     }
 
