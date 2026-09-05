@@ -514,6 +514,10 @@ export async function mockBookingAdminShellRoutes(
       },
     }),
   );
+  await page.route(
+    `**/api/finance/properties/${BOOKING_ADMIN_PROPERTY_ID}/bank-transfer-destination`,
+    (route) => route.fulfill({ json: { destination: null } }),
+  );
   await page.route(`**${BOOKING_ADMIN_FINANCE_PAYMENT_SETTINGS_PATH}`, (route) =>
     route.fulfill({
       json: {

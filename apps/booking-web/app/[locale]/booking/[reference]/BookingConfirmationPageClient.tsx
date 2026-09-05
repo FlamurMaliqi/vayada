@@ -130,7 +130,11 @@ export default function BookingConfirmationPageClient({
     trackEvent(slug, "completed_booking");
     setHydrateError(false);
     const stored = readLastBooking();
-    if (stored && stored.bookingReference === reference) {
+    if (
+      stored &&
+      stored.bookingReference === reference &&
+      !(stored.paymentMethod === "bank_transfer" && tokenParam)
+    ) {
       const guest = readGuestDetails();
       const normalized = toConfirmationBooking(stored, {
         hotelName: hotel.name,
@@ -703,7 +707,7 @@ export default function BookingConfirmationPageClient({
 
           {(isPending || isConfirmed) &&
             booking?.paymentMethod === "bank_transfer" &&
-            booking.paymentStatus === "unpaid" &&
+            ["unpaid", "pending", "partially_paid"].includes(booking.paymentStatus ?? "") &&
             booking.bankTransferDetails && (
               <div className="mt-6 p-4 bg-blue-50 border border-blue-200 rounded-xl text-left">
                 <p className="text-sm font-semibold text-blue-900">{t("bankTransferPending")}</p>
