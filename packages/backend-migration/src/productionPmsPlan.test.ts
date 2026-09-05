@@ -5,6 +5,36 @@ import { reconcileProductionPmsRecords } from "./productionPmsPlan.js";
 import type { PmsBuildContext, PmsTargetRecord } from "./productionPmsTypes.js";
 
 describe("production PMS reconciliation", () => {
+  it.each(["messages", "external_webhook_events"])(
+    "does not accept residual private payloads in existing %s rows",
+    (targetTable) => {
+      const candidate = record(targetTable === "messages", {
+        targetTable,
+        row: { id: "target", eventType: "message", rawPayload: {} },
+      });
+      for (const prior of [[], [link(candidate, "2026-09-01T00:00:00Z")]]) {
+        const context = buildContext({
+          records: [
+            {
+              ...existing(candidate, "2026-09-02T00:00:00Z"),
+              row: { ...candidate.row, rawPayload: { token: "secret", body: "private" } },
+            },
+          ],
+          provenance: prior,
+        });
+        const plan = reconcileProductionPmsRecords(context, [candidate]);
+        expect(plan.blockers).toContainEqual(
+          expect.objectContaining({
+            code: "TARGET_MESSAGE_PAYLOAD_REQUIRES_REVIEW",
+          }),
+        );
+        expect(plan.writes).toEqual([]);
+        expect(plan.provenance).toEqual([]);
+        expect(JSON.stringify(plan.blockers)).not.toMatch(/secret|private/);
+      }
+    },
+  );
+
   it("does not overwrite a newer target state from stale legacy source", () => {
     const candidate = record(true);
     const context = buildContext({

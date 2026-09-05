@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import { buildPmsAuditRecords } from "./productionPmsAuditRecords.js";
 import { createProductionPmsContext } from "./productionPmsContext.js";
+import { sha256 } from "./productionBookingValues.js";
 import type { IdentitySourceRow } from "./productionIdentityDisposition.js";
 
 const HOTEL = "10000000-0000-4000-a000-000000000001";
@@ -54,8 +55,69 @@ describe("production PMS audit records", () => {
     const records = buildPmsAuditRecords(context);
     expect(
       records.find((record) => record.targetTable === "external_webhook_events")?.row,
-    ).toMatchObject({ deliveryStatus: "failed", failureReason: "legacy failure" });
+    ).toMatchObject({ deliveryStatus: "failed", failureReason: "legacy_processor_failed" });
   });
+
+  it.each(["scoped", "absent", "unknown", "ambiguous", "unmapped-hotel"])(
+    "imports %s message receipts as bounded non-content evidence",
+    (ownership) => {
+      const sourceRows = rows(false);
+      const receipt = sourceRows.find((entry) => entry.sourceTable === "channex_webhook_events")!;
+      receipt.data["event_type"] = "message";
+      receipt.data["payload"] = {
+        body: "private guest message",
+        email: "guest@example.test",
+        attachments: [{ url: "https://provider.example/file?token=secret" }],
+        authorization: "Bearer secret",
+      };
+      receipt.data["error"] = "provider rejected Bearer secret for guest@example.test";
+      if (ownership === "absent") receipt.data["property_id"] = null;
+      if (ownership === "unknown") receipt.data["property_id"] = "unmapped-property";
+      const connection = sourceRows.find((entry) => entry.sourceTable === "channex_connections")!;
+      if (ownership === "ambiguous")
+        sourceRows.push({ ...connection, data: { ...connection.data, id: WEBHOOK } });
+      if (ownership === "unmapped-hotel") connection.data["hotel_id"] = WEBHOOK;
+      const original = structuredClone(sourceRows);
+      const context = createProductionPmsContext({
+        sourceRunId: "run",
+        completedAt: "2026-08-30T00:00:00Z",
+        rows: sourceRows,
+        target: target(),
+      });
+
+      const records = buildPmsAuditRecords(context).filter(
+        (record) => record.targetTable === "external_webhook_events",
+      );
+
+      expect(records).toHaveLength(1);
+      expect(records[0]!.row).toMatchObject({
+        propertyId: ownership === "scoped" ? PROPERTY : null,
+        tenantScope: ownership === "scoped" ? "property" : "migration",
+        eventType: "message",
+        rawPayload: {},
+        rawHeaders: {},
+        payloadHash: sha256(receipt.data["payload"]),
+        payloadRetentionUntil: "2026-09-27T03:00:00.000Z",
+        normalizedDomainEventId: null,
+        processedAt: null,
+        signatureVerified: false,
+        deliveryStatus: "failed",
+        failureReason:
+          ownership === "scoped"
+            ? "legacy_processor_failed"
+            : "legacy_message_ownership_unresolved",
+      });
+      expect(JSON.stringify(records)).not.toMatch(
+        /private guest|guest@example|secret|provider\.example/,
+      );
+      expect(sourceRows).toEqual(original);
+      expect(
+        buildPmsAuditRecords(context).filter(
+          (record) => record.targetTable === "external_webhook_events",
+        ),
+      ).toEqual(records);
+    },
+  );
 
   it("blocks a webhook whose external property has no canonical ownership", () => {
     const sourceRows = rows(true);

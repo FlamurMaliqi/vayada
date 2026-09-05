@@ -243,6 +243,8 @@ function channelMarkup(context: PmsBuildContext, source: IdentitySourceRow): Pms
 function webhookEvent(context: PmsBuildContext, source: IdentitySourceRow): PmsTargetRecord[] {
   const data = source.data;
   const id = uuid(data["id"], "id");
+  const eventType = requiredText(data["event_type"], "event_type");
+  const isMessage = eventType === "message";
   const externalPropertyId =
     optionalText(data["property_id"], "property_id")?.toLowerCase() ?? null;
   const connections = externalPropertyId
@@ -250,19 +252,25 @@ function webhookEvent(context: PmsBuildContext, source: IdentitySourceRow): PmsT
         (row) => String(row.data["channex_property_id"] ?? "").toLowerCase() === externalPropertyId,
       )
     : [];
-  if (connections.length > 1)
-    throw new Error(`external Channex property ${externalPropertyId} has duplicate connections`);
-  if (externalPropertyId && connections.length === 0)
-    throw new Error(`external Channex property ${externalPropertyId} has no target ownership`);
-  const propertyId = connections[0]
-    ? propertyForHotel(context, connections[0].data["hotel_id"])
-    : null;
+  if (!isMessage && connections.length > 1)
+    throw new Error("external Channex property has duplicate connections");
+  if (!isMessage && externalPropertyId && connections.length === 0)
+    throw new Error("external Channex property has no target ownership");
+  let propertyId: string | null = null;
+  if (connections.length === 1) {
+    try {
+      propertyId = propertyForHotel(context, connections[0]!.data["hotel_id"]);
+    } catch (error) {
+      if (!isMessage) throw error;
+    }
+  }
   const processedOk = optionalBoolean(data["processed_ok"], "processed_ok");
   const error = optionalText(data["error"], "error");
   if (processedOk === true && error)
     throw new Error("webhook is marked processed_ok but also contains an error");
   const rawPayload = jsonMap(data["payload"], "payload");
   const receivedAt = iso(data["received_at"], "received_at");
+  const unresolvedMessage = isMessage && !propertyId;
   return [
     pmsRecord(
       source,
@@ -275,8 +283,8 @@ function webhookEvent(context: PmsBuildContext, source: IdentitySourceRow): PmsT
         provider: "channex",
         providerEventId: null,
         webhookKeyHash: sha256({ source: "pms.channex_webhook_events", id }),
-        eventType: requiredText(data["event_type"], "event_type"),
-        deliveryStatus: processedOk === false ? "failed" : "observed",
+        eventType,
+        deliveryStatus: unresolvedMessage || processedOk === false ? "failed" : "observed",
         signatureVerified: false,
         receivedAt,
         processedAt: null,
@@ -287,9 +295,16 @@ function webhookEvent(context: PmsBuildContext, source: IdentitySourceRow): PmsT
         correlationId: `legacy-pms-webhook:${id}`,
         payloadHash: sha256(rawPayload),
         rawHeaders: {},
-        rawPayload,
-        failureReason:
-          processedOk === false ? (error ?? "Legacy processor recorded failure") : null,
+        // Historical message receipts are hash-only evidence, never replayable payloads.
+        rawPayload: isMessage ? {} : rawPayload,
+        payloadRetentionUntil: isMessage
+          ? new Date(Date.parse(receivedAt) + 30 * 86_400_000).toISOString()
+          : null,
+        failureReason: unresolvedMessage
+          ? "legacy_message_ownership_unresolved"
+          : processedOk === false
+            ? "legacy_processor_failed"
+            : null,
         privacyScope: "restricted",
         aiVisible: false,
       },
