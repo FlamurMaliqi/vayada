@@ -8,4 +8,5 @@ npm --workspace @vayada/backend-migration run target:migrate:dist -- \
   --env production \
   --git-sha "$APPLICATION_RELEASE"
 
-exec npm --workspace vayada-api run start
+cd apps/api
+exec node dist/server.js

@@ -152,6 +152,7 @@ export type ApiConfig = {
   marketplaceAdminSource: MarketplaceAdminSource;
   marketplaceAdminLegacySuperadminFallbackEnabled: boolean;
   pmsOperationsSource: PmsOperationsSource;
+  pmsInboxSendingEnabled: boolean;
   financeSource: FinanceSource;
   financeFolioRecipientKms?: FinanceFolioRecipientKmsConfig;
   financeBankTransferKms?: { currentKeyArn: string; allowedKeyArns: string[]; region: string };
@@ -270,9 +271,15 @@ function loadBankTransferKms(env: NodeJS.ProcessEnv): ApiConfig["financeBankTran
   const allowed = readOptionalEnv(env, "FINANCE_BANK_TRANSFER_KMS_ALLOWED_KEY_ARNS");
   if (!currentKeyArn && !allowed) return undefined;
   const allowedKeyArns = allowed?.split(",") ?? [];
-  const keys = [currentKeyArn, ...allowedKeyArns].map((key) => key ? KMS_KEY_ARN.exec(key) : null);
-  if (!currentKeyArn || !allowedKeyArns.includes(currentKeyArn) || keys.some((key) => !key) ||
-      keys.some((key) => key!.slice(1, 4).join() !== keys[0]!.slice(1, 4).join())) {
+  const keys = [currentKeyArn, ...allowedKeyArns].map((key) =>
+    key ? KMS_KEY_ARN.exec(key) : null,
+  );
+  if (
+    !currentKeyArn ||
+    !allowedKeyArns.includes(currentKeyArn) ||
+    keys.some((key) => !key) ||
+    keys.some((key) => key!.slice(1, 4).join() !== keys[0]!.slice(1, 4).join())
+  ) {
     throw new Error("Bank transfer KMS configuration is invalid");
   }
   return { currentKeyArn, allowedKeyArns, region: keys[0]![2]! };
@@ -855,6 +862,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
     pmsOperationsSource,
     financeSource,
     financeFolioRecipientKms,
+    pmsInboxSendingEnabled: readBooleanEnv(env, "PMS_INBOX_SENDING_ENABLED", true),
     financeBankTransferKms: loadBankTransferKms(env),
     marketplaceDiscoveryAllowedOrigins: readOptionalCsvEnv(
       env,
