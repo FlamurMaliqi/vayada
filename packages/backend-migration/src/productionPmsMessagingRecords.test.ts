@@ -36,6 +36,12 @@ describe("production PMS messaging", () => {
         attentionState: status === "open" ? "needs_attention" : "done",
         doneReason: status === "open" ? null : `legacy_${status}`,
         guestBookingId: null,
+        conversationContextState: "inquiry",
+        sourceBookingId: "inquiry-ext",
+        inquiryArrivalDate: null,
+        inquiryDepartureDate: null,
+        inquiryAdults: null,
+        inquiryChildren: null,
       });
       expect(sha256(source)).toBe(checksum);
       expect(buildPmsMessagingRecords(contextFor(source))).toEqual(records);
@@ -79,11 +85,18 @@ describe("production PMS messaging", () => {
 
   it("does not double-count an already inbound inquiry or unlink its later booking", () => {
     const source = systemInquiryRows();
+    Object.assign(inquiryPayload(source).meta.booking_details, {
+      arrival_date: "2026-09-01",
+      departure_date: "2026-09-03",
+      adults: 2,
+      children: 0,
+    });
     source.find((entry) => entry.sourceTable === "messages")!.data["direction"] = "inbound";
     Object.assign(source.find((entry) => entry.sourceTable === "message_threads")!.data, {
       unread_count: 1,
       last_message_direction: "inbound",
       booking_id: BOOKING,
+      source_booking_id: "booking-ext",
     });
     const context = contextFor(source);
     const records = buildPmsMessagingRecords(context);
@@ -92,8 +105,137 @@ describe("production PMS messaging", () => {
       unreadCount: 1,
       guestBookingId: BOOKING,
       conversationContextState: "linked",
+      sourceBookingId: "booking-ext",
+      inquiryArrivalDate: null,
+      inquiryDepartureDate: null,
+      inquiryAdults: null,
+      inquiryChildren: null,
     });
   });
+
+  it("retains supplied inquiry aliases, zero counts and unchanged source evidence", () => {
+    const source = systemInquiryRows();
+    const raw = inquiryPayload(source);
+    Object.assign(raw.meta.booking_details, {
+      checkin: "2028-02-29",
+      checkout: "2028-03-02",
+      number_of_adults: 100,
+    });
+    raw["children_count"] = 0;
+    raw["inquiry"] = { id: "inquiry-ext", arrival_date: "2028-02-29" };
+    source.find((entry) => entry.sourceTable === "message_threads")!.data["source_booking_id"] =
+      "inquiry-ext";
+    const checksum = sha256(source);
+    const context = contextFor(source);
+    const records = buildPmsMessagingRecords(context);
+    expect(context.blockers).toEqual([]);
+    expect(records.find((entry) => entry.targetId === THREAD)?.row).toMatchObject({
+      conversationContextState: "inquiry",
+      sourceBookingId: "inquiry-ext",
+      guestBookingId: null,
+      inquiryArrivalDate: "2028-02-29",
+      inquiryDepartureDate: "2028-03-02",
+      inquiryAdults: 100,
+      inquiryChildren: 0,
+    });
+    expect(sha256(source)).toBe(checksum);
+    expect(buildPmsMessagingRecords(contextFor(source))).toEqual(records);
+    expect(JSON.stringify(records)).not.toContain("private-token");
+  });
+
+  it.each([
+    { arrival_date: "2026-02-30", departure_date: "2026-03-03" },
+    { arrival_date: "2026-09-01T00:00:00Z", departure_date: "2026-09-03" },
+    { arrival_date: "2026-09-01" },
+    { departure_date: "2026-09-03" },
+    { arrival_date: "2026-09-03", departure_date: "2026-09-03" },
+    { arrival_date: "2026-09-04", departure_date: "2026-09-03" },
+    { adults: -1 },
+    { adults: 101 },
+    { adults: 1.5 },
+    { adults: "2" },
+    { children: false },
+    { children: "private-token" },
+    { adults: 2, adult_count: 3 },
+  ])("blocks invalid or conflicting supplied inquiry details %j", (details) => {
+    const source = systemInquiryRows();
+    Object.assign(inquiryPayload(source).meta.booking_details, details);
+    const context = contextFor(source);
+    buildPmsMessagingRecords(context);
+    expect(context.blockers).toContainEqual(
+      expect.objectContaining({
+        code: "INBOX_SYSTEM_INQUIRY_REQUIRES_REVIEW",
+        sourceId: MESSAGE,
+      }),
+    );
+    expect(JSON.stringify(context.blockers)).not.toContain("private-token");
+  });
+
+  it.each([
+    { inquiry: { id: "private-token" } },
+    { inquiry: [] },
+    { channel_booking_id: "private-token" },
+    { source_booking_id: "private-token" },
+    { adults: 3 },
+    { checkin: "2026-09-02" },
+  ])("blocks contradictory inquiry payload context %j", (fields) => {
+    const source = systemInquiryRows();
+    const raw = inquiryPayload(source);
+    Object.assign(raw.meta.booking_details, {
+      arrival_date: "2026-09-01",
+      departure_date: "2026-09-03",
+      adults: 2,
+    });
+    Object.assign(raw, fields);
+    const context = contextFor(source);
+    buildPmsMessagingRecords(context);
+    expect(context.blockers).toContainEqual(
+      expect.objectContaining({
+        code: "INBOX_SYSTEM_INQUIRY_REQUIRES_REVIEW",
+        sourceId: MESSAGE,
+      }),
+    );
+    expect(JSON.stringify(context.blockers)).not.toContain("private-token");
+  });
+
+  it.each(["identity", "adults", "compatible", "thread-reference"])(
+    "reconciles repeated inquiry %s evidence independently of extraction order",
+    (kind) => {
+      const source = systemInquiryRows();
+      inquiryPayload(source).meta.booking_details["adults"] = 2;
+      const duplicate = structuredClone(source.find((entry) => entry.sourceTable === "messages")!);
+      Object.assign(duplicate.data, { id: MEDIA, source_message_id: "second-inquiry" });
+      source.push(duplicate);
+      const raw = inquiryPayload([duplicate]);
+      if (kind === "identity") raw.meta.live_feed_event_id = "private-token";
+      if (kind === "adults") raw.meta.booking_details["adults"] = 3;
+      if (kind === "compatible") {
+        raw.meta.booking_details["adults"] = null;
+        raw["children"] = 0;
+      }
+      if (kind === "thread-reference")
+        source.find((entry) => entry.sourceTable === "message_threads")!.data["source_booking_id"] =
+          "private-token";
+      const threads = [];
+      for (const ordered of [source, [...source].reverse()]) {
+        const context = contextFor(ordered);
+        const records = buildPmsMessagingRecords(context);
+        if (kind === "compatible") {
+          expect(context.blockers).toEqual([]);
+          const thread = records.find((entry) => entry.targetId === THREAD)?.row;
+          expect(thread).toMatchObject({ inquiryAdults: 2, inquiryChildren: 0, unreadCount: 2 });
+          threads.push(thread);
+        } else
+          expect(context.blockers).toContainEqual(
+            expect.objectContaining({
+              code: "INBOX_SYSTEM_INQUIRY_REQUIRES_REVIEW",
+            }),
+          );
+        expect(JSON.stringify(context.blockers)).not.toContain("private-token");
+      }
+      if (kind === "compatible") expect(threads[0]).toEqual(threads[1]);
+    },
+  );
 
   it.each(["property", "binding", "message", "thread", "identity", "channel", "booking", "body"])(
     "blocks conflicting/incomplete inquiry %s evidence without guest content",
@@ -668,6 +810,13 @@ function systemInquiryRows() {
     row("channex_connections", { id: MEDIA, hotel_id: HOTEL, channex_property_id: MEDIA }),
   );
   return source;
+}
+
+function inquiryPayload(source: IdentitySourceRow[]) {
+  return source.find((entry) => entry.sourceTable === "messages")!.data["raw_payload"] as {
+    meta: { live_feed_event_id: string; booking_details: Record<string, unknown> };
+    [field: string]: unknown;
+  };
 }
 
 function target(mediaIds: string[]) {
