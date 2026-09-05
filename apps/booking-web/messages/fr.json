@@ -104,19 +104,6 @@
       "checkingAvailability": "Vérification des disponibilités",
       "availabilityUnavailable": "Les disponibilités pour ces dates sont temporairement indisponibles.",
       "availabilityUnavailableTooltip": "Disponibilités indisponibles"
-    },
-    "mobileView": {
-      "list": "Liste",
-      "map": "Carte"
-    },
-    "roomMap": {
-      "noLocations": "Aucun emplacement disponible",
-      "noLocationsDesc": "Les types de chambres sans coordonnées enregistrées apparaissent toujours dans la liste.",
-      "locations": "{count, plural, one {# emplacement} other {# emplacements}}",
-      "perNight": "/ nuit",
-      "view": "Voir →",
-      "zoomIn": "Zoomer",
-      "zoomOut": "Dézoomer"
     }
   },
   "rooms": {
