@@ -187,8 +187,17 @@ export function usePricing({
     roomId,
   ]);
 
-  const discountAmount = promoDiscount?.amount ?? 0;
-  const grandTotal = roomTotal + addonTotal - discountAmount;
+  const automatic = rateType === "nonrefundable" ? room?.nonRefundablePromotion : room?.promotion;
+  const automaticAmount = automatic
+    ? convertAndRound(automatic.discountAmount * roomsParam, roomCurrency)
+    : 0;
+  const promotion =
+    automatic && automaticAmount > (promoDiscount?.amount ?? 0)
+      ? { ...automatic, discountAmount: automaticAmount }
+      : null;
+  const winningCode = promotion ? null : promoDiscount;
+  const discountAmount = winningCode?.amount ?? 0;
+  const grandTotal = roomTotal + addonTotal - discountAmount - (promotion?.discountAmount ?? 0);
 
   return {
     room,
@@ -201,7 +210,8 @@ export function usePricing({
     variableNightlyRates,
     roomTotal,
     addonTotal,
-    promoDiscount,
+    promoDiscount: winningCode,
+    promotion,
     promoError,
     discountAmount,
     grandTotal,

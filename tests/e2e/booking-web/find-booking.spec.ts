@@ -41,7 +41,7 @@ test("finds a booking from the shared footer on mobile", async ({ page }) => {
         json: {
           ...booking,
           confirmationToken,
-          confirmationTokenExpiresAt: "2026-09-02T10:00:00.000Z",
+          confirmationTokenExpiresAt: new Date(Date.now() + 86400000).toISOString(),
         },
       });
     },
@@ -251,7 +251,7 @@ test("traps focus, restores the footer trigger, and ignores a dismissed lookup",
         json: {
           ...booking,
           confirmationToken,
-          confirmationTokenExpiresAt: "2026-09-02T10:00:00.000Z",
+          confirmationTokenExpiresAt: new Date(Date.now() + 86400000).toISOString(),
         },
       });
     },

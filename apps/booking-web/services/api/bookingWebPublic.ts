@@ -90,6 +90,7 @@ export type BookingWebPublicOffer = {
   paymentOptions: string[];
   totals: {
     currency: string;
+    promotion?: { name: string; discountAmount: number; discountPercent: number };
     roomTotal: number;
     taxesAndFees: number;
     discounts: number;
@@ -389,9 +390,21 @@ export function toLegacyRooms(
     const displayRoom = displayRoomById.get(roomTypeId);
     const nights = Math.max(data.request.nights || 1, 1);
     const rooms = Math.max(data.request.rooms || 1, 1);
-    const baseRate = nightlyRoomRate(flexible.totals.roomTotal, nights, rooms);
+    const baseRate = nightlyRoomRate(
+      flexible.totals.roomTotal -
+        flexible.totals.discounts +
+        (flexible.totals.promotion?.discountAmount ?? 0),
+      nights,
+      rooms,
+    );
     const nonRefundableRate = nonRefundable
-      ? nightlyRoomRate(nonRefundable.totals.roomTotal, nights, rooms)
+      ? nightlyRoomRate(
+          nonRefundable.totals.roomTotal -
+            nonRefundable.totals.discounts +
+            (nonRefundable.totals.promotion?.discountAmount ?? 0),
+          nights,
+          rooms,
+        )
       : null;
     const maxAdults = flexible.occupancy.maxAdults;
     const maxChildren = flexible.occupancy.maxChildren;
@@ -416,6 +429,18 @@ export function toLegacyRooms(
       size: displayRoom?.size || 0,
       baseRate,
       nonRefundableRate,
+      promotion: flexible.totals.promotion
+        ? {
+            ...flexible.totals.promotion,
+            discountAmount: flexible.totals.promotion.discountAmount / rooms,
+          }
+        : undefined,
+      nonRefundablePromotion: nonRefundable?.totals.promotion
+        ? {
+            ...nonRefundable.totals.promotion,
+            discountAmount: nonRefundable.totals.promotion.discountAmount / rooms,
+          }
+        : undefined,
       nightlyRates: Array.from({ length: nights }, () => baseRate),
       nonRefundableNightlyRates:
         nonRefundableRate === null

@@ -116,6 +116,11 @@ export default function RoomDetailModal({
     }
   }, [open]);
 
+  const closeFromHistory = useRef(onClose);
+  useEffect(() => {
+    closeFromHistory.current = onClose;
+  }, [onClose]);
+
   // Map browser back button to closing the modal instead of leaving the page
   useEffect(() => {
     if (!open) return;
@@ -128,7 +133,7 @@ export default function RoomDetailModal({
     }, 0);
     const onPop = () => {
       closedByPop = true;
-      onClose();
+      closeFromHistory.current();
     };
     window.addEventListener("popstate", onPop);
     return () => {
@@ -144,7 +149,7 @@ export default function RoomDetailModal({
         window.history.back();
       }
     };
-  }, [open, onClose]);
+  }, [open]);
 
   if (!open) return null;
 
@@ -152,23 +157,39 @@ export default function RoomDetailModal({
     convertAndRound(rate, room.currency),
   );
   const flexibleFromNightly = flexibleNightlies.length > 0 ? Math.min(...flexibleNightlies) : 0;
-  const flexibleTotal = flexibleNightlies.reduce((sum, rate) => sum + rate, 0);
+  const flexiblePromotionAmount = convertAndRound(
+    room.promotion?.discountAmount ?? 0,
+    room.currency,
+  );
+  const flexibleTotal =
+    flexibleNightlies.reduce((sum, rate) => sum + rate, 0) - flexiblePromotionAmount;
   const flexibleVaries = hasVariableNightlyRates(flexibleNightlies);
   const nonRefundableNightlies = getNonRefundableNightlyRates(room, nights).map((rate) =>
     convertAndRound(rate, room.currency),
   );
   const nonRefundableFromNightly =
     nonRefundableNightlies.length > 0 ? Math.min(...nonRefundableNightlies) : 0;
-  const nonRefundableTotal = nonRefundableNightlies.reduce((sum, rate) => sum + rate, 0);
+  const nonRefundablePromotionAmount = convertAndRound(
+    room.nonRefundablePromotion?.discountAmount ?? 0,
+    room.currency,
+  );
+  const nonRefundableTotal =
+    nonRefundableNightlies.reduce((sum, rate) => sum + rate, 0) - nonRefundablePromotionAmount;
   const nonRefundableVaries = hasVariableNightlyRates(nonRefundableNightlies);
   const discount =
     flexibleTotal > 0 ? Math.round((1 - nonRefundableTotal / flexibleTotal) * 100) : 0;
-  const flexibleNightlyLabel = flexibleVaries
-    ? tc("fromPrice", { price: formatPrice(flexibleFromNightly, selectedCurrency) })
-    : formatPrice(flexibleFromNightly, selectedCurrency);
-  const nonRefundableNightlyLabel = nonRefundableVaries
-    ? tc("fromPrice", { price: formatPrice(nonRefundableFromNightly, selectedCurrency) })
-    : formatPrice(nonRefundableFromNightly, selectedCurrency);
+  const flexibleNightlyLabel =
+    flexiblePromotionAmount > 0
+      ? formatPrice(flexibleTotal / nights, selectedCurrency)
+      : flexibleVaries
+        ? tc("fromPrice", { price: formatPrice(flexibleFromNightly, selectedCurrency) })
+        : formatPrice(flexibleFromNightly, selectedCurrency);
+  const nonRefundableNightlyLabel =
+    nonRefundablePromotionAmount > 0
+      ? formatPrice(nonRefundableTotal / nights, selectedCurrency)
+      : nonRefundableVaries
+        ? tc("fromPrice", { price: formatPrice(nonRefundableFromNightly, selectedCurrency) })
+        : formatPrice(nonRefundableFromNightly, selectedCurrency);
   const handleSelectRate = () => {
     if (soldOut || selectRateDisabled) return;
     navigatingAwayRef.current = true;
@@ -187,6 +208,18 @@ export default function RoomDetailModal({
   // Rate option buttons — shared between mobile scroll body and desktop sticky footer
   const rateOptionsJsx = (
     <div className="space-y-3">
+      {(selectedRate === "nonrefundable" ? room.nonRefundablePromotion : room.promotion) && (
+        <p className="text-sm text-emerald-700">
+          {(selectedRate === "nonrefundable" ? room.nonRefundablePromotion : room.promotion)?.name}:
+          −
+          {formatPrice(
+            selectedRate === "nonrefundable"
+              ? nonRefundablePromotionAmount
+              : flexiblePromotionAmount,
+            selectedCurrency,
+          )}
+        </p>
+      )}
       {/* Flexible Rate */}
       {showFlexibleRate && (
         <button
