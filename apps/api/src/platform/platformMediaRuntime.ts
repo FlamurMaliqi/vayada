@@ -11,6 +11,7 @@ import type { PlatformMediaServingConfig } from "./mediaServing.js";
 import { createPgPlatformMediaRepository } from "./platformMediaRepository.js";
 import {
   createS3PlatformMediaAdapter,
+  type PlatformMediaInboundAttachmentWriter,
   type PlatformMediaPrivateDownloadSigner,
   type PlatformMediaPrivateObjectReader,
 } from "./platformMediaS3.js";
@@ -44,6 +45,7 @@ export type PlatformMediaRuntime = {
     reader: PlatformMediaPrivateObjectReader;
     serving: PlatformMediaServingConfig;
   };
+  inboundAttachments: PlatformMediaInboundAttachmentWriter;
   cleanupStore: ReturnType<typeof createPgPlatformMediaCleanupStore>;
   propertyMediaCommands: ReturnType<typeof createPgS3PropertyMediaCommandRepository>;
   routes: PlatformMediaRoutesOptions;
@@ -111,6 +113,7 @@ export function composePlatformMediaRuntime(
       serving: input.platformMediaServing,
     },
     privateDownloads: { signer: adapter, reader: adapter, serving: input.platformMediaServing },
+    inboundAttachments: adapter,
     cleanupStore,
     propertyMediaCommands,
     routes: {
