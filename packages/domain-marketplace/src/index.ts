@@ -785,6 +785,8 @@ export type MarketplaceCollaborationRead = {
   propertyTimezone?: string | null;
   hotelLocation: string | null;
   applicationMessage?: string | null;
+  selectedCompensationOptionId?: string | null;
+  cancelledBy?: MarketplaceCollaborationAuthorizationSide | null;
   creatorConsent?: boolean | null;
   creatorAgreedAt?: MarketplaceUtcDateTime | null;
   hotelAgreedAt?: MarketplaceUtcDateTime | null;
@@ -929,6 +931,11 @@ export const MARKETPLACE_COLLABORATION_LIFECYCLE_WRITE_ENDPOINTS = {
     path: "/api/marketplace/collaborations/{collaborationId}/respond",
     doc: "engineering/marketplace-collaboration-lifecycle-writes-contract.md",
   },
+  editApplication: {
+    method: "PUT",
+    path: "/api/marketplace/collaborations/{collaborationId}/application",
+    doc: "engineering/marketplace-collaboration-lifecycle-writes-contract.md",
+  },
   updateTerms: {
     method: "PUT",
     path: "/api/marketplace/collaborations/{collaborationId}/terms",
@@ -959,6 +966,7 @@ export const MARKETPLACE_COLLABORATION_LIFECYCLE_WRITE_ENDPOINTS = {
 export const MARKETPLACE_COLLABORATION_LIFECYCLE_WRITE_ACTIONS = [
   "create",
   "respond",
+  "edit_application",
   "update_terms",
   "approve_terms",
   "cancel",

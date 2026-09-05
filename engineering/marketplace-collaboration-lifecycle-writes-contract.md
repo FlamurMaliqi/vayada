@@ -44,6 +44,23 @@ must not write PMS, finance, or affiliate-owned tables directly.
 Fixture coverage lives in
 `engineering/fixtures/marketplace-collaboration-lifecycle-writes/cases.json`.
 
+## Pending creator application edits (VAY-953)
+
+`PUT /api/marketplace/collaborations/:id/application` uses the creator create
+payload and requires `expectedUpdatedAt` from the collaboration read. Only the
+owning creator may edit a creator-initiated pending request. It replaces message,
+dates, deliverables and the selected compensation snapshot atomically, retaining
+the request ID and pending status. The compensation option must belong to the
+original offer. Edits also enforce the property-local date and current offering
+availability checks from VAY-954. Failures roll back all writes. This is separate from negotiating
+terms; it does not approve either party's terms.
+
+Lifecycle mutations lock the collaboration before reading its current state.
+Responses accept `expectedUpdatedAt` and return 409 on stale versions; clients
+refresh details before retrying. Cancel supports `pendingOnly: true` for request
+withdrawal and exposes `cancelledBy` in reads. Edits use existing idempotency and
+notification records. No legacy route or database is changed.
+
 ## Property-local collaboration dates (VAY-954)
 
 Creator applications require concrete ISO start/end dates, with end after start.
