@@ -56,6 +56,7 @@ describe.skipIf(!url)("nearby curation PostgreSQL transactions", () => {
     await repository.close();
     await admin.query("BEGIN");
     await admin.query("SET LOCAL session_replication_role = replica");
+    await admin.query("DELETE FROM hotel_catalog.property_nearby_curation WHERE property_id=$1", [propertyId]);
     await admin.query("DELETE FROM platform.product_audit_events WHERE organization_id=$1", [
       organizationId,
     ]);
