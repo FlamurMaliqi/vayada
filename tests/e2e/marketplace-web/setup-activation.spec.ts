@@ -746,87 +746,156 @@ test.describe("marketplace-web shared setup activation", () => {
     });
   });
 
-  test("saves multi-select guest payment methods with inherited currency and bank details", async ({
-    page,
-    baseURL,
-  }) => {
-    await primeBrowserState(page, true);
-    await mockAuthSession(page);
-    await mockSharedSetupStatus(page, sharedRoadmapStatus("payment"));
-    let paymentWrite: Record<string, unknown> | null = null;
-    await page.route(
-      new RegExp(`/api/finance/properties/${propertyId}/payment-settings$`),
-      async (route) => {
-        if (route.request().method() === "OPTIONS") {
-          await fulfillCorsPreflight(route);
-          return;
-        }
-        if (route.request().method() === "PATCH") {
-          paymentWrite = route.request().postDataJSON() as Record<string, unknown>;
-        }
-        const paymentSettings =
-          route.request().method() === "PATCH"
-            ? (paymentWrite?.paymentSettings as Record<string, unknown>)
-            : {
-                paymentsEnabled: false,
-                paymentProvider: "manual",
-                acceptedMethods: [],
-                depositPolicy: {},
-                requiresManualReview: false,
-              };
-        await route.fulfill({
-          status: 200,
-          headers: corsHeaders(route),
-          json: {
-            paymentSettings: {
-              ...paymentSettings,
-              defaultCurrency: "IDR",
-              supportedCurrencies: ["IDR"],
-              providerAccount: {
-                providerAccountId: null,
-                provider: "bank_transfer",
-                status: "active",
-                onboardingStatus: "completed",
-                chargesEnabled: false,
-                payoutsEnabled: false,
+  for (const mode of ["provider-only", "bank-only", "both"] as const)
+    test(`saves independent payment configuration: ${mode}`, async ({ page, baseURL }) => {
+      await primeBrowserState(page, true);
+      await mockAuthSession(page);
+      await mockSharedSetupStatus(page, sharedRoadmapStatus("payment"));
+      let policyFailed = false;
+      let destinationCalls = 0;
+      let paymentWrite: Record<string, unknown> | null = null;
+      let destinationWrite: Record<string, unknown> | null = null;
+      await page.route(
+        new RegExp(`/api/finance/properties/${propertyId}/bank-transfer-destination$`),
+        async (route) => {
+          if (route.request().method() === "OPTIONS") return fulfillCorsPreflight(route);
+          if (route.request().method() === "PUT") {
+            destinationCalls++;
+            destinationWrite = route.request().postDataJSON();
+          }
+          await route.fulfill({
+            status: 200,
+            headers: corsHeaders(route),
+            json: {
+              destination: destinationWrite
+                ? {
+                    id: propertyId,
+                    revision: 1,
+                    version: 1,
+                    enabled: true,
+                    deleted: false,
+                    maskedAccount: "•••• 7890",
+                  }
+                : null,
+            },
+          });
+        },
+      );
+      await page.route(
+        new RegExp(`/api/finance/properties/${propertyId}/payment-settings$`),
+        async (route) => {
+          if (route.request().method() === "OPTIONS") {
+            await fulfillCorsPreflight(route);
+            return;
+          }
+          if (route.request().method() === "PATCH") {
+            paymentWrite = route.request().postDataJSON() as Record<string, unknown>;
+            if (mode === "bank-only" && !policyFailed) {
+              policyFailed = true;
+              await route.fulfill({
+                status: 503,
+                headers: corsHeaders(route),
+                json: { code: "unavailable" },
+              });
+              return;
+            }
+          }
+          const paymentSettings =
+            route.request().method() === "PATCH"
+              ? (paymentWrite?.paymentSettings as Record<string, unknown>)
+              : {
+                  paymentsEnabled: false,
+                  paymentProvider: "stripe",
+                  acceptedMethods: [],
+                  depositPolicy: {},
+                  requiresManualReview: false,
+                };
+          await route.fulfill({
+            status: 200,
+            headers: corsHeaders(route),
+            json: {
+              paymentSettings: {
+                ...paymentSettings,
+                defaultCurrency: "IDR",
+                supportedCurrencies: ["IDR"],
+                providerAccount: {
+                  providerAccountId: "provider_account_123",
+                  provider: "stripe",
+                  status: "active",
+                  onboardingStatus: "completed",
+                  chargesEnabled: true,
+                  payoutsEnabled: true,
+                  ready: true,
+                },
               },
             },
-          },
-        });
-      },
-    );
-
-    await page.goto(setupUrl(baseURL));
-    const currentStep = page.locator('section[aria-labelledby="current-setup-step-title"]');
-    await expect(currentStep.getByRole("heading", { name: "How guests can pay" })).toBeVisible();
-    await expect(currentStep.getByLabel("Currency")).toHaveCount(0);
-    await expect(currentStep.getByText("Payments use your property currency: IDR.")).toBeVisible();
-    await currentStep.getByRole("button", { name: /Bank Transfer/ }).click();
-    await currentStep.getByLabel("Bank name").fill("Bank Central Asia");
-    await currentStep.getByLabel("Account holder").fill("Hotel Alpenrose");
-    await currentStep.getByLabel("Account number / IBAN").fill("1234567890");
-    await currentStep.getByRole("button", { name: /PayPal/ }).click();
-    await currentStep.getByLabel("PayPal email").fill("payments@alpenrose.test");
-    const paymentSettingsRequest = page.waitForRequest(
-      (request) => request.method() === "PATCH" && request.url().endsWith(`/payment-settings`),
-    );
-    await currentStep.getByRole("button", { name: "Save and continue" }).click();
-    await paymentSettingsRequest;
-
-    expect(paymentWrite).toMatchObject({
-      paymentSettings: {
-        acceptedMethods: ["pay_at_property", "cash", "manual_card", "bank_transfer", "paypal"],
-        depositPolicy: {
-          bankName: "Bank Central Asia",
-          accountHolder: "Hotel Alpenrose",
-          accountNumber: "1234567890",
-          paypalEmail: "payments@alpenrose.test",
+          });
         },
-      },
+      );
+
+      await page.goto(setupUrl(baseURL));
+      const currentStep = page.locator('section[aria-labelledby="current-setup-step-title"]');
+      await expect(currentStep.getByRole("heading", { name: "How guests can pay" })).toBeVisible();
+      await expect(currentStep.getByLabel("Currency")).toHaveCount(0);
+      await expect(
+        currentStep.getByText("Payments use your property currency: IDR."),
+      ).toBeVisible();
+      if (mode !== "bank-only")
+        await currentStep.getByRole("button", { name: /Online Card/ }).click();
+      if (mode !== "provider-only") {
+        await currentStep.getByRole("button", { name: /Bank Transfer/ }).click();
+        await currentStep.getByLabel("Bank name").fill("Bank Central Asia");
+        await currentStep.getByLabel("Account holder").fill("Hotel Alpenrose");
+        await currentStep.getByLabel("Account number / IBAN").fill("1234567890");
+      }
+      const paymentSettingsRequest = page.waitForResponse(
+        (response) =>
+          response.request().method() === "PATCH" && response.url().endsWith(`/payment-settings`),
+      );
+      await currentStep.getByRole("button", { name: /Save and (continue|connect Stripe)/ }).click();
+      await paymentSettingsRequest;
+      if (mode === "bank-only") {
+        await expect(currentStep.getByRole("button", { name: "Save and continue" })).toBeEnabled();
+        const retry = page.waitForResponse(
+          (response) =>
+            response.request().method() === "PATCH" &&
+            response.url().endsWith("/payment-settings") &&
+            response.status() === 200,
+        );
+        await currentStep.getByRole("button", { name: "Save and continue" }).click();
+        await retry;
+        expect(destinationCalls).toBe(1);
+      }
+
+      const expected = [
+        "pay_at_property",
+        "cash",
+        "manual_card",
+        ...(mode !== "bank-only" ? ["card"] : []),
+        ...(mode !== "provider-only" ? ["bank_transfer"] : []),
+      ];
+      expect(
+        (paymentWrite?.paymentSettings as { acceptedMethods: string[] }).acceptedMethods.sort(),
+      ).toEqual(expected.sort());
+      expect(JSON.stringify(paymentWrite)).not.toContain("1234567890");
+      expect(JSON.stringify(paymentWrite)).not.toContain("Bank Central Asia");
+      if (mode === "provider-only") expect(destinationWrite).toBeNull();
+      else
+        expect(destinationWrite).toMatchObject({
+          action: "replace",
+          details: { accountNumber: "1234567890", bankName: "Bank Central Asia" },
+        });
+      if (mode === "bank-only")
+        expect(paymentWrite?.paymentSettings).not.toHaveProperty("paymentProvider");
+      else expect(paymentWrite?.paymentSettings).toHaveProperty("paymentProvider", "stripe");
+      expect(paymentWrite?.paymentSettings).not.toHaveProperty("defaultCurrency");
+      expect(paymentWrite?.paymentSettings).not.toHaveProperty("supportedCurrencies");
+      if (mode !== "provider-only") {
+        await expect(currentStep.getByLabel("Account number / IBAN")).toHaveValue("");
+        await expect(currentStep.getByText(/Saved account: •••• 7890/)).toBeVisible();
+        await page.screenshot({ path: `/tmp/v1041-${mode}-saved.png`, fullPage: true });
+      }
     });
-    expect(paymentWrite?.paymentSettings).not.toHaveProperty("defaultCurrency");
-    expect(paymentWrite?.paymentSettings).not.toHaveProperty("supportedCurrencies");
-  });
 
   test("refreshes canonical Stripe readiness once on the exact Marketplace return", async ({
     page,
@@ -2041,6 +2110,10 @@ async function mockAuthSession(page: Page) {
 }
 
 async function mockSharedSetupStatus(page: Page, status: AdaptiveHotelSetupStatus) {
+  await page.route(/\/bank-transfer-destination$/, async (route) => {
+    if (route.request().method() === "OPTIONS") return fulfillCorsPreflight(route);
+    await route.fulfill({ status: 200, headers: corsHeaders(route), json: { destination: null } });
+  });
   await page.route(/\/api\/hotel-setup\/status/, async (route) => {
     if (route.request().method() === "OPTIONS") {
       await fulfillCorsPreflight(route);
