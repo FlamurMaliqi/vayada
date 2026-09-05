@@ -28,7 +28,7 @@ it.each(["missing", "invalid", "permission", "entitlement", "inactive", "resourc
         : mode === "entitlement"
           ? { entitlements: [] }
           : mode === "inactive"
-            ? { entitlements: [entitlement("inactive")] }
+            ? { entitlements: [entitlement("suspended")] }
             : mode === "resource"
               ? { links: [] }
               : {};
