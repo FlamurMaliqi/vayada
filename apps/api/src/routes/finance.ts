@@ -21,6 +21,8 @@ import {
   type FinanceAffiliatePayoutSchedule,
   toFinanceCancellationPolicyResponse,
   toFinancePaymentSettingsResponse,
+  safeDepositPolicy,
+  BANK_POLICY_FIELDS,
   toPublicPaymentCapabilityProjection,
   type CancellationPolicy,
   type CreateStripeProviderAccountCommand,
@@ -235,6 +237,7 @@ type FinancePaymentSettingsRow = {
   paymentsEnabled: boolean | null;
   acceptedMethods: unknown;
   defaultCurrency: string | null;
+  bankTransferReady?: boolean;
   depositPolicy: unknown;
   refundPolicy: unknown;
   taxPolicy: unknown;
@@ -1542,6 +1545,17 @@ async function updatePaymentSettingsInClient(
   const current = existing
     ? toFinancePaymentSettingsReadModel(existing)
     : setupIncompletePaymentSettings(command.propertyId, new Date().toISOString());
+  if (
+    command.payload.depositPolicy &&
+    BANK_POLICY_FIELDS.some((field) => Object.hasOwn(command.payload.depositPolicy!, field))
+  ) {
+    return {
+      ok: false,
+      statusCode: 400,
+      code: "invalid_command",
+      message: "Bank details require the dedicated destination endpoint.",
+    };
+  }
   const next = mergePaymentSettings(current, {
     ...command.payload,
     defaultCurrency: canonicalCurrency,
@@ -1731,18 +1745,8 @@ function paymentSettingsCompletenessError(
   ) {
     return "Pay at Hotel requires cash, card, or both.";
   }
-  if (settings.acceptedMethods.includes("bank_transfer")) {
-    const requiredFields = [
-      ["bankName", "bank name"],
-      ["accountHolder", "account holder"],
-      ["accountNumber", "account number or IBAN"],
-      ["bankTransferInstructions", "bank transfer instructions"],
-    ] as const;
-    for (const [field, label] of requiredFields) {
-      if (!policyText(settings.depositPolicy[field])) {
-        return `Bank Transfer requires ${label}.`;
-      }
-    }
+  if (settings.acceptedMethods.includes("bank_transfer") && !settings.bankTransferReady) {
+    return "Bank Transfer requires an enabled destination.";
   }
   if (
     settings.acceptedMethods.includes("paypal") &&
@@ -2557,7 +2561,8 @@ async function createStripeProviderAccountInClient(
   }
 
   let loserCompensation:
-    { kind: "compensated" } | { kind: "durably_owned"; account: StripeProviderAccountOwnershipRow };
+    | { kind: "compensated" }
+    | { kind: "durably_owned"; account: StripeProviderAccountOwnershipRow };
   try {
     loserCompensation = await compensateStripeProviderAccountIfUnowned(
       client,
@@ -5090,6 +5095,8 @@ async function loadPaymentSettingsRow(
        COALESCE(settings.payments_enabled, FALSE) AS "paymentsEnabled",
        COALESCE(settings.accepted_methods, ARRAY[]::text[]) AS "acceptedMethods",
        COALESCE(booking_settings.default_currency, settings.default_currency, 'EUR') AS "defaultCurrency",
+       EXISTS (SELECT 1 FROM finance.bank_transfer_destinations destination
+         WHERE destination.property_id=property.id AND destination.enabled) AS "bankTransferReady",
        COALESCE(settings.deposit_policy, '{}'::jsonb) AS "depositPolicy",
        COALESCE(settings.refund_policy, '{}'::jsonb) AS "refundPolicy",
        COALESCE(settings.tax_policy, '{}'::jsonb) AS "taxPolicy",
@@ -5881,7 +5888,8 @@ function toFinancePaymentSettingsReadModel(
     acceptedMethods,
     defaultCurrency,
     supportedCurrencies: [defaultCurrency],
-    depositPolicy: jsonPolicy(row.depositPolicy),
+    bankTransferReady: row.bankTransferReady === true,
+    depositPolicy: safeDepositPolicy(jsonPolicy(row.depositPolicy)),
     refundPolicy: jsonPolicy(row.refundPolicy),
     taxPolicy: jsonPolicy(row.taxPolicy),
     statementDescriptor: row.statementDescriptor,
@@ -6523,6 +6531,14 @@ function toPaymentSettingsPatchCommand(
     if (paymentSettings[key] !== undefined) {
       const policy = jsonPolicyBody(paymentSettings[key], key);
       if (!policy.ok) return policy.error;
+      if (
+        key === "depositPolicy" &&
+        BANK_POLICY_FIELDS.some((field) => Object.hasOwn(policy.value, field))
+      )
+        return invalidQuery(
+          "invalid_body",
+          "Bank details require the dedicated destination endpoint.",
+        );
       payload[key] = policy.value;
     }
   }
@@ -6593,7 +6609,8 @@ function currencyArray(value: unknown): string[] | null {
 }
 
 type FinanceJsonPolicyBodyResult =
-  { ok: true; value: FinanceJsonPolicy } | { ok: false; error: FinanceValidationError };
+  | { ok: true; value: FinanceJsonPolicy }
+  | { ok: false; error: FinanceValidationError };
 
 function jsonPolicyBody(value: unknown, name: string): FinanceJsonPolicyBodyResult {
   const record = plainRecord(value);
@@ -6609,10 +6626,7 @@ function jsonPolicyBody(value: unknown, name: string): FinanceJsonPolicyBodyResu
     if (!valid) {
       return {
         ok: false,
-        error: invalidQuery(
-          "invalid_body",
-          `${name}.${key} must be a string, number, boolean, or null.`,
-        ),
+        error: invalidQuery("invalid_body", `${name} contains an invalid value.`),
       };
     }
   }
