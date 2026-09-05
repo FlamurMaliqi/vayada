@@ -4579,7 +4579,7 @@ function reservationNotFoundError(): PmsOperationsError {
   };
 }
 
-function writePmsOperationsCorsHeaders(
+export function writePmsOperationsCorsHeaders(
   request: FastifyRequest,
   reply: FastifyReply,
   allowedOrigins: string[],

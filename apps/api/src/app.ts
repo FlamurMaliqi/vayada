@@ -1,3 +1,5 @@
+import { registerPmsConfirmationEmailRoutes } from "./routes/pmsConfirmationEmails.js";
+import type { PmsConfirmationEmails } from "./domains/pmsConfirmationEmails.js";
 import { backendAuthPlugin, type BackendAuthPluginOptions } from "@vayada/backend-auth";
 import type { IdentityLifecycleCommandBus } from "@vayada/backend-auth";
 import type { BookingGuestPiiPort } from "@vayada/domain-booking";
@@ -268,6 +270,7 @@ type BuildAppOptions = Pick<FastifyServerOptions, "logger" | "trustProxy"> & {
   bookingReservationsRepository?: BookingReservationsReadRepository;
   bookingGuestPolicy?: BookingGuestPolicyRoutesOptions;
   bookingChangeRequestRepository?: BookingHotelChangeRequestRepository;
+  pmsConfirmationEmails?: PmsConfirmationEmails;
   pmsOperationsRepository?: PmsOperationsReadRepository;
   pmsInboxAssistancePort?: PmsInboxAssistancePort;
   pmsInboxReadPort?: PmsInboxReadPort;
@@ -685,6 +688,14 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     repository: options.affiliateDashboardRepository,
     financeRepository: options.financeRepository,
   });
+  if (options.pmsConfirmationEmails && options.auth) {
+    app.register(registerPmsConfirmationEmailRoutes, {
+      prefix: "/api/pms",
+      emails: options.pmsConfirmationEmails,
+      propertyAccessRepository: options.auth.propertyAccessRepository,
+      allowedOrigins: options.pmsOperationsAllowedOrigins,
+    });
+  }
   if (options.pmsOperationsRepository) {
     app.register(registerPmsOperationsRoutes, {
       prefix: "/api/pms",
