@@ -136,6 +136,31 @@ describe.skipIf(!URL)("production PMS writers (PostgreSQL)", () => {
       const source = sourceRows();
       const webhook = source.find((row) => row.sourceTable === "channex_webhook_events")!;
       const inquiryThread = source.find((row) => row.sourceTable === "message_threads")!;
+      const previewThreadId = "13560000-0000-4000-8000-000000000110";
+      const previewMessageId = "13560000-0000-4000-8000-000000000111";
+      const previewBody = " 🏨e\u0301".repeat(100);
+      source.push({
+        ...inquiryThread,
+        rowOrdinal: source.length + 1,
+        data: {
+          ...inquiryThread.data,
+          id: previewThreadId,
+          source_thread_id: "preview-thread",
+          last_message_preview: [...previewBody].slice(0, 200).join(""),
+        },
+      });
+      const previewMessage = source.find((row) => row.sourceTable === "messages")!;
+      source.push({
+        ...previewMessage,
+        rowOrdinal: source.length + 1,
+        data: {
+          ...previewMessage.data,
+          id: previewMessageId,
+          thread_id: previewThreadId,
+          source_message_id: "preview-message",
+          body: previewBody,
+        },
+      });
       Object.assign(inquiryThread.data, {
         channel: "airbnb",
         booking_id: null,
@@ -275,6 +300,22 @@ describe.skipIf(!URL)("production PMS writers (PostgreSQL)", () => {
       expect(verified.blockers).toEqual([]);
       expect(verified.writes).toEqual([]);
       expect(verified.checksum).toBe(plan.checksum);
+
+      const preview = await client.query(
+        `SELECT thread.last_message_preview, char_length(thread.last_message_preview) AS length,
+                message.body, thread.last_message_preview = left(message.body, 280) AS matches_target
+           FROM pms.message_threads thread JOIN pms.messages message ON message.thread_id = thread.id
+          WHERE thread.id = $1 AND message.id = $2`,
+        [previewThreadId, previewMessageId],
+      );
+      expect(preview.rows).toEqual([
+        {
+          last_message_preview: [...previewBody].slice(0, 280).join(""),
+          length: 280,
+          body: previewBody,
+          matches_target: true,
+        },
+      ]);
 
       const inquiry = await client.query(
         `SELECT thread.attention_state, thread.unread_count, thread.last_message_direction,
