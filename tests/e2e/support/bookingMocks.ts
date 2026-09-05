@@ -133,6 +133,8 @@ const rooms = [
       "Balcony",
       "Kitchen",
       "Non-smoking",
+      "Safe",
+      "Coffee machine",
       "Minibar",
       "Laptop-friendly workspace",
     ],
