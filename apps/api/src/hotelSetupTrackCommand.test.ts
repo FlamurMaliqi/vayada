@@ -1,3 +1,5 @@
+import { createPgMarketplaceAdminRepository } from "./routes/marketplaceAdmin.js";
+import { createPgMarketplaceOfferIdentityAccessCommandPort } from "./platform/marketplaceOfferIdentityAccess.js";
 import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 
@@ -104,6 +106,7 @@ describe.skipIf(!TEST_DATABASE_URL)("hotel setup track command repository", () =
     try {
       await client.query("SET LOCAL session_replication_role = replica");
       for (const table of [
+        "identity.organization_memberships",
         "platform.product_audit_events",
         "platform.idempotency_keys",
         "finance.billing_entitlements",
@@ -113,6 +116,17 @@ describe.skipIf(!TEST_DATABASE_URL)("hotel setup track command repository", () =
       ]) {
         await client.query(`DELETE FROM ${table} WHERE organization_id = ANY($1::uuid[])`, [
           organizationIds,
+        ]);
+      }
+      for (const table of [
+        "marketplace.marketplace_offer_read_model",
+        "marketplace.offer_creator_requirements",
+        "marketplace.offer_deliverables",
+        "marketplace.offer_compensation_options",
+        "marketplace.marketplace_offers",
+      ]) {
+        await client.query(`DELETE FROM ${table} WHERE property_id = ANY($1::uuid[])`, [
+          propertyIds,
         ]);
       }
       await client.query(
@@ -909,7 +923,7 @@ describe.skipIf(!TEST_DATABASE_URL)("hotel setup track command repository", () =
         correlationId: "setup-property-create-race",
         profile: completePropertyProfile("Concurrent Track Test Hotel"),
       });
-      await waitForBlockedQuery("hotel_setup.property.create");
+      await waitForBlockedQuery("FROM identity.organizations");
       await client.query("COMMIT");
       blockerOpen = false;
 
@@ -961,6 +975,153 @@ describe.skipIf(!TEST_DATABASE_URL)("hotel setup track command repository", () =
     expect(
       await count("platform.idempotency_keys", "organization_id", rollback.organizationId),
     ).toBe(0);
+  });
+
+  it("lets an authorized admin add Marketplace without publishing or duplicating profiles", async () => {
+    const hotel = await createFixture();
+    await addProperty(hotel.organizationId);
+    await client.query(
+      `INSERT INTO identity.organization_memberships (organization_id, user_id, role_key, access_origin) VALUES ($1, $2, 'hotel_owner', 'agency')`,
+      [hotel.organizationId, hotel.actorUserId],
+    );
+    await repository.updateTracks(
+      command(hotel, {
+        selectedTracks: ["hotel_operations"],
+        expectedRevision: 0,
+        idempotencyKey: "initial-operations",
+      }),
+    );
+    const platformOrganizationId = randomUUID();
+    const adminId = randomUUID();
+    organizationIds.push(platformOrganizationId);
+    userIds.push(adminId);
+    await client.query(`INSERT INTO identity.users (id, email) VALUES ($1, $2)`, [
+      adminId,
+      `${adminId}@example.test`,
+    ]);
+    await client.query(
+      `INSERT INTO identity.organizations (id, kind, name, slug) VALUES ($1::uuid, 'platform', 'Admin', $1::text)`,
+      [platformOrganizationId],
+    );
+    await client.query(
+      `INSERT INTO identity.organization_memberships (organization_id, user_id, role_key, access_origin) VALUES ($1, $2, 'platform_admin', 'agency')`,
+      [platformOrganizationId, adminId],
+    );
+    await client.query(
+      `INSERT INTO identity.organization_resource_links (organization_id, product, resource_type, resource_id, relationship, status) VALUES ($1, 'platform', 'platform', 'vayada', 'operator', 'active')`,
+      [platformOrganizationId],
+    );
+    const activation = {
+      ...command(hotel, {
+        selectedTracks: ["hotel_operations", "creator_marketplace"],
+        expectedRevision: 1,
+        idempotencyKey: "admin-enable",
+      }),
+      actorUserId: adminId,
+      adminActivation: {
+        platformOrganizationId,
+        accountUserId: hotel.actorUserId,
+        actorUserId: adminId,
+      },
+    };
+    const [first, replay] = await Promise.all([
+      repository.updateTracks(activation),
+      repository.updateTracks(activation),
+    ]);
+    expect(first).toEqual(replay);
+    expect(first).toMatchObject({
+      ok: true,
+      response: { tracks: [{ provisioning: "active" }, { provisioning: "active" }] },
+    });
+    const profiles = await client.query(
+      `SELECT marketplace_profile_status FROM marketplace.marketplace_hotel_profiles WHERE organization_id = $1`,
+      [hotel.organizationId],
+    );
+    expect(profiles.rows).toHaveLength(2);
+    expect(profiles.rows.every((row) => row.marketplace_profile_status !== "verified")).toBe(true);
+    const audit = await client.query(
+      `SELECT actor_user_id, audit_metadata FROM platform.product_audit_events WHERE organization_id = $1 AND actor_user_id = $2`,
+      [hotel.organizationId, adminId],
+    );
+    expect(audit.rows).toHaveLength(1);
+    expect(audit.rows[0].audit_metadata.adminActivation.accountUserId).toBe(hotel.actorUserId);
+    const offers = createPgMarketplaceAdminRepository({
+      connectionString: TEST_DATABASE_URL!,
+      identityAccess: createPgMarketplaceOfferIdentityAccessCommandPort(),
+    });
+    try {
+      const scope = {
+        hotelUserId: hotel.actorUserId,
+        authorizationMode: "platform_organization_membership" as const,
+      };
+      await expect(offers.readHotelReviewForUser(scope)).rejects.toMatchObject({ statusCode: 409 });
+      const input = {
+        ...scope,
+        propertyId: hotel.propertyId,
+        idempotencyKey: "draft-retry",
+        request: {
+          title: "Private draft",
+          deliverables: [],
+          compensationOptions: [],
+          creatorRequirements: {
+            platforms: [],
+            targetCountries: [],
+            targetAgeMin: null,
+            targetAgeMax: null,
+            targetAgeGroups: [],
+            creatorTypes: [],
+          },
+        },
+        audit: {
+          actorUserId: adminId,
+          actorOrganizationId: platformOrganizationId,
+          requestId: "draft-test",
+          correlationId: null,
+          source: "web" as const,
+          occurredAt,
+        },
+      };
+      const [draft, retried] = await Promise.all([
+        offers.createOfferForUser(input),
+        offers.createOfferForUser(input),
+      ]);
+      expect(draft?.offerStatus).toBe("draft");
+      expect(retried?.offerId).toBe(draft?.offerId);
+      await expect(
+        offers.createOfferForUser({ ...input, request: { ...input.request, title: "Changed" } }),
+      ).rejects.toMatchObject({ statusCode: 409 });
+      const review = await offers.readHotelReviewForUser({
+        ...scope,
+        propertyId: hotel.propertyId,
+      });
+      expect(review.offers).toHaveLength(1);
+      const discovery = await client.query(
+        `SELECT offer_id FROM marketplace.marketplace_offer_read_model WHERE property_id = $1 AND visibility_status = 'public'`,
+        [hotel.propertyId],
+      );
+      expect(discovery.rows).toHaveLength(0);
+      await expect(
+        offers.verifyOfferForUser({
+          ...scope,
+          propertyId: hotel.propertyId,
+          offerId: draft!.offerId,
+        }),
+      ).rejects.toMatchObject({ statusCode: 422 });
+      const other = await createFixture();
+      expect(
+        await offers.createOfferForUser({ ...input, propertyId: other.propertyId }),
+      ).toBeNull();
+    } finally {
+      await offers.close?.();
+    }
+    // Revoked target membership must deny even an otherwise valid replay.
+    await client.query(
+      `UPDATE identity.organization_memberships SET status = 'suspended' WHERE organization_id = $1`,
+      [hotel.organizationId],
+    );
+    await expect(repository.updateTracks(activation)).rejects.toMatchObject({
+      code: "invalid_platform_scope",
+    });
   });
 
   async function createFixture() {
