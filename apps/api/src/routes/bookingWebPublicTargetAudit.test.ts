@@ -247,6 +247,88 @@ describe("target Booking public audit regressions", () => {
     ]);
   });
 
+  it.each([10, 20, 30])(
+    "compares automatic %i%% with a 20%% code without stacking",
+    async (discountPercent) => {
+      const target = quoteHarness({
+        propertyId: propertyA,
+        promo: {},
+        promotionSettings: {
+          promotions: [
+            {
+              type: "EARLY_BIRD",
+              active: true,
+              roomTypeIds: [],
+              discountPercent,
+              threshold: 30,
+              freeNights: 0,
+              weekdays: [],
+              tiers: [],
+            },
+          ],
+        },
+      });
+      const result = await target.adapter.quoteBooking(
+        "hotel-a",
+        {
+          roomTypeId: "room-deluxe",
+          checkIn: "2026-09-12",
+          checkOut: "2026-09-15",
+          adults: 2,
+          numberOfRooms: 1,
+          paymentMethod: "pay_at_property",
+          rateType: "nonrefundable",
+          promoCode: "summer20",
+        },
+        quoteContext(),
+      );
+      expect(result).toMatchObject({
+        totalAmount: discountPercent > 20 ? 189 : 216,
+        promoDiscount: discountPercent > 20 ? 0 : 54,
+      });
+      const snapshot = JSON.parse(String(target.quoteWrite?.values?.[9]));
+      if (discountPercent > 20) {
+        expect(snapshot.promotion).toMatchObject({ name: "Early bird", discountAmount: 81 });
+        expect(snapshot.promo).toBeUndefined();
+        expect(target.promoApplicationWrite).toBeUndefined();
+      } else {
+        expect(snapshot.promo.code).toBe("SUMMER20");
+        expect(snapshot.promotion).toBeUndefined();
+      }
+      expect(target.quoteWrite?.values?.[13]).toBe("SUMMER20");
+    },
+  );
+
+  it("applies existing target last-minute tiers without requiring a settings migration", async () => {
+    const target = quoteHarness({
+      propertyId: propertyA,
+      promotionSettings: {
+        enabled: true,
+        stackWithPromo: true,
+        tiers: [{ daysBeforeMin: 0, daysBeforeMax: 60, discountPercent: 25 }],
+      },
+    });
+    await expect(
+      target.adapter.quoteBooking(
+        "hotel-a",
+        {
+          roomTypeId: "room-deluxe",
+          checkIn: "2026-09-12",
+          checkOut: "2026-09-15",
+          adults: 2,
+          numberOfRooms: 1,
+          paymentMethod: "pay_at_property",
+          rateType: "nonrefundable",
+        },
+        quoteContext(),
+      ),
+    ).resolves.toMatchObject({
+      totalAmount: 202.5,
+      lastMinuteDiscountAmount: 67.5,
+      promotion: { name: "Last minute escape", discountAmount: 67.5 },
+    });
+  });
+
   it.each([
     [{ validUntil: "2026-07-19" }, { code: "SUMMER20" }, "This promo code has expired."],
     [
@@ -286,6 +368,7 @@ function quoteHarness(options: {
   sameDayBookingsEnabled?: boolean;
   sameDayBookingCutoffTime?: string | null;
   referenceCollision?: boolean;
+  promotionSettings?: unknown;
   promo?: Partial<{
     validUntil: string | null;
     stayDateFrom: string | null;
@@ -320,6 +403,7 @@ function quoteHarness(options: {
             {
               propertyId: options.propertyId,
               defaultCurrency: "EUR",
+              promotionSettings: options.promotionSettings,
               acceptedMethods: ["pay_at_property"],
               depositPolicy: {},
             },

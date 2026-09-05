@@ -9,7 +9,7 @@ import {
 } from "@vayada/domain-distribution";
 import { createHash } from "node:crypto";
 import type { QueryResultRow } from "pg";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { buildApp } from "../app.js";
 import { createTargetPmsInventoryReservationPort } from "../domains/pmsInventoryReservation.js";
@@ -1569,6 +1569,9 @@ describe("Booking Web public bootstrap parity", () => {
       quotedAcceptanceMode: "instant" | "request" = "request",
       addonUnitAmount = "10.25",
       withPromo = false,
+      withAutomatic = false,
+      corruptPromotion = false,
+      withLosingCode = false,
     ) => {
       const calls: string[] = [];
       let bookingWriteValues: readonly unknown[] | undefined;
@@ -1632,6 +1635,16 @@ describe("Booking Web public bootstrap parity", () => {
                         partnerCommissionRate: "18.7500",
                       },
                     ],
+                    ...(withAutomatic
+                      ? {
+                          promotion: {
+                            type: "EARLY_BIRD",
+                            name: "Early bird",
+                            discountPercent: 20,
+                            discountAmount: corruptPromotion ? 19 : 20,
+                          },
+                        }
+                      : {}),
                     ...(withPromo
                       ? {
                           promo: {
@@ -1646,8 +1659,8 @@ describe("Booking Web public bootstrap parity", () => {
                       : {}),
                   },
                   // prettier-ignore
-                  totals: { roomTotal: withPromo ? "99.50" : "79.50", addonTotal, promoDiscount: withPromo ? "20.00" : "0.00", totalAmount: "100.00", balanceAmount: "100.00" },
-                  promoCode: withPromo ? "SUMMER20" : null,
+                  totals: { roomTotal: withPromo || withAutomatic ? "99.50" : "79.50", addonTotal, promoDiscount: withPromo ? "20.00" : "0.00", ...(withAutomatic ? { promotionDiscount: "20.00" } : {}), totalAmount: "100.00", balanceAmount: "100.00" },
+                  promoCode: withPromo || withLosingCode ? "SUMMER20" : null,
                   policySnapshot: { freeUntilDays: 7 },
                   expiresAt: "2026-09-12T12:00:00.000Z",
                 },
@@ -1939,6 +1952,36 @@ describe("Booking Web public bootstrap parity", () => {
     expect(
       promoBooking.calls.filter((text) => text.includes("INSERT INTO booking.promo_applications")),
     ).toHaveLength(1);
+
+    const automaticBooking = createAdapter(false, "20.50", "request", "10.25", false, true);
+    await expect(
+      automaticBooking.adapter.createBooking("hotel-alpenrose", request, context),
+    ).resolves.toMatchObject({ bookingReference: "B-OPTIONAL" });
+    expect(
+      JSON.parse(String(automaticBooking.bookingWriteValues?.[18])).selectedOffer.promotion,
+    ).toMatchObject({ name: "Early bird", discountAmount: 20 });
+    expect(
+      automaticBooking.calls.some((text) => text.includes("SET current_uses = current_uses + 1")),
+    ).toBe(false);
+    await expect(
+      createAdapter(false, "20.50", "request", "10.25", false, true, true).adapter.createBooking(
+        "hotel-alpenrose",
+        request,
+        context,
+      ),
+    ).rejects.toThrow("Checkout quote pricing evidence is unavailable");
+
+    const losingCode = createAdapter(false, "20.50", "request", "10.25", false, true, false, true);
+    await expect(
+      losingCode.adapter.createBooking(
+        "hotel-alpenrose",
+        { ...request, promoCode: "SUMMER20" },
+        context,
+      ),
+    ).resolves.toMatchObject({ bookingReference: "B-OPTIONAL" });
+    expect(
+      losingCode.calls.some((text) => text.includes("SET current_uses = current_uses + 1")),
+    ).toBe(false);
 
     const instant = createAdapter(false, "20.50", "instant");
     await expect(
@@ -2683,7 +2726,11 @@ describe("Booking Web public bootstrap parity", () => {
     );
   });
 
+  afterEach(() => vi.useRealTimers());
+
   it("creates and settles a target Stripe Connect card booking", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-09-01T10:00:00.000Z"));
     const propertyId = "a9fccec2-eb4c-4c35-bfd3-02a748c2e117";
     const guestBookingId = "b9fccec2-eb4c-4c35-bfd3-02a748c2e952";
     let lifecycleStatus = "draft";
