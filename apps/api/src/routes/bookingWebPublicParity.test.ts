@@ -1,3 +1,4 @@
+import { vi } from "vitest";
 import {
   buildPublicBookabilityQuoteProjection,
   findForbiddenPublicBookabilityKeys,
@@ -1471,6 +1472,7 @@ describe("Booking Web public bootstrap parity", () => {
                   "paypal",
                   "pay_at_property",
                 ].filter((method) => paypalConfigured || method !== "paypal"),
+                bankTransferReady: true,
                 depositPolicy: {
                   bankTransferInstructions: "Bank: Vayada Bank\nIBAN: DE123",
                   paypalEmail: paypalConfigured ? "payments@alpenrose.test" : "",
@@ -2473,7 +2475,7 @@ describe("Booking Web public bootstrap parity", () => {
     );
   });
 
-  it("creates a pending bank-transfer booking without emailing details before host acceptance", async () => {
+  it("binds bank-transfer bookings without persisting raw instructions", async () => {
     const propertyId = "a9fccec2-eb4c-4c35-bfd3-02a748c2e117";
     const guestBookingId = "b9fccec2-eb4c-4c35-bfd3-02a748c2e951";
     const calls: Array<{ text: string; values: readonly unknown[] | undefined }> = [];
@@ -2528,6 +2530,7 @@ describe("Booking Web public bootstrap parity", () => {
                 phoneRequired: true,
                 paymentsEnabled: true,
                 acceptedMethods: ["bank_transfer"],
+                bankTransferReady: true,
                 depositPolicy: {
                   bankTransferInstructions: "IBAN: DE89370400440532013000",
                 },
@@ -2592,7 +2595,9 @@ describe("Booking Web public bootstrap parity", () => {
       },
       async end() {},
     };
+    const bind = vi.fn(async () => undefined);
     const adapter = createTargetBookingWebCheckoutAdapter({
+      bankTransfers: { bind, confirmation: async () => null, email: async () => null },
       connectionString: "postgres://unused",
       inventoryReservationPort: createTargetPmsInventoryReservationPort(),
       billingConfigReadPortFactory: () => ({
@@ -2647,6 +2652,8 @@ describe("Booking Web public bootstrap parity", () => {
       },
     });
 
+    expect(bind).toHaveBeenCalledWith(expect.anything(), propertyId, guestBookingId);
+    expect(JSON.stringify(calls)).not.toContain("DE89370400440532013000");
     const quoteRead = calls.find((call) => call.text.includes("FROM booking.quote_sessions"));
     expect(quoteRead?.text).toContain("profile.freshness_status = 'fresh'");
     expect(quoteRead?.text).toContain("profile.public_setup_completeness ->> 'status' = 'ready'");
@@ -2662,9 +2669,6 @@ describe("Booking Web public bootstrap parity", () => {
     expect(JSON.parse(String(bookingInsert?.values?.[18]))).toMatchObject({
       paymentMethod: "bank_transfer",
       pendingExpiresAt: "2026-09-02T10:00:00.000Z",
-      paymentInstructions: {
-        bankTransferDetails: "IBAN: DE89370400440532013000",
-      },
     });
     expect(
       calls.some((call) => call.values?.includes("email.booking-reserved-pending-payment")),
@@ -3239,10 +3243,21 @@ describe("Booking Web public bootstrap parity", () => {
 
     confirmationMetadata = { ...confirmationMetadata, paymentMethod: undefined };
     await expect(
-      adapter.confirmation?.("hotel-alpenrose", {
-        bookingReference: "B-CARD952",
-        confirmationToken: created.confirmationToken,
-      }),
+      adapter.confirmation?.(
+        "hotel-alpenrose",
+        {
+          bookingReference: "B-CARD952",
+          confirmationToken: created.confirmationToken,
+        },
+        {
+          operation: "booking-confirmation",
+          requestId: "confirmation-fixed-clock",
+          correlationId: "fixed",
+          idempotencyKey: "confirmation-fixed-clock",
+          fingerprint: "f".repeat(64),
+          occurredAt: new Date("2026-09-01T10:01:00Z"),
+        },
+      ),
     ).resolves.toMatchObject({
       roomName: "Deluxe Suite",
       paymentMethod: "manual_card",

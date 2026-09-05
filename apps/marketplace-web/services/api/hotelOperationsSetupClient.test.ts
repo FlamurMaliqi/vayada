@@ -632,13 +632,8 @@ describe("hotel operations setup client", () => {
     expect(eurRequest).toMatchObject({
       paymentSettings: {
         paymentsEnabled: true,
-        paymentProvider: "bank_transfer",
         acceptedMethods: ["pay_at_property", "cash", "manual_card", "bank_transfer", "paypal"],
         depositPolicy: {
-          bankName: "Vayada Bank",
-          accountHolder: "Hotel One",
-          accountNumber: "DE123",
-          bicSwift: "VAYADEF1",
           paypalEmail: "payments@hotel.test",
         },
       },

@@ -1059,3 +1059,68 @@ test.describe("booking-admin settings no-legacy guard", () => {
     await assertNoLegacyCalls();
   });
 });
+
+test("saves direct-only transfers while retaining an existing hosted provider", async ({
+  page,
+}) => {
+  await mockBookingAdminAuthenticatedSession(page);
+  await mockBookingAdminShellRoutes(page);
+  await page.route(
+    `**/api/finance/properties/${BOOKING_ADMIN_PROPERTY_ID}/bank-transfer-destination`,
+    async (route) => {
+      expect(route.request().method()).toBe("GET");
+      await route.fulfill({
+        json: {
+          destination: {
+            id: BOOKING_ADMIN_PROPERTY_ID,
+            revision: 1,
+            version: 1,
+            enabled: true,
+            deleted: false,
+            maskedAccount: "•••• 3000",
+          },
+        },
+      });
+    },
+  );
+  let write: Record<string, unknown> | null = null;
+  await page.route(`**${BOOKING_ADMIN_FINANCE_PAYMENT_SETTINGS_PATH}`, async (route) => {
+    if (route.request().method() === "PATCH") write = route.request().postDataJSON();
+    await route.fulfill({
+      json: {
+        propertyId: BOOKING_ADMIN_PROPERTY_ID,
+        paymentSettings: {
+          paymentsEnabled: true,
+          paymentProvider: "xendit",
+          acceptedMethods: ["bank_transfer"],
+          defaultCurrency: "EUR",
+          supportedCurrencies: ["EUR"],
+          depositPolicy: {},
+          requiresManualReview: false,
+          providerAccount: {
+            providerAccountId: "provider_saved",
+            provider: "xendit",
+            status: "active",
+            onboardingStatus: "completed",
+            chargesEnabled: true,
+            payoutsEnabled: true,
+          },
+        },
+      },
+    });
+  });
+  await page.goto("/settings?section=billing");
+  const transfer = page
+    .getByRole("heading", { name: "Direct guest bank transfers" })
+    .locator("..")
+    .locator("..");
+  await expect(page.getByText(/Saved account: •••• 3000/)).toBeVisible();
+  const response = page.waitForResponse(
+    (response) =>
+      response.request().method() === "PATCH" && response.url().endsWith("/payment-settings"),
+  );
+  await transfer.getByRole("button", { name: "Save Changes", exact: true }).click();
+  await response;
+  expect(write).toMatchObject({ paymentSettings: { acceptedMethods: ["bank_transfer"] } });
+  expect(write?.paymentSettings).not.toHaveProperty("paymentProvider");
+});
