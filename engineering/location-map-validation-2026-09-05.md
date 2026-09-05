@@ -71,3 +71,25 @@ deployed API/database, Google account/API/billing/referrer/quota checks, live
 attribution and SDK keyboard behavior remain unverified. No credentials were
 available for that validation. Keep provider activation disabled and the rebuild
 PRs draft until that evidence and human merge/shipped acceptance are supplied.
+
+## Follow-up: selected real staging evidence
+
+A subsequent lookup of [VAY-1361](https://linear.app/vayadacom/issue/VAY-1361)
+found newer real-data evidence that was not configured in this checkout. Select
+its retained isolated target `vayada_target_staging_824c10d8_b074ab` and immutable
+source run `vay1351-284859bacf5c049394f9f5e6` for the remaining read-only location
+reconciliation. Do not substitute the shared production/auth database.
+
+VAY-1361 records orchestration `vay1360-b074ab30e0ff1559080d6942`, release
+`824c10d89e11a84bc7ea298577f80040bf5ff840`, parity GO and AWAITING_SMOKE.
+Read-only AWS inspection independently confirmed its ECS task
+`ad41ac4718d1431d8aa7ede89d15096c` stopped with expected exit 4 and image digest
+`sha256:fb1493a317838fd2bb5f6278c2e3a883d5d421c70357d521e8e1ded339e04814`.
+The parity result is recorded evidence from VAY-1361, not a new location-specific
+query or validation of the unmerged map rebuild on that older release.
+
+VAY-1361's latest application preflight reports no isolated application/test-auth
+runtime bound to that target/release. Reuse that existing rehearsal work for the
+runtime prerequisite; retain the run and its evidence. Real location counts,
+map-specific reconciliation and live Google checks remain pending. This
+follow-up launched no task, changed no database and switched no service binding.
