@@ -146,7 +146,11 @@
     "pricePerDay": "Preis pro Tag",
     "priceLabel": "Preis",
     "addedToTrip": "Zur Reise hinzugefügt",
-    "addToTrip": "Zur Reise hinzufügen"
+    "addToTrip": "Zur Reise hinzufügen",
+    "pricePerPersonNight": "Preis pro Person / Nacht",
+    "leadTime": "Vorlaufzeit",
+    "showPhoto": "Foto {number} anzeigen",
+    "closeDetails": "Zusatzleistungsdetails schließen"
   },
   "book": {
     "guestInformation": "Gastinformationen",

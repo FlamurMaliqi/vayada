@@ -184,6 +184,7 @@ export default function BookingConfirmationPageClient({
                 addonTotal: quote.addonTotal,
                 addonIds: request.addonIds,
                 addonQuantities: request.addonQuantities,
+                addonPackageQuantities: request.addonPackageQuantities,
                 addonDates: request.addonDates,
                 currency: quote.currency,
                 paymentMethod: "card",
@@ -632,7 +633,7 @@ export default function BookingConfirmationPageClient({
                   <span className="text-gray-600">{t("addons") || "Add-ons"}</span>
                   <div className="space-y-1.5 text-right">
                     {booking.addonIds.map((addonId, idx) => {
-                      const qty = booking.addonQuantities?.[addonId];
+                      const qty = (booking.addonQuantities?.[addonId] ?? 1) * (booking.addonPackageQuantities?.[addonId] ?? 1);
                       const name = booking.addonNames?.[idx] || addonId;
                       return (
                         <div key={addonId} className="font-medium text-gray-900">
