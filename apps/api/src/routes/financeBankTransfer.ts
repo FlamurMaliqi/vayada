@@ -6,7 +6,11 @@ import type {
   createBankTransferRepository,
   BankTransferDestinationSummary,
 } from "../domains/financeBankTransferRepository.js";
-import { enforceFinancePropertyReadPolicy, enforceFinancePropertyWritePolicy } from "./finance.js";
+import {
+  enforceFinancePropertyReadPolicy,
+  enforceFinancePropertyWritePolicy,
+  type FinanceRoutesOptions,
+} from "./finance.js";
 
 const bodySchema = z.discriminatedUnion("action", [
   z.strictObject({
@@ -26,7 +30,10 @@ type Repository = Pick<ReturnType<typeof createBankTransferRepository>, "read" |
 
 export async function registerFinanceBankTransferRoutes(
   app: FastifyInstance,
-  options: { repository: Repository },
+  options: {
+    repository: Repository;
+    publicBookabilityPublisher?: FinanceRoutesOptions["publicBookabilityPublisher"];
+  },
 ) {
   for (const method of ["GET", "PUT"] as const) {
     app.route<{ Params: { propertyId: string }; Body: unknown }>({
@@ -55,6 +62,7 @@ export async function registerFinanceBankTransferRoutes(
           });
           if (result.status === "conflict")
             return reply.code(409).send({ code: "destination_conflict" });
+          await options.publicBookabilityPublisher?.publish({ propertyId });
           return { destination: masked(result.summary, propertyId) };
         } catch {
           return reply.code(503).send({ code: "bank_transfer_destination_unavailable" });

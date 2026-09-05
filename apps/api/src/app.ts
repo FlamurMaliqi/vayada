@@ -856,7 +856,11 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     app.register(registerFinanceFolioRoutes, { prefix: "/api", ...options.financeFolios });
   }
   if (options.financeBankTransfer) {
-    app.register(registerFinanceBankTransferRoutes, { prefix: "/api", ...options.financeBankTransfer });
+    app.register(registerFinanceBankTransferRoutes, {
+      prefix: "/api",
+      publicBookabilityPublisher: options.publicBookabilityPublisher,
+      ...options.financeBankTransfer,
+    });
   }
   if (options.platformContactIntake) {
     app.register(registerPlatformContactIntakeRoutes, {

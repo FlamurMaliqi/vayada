@@ -103,7 +103,7 @@ describe("booking email delivery", () => {
     expect(queries.some((sql) => sql.includes("INSERT INTO platform.product_audit_events"))).toBe(
       true,
     );
-    expect(queryValues.flat()).toContain("provider unavailable for [redacted-email]");
+    expect(queryValues.flat()).toContain("Booking email delivery failed.");
     expect(queryValues.flat()).not.toContain("provider unavailable for guest@example.test");
     const failureUpdate = queries.find((sql) => sql.includes("delivery_failed"));
     expect(failureUpdate).toContain("worker_id = $6");

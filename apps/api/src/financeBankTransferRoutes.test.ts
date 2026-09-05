@@ -83,7 +83,12 @@ it.each([
       audit: { requestId: "request", receivedAt: "2026-09-05T00:00:00Z" },
     } as RequestContext;
   });
-  await app.register(registerFinanceBankTransferRoutes, { prefix: "/api", repository });
+  const publisher = { publish: vi.fn(async () => null) };
+  await app.register(registerFinanceBankTransferRoutes, {
+    prefix: "/api",
+    repository,
+    publicBookabilityPublisher: publisher,
+  });
   try {
     for (const method of ["GET", "PUT"] as const) {
       const response = await app.inject({
@@ -103,6 +108,9 @@ it.each([
       expect(response.body).not.toContain(details.accountNumber);
       if (allowed) expect(response.json().destination.maskedAccount).toBe("•••• 3000");
     }
+    expect(publisher.publish).toHaveBeenCalledTimes(
+      ["allowed", "booking-only"].includes(variant) ? 1 : 0,
+    );
     if (variant === "allowed") {
       repository.execute.mockRejectedValueOnce(new Error(details.accountNumber));
       expect((await app.inject({ method: "PUT", url: path, payload: body })).json()).toEqual({
