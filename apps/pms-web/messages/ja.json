@@ -616,5 +616,11 @@
   "channels.installMessagingApp": "Install messaging app",
   "channels.installingMessagingApp": "Installing...",
   "channels.messagingAppInstalledSuccess": "Messaging app installed",
-  "channels.failedToInstallMessagingApp": "Failed to install messaging app"
+  "channels.failedToInstallMessagingApp": "Failed to install messaging app",
+  "dashboard.arrivalsOn": "到着 • {date}",
+  "dashboard.departuresOn": "出発 • {date}",
+  "dashboard.noArrivalsOnDate": "この日の到着はありません",
+  "dashboard.noDeparturesOnDate": "この日の出発はありません",
+  "dashboard.previousDay": "前日",
+  "dashboard.nextDay": "翌日"
 }

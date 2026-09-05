@@ -616,5 +616,11 @@
   "channels.installMessagingApp": "Install messaging app",
   "channels.installingMessagingApp": "Installing...",
   "channels.messagingAppInstalledSuccess": "Messaging app installed",
-  "channels.failedToInstallMessagingApp": "Failed to install messaging app"
+  "channels.failedToInstallMessagingApp": "Failed to install messaging app",
+  "dashboard.arrivalsOn": "Aankomsten • {date}",
+  "dashboard.departuresOn": "Vertrekken • {date}",
+  "dashboard.noArrivalsOnDate": "Geen aankomsten op deze datum",
+  "dashboard.noDeparturesOnDate": "Geen vertrekken op deze datum",
+  "dashboard.previousDay": "Vorige dag",
+  "dashboard.nextDay": "Volgende dag"
 }

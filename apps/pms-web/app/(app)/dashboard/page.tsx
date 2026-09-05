@@ -114,6 +114,8 @@ export default function DashboardPage() {
   const [inventoryRefresh, setInventoryRefresh] = useState(0);
   const [incompleteSetupPropertyId, setIncompleteSetupPropertyId] = useState<string | null>(null);
   const [weekOffset, setWeekOffset] = useState(0);
+  const [arrivalDay, setArrivalDay] = useState<string | null>(null);
+  const [departureDay, setDepartureDay] = useState<string | null>(null);
   const [quickView, setQuickView] = useState<{
     booking: Booking;
     guests: BookingAdditionalGuest[];
@@ -123,6 +125,10 @@ export default function DashboardPage() {
   } | null>(null);
 
   const today = getPropertyToday(hotelTimezone, now);
+  const arrivalDate = arrivalDay && arrivalDay > today ? arrivalDay : today;
+  const departureDate = departureDay && departureDay > today ? departureDay : today;
+  const selectedArrivals = getArrivalsToday(bookings, arrivalDate);
+  const selectedDepartures = getDeparturesToday(bookings, departureDate);
 
   useEffect(() => {
     const interval = window.setInterval(() => setNow(new Date()), 60_000);
@@ -408,16 +414,30 @@ export default function DashboardPage() {
       {/* Arrivals & Departures */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
         {/* Arrivals */}
-        <div className="bg-white border border-gray-200 rounded-xl p-4">
-          <div className="flex items-center justify-between mb-3">
+        <section
+          aria-labelledby="arrivals-heading"
+          className="bg-white border border-gray-200 rounded-xl p-4"
+        >
+          <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
             <div className="flex items-center gap-2">
-              <span className="text-sm font-semibold text-gray-900">
-                {t("dashboard.arrivalsToday")}
-              </span>
+              <h2
+                id="arrivals-heading"
+                aria-live="polite"
+                className="text-sm font-semibold text-gray-900"
+              >
+                {t("dashboard.arrivalsOn", {
+                  date: formatPropertyDate(
+                    arrivalDate,
+                    { month: "short", day: "numeric", year: "numeric" },
+                    locale,
+                  ),
+                })}
+              </h2>
               <span className="inline-flex items-center justify-center w-5 h-5 text-[11px] font-semibold bg-blue-100 text-blue-700 rounded-full">
-                {arrivalsToday.length}
+                {selectedArrivals.length}
               </span>
             </div>
+            <GuestDayNavigation date={arrivalDate} today={today} onChange={setArrivalDay} />
             <Link
               href="/bookings"
               className="shrink-0 text-xs text-blue-600 hover:text-blue-700 font-medium whitespace-nowrap"
@@ -425,19 +445,21 @@ export default function DashboardPage() {
               {t("dashboard.viewAll")} ↗
             </Link>
           </div>
-          {arrivalsToday.length > 0 && (
+          {selectedArrivals.length > 0 && (
             <p className="mb-2 text-xs text-gray-500">
               {t("dashboard.arrivalsRemaining", {
-                total: String(arrivalsToday.length),
-                remaining: String(remainingArrivals),
+                total: String(selectedArrivals.length),
+                remaining: String(getRemainingArrivals(selectedArrivals)),
               })}
             </p>
           )}
-          {arrivalsToday.length === 0 ? (
-            <p className="text-sm text-gray-400 py-6 text-center">{t("dashboard.noArrivals")}</p>
+          {selectedArrivals.length === 0 ? (
+            <p className="text-sm text-gray-400 py-6 text-center">
+              {t(arrivalDate === today ? "dashboard.noArrivals" : "dashboard.noArrivalsOnDate")}
+            </p>
           ) : (
             <div className="divide-y divide-gray-50">
-              {arrivalsToday.map((b) => (
+              {selectedArrivals.map((b) => (
                 <button
                   key={b.id}
                   type="button"
@@ -458,23 +480,41 @@ export default function DashboardPage() {
                 </button>
               ))}
               <p className="pt-3 text-xs font-medium text-gray-500">
-                {t("dashboard.clickGuestToStartCheckIn")}
+                {t(
+                  arrivalDate === today
+                    ? "dashboard.clickGuestToStartCheckIn"
+                    : "dashboard.viewFullBooking",
+                )}
               </p>
             </div>
           )}
-        </div>
+        </section>
 
         {/* Departures */}
-        <div className="bg-white border border-gray-200 rounded-xl p-4">
-          <div className="flex items-center justify-between mb-3">
+        <section
+          aria-labelledby="departures-heading"
+          className="bg-white border border-gray-200 rounded-xl p-4"
+        >
+          <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
             <div className="flex items-center gap-2">
-              <span className="text-sm font-semibold text-gray-900">
-                {t("dashboard.departuresToday")}
-              </span>
+              <h2
+                id="departures-heading"
+                aria-live="polite"
+                className="text-sm font-semibold text-gray-900"
+              >
+                {t("dashboard.departuresOn", {
+                  date: formatPropertyDate(
+                    departureDate,
+                    { month: "short", day: "numeric", year: "numeric" },
+                    locale,
+                  ),
+                })}
+              </h2>
               <span className="inline-flex items-center justify-center w-5 h-5 text-[11px] font-semibold bg-blue-100 text-blue-700 rounded-full">
-                {departuresToday.length}
+                {selectedDepartures.length}
               </span>
             </div>
+            <GuestDayNavigation date={departureDate} today={today} onChange={setDepartureDay} />
             <Link
               href="/bookings"
               className="shrink-0 text-xs text-blue-600 hover:text-blue-700 font-medium whitespace-nowrap"
@@ -482,11 +522,15 @@ export default function DashboardPage() {
               {t("dashboard.viewAll")} ↗
             </Link>
           </div>
-          {departuresToday.length === 0 ? (
-            <p className="text-sm text-gray-400 py-6 text-center">{t("dashboard.noDepartures")}</p>
+          {selectedDepartures.length === 0 ? (
+            <p className="text-sm text-gray-400 py-6 text-center">
+              {t(
+                departureDate === today ? "dashboard.noDepartures" : "dashboard.noDeparturesOnDate",
+              )}
+            </p>
           ) : (
             <div className="divide-y divide-gray-50">
-              {departuresToday.map((b) => (
+              {selectedDepartures.map((b) => (
                 <button
                   key={b.id}
                   type="button"
@@ -533,11 +577,15 @@ export default function DashboardPage() {
                 </button>
               ))}
               <p className="pt-3 text-xs font-medium text-gray-500">
-                {t("dashboard.clickGuestToStartCheckOut")}
+                {t(
+                  departureDate === today
+                    ? "dashboard.clickGuestToStartCheckOut"
+                    : "dashboard.viewFullBooking",
+                )}
               </p>
             </div>
           )}
-        </div>
+        </section>
       </div>
 
       {/* Occupancy Forecast */}
@@ -622,6 +670,7 @@ export default function DashboardPage() {
           guests={quickView.guests}
           notes={quickView.notes}
           loading={quickView.loading}
+          today={today}
           mode={quickView.mode}
           onClose={() => setQuickView(null)}
           onNoShow={handleNoShow}
@@ -639,6 +688,7 @@ function ArrivalQuickView({
   notes,
   loading,
   mode,
+  today,
   onClose,
   onNoShow,
 }: {
@@ -647,17 +697,20 @@ function ArrivalQuickView({
   notes: BookingNote[];
   loading: boolean;
   mode: "arrival" | "departure";
+  today: string;
   onClose: () => void;
   onNoShow?: (bookingId: string) => Promise<void>;
 }) {
-  const { t } = useTranslation();
+  const { locale, t } = useTranslation();
   const [noShowLoading, setNoShowLoading] = useState(false);
   const [noShowError, setNoShowError] = useState<string | null>(null);
   const missingIds = loading ? 0 : incompleteGuestCount(booking, guests);
   const due = isPaid(booking) ? 0 : booking.totalAmount;
   const internalNotes = notes.filter((note) => note.body.trim().length > 0);
   const isDeparture = mode === "departure";
-  const isNotCheckedIn = isDeparture && isNotCheckedInDeparture(booking);
+  const eventDate = isDeparture ? booking.checkOut : booking.checkIn;
+  const isFuture = eventDate > today;
+  const isNotCheckedIn = !isFuture && isDeparture && isNotCheckedInDeparture(booking);
   const isCheckedOut = booking.status === "checked_out";
 
   async function handleNoShow() {
@@ -722,13 +775,21 @@ function ArrivalQuickView({
                       : "bg-blue-100 text-blue-700"
               }`}
             >
-              {isNotCheckedIn
-                ? t("dashboard.notCheckedIn")
-                : isCheckedOut
-                  ? t("dashboard.checkedOut")
-                  : isDeparture
-                    ? t("dashboard.checkedIn")
-                    : t("dashboard.arrivingToday")}
+              {isFuture
+                ? t(isDeparture ? "dashboard.departuresOn" : "dashboard.arrivalsOn", {
+                    date: formatPropertyDate(
+                      eventDate,
+                      { month: "short", day: "numeric", year: "numeric" },
+                      locale,
+                    ),
+                  })
+                : isNotCheckedIn
+                  ? t("dashboard.notCheckedIn")
+                  : isCheckedOut
+                    ? t("dashboard.checkedOut")
+                    : isDeparture
+                      ? t("dashboard.checkedIn")
+                      : t("dashboard.arrivingToday")}
             </span>
             {due > 0 && (
               <span className="rounded-full bg-amber-100 px-2.5 py-1 text-xs font-semibold text-amber-800">
@@ -784,36 +845,37 @@ function ArrivalQuickView({
           )}
 
           <div className="grid gap-2">
-            {isNotCheckedIn ? (
-              <>
-                {noShowError && (
-                  <p className="rounded-lg border border-red-200 bg-red-50 p-2 text-xs text-red-700">
-                    {noShowError}
-                  </p>
-                )}
+            {!isFuture &&
+              (isNotCheckedIn ? (
+                <>
+                  {noShowError && (
+                    <p className="rounded-lg border border-red-200 bg-red-50 p-2 text-xs text-red-700">
+                      {noShowError}
+                    </p>
+                  )}
+                  <Link
+                    href={`/check-in/${booking.id}?next=checkout`}
+                    className="flex h-11 items-center justify-center rounded-lg bg-primary-600 px-4 text-sm font-semibold text-white hover:bg-primary-700"
+                  >
+                    {t("dashboard.checkInNow")}
+                  </Link>
+                  <button
+                    type="button"
+                    onClick={handleNoShow}
+                    disabled={noShowLoading}
+                    className="flex h-11 items-center justify-center rounded-lg border border-red-200 px-4 text-sm font-semibold text-red-600 hover:bg-red-50 disabled:opacity-60"
+                  >
+                    {noShowLoading ? t("dashboard.markingNoShow") : t("dashboard.markNoShow")}
+                  </button>
+                </>
+              ) : (
                 <Link
-                  href={`/check-in/${booking.id}?next=checkout`}
+                  href={isDeparture ? `/check-out/${booking.id}` : `/check-in/${booking.id}`}
                   className="flex h-11 items-center justify-center rounded-lg bg-primary-600 px-4 text-sm font-semibold text-white hover:bg-primary-700"
                 >
-                  {t("dashboard.checkInNow")}
+                  {isDeparture ? t("dashboard.startCheckOut") : t("dashboard.startCheckIn")}
                 </Link>
-                <button
-                  type="button"
-                  onClick={handleNoShow}
-                  disabled={noShowLoading}
-                  className="flex h-11 items-center justify-center rounded-lg border border-red-200 px-4 text-sm font-semibold text-red-600 hover:bg-red-50 disabled:opacity-60"
-                >
-                  {noShowLoading ? t("dashboard.markingNoShow") : t("dashboard.markNoShow")}
-                </button>
-              </>
-            ) : (
-              <Link
-                href={isDeparture ? `/check-out/${booking.id}` : `/check-in/${booking.id}`}
-                className="flex h-11 items-center justify-center rounded-lg bg-primary-600 px-4 text-sm font-semibold text-white hover:bg-primary-700"
-              >
-                {isDeparture ? t("dashboard.startCheckOut") : t("dashboard.startCheckIn")}
-              </Link>
-            )}
+              ))}
             <Link
               href={`/bookings/${booking.id}`}
               className="flex h-11 items-center justify-center rounded-lg border border-gray-200 px-4 text-sm font-semibold text-gray-700 hover:bg-gray-50"
@@ -825,6 +887,48 @@ function ArrivalQuickView({
       </aside>
     </div>,
     document.body,
+  );
+}
+
+function GuestDayNavigation({
+  date,
+  today,
+  onChange,
+}: {
+  date: string;
+  today: string;
+  onChange: (date: string | null) => void;
+}) {
+  const { t } = useTranslation();
+  return (
+    <div className="flex items-center gap-2">
+      <button
+        type="button"
+        aria-label={t("dashboard.previousDay")}
+        disabled={date === today}
+        onClick={() => onChange(addPropertyDays(date, -1))}
+        className="flex h-8 w-8 items-center justify-center rounded-md border border-gray-200 hover:bg-gray-50 disabled:opacity-40 focus-visible:ring-2 focus-visible:ring-blue-500"
+      >
+        <ChevronLeftIcon />
+      </button>
+      <button
+        type="button"
+        aria-label={t("dashboard.nextDay")}
+        onClick={() => onChange(addPropertyDays(date, 1))}
+        className="flex h-8 w-8 items-center justify-center rounded-md border border-gray-200 hover:bg-gray-50 focus-visible:ring-2 focus-visible:ring-blue-500"
+      >
+        <ChevronRightIcon />
+      </button>
+      {date !== today && (
+        <button
+          type="button"
+          onClick={() => onChange(null)}
+          className="rounded-md px-2 py-1 text-xs font-medium text-blue-600 hover:bg-blue-50 focus-visible:ring-2 focus-visible:ring-blue-500"
+        >
+          {t("common.today")}
+        </button>
+      )}
+    </div>
   );
 }
 
