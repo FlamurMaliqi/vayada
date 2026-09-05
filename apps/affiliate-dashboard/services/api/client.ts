@@ -62,7 +62,11 @@ export class ApiClient {
     }
   }
 
-  private async request<T>(endpoint: string, options: RequestInit = {}): Promise<T> {
+  private async request<T>(
+    endpoint: string,
+    options: RequestInit & { redirectOnUnauthorized?: boolean } = {},
+  ): Promise<T> {
+    const { redirectOnUnauthorized = true, ...fetchOptions } = options;
     const url = `${this.baseURL}${endpoint}`;
 
     const headers: Record<string, string> = {
@@ -79,7 +83,7 @@ export class ApiClient {
     }
 
     const response = await fetch(url, {
-      ...options,
+      ...fetchOptions,
       headers,
     });
 
@@ -111,7 +115,7 @@ export class ApiClient {
         : { detail: typeof data === "string" && data ? data : `API Error: ${response.status}` };
       const error = new ApiErrorResponse(response.status, errorData);
 
-      if (response.status === 401 && !endpoint.startsWith("/auth/")) {
+      if (redirectOnUnauthorized && response.status === 401 && !endpoint.startsWith("/auth/")) {
         this.handleUnauthorized(error);
       }
 
@@ -125,7 +129,11 @@ export class ApiClient {
     return this.request<T>(endpoint, { ...options, method: "GET" });
   }
 
-  async post<T>(endpoint: string, data?: unknown, options?: RequestInit): Promise<T> {
+  async post<T>(
+    endpoint: string,
+    data?: unknown,
+    options?: RequestInit & { redirectOnUnauthorized?: boolean },
+  ): Promise<T> {
     return this.request<T>(endpoint, {
       ...options,
       method: "POST",

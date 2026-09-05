@@ -1,5 +1,8 @@
 "use client";
 
+import { SupportButton } from "@vayada/settings-ui";
+import { pmsOperationsClient } from "@/services/api/pmsOperationsClient";
+
 import { useState, useRef, useEffect } from "react";
 import { ChevronDownIcon, PlusIcon, MagnifyingGlassIcon } from "@heroicons/react/24/outline";
 import { useRouter } from "next/navigation";
@@ -285,6 +288,12 @@ export default function Header({ onMenuToggle }: { onMenuToggle?: () => void }) 
         </button>
       </div>
 
+      <SupportButton
+        product="pms"
+        submit={(request) =>
+          pmsOperationsClient.post("/api/support", request, { signal: AbortSignal.timeout(20000) })
+        }
+      />
       {/* Right: avatar */}
       <div className="flex items-center gap-3 shrink-0">
         {/* Profile avatar */}
