@@ -930,6 +930,11 @@ export const MARKETPLACE_COLLABORATION_LIFECYCLE_WRITE_ENDPOINTS = {
     path: "/api/marketplace/collaborations/{collaborationId}/respond",
     doc: "engineering/marketplace-collaboration-lifecycle-writes-contract.md",
   },
+  editApplication: {
+    method: "PUT",
+    path: "/api/marketplace/collaborations/{collaborationId}/application",
+    doc: "engineering/marketplace-collaboration-lifecycle-writes-contract.md",
+  },
   updateTerms: {
     method: "PUT",
     path: "/api/marketplace/collaborations/{collaborationId}/terms",
