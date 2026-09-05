@@ -473,7 +473,7 @@ const financeSubscriptionService =
         stripe: stripeSubscriptionProvider,
         returnBaseUrls: {
           bookingAdmin: config.stripeSubscriptions.bookingAdminBaseUrl,
-          pms: config.authSession?.authSurfaceOrigins["pms-web"] ?? "https://pms.localhost",
+          pms: config.authSession?.authSurfaceOrigins["pms-web"],
         },
         afterPlanChange: publicBookabilityPublisher
           ? async (propertyId) => {

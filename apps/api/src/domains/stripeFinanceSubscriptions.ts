@@ -282,11 +282,23 @@ export function createStripeFinanceSubscriptionProvider(config: {
     },
 
     async listInvoices(customerId) {
-      const response = await request("GET", "/invoices", [
-        ["customer", customerId],
-        ["limit", "100"],
-      ]);
-      return objectArray(response["data"])
+      const invoices: StripeObject[] = [];
+      let startingAfter: string | undefined;
+      while (true) {
+        const fields: Array<readonly [string, string]> = [
+          ["customer", customerId],
+          ["limit", "100"],
+        ];
+        if (startingAfter) fields.push(["starting_after", startingAfter]);
+        const response = await request("GET", "/invoices", fields);
+        const page = objectArray(response["data"]);
+        invoices.push(...page);
+        if (response["has_more"] !== true || page.length === 0) break;
+        const lastId = text(page.at(-1)?.["id"]);
+        if (!lastId || lastId === startingAfter) break;
+        startingAfter = lastId;
+      }
+      return invoices
         .map(invoice)
         .sort((left, right) => right.issuedAt.localeCompare(left.issuedAt));
     },
@@ -397,12 +409,15 @@ function subscriptionSnapshot(value: StripeObject): StripeSubscriptionSnapshot {
   const customer = value["customer"];
   const propertyId = text(subscriptionMetadata["vayada_property_id"]);
   const organizationId = text(subscriptionMetadata["vayada_organization_id"]);
-  const currency = normalizedCurrency(text(price["currency"]) ?? "");
+  const currency = (text(price["currency"]) ?? "").trim().toUpperCase();
+  const validCurrency = /^[A-Z]{3}$/.test(currency);
   const currentTerms =
+    validCurrency &&
     text(price["lookup_key"]) === fixedPriceLookupKey(currency) &&
     text(recurring["interval"]) === "month" &&
     Number(recurring["interval_count"]) === FINANCE_FIXED_PLAN_INTERVAL_MONTHS;
   const legacyTerms =
+    validCurrency &&
     text(price["lookup_key"]) === legacyFixedPriceLookupKey(currency) &&
     text(recurring["interval"]) === "day" &&
     Number(recurring["interval_count"]) === 30;
@@ -413,7 +428,7 @@ function subscriptionSnapshot(value: StripeObject): StripeSubscriptionSnapshot {
     propertyId,
     organizationId,
     fixedPlanVerified:
-      /^[A-Z]{3}$/.test(currency) &&
+      validCurrency &&
       text(price["billing_scheme"]) === "tiered" &&
       text(price["tiers_mode"]) === "graduated" &&
       text(priceMetadata["vayada_plan"]) === "fixed" &&
@@ -427,7 +442,7 @@ function subscriptionSnapshot(value: StripeObject): StripeSubscriptionSnapshot {
     currentPeriodEnd: stripeTimestamp(item["current_period_end"] ?? value["current_period_end"]),
     cancelAtPeriodEnd: value["cancel_at_period_end"] === true,
     subscriptionItemId: text(item["id"]),
-    currency,
+    currency: validCurrency ? currency : "",
   };
 }
 
@@ -463,7 +478,7 @@ function customerFields(
       ["invoice_settings[custom_fields][0][value]", details.taxId],
     );
   } else {
-    fields.push(["invoice_settings[custom_fields]", ""]);
+    fields.push(["metadata[vayada_tax_id]", ""], ["invoice_settings[custom_fields]", ""]);
   }
   return fields;
 }

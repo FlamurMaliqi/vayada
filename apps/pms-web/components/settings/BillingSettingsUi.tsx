@@ -1,6 +1,6 @@
 import { ArrowDownTrayIcon, CheckIcon } from "@heroicons/react/24/outline";
 import { SettingsCard } from "@vayada/settings-ui";
-import type { ComponentType, ReactNode } from "react";
+import type { ComponentType, KeyboardEvent, ReactNode } from "react";
 
 import { formatBillingAmount, formatInvoiceDate } from "@/lib/settings/billing";
 import type { BillingOverview } from "@/services/api/financeBillingClient";
@@ -80,12 +80,31 @@ export function PaymentChoice({
   description: string;
   onClick: () => void;
 }) {
+  const handleKeyDown = (event: KeyboardEvent<HTMLButtonElement>) => {
+    const offset = ["ArrowRight", "ArrowDown"].includes(event.key)
+      ? 1
+      : ["ArrowLeft", "ArrowUp"].includes(event.key)
+        ? -1
+        : 0;
+    if (offset === 0) return;
+    const group = event.currentTarget.closest('[role="radiogroup"]');
+    const choices = Array.from(group?.querySelectorAll<HTMLButtonElement>('[role="radio"]') ?? []);
+    const currentIndex = choices.indexOf(event.currentTarget);
+    if (currentIndex < 0 || choices.length < 2) return;
+    event.preventDefault();
+    const next = choices[(currentIndex + offset + choices.length) % choices.length];
+    next?.focus();
+    next?.click();
+  };
+
   return (
     <button
       type="button"
       role="radio"
       aria-checked={selected}
+      tabIndex={selected ? 0 : -1}
       onClick={onClick}
+      onKeyDown={handleKeyDown}
       className={`flex min-h-28 items-start gap-3 rounded-lg border p-4 text-left transition ${selected ? "border-primary-500 bg-primary-50/50 ring-1 ring-primary-500" : "border-gray-200 bg-white hover:border-gray-300"}`}
     >
       <span
@@ -230,7 +249,7 @@ function InvoiceLink({ url }: { url: string | null }) {
 
 export function BillingSkeleton() {
   return (
-    <div aria-label="Loading billing settings" className="animate-pulse space-y-8">
+    <div role="status" aria-label="Loading billing settings" className="animate-pulse space-y-8">
       <div className="h-5 w-48 rounded bg-gray-200" />
       <div className="grid gap-4 sm:grid-cols-2">
         <div className="h-72 rounded-xl bg-gray-100" />

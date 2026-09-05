@@ -212,7 +212,10 @@ export default function BillingSettingsPage() {
                 benefits={[
                   "0% commission on direct bookings",
                   "Base fee + per extra room",
-                  "Best above ~$1,200 monthly direct revenue",
+                  `Best above ~${formatBillingAmount(
+                    billing.planStatus.amountMinor * 20,
+                    billing.planStatus.currency,
+                  )} monthly direct revenue`,
                 ]}
                 current={billing.planStatus.plan === "fixed"}
                 disabled={!billing.planStatus.fixedPlanAvailable}

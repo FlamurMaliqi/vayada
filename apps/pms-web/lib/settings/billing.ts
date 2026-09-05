@@ -18,15 +18,20 @@ const STRIPE_ZERO_DECIMAL = new Set([
 ]);
 
 export function formatBillingAmount(amountMinor: number, currency: string): string {
-  const normalized = currency.toUpperCase();
+  const normalized = typeof currency === "string" ? currency.trim().toUpperCase() : "";
+  if (!/^[A-Z]{3}$/.test(normalized)) return String(amountMinor);
   const amount = amountMinor / (STRIPE_ZERO_DECIMAL.has(normalized) ? 1 : 100);
   const zeroDisplayDecimals = normalized === "IDR" || STRIPE_ZERO_DECIMAL.has(normalized);
-  return new Intl.NumberFormat(undefined, {
-    style: "currency",
-    currency: normalized,
-    minimumFractionDigits: zeroDisplayDecimals ? 0 : 2,
-    maximumFractionDigits: zeroDisplayDecimals ? 0 : 2,
-  }).format(amount);
+  try {
+    return new Intl.NumberFormat(undefined, {
+      style: "currency",
+      currency: normalized,
+      minimumFractionDigits: zeroDisplayDecimals ? 0 : 2,
+      maximumFractionDigits: zeroDisplayDecimals ? 0 : 2,
+    }).format(amount);
+  } catch {
+    return String(amountMinor);
+  }
 }
 
 export function formatInvoiceDate(value: string): string {

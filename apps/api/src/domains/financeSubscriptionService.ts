@@ -33,7 +33,7 @@ export function createFinanceSubscriptionService(config: {
   roomInventory: RoomInventoryReadPort & { close?(): Promise<void> };
   stripe?: StripeFinanceSubscriptionProvider;
   pricing: Pick<PmsPricingReadPort, "getPropertyPricingCurrency">;
-  returnBaseUrls: { bookingAdmin: string; pms: string };
+  returnBaseUrls: { bookingAdmin: string; pms?: string };
   now?: () => Date;
   afterPlanChange?: (propertyId: string) => Promise<void>;
 }): FinanceSubscriptionService {
@@ -313,6 +313,7 @@ export function createFinanceSubscriptionService(config: {
               command.returnSurface === "pms"
                 ? config.returnBaseUrls.pms
                 : config.returnBaseUrls.bookingAdmin;
+            if (!returnBaseUrl) throw new Error("PMS billing return origin is not configured.");
             const session = await config.stripe!.createFixedPlanCheckout({
               propertyId: command.propertyId,
               organizationId: command.organizationId,
@@ -379,6 +380,7 @@ export function createFinanceSubscriptionService(config: {
           command.returnSurface === "pms"
             ? config.returnBaseUrls.pms
             : config.returnBaseUrls.bookingAdmin;
+        if (!returnBaseUrl) throw new Error("PMS billing return origin is not configured.");
         const value = await config.stripe.createCustomerPortal({
           customerId: entitlement.customerRef,
           returnUrl: billingReturnUrl(returnBaseUrl, command.returnSurface),

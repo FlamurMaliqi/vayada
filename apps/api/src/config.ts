@@ -805,6 +805,14 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
     stripeSubscriptions: loadStripeSubscriptionConfig(env),
     providerWebhooks: loadProviderWebhookConfig(env),
   };
+  if (
+    stripeSubscriptionRuntimeEnabled(prospectiveConfig) &&
+    !authSession?.authSurfaceOrigins["pms-web"]
+  ) {
+    throw new Error(
+      "Stripe subscriptions require AUTH_PMS_WEB_ORIGIN through complete auth session config",
+    );
+  }
   const channexManagement = loadChannexManagementConfig(env);
   if (
     Object.values(channexManagement.capabilityModes).includes("mutating") &&

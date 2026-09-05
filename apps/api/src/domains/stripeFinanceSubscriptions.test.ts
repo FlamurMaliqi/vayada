@@ -258,6 +258,35 @@ describe("Stripe fixed-plan provider", () => {
     ]);
   });
 
+  it("paginates through the complete Stripe invoice history", async () => {
+    const calls: string[] = [];
+    const provider = createStripeFinanceSubscriptionProvider({
+      secretKey: "sk_test_secret",
+      fetch: async (input) => {
+        const url = String(input);
+        calls.push(url);
+        const secondPage = url.includes("starting_after=in_first");
+        return response({
+          data: [
+            {
+              id: secondPage ? "in_second" : "in_first",
+              number: secondPage ? "ACME-2" : "ACME-1",
+              created: secondPage ? 1_788_652_800 : 1_788_566_400,
+              amount_due: 6_000,
+              currency: "usd",
+              status: "paid",
+            },
+          ],
+          has_more: !secondPage,
+        });
+      },
+    });
+
+    await expect(provider.listInvoices("cus_fixed")).resolves.toHaveLength(2);
+    expect(calls).toHaveLength(2);
+    expect(calls[1]).toContain("starting_after=in_first");
+  });
+
   it("maps a failed automatic payment and uses the paid charge date when available", async () => {
     const provider = createStripeFinanceSubscriptionProvider({
       secretKey: "sk_test_secret",
@@ -318,6 +347,21 @@ describe("Stripe fixed-plan provider", () => {
     expect(fields.get("name")).toBe("Alpenrose Hospitality Ltd.");
     expect(fields.get("email")).toBe("billing@example.test");
     expect(fields.get("invoice_settings[custom_fields][0][value]")).toBe("EU123");
+
+    await provider.upsertCustomer({
+      customerId: "cus_fixed",
+      propertyId: "property-1",
+      organizationId: "organization-1",
+      billingDetails: {
+        companyName: "Alpenrose Hospitality Ltd.",
+        billingEmail: "billing@example.test",
+        taxId: null,
+      },
+      idempotencyKey: "billing-details-clear-tax",
+    });
+    const clearedFields = new URLSearchParams(body);
+    expect(clearedFields.get("metadata[vayada_tax_id]")).toBe("");
+    expect(clearedFields.get("invoice_settings[custom_fields]")).toBe("");
   });
 
   it.each([
@@ -387,6 +431,29 @@ describe("Stripe fixed-plan provider", () => {
 
     await expect(provider.retrieveSubscription("sub_wrong")).resolves.toMatchObject({
       fixedPlanVerified: false,
+    });
+  });
+
+  it("returns an unverified snapshot when Stripe omits a valid price currency", async () => {
+    const provider = createStripeFinanceSubscriptionProvider({
+      secretKey: "sk_test_secret",
+      fetch: async () =>
+        response({
+          ...subscription(),
+          items: {
+            data: [
+              {
+                ...subscription().items.data[0],
+                price: { ...fixedPrice(), currency: "US" },
+              },
+            ],
+          },
+        }),
+    });
+
+    await expect(provider.retrieveSubscription("sub_malformed")).resolves.toMatchObject({
+      fixedPlanVerified: false,
+      currency: "",
     });
   });
 

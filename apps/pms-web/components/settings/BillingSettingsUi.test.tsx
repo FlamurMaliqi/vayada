@@ -51,6 +51,7 @@ describe("BillingSettingsUi", () => {
 
     expect(payment).toContain("Credit / debit card");
     expect(payment).toContain("Charged automatically on the 1st of each month.");
+    expect(payment).toContain('tabindex="0"');
     expect(invoices).toContain(
       "Your first invoice will appear here after your first billing cycle.",
     );
