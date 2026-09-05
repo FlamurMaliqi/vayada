@@ -864,10 +864,13 @@ export function createTargetPmsOperationsCommandRepository(
           );
         }
 
+        // Canonical pricing remains historical source evidence; its schema requires
+        // active = TRUE. The owning room type's active flag gates its availability.
         await client.query(
           `UPDATE pms.rate_plans
            SET active = FALSE, updated_at = $3::timestamptz
-           WHERE property_id = $1::uuid AND room_type_id = $2::uuid AND active`,
+           WHERE property_id = $1::uuid AND room_type_id = $2::uuid AND active
+             AND pricing_contract_version IS NULL`,
           [command.propertyId, command.roomTypeId, acceptedAt],
         );
         const retired = await client.query<{ roomFactsRevision: number | string }>(
