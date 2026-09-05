@@ -1,5 +1,11 @@
 "use client";
 
+import {
+  collaborationToday,
+  collaborationDateError,
+  collaborationAvailabilityError,
+} from "@vayada/domain-marketplace/collaborationDates";
+
 import { useRef, useState } from "react";
 import { Button, Textarea } from "@/components/ui";
 import { MONTHS_ABBR } from "@/lib/constants";
@@ -21,6 +27,7 @@ interface CollaborationApplicationModalProps {
   isOpen: boolean;
   onClose: () => void;
   listingId: string;
+  propertyTimezone?: string | null;
   onSubmit: (
     data: CollaborationApplicationData,
     options: CollaborationApplicationSubmissionOptions,
@@ -88,6 +95,7 @@ export function CollaborationApplicationModal({
   isOpen,
   onClose,
   listingId,
+  propertyTimezone,
   onSubmit,
   compensationOptions = [],
   creatorPlatforms = [],
@@ -161,6 +169,10 @@ export function CollaborationApplicationModal({
   const minNights = selectedCompensationOption
     ? (selectedCompensationOption.free_stay_min_nights ?? undefined)
     : (fallbackStayOption?.free_stay_min_nights ?? undefined);
+  const availabilityError = collaborationAvailabilityError(
+    availableMonths,
+    collaborationToday(propertyTimezone),
+  );
   const normalizedAvailable = availableMonths.map((m) => getMonthAbbr(m));
 
   const handleMonthToggle = (month: string) => {
@@ -199,6 +211,16 @@ export function CollaborationApplicationModal({
       validPlatformDeliverables.length === 0 ||
       !consent
     ) {
+      return;
+    }
+
+    const dateError = collaborationDateError(
+      travelDateFrom,
+      travelDateTo,
+      collaborationToday(propertyTimezone),
+    );
+    if (dateError || availabilityError) {
+      setErrorMessage(dateError ?? availabilityError);
       return;
     }
 
@@ -408,8 +430,15 @@ export function CollaborationApplicationModal({
             </div>
           )}
 
+          {availabilityError && (
+            <p role="alert" className="text-sm text-red-700">
+              {availabilityError}
+            </p>
+          )}
+
           {/* Preferred Travel Dates */}
           <DateMonthPicker
+            minDate={collaborationToday(propertyTimezone) ?? undefined}
             dateFrom={travelDateFrom}
             dateTo={travelDateTo}
             onDateFromChange={(value) => {
@@ -484,6 +513,7 @@ export function CollaborationApplicationModal({
               onClick={handleSubmit}
               isLoading={isSubmitting}
               disabled={
+                Boolean(availabilityError) ||
                 !selectedCompensationOptionId ||
                 !whyGreatFit.trim() ||
                 platformDeliverables.filter((pd) => pd.deliverables.length > 0).length === 0 ||
