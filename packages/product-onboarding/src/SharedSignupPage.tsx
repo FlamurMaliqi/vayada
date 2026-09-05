@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import Image from "next/image";
-import { EyeIcon, EyeSlashIcon } from "@heroicons/react/24/outline";
+import { ChevronDownIcon, EyeIcon, EyeSlashIcon } from "@heroicons/react/24/outline";
 
 export type SharedSignupPageProps = {
   isSubmitting: boolean;
@@ -165,15 +165,27 @@ export default function SharedSignupPage({
                     {passwordError}
                   </p>
                 )}
-                <div id="password-requirements" className="mt-2 text-xs leading-5 text-gray-500">
-                  <p className="font-medium text-gray-700">Password requirements</p>
-                  <ul className="list-disc pl-4">
-                    <li>At least {PASSWORD_MIN_LENGTH} characters.</li>
-                    <li>Hard to guess: avoid names, common passwords, and sequences like 12345.</li>
-                    <li>Must not have appeared in a data breach.</li>
-                  </ul>
-                  <p className="mt-1">Try several unrelated words or use a password manager.</p>
-                </div>
+                <details className="group mt-2 text-xs leading-5 text-gray-500">
+                  <summary className="flex cursor-pointer list-none items-center justify-between gap-3 rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500 [&::-webkit-details-marker]:hidden">
+                    <span id="password-requirements">
+                      At least {PASSWORD_MIN_LENGTH} characters
+                    </span>
+                    <span className="inline-flex shrink-0 items-center gap-1 font-medium text-gray-600 group-hover:text-gray-900">
+                      Password tips
+                      <ChevronDownIcon
+                        className="h-3 w-3 transition-transform group-open:rotate-180 motion-reduce:transition-none"
+                        aria-hidden="true"
+                      />
+                    </span>
+                  </summary>
+                  <div className="mt-2 space-y-1">
+                    <p>
+                      Use several unrelated words or a password manager. Avoid names and predictable
+                      sequences.
+                    </p>
+                    <p>Previously breached passwords aren’t accepted.</p>
+                  </div>
+                </details>
               </div>
 
               {submitError && (
