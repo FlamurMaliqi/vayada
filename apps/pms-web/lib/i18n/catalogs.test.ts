@@ -39,6 +39,15 @@ describe("PMS localization catalogs", () => {
     expect(missingGerman).toEqual([]);
   });
 
+  it("uses German umlauts without corrupting legitimate vowel pairs", () => {
+    const copy = Object.values(deMessages).join("\n");
+    expect(copy).not.toMatch(/Gaeste|Ankuenfte|Ueber|Aenderungen|groesse|fuer|waehlen|Loeschen/);
+    expect(deMessages["rooms.form.bedTypeQueen"]).toBe("Queen-Bett");
+    expect(deMessages["search.pageSettingsHint"]).toContain("Steuern");
+    expect(deMessages["bookings.tableSource"]).toBe("Quelle");
+    expect(deMessages["rooms.new.title"]).toBe("Neuer Zimmertyp");
+  });
+
   it("keeps translated room-option keys aligned", () => {
     const prefix = "rooms.form.option.";
     const englishKeys = Object.keys(enMessages)

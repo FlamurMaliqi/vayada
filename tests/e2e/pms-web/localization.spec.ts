@@ -40,6 +40,15 @@ test("applies German across settings and room setup", async ({ page }) => {
   await expect(page.getByText("Inbox", { exact: true })).toHaveCount(0);
   await expect(page.getByText("Reviews", { exact: true })).toHaveCount(0);
 
+  await expect(page.getByText(/Ankünfte ·/)).toBeVisible();
+  await page
+    .getByRole("button", { name: "Reservierungen, Gäste, Zimmer, Einstellungen, Seiten suchen..." })
+    .click();
+  await expect(
+    page.getByPlaceholder("Reservierungen, Gäste, Zimmer, Einstellungen, Seiten suchen..."),
+  ).toBeVisible();
+  await page.keyboard.press("Escape");
+
   await page.goto("/rooms/new");
 
   await expect(page.getByRole("heading", { name: "Neuer Zimmertyp" })).toBeVisible();
@@ -50,6 +59,7 @@ test("applies German across settings and room setup", async ({ page }) => {
   await expect(page.getByText("Max. Erwachsene", { exact: true })).toBeVisible();
   await expect(page.getByText("Max. Kinder", { exact: true })).toBeVisible();
   await expect(page.getByText("Gesamtzahl Zimmer")).toBeVisible();
+  await expect(page.getByText("Zimmergröße (m²)")).toBeVisible();
 
   await page.getByRole("button", { name: "Preise & Tarife" }).click();
   await expect(page.getByRole("heading", { name: "Wann haben Sie geöffnet?" })).toBeVisible();
