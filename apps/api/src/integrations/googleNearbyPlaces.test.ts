@@ -6,11 +6,11 @@ import {
   NEARBY_SEARCH_POLICY,
 } from "./googleNearbyPlaces.js";
 const location: PropertyProfileLocation = {
-  streetAddress: null,
-  postalCode: null,
-  city: null,
-  countryCode: null,
-  timezone: null,
+  streetAddress: "1 Beach Road",
+  postalCode: "80361",
+  city: "Bali",
+  countryCode: "ID",
+  timezone: "Asia/Makassar",
   latitude: -8.654321,
   longitude: 115.14321,
   localityPublic: true,
@@ -89,6 +89,7 @@ describe("Google nearby boundary", () => {
         maxResultCount: 10,
         rankPreference: "DISTANCE",
         includedTypes: NEARBY_SEARCH_POLICY[i].types,
+        excludedTypes: expect.arrayContaining(["hotel", "lodging", "resort_hotel", "hostel"]),
         locationRestriction: { circle: { center: origin, radius: NEARBY_SEARCH_POLICY[i].radius } },
       });
     });
@@ -96,6 +97,7 @@ describe("Google nearby boundary", () => {
   it("distinguishes empty, malformed, quota and provider failures without reflecting messages", async () => {
     for (const [response, status] of [
       [Response.json({}), "empty"],
+      [new Response("not json"), "provider_unavailable"],
       [Response.json({ places: "bad" }), "invalid_response"],
       [new Response("secret", { status: 429 }), "quota_exhausted"],
       [new Response("secret", { status: 403 }), "provider_unavailable"],
@@ -107,6 +109,35 @@ describe("Google nearby boundary", () => {
       });
       expect(result).toEqual({ status, places: [] });
     }
+  });
+  it("discards successful categories when another category fails", async () => {
+    const fetch = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body));
+      return body.includedTypes.includes("restaurant")
+        ? new Response("quota", { status: 429 })
+        : Response.json({ places: [{ id: "valid", location: origin, types: body.includedTypes }] });
+    });
+    expect(await discoverGoogleNearby({ origin, apiKey: "test", fetch })).toEqual({
+      status: "quota_exhausted",
+      places: [],
+    });
+    expect(fetch).toHaveBeenCalledTimes(4);
+  });
+  it("keeps the timeout active while reading the response body", async () => {
+    vi.useFakeTimers();
+    const fetch = vi.fn(
+      async (_url: string | URL | Request, init?: RequestInit) =>
+        new Response(
+          new ReadableStream({
+            start(controller) {
+              init?.signal?.addEventListener("abort", () => controller.error(new Error("aborted")));
+            },
+          }),
+        ),
+    );
+    const pending = discoverGoogleNearby({ origin, apiKey: "test", fetch });
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(await pending).toEqual({ status: "timeout", places: [] });
   });
   it("times out every call after five seconds without retries", async () => {
     vi.useFakeTimers();
