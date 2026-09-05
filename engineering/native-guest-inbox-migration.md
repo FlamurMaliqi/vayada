@@ -46,6 +46,29 @@ reports contain canonical property/record IDs and field names, never message
 content or provider keys. Reconcile inconsistent source evidence explicitly.
 These are source checks, not proof of actual-target parity or inquiry semantics.
 
+## Existing target Inbox consistency gate
+
+For candidate thread IDs, the target reader checks the actual stored unread total
+and latest message by `sent_at DESC, id DESC`, including target-only messages not
+present in the extraction. Scope every lookup to the stored property and thread,
+in batches of at most 500 thread IDs; unrelated threads are not a cohort audit.
+Require matching timestamp, direction and preview, and null summaries/zero unread
+for empty threads. Accept the existing 280-code-point intake/import preview or,
+for an accepted manual property-user reply, its 500-code-point command preview
+(including null preview for an empty-body attachment reply). Do not truncate or
+repair target history. This recognizes existing writers, not a new UI policy.
+
+The reader returns only property/thread IDs and mismatched field names. The
+existing transaction blocks an inconsistent target before writes, and repeats the
+check after writes before commit; a new post-write inconsistency rolls everything
+back and returns the verification report with `applied: false` and its blockers
+(CLI exit code 2). Keep those transient mismatch details: after rollback, another
+dry-run may no longer reproduce them. A clean pre-write dry-run alone does not
+prove a prospective merge is safe.
+Preserving a newer target row is not permission to skip this integrity check.
+This is target cache consistency, not source/target row-count parity, provider
+identity reconciliation, or evidence of a successful live rehearsal.
+
 ## Historical attachment disposition
 
 Keep an attachment's identity, verified property/message ownership and available

@@ -127,11 +127,12 @@ export async function runProductionPmsTransaction(
       rows: snapshot.rows,
       target: verifiedTarget,
     });
-    if (
-      verified.blockers.length > 0 ||
-      verified.checksum !== plan.checksum ||
-      verified.writes.length > 0
-    )
+    if (verified.blockers.length > 0) {
+      await client.query("ROLLBACK");
+      finished = true;
+      return report(input, verified, false);
+    }
+    if (verified.checksum !== plan.checksum || verified.writes.length > 0)
       throw new Error("Post-write PMS verification does not match the migration plan");
     await client.query("COMMIT");
     finished = true;
