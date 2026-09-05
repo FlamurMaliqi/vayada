@@ -120,6 +120,11 @@ function toSettingsAddonItem(item: BookingAddonItem): AddonItem {
     category: item.category,
     image: item.imageUrl ?? "",
     imageMediaObjectId: item.imageMediaObjectId,
+    photos: item.photos,
+    location: item.location ?? undefined,
+    maxGuests: item.maxGuests == null ? undefined : String(item.maxGuests),
+    maxQuantity: item.maxQuantity,
+    leadTime: item.leadTime ?? undefined,
     duration: item.duration ?? undefined,
     perPerson: item.pricingModel === "per_guest" || item.pricingModel === "per_guest_night",
     perNight: item.pricingModel === "per_night" || item.pricingModel === "per_guest_night",
@@ -144,6 +149,10 @@ function toAddonWritableFields(values: AddonItemFormValues) {
     currency: values.currency,
     category: values.category,
     duration: values.duration || null,
+    location: values.location || null,
+    maxGuests: values.maxGuests ? Number(values.maxGuests) : null,
+    maxQuantity: Number(values.maxQuantity),
+    leadTime: values.leadTime || null,
     pricingModel: toAddonPricingModel(values) as BookingAddonPricingModel,
   };
   return values.ownershipKind === "partner"
@@ -159,17 +168,19 @@ function toAddonWritableFields(values: AddonItemFormValues) {
       };
 }
 
-async function addonImageMediaObjectId(
-  values: AddonItemFormValues,
-  bookingHotelId: string,
-): Promise<string | null> {
-  if (!values.imageFile) return values.imageMediaObjectId;
-  const uploaded = await uploadSingleImageWithMediaReference(
-    values.imageFile,
-    "booking.addon.image",
-    bookingHotelId,
-  );
-  return uploaded.mediaObjectId;
+async function addonPhotos(values: AddonItemFormValues, bookingHotelId: string) {
+  const photos = [];
+  for (const photo of values.photos) {
+    const uploaded = photo.file
+      ? await uploadSingleImageWithMediaReference(photo.file, "booking.addon.image", bookingHotelId)
+      : photo;
+    photos.push({
+      mediaObjectId: uploaded.mediaObjectId,
+      imageUrl: photo.file ? "" : photo.imageUrl,
+      isCover: photo.isCover,
+    });
+  }
+  return photos;
 }
 
 function toAddonCreateBody(
@@ -238,6 +249,7 @@ export default function BookingFlowPage() {
   const [savingFilters, setSavingFilters] = useState(false);
   const [pmsRooms, setPmsRooms] = useState<{ id: string; name: string }[]>([]);
   const [pmsRoomsLoading, setPmsRoomsLoading] = useState(false);
+  const [addonCurrency, setAddonCurrency] = useState("");
   const [defaultCurrency, setDefaultCurrency] = useState("EUR");
 
   const { t } = useTranslation();
@@ -302,8 +314,13 @@ export default function BookingFlowPage() {
         getBookingAddonItemsContext({ hotelId }).then((context) => ({
           addonItems: context.addonItems.map(toSettingsAddonItem),
           propertyPlan: context.propertyPlan,
+          propertyCurrency: context.propertyCurrency,
         })),
-      { addonItems: [] as AddonItem[], propertyPlan: DEFAULT_PROPERTY_PLAN },
+      {
+        addonItems: [] as AddonItem[],
+        propertyPlan: DEFAULT_PROPERTY_PLAN,
+        propertyCurrency: undefined as string | undefined,
+      },
     );
     const guestFormSettingsPromise = loadTypedSetting(
       (hotelId) => getBookingGuestFormSettings({ hotelId }),
@@ -347,6 +364,7 @@ export default function BookingFlowPage() {
           setAddonSettings(settings);
           setAddons(orderAddons(addonContext.addonItems));
           setPropertyPlan(addonContext.propertyPlan);
+          setAddonCurrency(addonContext.propertyCurrency ?? "");
           setBenefits(
             normalizeBookingBenefitsSettings(benefitsRes, DEFAULT_BENEFITS_SETTINGS).benefits,
           );
@@ -418,7 +436,7 @@ export default function BookingFlowPage() {
         hotelId,
         body: {
           ...toAddonCreateBody(values, nextAddonSortOrder(addons)),
-          imageMediaObjectId: await addonImageMediaObjectId(values, hotelId),
+          photos: await addonPhotos(values, hotelId),
         },
       });
       setAddons((current) => orderAddons([...current, toSettingsAddonItem(saved)]));
@@ -452,7 +470,7 @@ export default function BookingFlowPage() {
         addonItemId: addonId,
         body: {
           ...toAddonWritableFields(values),
-          imageMediaObjectId: await addonImageMediaObjectId(values, hotelId),
+          photos: await addonPhotos(values, hotelId),
         },
       });
       setAddons((current) =>
@@ -620,7 +638,7 @@ export default function BookingFlowPage() {
           <AddonsTab
             addons={addons}
             addonSettings={addonSettings}
-            propertyCurrency={defaultCurrency}
+            propertyCurrency={addonCurrency}
             propertyPlan={propertyPlan}
             handleToggleAddonSetting={handleToggleAddonSetting}
             onCreateAddon={handleCreateAddon}
