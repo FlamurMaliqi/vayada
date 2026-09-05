@@ -65,8 +65,8 @@ beforeEach(() => {
   mocks.stateValues = [
     "compensation-001",
     "My travel audience is a strong fit for this hotel.",
-    "",
-    "",
+    "2099-09-01",
+    "2099-09-03",
     [],
     true,
     false,
@@ -128,6 +128,7 @@ function renderSubmitHandler(onSubmit: SubmitApplication, onClose: () => void) {
   const tree = CollaborationApplicationModal({
     isOpen: true,
     listingId: "offer-001",
+    propertyTimezone: "Europe/Berlin",
     onClose,
     onSubmit,
     creatorPlatforms: ["Instagram"],
