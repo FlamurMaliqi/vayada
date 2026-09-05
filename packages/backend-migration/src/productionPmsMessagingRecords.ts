@@ -36,9 +36,9 @@ function thread(context: PmsBuildContext, source: IdentitySourceRow): PmsTargetR
   const sourceName = requiredText(data["source"], "source").toLowerCase();
   if (!["channex", "direct"].includes(sourceName))
     throw new Error(`message source ${sourceName} is unsupported`);
-  const status = requiredText(data["status"] ?? "open", "status").toLowerCase();
-  if (!["open", "closed", "no_reply_needed"].includes(status))
-    throw new Error(`message thread status ${status} is unsupported`);
+  const legacyStatus = requiredText(data["status"] ?? "open", "status").toLowerCase();
+  if (!["open", "closed", "no_reply_needed"].includes(legacyStatus))
+    throw new Error(`message thread status ${legacyStatus} is unsupported`);
   const bookingId = optionalUuid(data["booking_id"], "booking_id");
   if (bookingId && targetBooking(context, bookingId).propertyId !== propertyId)
     throw new Error("message thread crosses booking property scope");
@@ -55,10 +55,19 @@ function thread(context: PmsBuildContext, source: IdentitySourceRow): PmsTargetR
       source: sourceName === "direct" ? "manual" : "channex",
       sourceThreadId: requiredText(data["source_thread_id"], "source_thread_id"),
       sourceBookingId: optionalText(data["source_booking_id"], "source_booking_id"),
-      channel: optionalText(data["channel"], "channel"),
+      providerChannel: sourceName === "direct" ? null : optionalText(data["channel"], "channel"),
+      deliveryChannel: sourceName === "direct" ? "email" : "ota",
       guestDisplayName: optionalText(data["guest_name"], "guest_name"),
       guestEmail: optionalText(data["guest_email"], "guest_email")?.toLowerCase() ?? null,
-      status,
+      attentionState: legacyStatus === "open" ? "needs_attention" : "done",
+      doneAt: legacyStatus === "open" ? null : updatedAt,
+      doneReason:
+        legacyStatus === "no_reply_needed"
+          ? "legacy_no_reply_needed"
+          : legacyStatus === "closed"
+            ? "legacy_closed"
+            : null,
+      conversationContextState: bookingId ? "linked" : "unlinked",
       lastMessageAt: optionalIso(data["last_message_at"], "last_message_at"),
       lastMessagePreview: optionalText(data["last_message_preview"], "last_message_preview"),
       lastMessageDirection: lastDirection,

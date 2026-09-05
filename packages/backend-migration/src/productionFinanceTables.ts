@@ -198,7 +198,6 @@ export const PRODUCTION_FINANCE_TABLES: Record<string, FinanceTableDefinition> =
     id,
     c("organizationId", "organization_id", "uuid"),
     property,
-    c("identityEntitlementId", "identity_entitlement_id", "uuid"),
     c("product", "product", "text"),
     c("entitlementKey", "entitlement_key", "text"),
     c("billingStatus", "billing_status", "text"),

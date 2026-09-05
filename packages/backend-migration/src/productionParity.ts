@@ -1094,32 +1094,55 @@ function addDomainInvariantFindings(
       [
         parity.sourcePaymentAmountsByCurrencyStatusOwner,
         parity.targetPaymentAmountsByCurrencyStatusOwner,
+        parity.omittedPaymentAmountsByCurrencyStatusOwner,
       ],
       [
         parity.sourcePaymentCountsByCurrencyStatusOwner,
         parity.targetPaymentCountsByCurrencyStatusOwner,
+        parity.omittedPaymentCountsByCurrencyStatusOwner,
       ],
       [
         parity.sourcePaymentFeesByCurrencyStatusOwner,
         parity.targetPaymentFeesByCurrencyStatusOwner,
+        parity.omittedPaymentFeesByCurrencyStatusOwner,
       ],
-      [parity.sourcePaymentNetByCurrencyStatusOwner, parity.targetPaymentNetByCurrencyStatusOwner],
+      [
+        parity.sourcePaymentNetByCurrencyStatusOwner,
+        parity.targetPaymentNetByCurrencyStatusOwner,
+        parity.omittedPaymentNetByCurrencyStatusOwner,
+      ],
       [
         parity.sourcePaymentRefundsByCurrencyStatusOwner,
         parity.targetPaymentRefundsByCurrencyStatusOwner,
+        parity.omittedPaymentRefundsByCurrencyStatusOwner,
       ],
       [
         parity.sourcePayoutAmountsByCurrencyStatusOwner,
         parity.targetPayoutAmountsByCurrencyStatusOwner,
+        parity.omittedPayoutAmountsByCurrencyStatusOwner,
       ],
       [
         parity.sourcePayoutCountsByCurrencyStatusOwner,
         parity.targetPayoutCountsByCurrencyStatusOwner,
+        parity.omittedPayoutCountsByCurrencyStatusOwner,
       ],
-      [parity.sourcePayoutNetByCurrencyStatusOwner, parity.targetPayoutNetByCurrencyStatusOwner],
-      [parity.sourcePayoutAllocationsByBookingOwner, parity.targetPayoutAllocationsByBookingOwner],
+      [
+        parity.sourcePayoutNetByCurrencyStatusOwner,
+        parity.targetPayoutNetByCurrencyStatusOwner,
+        parity.omittedPayoutNetByCurrencyStatusOwner,
+      ],
+      [
+        parity.sourcePayoutAllocationsByBookingOwner,
+        parity.targetPayoutAllocationsByBookingOwner,
+        parity.omittedPayoutAllocationsByBookingOwner,
+      ],
     ];
-    if (pairs.some(([source, target]) => stableJson(source) !== stableJson(target)))
+    if (
+      pairs.some(
+        ([source, target, omitted]) =>
+          stableJson(source) !== stableJson(combineFinanceDimensions(target, omitted)),
+      )
+    )
       findings.push(
         finding(
           "fail",
@@ -1199,6 +1222,30 @@ function stableJson(value: unknown): string {
       .map(([key, child]) => `${JSON.stringify(key)}:${stableJson(child)}`)
       .join(",")}}`;
   return JSON.stringify(value);
+}
+
+function combineFinanceDimensions(
+  target: Record<string, string> | Record<string, number>,
+  omitted: Record<string, string> | Record<string, number>,
+): Record<string, string> | Record<string, number> {
+  const entries = [...Object.entries(target), ...Object.entries(omitted)];
+  if (entries.some(([, value]) => typeof value === "string")) {
+    const sums = new Map<string, bigint>();
+    for (const [key, value] of entries) {
+      const match = /^(\d+)\.(\d{2})$/.exec(String(value));
+      if (!match) return { invalid: "1" };
+      const minor = BigInt(match[1]!) * 100n + BigInt(match[2]!);
+      sums.set(key, (sums.get(key) ?? 0n) + minor);
+    }
+    return Object.fromEntries(
+      [...sums]
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([key, value]) => [key, `${value / 100n}.${String(value % 100n).padStart(2, "0")}`]),
+    );
+  }
+  const counts = new Map<string, number>();
+  for (const [key, value] of entries) counts.set(key, (counts.get(key) ?? 0) + Number(value));
+  return Object.fromEntries([...counts].sort(([left], [right]) => left.localeCompare(right)));
 }
 
 function sha256(value: string): string {

@@ -482,6 +482,48 @@ describe.skipIf(!TEST_DATABASE_URL)("PostgreSQL staff invitation repository", ()
     expect(audit.rows[0].occurred_at.toISOString()).not.toBe(edit.audit.requestedAt);
   });
 
+  it("schedules one Inbox assignment reconciliation when property access is removed", async () => {
+    await client.query(
+      `INSERT INTO identity.membership_property_assignments (membership_id, property_id)
+       VALUES ($1, $2), ($1, $3)`,
+      [staffMembership, property, secondProperty],
+    );
+    const edit = updateCommand({ propertyIds: [property] });
+    await expect(repository.updateAccess(edit)).resolves.toEqual({
+      outcome: "updated",
+      membershipId: staffMembership,
+    });
+    await expect(repository.updateAccess({ ...edit, commandId: randomUUID() })).resolves.toEqual({
+      outcome: "idempotent_replay",
+      membershipId: staffMembership,
+    });
+
+    const jobs = await client.query(
+      `SELECT queue_name, job_type, tenant_scope, organization_id::text, resource_product,
+              resource_type, resource_id, payload, job_metadata
+       FROM platform.jobs
+       WHERE job_type = 'pms.inbox.assignment.reconcile'
+         AND job_metadata ->> 'commandId' = $1`,
+      [edit.commandId],
+    );
+    expect(jobs.rows).toEqual([
+      expect.objectContaining({
+        queue_name: "pms-inbox",
+        job_type: "pms.inbox.assignment.reconcile",
+        tenant_scope: "organization",
+        organization_id: org,
+        resource_product: "pms",
+        resource_type: "inbox_assignment",
+        resource_id: staffMembership,
+        payload: { membershipId: staffMembership },
+        job_metadata: expect.objectContaining({
+          commandId: edit.commandId,
+          reason: "property_access_removed",
+        }),
+      }),
+    ]);
+  });
+
   it("fails closed for unauthorized, owner, cross-tenant, and foreign-property updates", async () => {
     await expect(
       repository.updateAccess(updateCommand({ actorUserId: otherUser })),

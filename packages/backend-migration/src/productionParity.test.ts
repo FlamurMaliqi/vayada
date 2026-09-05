@@ -37,6 +37,51 @@ describe("production migration parity", () => {
     expect(formatProductionParityText(report)).toContain("Decision: GO");
   });
 
+  it("reconciles explicit Finance omissions without hiding unexplained variance", async () => {
+    const reports = domainReports();
+    const dimension = "EUR:unbound:paid:owner_0123456789abcdef";
+    reports.finance.parity.sourcePaymentAmountsByCurrencyStatusOwner = {
+      [dimension]: "10.00",
+    };
+    reports.finance.parity.targetPaymentAmountsByCurrencyStatusOwner = {
+      [dimension]: "7.00",
+    };
+    reports.finance.parity.omittedPaymentAmountsByCurrencyStatusOwner = {
+      [dimension]: "3.00",
+    };
+
+    const reconciled = await runProductionParity(config(), services({ reports }));
+    expect(reconciled.decision).toBe("go");
+
+    reports.finance.parity.omittedPaymentAmountsByCurrencyStatusOwner[dimension] = "2.00";
+    const unexplained = await runProductionParity(config(), services({ reports }));
+    expect(unexplained.decision).toBe("no-go");
+    expect(unexplained.findings).toContainEqual(
+      expect.objectContaining({ code: "FINANCIAL_VARIANCE" }),
+    );
+  });
+
+  it("reconciles hash-only booking allocation omissions in the final gate", async () => {
+    const reports = domainReports();
+    const dimension = "booking_0123456789abcdef:property:owner_fedcba9876543210";
+    reports.finance.parity.sourcePayoutAllocationsByBookingOwner = {
+      [dimension]: "100.00",
+    };
+    reports.finance.parity.omittedPayoutAllocationsByBookingOwner = {
+      [dimension]: "100.00",
+    };
+
+    const reconciled = await runProductionParity(config(), services({ reports }));
+    expect(reconciled.decision).toBe("go");
+
+    reports.finance.parity.omittedPayoutAllocationsByBookingOwner = {};
+    const unexplained = await runProductionParity(config(), services({ reports }));
+    expect(unexplained.decision).toBe("no-go");
+    expect(unexplained.findings).toContainEqual(
+      expect.objectContaining({ code: "FINANCIAL_VARIANCE" }),
+    );
+  });
+
   it("requires human review for preserved newer target state even within the warning budget", async () => {
     const reports = domainReports();
     reports.booking.counts.preservedNewerTarget = 1;
@@ -482,27 +527,39 @@ function domainReports(): {
       mode: "dry-run",
       applied: false,
       checksum: SHA,
-      counts: { ...reconciliationCounts },
+      counts: { ...reconciliationCounts, dispositions: 0, omittedSourceRows: 0 },
+      dispositionCountsByReason: {},
       parity: {
         sourceTableCounts: {},
         targetTableCounts: {},
+        dispositionCountsByReason: {},
+        omittedSourceRowCounts: {},
         sourcePaymentAmountsByCurrencyStatusOwner: {},
+        omittedPaymentAmountsByCurrencyStatusOwner: {},
         targetPaymentAmountsByCurrencyStatusOwner: {},
         sourcePaymentCountsByCurrencyStatusOwner: {},
+        omittedPaymentCountsByCurrencyStatusOwner: {},
         targetPaymentCountsByCurrencyStatusOwner: {},
         sourcePaymentFeesByCurrencyStatusOwner: {},
+        omittedPaymentFeesByCurrencyStatusOwner: {},
         targetPaymentFeesByCurrencyStatusOwner: {},
         sourcePaymentNetByCurrencyStatusOwner: {},
+        omittedPaymentNetByCurrencyStatusOwner: {},
         targetPaymentNetByCurrencyStatusOwner: {},
         sourcePaymentRefundsByCurrencyStatusOwner: {},
+        omittedPaymentRefundsByCurrencyStatusOwner: {},
         targetPaymentRefundsByCurrencyStatusOwner: {},
         sourcePayoutAmountsByCurrencyStatusOwner: {},
+        omittedPayoutAmountsByCurrencyStatusOwner: {},
         targetPayoutAmountsByCurrencyStatusOwner: {},
         sourcePayoutCountsByCurrencyStatusOwner: {},
+        omittedPayoutCountsByCurrencyStatusOwner: {},
         targetPayoutCountsByCurrencyStatusOwner: {},
         sourcePayoutNetByCurrencyStatusOwner: {},
+        omittedPayoutNetByCurrencyStatusOwner: {},
         targetPayoutNetByCurrencyStatusOwner: {},
         sourcePayoutAllocationsByBookingOwner: {},
+        omittedPayoutAllocationsByBookingOwner: {},
         targetPayoutAllocationsByBookingOwner: {},
       },
       blockers: [],

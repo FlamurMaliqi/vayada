@@ -38,6 +38,7 @@ type StaffRosterRow = {
 type StaffAccessTargetRow = {
   role_key: string;
   permission_overrides: unknown;
+  property_access_mode: string;
   property_ids: string[];
 };
 type StaffStatusTargetRow = {
@@ -66,6 +67,7 @@ const permissionKeys = new Set<string>(staffAccessPermissionKeys);
 const staffAccessUpdateOperation = "staff_access_update";
 const staffStatusUpdateOperation = "staff_status_update";
 const staffRemovalOperation = "staff_remove";
+const inboxAssignmentReconciliationJobType = "pms.inbox.assignment.reconcile";
 
 export function createPgStaffInvitationRepository(config: RepositoryConfig) {
   if (!config.connectionString.trim()) {
@@ -223,6 +225,15 @@ export function createPgStaffInvitationRepository(config: RepositoryConfig) {
            WHERE organization_id = $1 AND id = $2`,
           [normalized.organizationId, normalized.membershipId, normalized.membershipStatus],
         );
+        if (normalized.membershipStatus === "suspended")
+          await enqueueInboxAssignmentReconciliation(client, {
+            organizationId: normalized.organizationId,
+            membershipId: normalized.membershipId,
+            idempotencyId: reservationId,
+            correlationId: command.audit.correlationId ?? command.audit.requestId,
+            commandId: command.commandId,
+            reason: "membership_suspended",
+          });
         await client.query(
           `INSERT INTO platform.product_audit_events
              (audit_key, product, action, occurred_at, tenant_scope, organization_id,
@@ -372,6 +383,14 @@ export function createPgStaffInvitationRepository(config: RepositoryConfig) {
            WHERE organization_id = $1 AND id = $2`,
           [normalized.organizationId, normalized.membershipId],
         );
+        await enqueueInboxAssignmentReconciliation(client, {
+          organizationId: normalized.organizationId,
+          membershipId: normalized.membershipId,
+          idempotencyId: reservationId,
+          correlationId: command.audit.correlationId ?? command.audit.requestId,
+          commandId: command.commandId,
+          reason: "membership_removed",
+        });
         const expectedWorkosUserId =
           previous.workos_user_ids.length === 1 ? previous.workos_user_ids[0] : null;
         const job = await client.query<{ id: string }>(
@@ -535,6 +554,7 @@ export function createPgStaffInvitationRepository(config: RepositoryConfig) {
         }
         const target = await client.query<StaffAccessTargetRow>(
           `SELECT membership.role_key, membership.permission_overrides,
+                  membership.property_access_mode,
                   ARRAY(SELECT assignment.property_id::text
                         FROM identity.membership_property_assignments assignment
                         WHERE assignment.membership_id = membership.id
@@ -589,6 +609,19 @@ export function createPgStaffInvitationRepository(config: RepositoryConfig) {
            SELECT $1, property_id FROM unnest($2::uuid[]) property_id`,
           [normalized.membershipId, normalized.propertyIds],
         );
+        const nextPropertyIds = new Set(normalized.propertyIds);
+        if (
+          previous.property_access_mode === "all" ||
+          previous.property_ids.some((propertyId) => !nextPropertyIds.has(propertyId))
+        )
+          await enqueueInboxAssignmentReconciliation(client, {
+            organizationId: normalized.organizationId,
+            membershipId: normalized.membershipId,
+            idempotencyId: reservationId,
+            correlationId: command.audit.correlationId ?? command.audit.requestId,
+            commandId: command.commandId,
+            reason: "property_access_removed",
+          });
         const next = {
           roleKey: normalized.roleKey,
           permissionOverrides: normalized.permissionOverrides,
@@ -776,6 +809,42 @@ export function createPgStaffInvitationRepository(config: RepositoryConfig) {
     },
     close: () => pool.end(),
   };
+}
+
+async function enqueueInboxAssignmentReconciliation(
+  client: pg.PoolClient,
+  input: {
+    organizationId: string;
+    membershipId: string;
+    idempotencyId: string;
+    correlationId: string;
+    commandId: string;
+    reason: "membership_removed" | "membership_suspended" | "property_access_removed";
+  },
+): Promise<void> {
+  const inserted = await client.query(
+    `INSERT INTO platform.jobs
+       (job_key, queue_name, job_type, max_attempts, tenant_scope, organization_id,
+        resource_product, resource_type, resource_id, correlation_id, payload, job_metadata)
+     VALUES ($1, 'pms-inbox', $2, 5, 'organization', $3, 'pms', 'inbox_assignment',
+             $4, $5, jsonb_build_object('membershipId', $4::text),
+             jsonb_build_object('identityIdempotencyKeyId', $6::text,
+                                'commandId', $7::text, 'reason', $8::text))
+     ON CONFLICT (queue_name, job_key) DO NOTHING
+     RETURNING id`,
+    [
+      `${inboxAssignmentReconciliationJobType}:${input.idempotencyId}`,
+      inboxAssignmentReconciliationJobType,
+      input.organizationId,
+      input.membershipId,
+      input.correlationId,
+      input.idempotencyId,
+      input.commandId,
+      input.reason,
+    ],
+  );
+  if (inserted.rowCount !== 1)
+    throw new Error("PMS Inbox assignment reconciliation job was not scheduled");
 }
 
 function normalize(command: CreateStaffInviteCommand) {

@@ -138,6 +138,15 @@ test.describe("adaptive pricing and calendar", () => {
     expect(api.calendarWrites[0]).not.toHaveProperty("audit");
     expect(api.calendarWrites[0]).not.toHaveProperty("idempotencyKey");
     expect(api.calendarIdempotencyKeys).toHaveLength(1);
+    expect(api.materializationWrites).toEqual([
+      expect.objectContaining({
+        expectedCalendarRevision: 3,
+        horizon: expect.objectContaining({
+          from: expect.stringMatching(/^\d{4}-\d{2}-\d{2}$/),
+          through: expect.stringMatching(/^\d{4}-\d{2}-\d{2}$/),
+        }),
+      }),
+    ]);
     expect(api.forbiddenCalls).toEqual([]);
     expect(api.unexpectedCalls).toEqual([]);
     await assertHealthy();
@@ -193,6 +202,7 @@ async function mockPricingCalendarApis(page: Page) {
   const previewWrites: Record<string, unknown>[] = [];
   const calendarWrites: Record<string, unknown>[] = [];
   const calendarIdempotencyKeys: string[] = [];
+  const materializationWrites: Record<string, unknown>[] = [];
   const forbiddenCalls: string[] = [];
   const unexpectedCalls: string[] = [];
 
@@ -280,7 +290,7 @@ async function mockPricingCalendarApis(page: Page) {
     },
   );
 
-  await page.route(new RegExp(`/api/pms/properties/${propertyId}/.*`), async (route) => {
+  await page.route(new RegExp(`/api/pms/(?:setup/)?properties/${propertyId}/.*`), async (route) => {
     if (route.request().method() === "OPTIONS") return fulfillCorsPreflight(route);
     const request = route.request();
     const pathname = new URL(request.url()).pathname;
@@ -307,6 +317,20 @@ async function mockPricingCalendarApis(page: Page) {
         roomUnitsRevision: 5,
         activeUnitCount: 4,
         capturedAt: acceptedAt,
+      });
+      return;
+    }
+    if (pathname.endsWith(`/room-types/${roomTypeId}/units`) && method === "GET") {
+      await ok(route, {
+        items: Array.from({ length: 4 }, (_, index) => ({
+          contractVersion: PMS_ROOM_FACTS_CONTRACT_VERSION,
+          propertyId,
+          roomTypeId,
+          roomUnitId: `55555555-5555-4555-8555-${String(index + 1).padStart(12, "0")}`,
+          lifecycle: "active",
+          operationalLabel: `Garden Suite ${index + 1}`,
+          operationalLabelStatus: "verified",
+        })),
       });
       return;
     }
@@ -384,6 +408,23 @@ async function mockPricingCalendarApis(page: Page) {
       });
       return;
     }
+    if (pathname.endsWith("/inventory-materialization") && method === "POST") {
+      const body = request.postDataJSON() as {
+        expectedCalendarRevision: number;
+        horizon: { from: string; through: string };
+      };
+      materializationWrites.push(body);
+      await ok(route, {
+        ok: true,
+        outcome: "applied",
+        coverage: {
+          materializedRevision: body.expectedCalendarRevision,
+          coverageFrom: body.horizon.from,
+          coverageThrough: body.horizon.through,
+        },
+      });
+      return;
+    }
     await unexpected(route, unexpectedCalls);
   });
 
@@ -395,6 +436,7 @@ async function mockPricingCalendarApis(page: Page) {
     previewWrites,
     calendarWrites,
     calendarIdempotencyKeys,
+    materializationWrites,
     forbiddenCalls,
     unexpectedCalls,
   };

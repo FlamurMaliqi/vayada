@@ -5,6 +5,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
   BoltIcon,
+  ChatBubbleLeftRightIcon,
   ChevronLeftIcon,
   ChevronDownIcon,
   CheckIcon,
@@ -14,6 +15,8 @@ import { cn } from "@/lib/utils";
 import { useTranslation } from "@/lib/i18n";
 import { sharedHotelSetupApi } from "@/services/api/sharedHotelSetupClient";
 import { getAuthCsrfToken } from "@/services/auth/sessionStore";
+import { resolveSelectedPmsPropertyId } from "@/services/api/pmsPropertyClient";
+import { messagingService } from "@/services/messaging";
 import {
   createBrowserAuthHandoff,
   crossAppReauthenticationUrl,
@@ -39,6 +42,7 @@ const CORE_NAV_ITEMS: Omit<NavItem, "badge">[] = [
   { labelKey: "layout.sidebar.dashboard", href: "/dashboard", icon: DashboardIcon },
   { labelKey: "layout.sidebar.calendar", href: "/calendar", icon: CalendarIcon },
   { labelKey: "layout.sidebar.reservations", href: "/bookings", icon: ReservationsIcon },
+  { label: "Inbox", href: "/inbox", icon: ChatBubbleLeftRightIcon },
   { label: "Reviews", href: "/reviews", icon: StarIcon },
   { labelKey: "layout.sidebar.roomsAndRates", href: "/rooms", icon: RoomsIcon },
   {
@@ -58,6 +62,7 @@ export default function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
   const [enabledProducts, setEnabledProducts] = useState<Set<Product>>(
     () => new Set<Product>(["pms"]),
   );
+  const [inboxUnread, setInboxUnread] = useState(0);
   const { t } = useTranslation();
   const switcherRef = useRef<HTMLDivElement>(null);
 
@@ -101,6 +106,29 @@ export default function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
 
   useEffect(() => {
     let cancelled = false;
+    const loadUnread = async () => {
+      try {
+        const propertyId = await resolveSelectedPmsPropertyId("loading the Inbox unread count");
+        const count = await messagingService.unreadCount(propertyId);
+        if (!cancelled) setInboxUnread(count.threadCount);
+      } catch {
+        if (!cancelled) setInboxUnread(0);
+      }
+    };
+    void loadUnread();
+    const interval = window.setInterval(() => {
+      if (document.visibilityState === "visible") void loadUnread();
+    }, 30_000);
+    window.addEventListener("pms-inbox-unread-changed", loadUnread);
+    return () => {
+      cancelled = true;
+      window.clearInterval(interval);
+      window.removeEventListener("pms-inbox-unread-changed", loadUnread);
+    };
+  }, [pathname]);
+
+  useEffect(() => {
+    let cancelled = false;
     void sharedHotelSetupApi
       .getStatus({ entryProduct: "pms" })
       .then((status) => {
@@ -125,17 +153,9 @@ export default function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
     };
   }, []);
 
-  const baseNavItems: Omit<NavItem, "badge">[] = [
-    CORE_NAV_ITEMS[0],
-    CORE_NAV_ITEMS[1],
-    CORE_NAV_ITEMS[2],
-    CORE_NAV_ITEMS[3],
-    CORE_NAV_ITEMS[4],
-    CORE_NAV_ITEMS[5],
-    CORE_NAV_ITEMS[6],
-  ];
-
-  const navItems: NavItem[] = baseNavItems;
+  const navItems: NavItem[] = CORE_NAV_ITEMS.map((item) =>
+    item.href === "/inbox" && inboxUnread > 0 ? { ...item, badge: inboxUnread } : item,
+  );
 
   return (
     <aside

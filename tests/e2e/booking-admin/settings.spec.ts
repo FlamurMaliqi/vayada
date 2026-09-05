@@ -283,6 +283,7 @@ test.describe("booking-admin settings no-legacy guard", () => {
 
     await page.goto("/design-studio");
 
+    const canonicalBookingUrl = "hotel-alpenrose.booking.vayada.com";
     await expect(page.getByRole("button", { name: "Content" })).toBeVisible();
     await expect(page.getByRole("button", { name: "Colors" })).toBeVisible();
     await expect(page.getByRole("button", { name: "Typography" })).toBeVisible();
@@ -320,23 +321,26 @@ test.describe("booking-admin settings no-legacy guard", () => {
     ).toBe(true);
 
     await page.getByRole("button", { name: "Domain" }).click();
-    await expect(page.getByRole("heading", { name: "Current booking URL" })).toBeVisible();
+    const currentBookingUrl = page
+      .getByRole("heading", { name: "Current booking URL" })
+      .locator("xpath=..");
+    await expect(currentBookingUrl).toBeVisible();
     await expect(page.getByRole("heading", { name: "Custom Domain" })).toBeVisible();
     await expect(heroImageHeading).toHaveCount(0);
-    await expect(page.getByText("hotel-alpenrose.booking.vayada.com")).toBeVisible();
-    await expect(preview).toContainText(/hotel-alpenrose\.booking\.localhost(?::\d+)?/);
+    await expect(currentBookingUrl.getByText(canonicalBookingUrl, { exact: true })).toBeVisible();
+    await expect(preview).toContainText(canonicalBookingUrl);
 
     await page.getByPlaceholder("booking.yourdomain.com").fill("book.alpenrose.example");
     await page.getByRole("button", { name: "Connect Domain" }).click();
 
     await expect(preview).toContainText("book.alpenrose.example");
-    await expect(preview).not.toContainText(/hotel-alpenrose\.booking\.localhost(?::\d+)?/);
+    await expect(preview).not.toContainText(canonicalBookingUrl);
     await expect(page.getByText("custom.booking.vayada.com")).toBeVisible();
 
     await page.getByRole("button", { name: "Remove domain" }).click();
 
     await expect(page.getByPlaceholder("booking.yourdomain.com")).toBeVisible();
-    await expect(preview).toContainText(/hotel-alpenrose\.booking\.localhost(?::\d+)?/);
+    await expect(preview).toContainText(canonicalBookingUrl);
     await assertHealthy();
   });
 

@@ -43,6 +43,9 @@ describe("PMS inventory public offer projection", () => {
       projectedOfferDays: 366,
     });
     expect(target.publishedEventIds).toEqual(["f6855f00-0000-0000-0000-000000000001"]);
+    const claim = target.queries.find((query) => query.includes("WITH candidate_event AS"));
+    expect(claim).toContain("outbox.destination = 'distribution.inventory-projection'");
+    expect(claim).toContain("outbox.event_type = 'pms.inventory.projection_refresh_requested'");
     expect(PROJECT_PMS_INVENTORY_TO_PUBLIC_OFFERS).toContain("inventory.available_count");
     expect(PROJECT_PMS_INVENTORY_TO_PUBLIC_OFFERS).toContain(
       "hashtextextended(concat('pms-inventory:', $1::text), 0)",

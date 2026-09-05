@@ -47,6 +47,7 @@ vi.mock("../api/unsupported", () => ({
 }));
 
 import { linkedInventoryGroupsService, roomsService, roomTypeUpdateForm } from ".";
+import { ApiErrorResponse } from "../api/client";
 
 function pmsRoomTypeItem(overrides: Record<string, unknown> = {}) {
   return {
@@ -90,6 +91,91 @@ function canonicalPricingSnapshot(overrides: Record<string, unknown> = {}) {
     partialRefundAmountPercent: 50,
     partialRefundTiers: [],
     ...overrides,
+  };
+}
+
+const canonicalAt = "2026-09-04T00:00:00.000Z";
+
+function canonicalCancellationTerms() {
+  return {
+    type: "free_until_days_before_arrival",
+    freeCancellationDeadlineDays: 7,
+    afterDeadlinePenalty: "full_booking_amount",
+    noShowPenalty: "full_booking_amount",
+    text: "Free until 7 days before",
+    flexibleCancellationType: "free",
+    partialRefundCancelWindowDays: 30,
+    partialRefundAmountPercent: 50,
+    partialRefundTiers: [],
+  };
+}
+
+function canonicalRoomFacts(propertyId: string, roomTypeId: string, roomFactsRevision = 1) {
+  return {
+    contractVersion: "pms-room-facts.v1",
+    propertyId,
+    roomTypeId,
+    roomFactsRevision,
+    lifecycle: "active",
+    facts: {
+      name: "Castrop Suite",
+      description: "Suite",
+      category: "suite",
+      occupancy: { maxGuests: 2, maxAdults: 2, maxChildren: 0 },
+      beds: [{ type: "queen", quantity: 1 }],
+      bedrooms: 1,
+      bathrooms: 1,
+      bathroomType: "private",
+      size: null,
+    },
+    createdAt: canonicalAt,
+    updatedAt: canonicalAt,
+  };
+}
+
+function canonicalPricingSource(propertyId: string, roomTypeId?: string, roomFactsRevision = 1) {
+  return {
+    contractVersion: "pms-pricing.v1",
+    propertyId,
+    pricingCurrency: {
+      contractVersion: "pms-pricing.v1",
+      propertyId,
+      currency: "EUR",
+      pricingCurrencyRevision: 1,
+      createdAt: canonicalAt,
+      updatedAt: canonicalAt,
+    },
+    flexibleRatePlans: roomTypeId
+      ? [
+          {
+            contractVersion: "pms-pricing.v1",
+            propertyId,
+            roomTypeId,
+            flexibleRatePlanId: "44444444-4444-4444-8444-444444444444",
+            flexibleRatePlanRevision: 1,
+            sourceRoomFactsRevision: roomFactsRevision,
+            baseAmount: { amountDecimal: "180.00", currency: "EUR" },
+            cancellationTerms: canonicalCancellationTerms(),
+            createdAt: canonicalAt,
+            updatedAt: canonicalAt,
+          },
+        ]
+      : [],
+    capturedAt: canonicalAt,
+  };
+}
+
+function canonicalFlexiblePlanResponse(
+  propertyId: string,
+  roomTypeId: string,
+  roomFactsRevision = 1,
+) {
+  return {
+    contractVersion: "pms-pricing.v1",
+    outcome: "created",
+    flexibleRatePlan: canonicalPricingSource(propertyId, roomTypeId, roomFactsRevision)
+      .flexibleRatePlans[0],
+    acceptedAt: canonicalAt,
   };
 }
 
@@ -367,6 +453,74 @@ describe("roomsService.update", () => {
     });
   });
 
+  it.each(["125", "180"])(
+    "preserves captured pricing revisions during physical-room preparation at rate %s",
+    async (rate) => {
+      const propertyId = "11111111-1111-4111-8111-111111111111";
+      const roomTypeId = "22222222-2222-4222-8222-222222222222";
+      const room = { propertyId, item: pmsRoomTypeItem({ roomTypeId, roomCount: 1 }) };
+      const savedPlan = {
+        ...canonicalPricingSource(propertyId, roomTypeId, 3).flexibleRatePlans[0],
+        flexibleRatePlanRevision: rate === "180" ? 6 : 7,
+        baseAmount: { amountDecimal: `${rate}.00`, currency: "EUR" },
+      };
+      mocks.resolvePropertyId.mockResolvedValue(propertyId);
+      mocks.patch.mockResolvedValue(room);
+      mocks.put.mockResolvedValue({ flexibleRatePlan: savedPlan });
+      mocks.get.mockImplementation(async (endpoint: string) => {
+        if (endpoint.endsWith("/capacity")) {
+          return {
+            contractVersion: "pms-room-facts.v1",
+            propertyId,
+            roomTypeId,
+            roomUnitsRevision: 5,
+            activeUnitCount: 1,
+            capturedAt: canonicalAt,
+          };
+        }
+        if (endpoint.endsWith("/units")) {
+          return {
+            items: [
+              {
+                contractVersion: "pms-room-facts.v1",
+                propertyId,
+                roomTypeId,
+                roomUnitId: "33333333-3333-4333-8333-333333333333",
+                lifecycle: "active",
+                operationalLabel: "Alpine Suite 1",
+                operationalLabelStatus: "verified",
+              },
+            ],
+          };
+        }
+        if (endpoint.endsWith("/pricing-source")) {
+          return {
+            pricingCurrency: { currency: "EUR", pricingCurrencyRevision: 4 },
+            flexibleRatePlans: [savedPlan],
+          };
+        }
+        return room;
+      });
+
+      const updated = await roomsService.update(roomTypeId, {
+        totalRooms: 1,
+        canonicalPricingSnapshot: canonicalPricingSnapshot({ expectedFlexibleRatePlanRevision: 6 }),
+        seasons: [{ name: "Default", tier: "mid", from: "01-01", to: "12-31", rate, minStay: 1 }],
+      });
+
+      expect(updated.baseRate).toBe(Number(rate));
+      expect(mocks.put).toHaveBeenCalledTimes(rate === "180" ? 0 : 1);
+      if (rate !== "180") {
+        expect(mocks.put.mock.calls[0]?.[1]).toMatchObject({
+          expectedRoomFactsRevision: 3,
+          expectedPricingCurrencyRevision: 4,
+          expectedFlexibleRatePlanRevision: 6,
+          baseAmountDecimal: "125.00",
+        });
+      }
+    },
+  );
+
   it("does not rewrite canonical pricing when an unrelated field changes", async () => {
     const currentPlan = {
       roomTypeId: "room-type-1",
@@ -438,8 +592,12 @@ describe("roomsService.update", () => {
     });
   });
 
-  it("keeps the editor-load plan revision so concurrent pricing changes conflict", async () => {
-    mocks.put.mockRejectedValue(new Error("Room pricing changed. Refresh and try again."));
+  it.each([
+    "flexible_rate_plan_revision_conflict",
+    "pricing_currency_revision_conflict",
+    "room_facts_revision_conflict",
+  ])("explains %s while preserving the editor-load revision", async (code) => {
+    mocks.put.mockRejectedValue(new ApiErrorResponse(409, { code }));
 
     await expect(
       roomsService.update("room-type-1", {
@@ -450,11 +608,90 @@ describe("roomsService.update", () => {
           { name: "Default", tier: "mid", from: "01-01", to: "12-31", rate: "125", minStay: 1 },
         ],
       }),
-    ).rejects.toThrow("Room pricing changed");
+    ).rejects.toThrow("Reload the room and reapply your pricing changes.");
     expect(mocks.put.mock.calls[0]?.[1]).toMatchObject({
       expectedFlexibleRatePlanRevision: 6,
     });
   });
+
+  it.each(["", "0", "-1", "invalid"])(
+    "rejects an explicit invalid rate %j before any write",
+    async (rate) => {
+      await expect(
+        roomsService.update("room-type-1", {
+          canonicalPricingSnapshot: canonicalPricingSnapshot(),
+          baseRate: 180,
+          seasons: [{ name: "Default", tier: "mid", from: "01-01", to: "12-31", rate, minStay: 1 }],
+        }),
+      ).rejects.toThrow("Enter a room rate greater than zero before saving.");
+      expect(mocks.patch).not.toHaveBeenCalled();
+      expect(mocks.put).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(["plan", "reload"])(
+    "replays the currency and plan commands after a failed %s",
+    async (failure) => {
+      const currencyKeys: string[] = [];
+      const planKeys: string[] = [];
+      const savedPlan = {
+        roomTypeId: `retry-${failure}`,
+        flexibleRatePlanRevision: 1,
+        sourceRoomFactsRevision: 3,
+        baseAmount: { amountDecimal: "125.00", currency: "EUR" },
+        cancellationTerms: {},
+      };
+      let failed = false;
+      mocks.put.mockImplementation(async (endpoint: string, _body, options) => {
+        const key = options.headers["Idempotency-Key"];
+        if (endpoint.endsWith("/currency")) {
+          currencyKeys.push(key);
+          if (key !== currencyKeys[0]) {
+            throw new ApiErrorResponse(409, { code: "pricing_currency_revision_conflict" });
+          }
+          return { pricingCurrency: { currency: "EUR", pricingCurrencyRevision: 1 } };
+        }
+        planKeys.push(key);
+        if (failure === "plan" && !failed) {
+          failed = true;
+          throw new Error("temporary plan failure");
+        }
+        return { flexibleRatePlan: savedPlan };
+      });
+      mocks.get.mockImplementation(async (endpoint: string) => {
+        if (failure === "reload" && !failed) {
+          failed = true;
+          throw new Error("temporary reload failure");
+        }
+        return endpoint.endsWith("/pricing-source")
+          ? {
+              pricingCurrency: { currency: "EUR", pricingCurrencyRevision: 1 },
+              flexibleRatePlans: [savedPlan],
+            }
+          : {
+              propertyId: "pms-property-1",
+              item: pmsRoomTypeItem({ roomTypeId: savedPlan.roomTypeId }),
+            };
+      });
+      const data = {
+        canonicalPricingSnapshot: canonicalPricingSnapshot({ expectedPricingCurrencyRevision: 0 }),
+        seasons: [
+          { name: "Default", tier: "mid", from: "01-01", to: "12-31", rate: "125", minStay: 1 },
+        ],
+      };
+
+      await expect(roomsService.update(savedPlan.roomTypeId, data)).rejects.toThrow(
+        `temporary ${failure} failure`,
+      );
+      await expect(roomsService.update(savedPlan.roomTypeId, data)).resolves.toMatchObject({
+        baseRate: 125,
+      });
+      expect(currencyKeys).toHaveLength(2);
+      expect(currencyKeys[1]).toBe(currencyKeys[0]);
+      expect(planKeys).toHaveLength(2);
+      expect(planKeys[1]).toBe(planKeys[0]);
+    },
+  );
 
   it("rejects room-level currency changes before mutating the room", async () => {
     await expect(
@@ -568,7 +805,9 @@ describe("roomsService.update", () => {
       currency: "EUR",
       canonicalPricingSnapshot: { currency: "EUR", expectedFlexibleRatePlanRevision: 0 },
     });
-    await expect(roomsService.update("room-type-1", form)).resolves.toMatchObject({
+    await expect(
+      roomsService.update("room-type-1", { ...form, totalRooms: undefined }),
+    ).resolves.toMatchObject({
       currency: "EUR",
     });
     expect(mocks.put.mock.calls[0]?.[1]).toMatchObject({
@@ -838,11 +1077,14 @@ describe("roomsService.getPropertyPlan", () => {
 describe("roomsService.create", () => {
   it("uploads staged files only after receiving the canonical room UUID", async () => {
     vi.clearAllMocks();
-    mocks.resolvePropertyId.mockResolvedValue("pms-property-1");
+    const propertyId = "11111111-1111-4111-8111-111111111111";
+    const roomTypeId = "22222222-2222-4222-8222-222222222222";
+    mocks.resolvePropertyId.mockResolvedValue(propertyId);
     const item = pmsRoomTypeItem({
+      roomTypeId,
       roomMediaRevision: 1,
     });
-    mocks.post.mockResolvedValue({ propertyId: "pms-property-1", item });
+    mocks.post.mockResolvedValue({ propertyId, item });
     mocks.uploadImages.mockResolvedValue({
       images: [
         {
@@ -853,19 +1095,23 @@ describe("roomsService.create", () => {
       total: 1,
     });
     mocks.put.mockResolvedValue({ roomMediaRevision: 2 });
-    mocks.get.mockResolvedValue({
-      propertyId: "pms-property-1",
-      item: {
-        ...item,
-        roomMediaRevision: 2,
-        media: [
-          {
-            mediaObjectId: "22222222-2222-4222-8222-222222222222",
-            url: "https://cdn.example.com/new.webp",
-          },
-        ],
-      },
-    });
+    mocks.get
+      .mockResolvedValueOnce(canonicalPricingSource(propertyId, roomTypeId))
+      .mockResolvedValueOnce(canonicalRoomFacts(propertyId, roomTypeId))
+      .mockResolvedValueOnce({ propertyId, item })
+      .mockResolvedValueOnce({
+        propertyId,
+        item: {
+          ...item,
+          roomMediaRevision: 2,
+          media: [
+            {
+              mediaObjectId: "22222222-2222-4222-8222-222222222222",
+              url: "https://cdn.example.com/new.webp",
+            },
+          ],
+        },
+      });
     const file = new File([new Uint8Array([1])], "room.jpg", { type: "image/jpeg" });
 
     await roomsService.create({
@@ -878,13 +1124,493 @@ describe("roomsService.create", () => {
     expect(mocks.uploadImages).toHaveBeenCalledWith([file], {
       product: "hotel_catalog",
       resourceType: "property",
-      resourceId: "pms-property-1",
-      propertyId: "pms-property-1",
-      targetResourceId: "room-type-1",
+      resourceId: propertyId,
+      propertyId,
+      targetResourceId: roomTypeId,
     });
     expect(mocks.put).toHaveBeenCalledWith(
-      "/api/pms/properties/pms-property-1/room-types/room-type-1/media",
+      `/api/pms/properties/${propertyId}/room-types/${roomTypeId}/media`,
       expect.objectContaining({ expectedRoomMediaRevision: 1 }),
+      expect.any(Object),
+    );
+  });
+
+  it("resumes after a committed media write without uploading or writing twice", async () => {
+    vi.clearAllMocks();
+    const propertyId = "11111111-1111-4111-8111-111111111111";
+    const roomTypeId = "22222222-2222-4222-8222-222222222222";
+    const mediaObjectId = "33333333-3333-4333-8333-333333333333";
+    const item = pmsRoomTypeItem({ roomTypeId, roomMediaRevision: 1 });
+    const appliedItem = pmsRoomTypeItem({
+      roomTypeId,
+      roomMediaRevision: 2,
+      media: [{ mediaObjectId, url: "https://cdn.example.com/new.webp" }],
+    });
+    mocks.resolvePropertyId.mockResolvedValue(propertyId);
+    mocks.post.mockResolvedValue({ propertyId, item });
+    mocks.uploadImages.mockResolvedValue({
+      images: [{ platformMediaObjectId: mediaObjectId, url: "https://cdn.example.com/new.webp" }],
+      total: 1,
+    });
+    let roomRead = 0;
+    mocks.get.mockImplementation(async (endpoint: string) => {
+      if (endpoint.endsWith("/pricing-source")) {
+        return canonicalPricingSource(propertyId, roomTypeId);
+      }
+      if (endpoint.includes("/api/pms/setup/")) {
+        return canonicalRoomFacts(propertyId, roomTypeId);
+      }
+      roomRead += 1;
+      if (roomRead === 1) return { propertyId, item };
+      if (roomRead === 2) throw new Error("room refresh interrupted");
+      return { propertyId, item: appliedItem };
+    });
+    mocks.put.mockResolvedValue({
+      propertyId,
+      roomTypeId,
+      roomMediaRevision: 2,
+    });
+    const file = new File([new Uint8Array([1])], "room.jpg", { type: "image/jpeg" });
+    const data = {
+      name: "Alpine Suite",
+      bathroomType: "private" as const,
+      images: [{ url: "blob:room-preview", pendingFile: file }],
+    };
+
+    await expect(roomsService.create(data)).rejects.toThrow("room refresh interrupted");
+    await expect(roomsService.create(data)).resolves.toMatchObject({
+      id: roomTypeId,
+      roomMediaRevision: 2,
+    });
+
+    expect(mocks.post).toHaveBeenCalledTimes(2);
+    expect(mocks.post.mock.calls[1]![1]).toEqual(mocks.post.mock.calls[0]![1]);
+    expect(mocks.uploadImages).toHaveBeenCalledTimes(1);
+    expect(mocks.put).toHaveBeenCalledTimes(1);
+  });
+
+  it("retries generated labels that collide elsewhere in the property", async () => {
+    vi.clearAllMocks();
+    const propertyId = "AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA";
+    const canonicalPropertyId = propertyId.toLowerCase();
+    const roomTypeId = "22222222-2222-4222-8222-222222222222";
+    const unitIds = [
+      "33333333-3333-4333-8333-333333333331",
+      "33333333-3333-4333-8333-333333333332",
+    ];
+    mocks.resolvePropertyId.mockResolvedValue(propertyId);
+    mocks.post.mockResolvedValue({
+      propertyId: canonicalPropertyId,
+      item: pmsRoomTypeItem({ roomTypeId, name: "Castrop Suite", roomCount: 2 }),
+    });
+    mocks.get
+      .mockResolvedValueOnce({
+        contractVersion: "pms-room-facts.v1",
+        propertyId: canonicalPropertyId,
+        roomTypeId,
+        roomUnitsRevision: 1,
+        activeUnitCount: 2,
+        capturedAt: "2026-09-04T00:00:00.000Z",
+      })
+      .mockResolvedValueOnce({
+        items: unitIds.map((roomUnitId) => ({
+          contractVersion: "pms-room-facts.v1",
+          propertyId: canonicalPropertyId,
+          roomTypeId,
+          roomUnitId,
+          lifecycle: "active",
+          operationalLabel: null,
+          operationalLabelStatus: "unverified",
+        })),
+      })
+      .mockResolvedValueOnce(canonicalPricingSource(canonicalPropertyId, roomTypeId))
+      .mockResolvedValueOnce(canonicalRoomFacts(canonicalPropertyId, roomTypeId));
+    let propertyWideLabelConflict = true;
+    mocks.put.mockImplementation(async (endpoint, body) => {
+      if (propertyWideLabelConflict && body.operationalLabel === "Castrop Suite 1") {
+        propertyWideLabelConflict = false;
+        throw new ApiErrorResponse(409, { code: "operational_label_conflict" });
+      }
+      return {
+        contractVersion: "pms-room-facts.v1",
+        outcome: "updated",
+        propertyId: canonicalPropertyId,
+        roomTypeId,
+        roomUnitId: endpoint.split("/").at(-2),
+        roomUnitsRevision: body.expectedRevision + 1,
+        operationalLabel: body.operationalLabel,
+        operationalLabelStatus: "verified",
+        acceptedAt: "2026-09-04T00:00:00.000Z",
+      };
+    });
+
+    await roomsService.create({ name: "Castrop Suite", bathroomType: "private", totalRooms: 2 });
+
+    expect(mocks.put).toHaveBeenCalledTimes(3);
+    expect(mocks.put.mock.calls.map(([, body]) => body)).toEqual([
+      { expectedRevision: 1, operationalLabel: "Castrop Suite 1" },
+      { expectedRevision: 1, operationalLabel: "Castrop Suite 2" },
+      { expectedRevision: 2, operationalLabel: "Castrop Suite 3" },
+    ]);
+  });
+
+  it("replays the room create and resumes labels before persisting canonical pricing", async () => {
+    vi.clearAllMocks();
+    const propertyId = "11111111-1111-4111-8111-111111111111";
+    const roomTypeId = "22222222-2222-4222-8222-222222222222";
+    const unitIds = [
+      "33333333-3333-4333-8333-333333333331",
+      "33333333-3333-4333-8333-333333333332",
+    ];
+    mocks.resolvePropertyId.mockResolvedValue(propertyId);
+    mocks.post.mockResolvedValue({
+      propertyId,
+      item: pmsRoomTypeItem({ roomTypeId, name: "Castrop Suite", roomCount: 2 }),
+    });
+    let setupAttempt = 0;
+    mocks.get.mockImplementation(async (endpoint: string) => {
+      if (endpoint.endsWith("/capacity")) {
+        setupAttempt += 1;
+        return {
+          contractVersion: "pms-room-facts.v1",
+          propertyId,
+          roomTypeId,
+          roomUnitsRevision: setupAttempt,
+          activeUnitCount: 2,
+          capturedAt: canonicalAt,
+        };
+      }
+      if (endpoint.endsWith("/units")) {
+        return {
+          items: unitIds.map((roomUnitId, index) => ({
+            contractVersion: "pms-room-facts.v1",
+            propertyId,
+            roomTypeId,
+            roomUnitId,
+            lifecycle: "active",
+            operationalLabel: setupAttempt === 2 && index === 0 ? "Castrop Suite 1" : null,
+            operationalLabelStatus: setupAttempt === 2 && index === 0 ? "verified" : "unverified",
+          })),
+        };
+      }
+      if (endpoint.endsWith("/pricing-source")) {
+        throw new ApiErrorResponse(404, { code: "pricing_currency_not_configured" });
+      }
+      if (endpoint.endsWith(`/room-types/${roomTypeId}`)) {
+        return canonicalRoomFacts(propertyId, roomTypeId);
+      }
+      throw new Error(`Unexpected GET ${endpoint}`);
+    });
+    let secondLabelAttempt = 0;
+    mocks.put.mockImplementation(async (endpoint: string, body) => {
+      if (endpoint.endsWith("/pricing-source/currency")) {
+        return {
+          contractVersion: "pms-pricing.v1",
+          outcome: "created",
+          pricingCurrency: canonicalPricingSource(propertyId).pricingCurrency,
+          acceptedAt: canonicalAt,
+        };
+      }
+      if (endpoint.endsWith("/flexible-rate-plan")) {
+        return canonicalFlexiblePlanResponse(propertyId, roomTypeId);
+      }
+      const roomUnitId = endpoint.split("/").at(-2);
+      if (roomUnitId === unitIds[1] && secondLabelAttempt++ === 0) {
+        throw new Error("label write interrupted");
+      }
+      return {
+        contractVersion: "pms-room-facts.v1",
+        outcome: "updated",
+        propertyId,
+        roomTypeId,
+        roomUnitId,
+        roomUnitsRevision: body.expectedRevision + 1,
+        operationalLabel: body.operationalLabel,
+        operationalLabelStatus: "verified",
+        acceptedAt: canonicalAt,
+      };
+    });
+    const data = { name: "Castrop Suite", bathroomType: "private" as const, totalRooms: 2 };
+
+    await expect(roomsService.create(data)).rejects.toThrow("label write interrupted");
+    await expect(roomsService.create(data)).resolves.toMatchObject({
+      id: roomTypeId,
+      totalRooms: 2,
+    });
+
+    expect(mocks.post).toHaveBeenCalledTimes(2);
+    expect(mocks.post.mock.calls[1]![1]).toEqual(mocks.post.mock.calls[0]![1]);
+    expect(mocks.post.mock.calls[0]![1]).toMatchObject({
+      commandId: expect.stringMatching(/^pms-room-type-create-/),
+      idempotencyKey: expect.stringMatching(/^pms-room-type-create-/),
+    });
+    expect(mocks.put).toHaveBeenCalledWith(
+      `/api/pms/properties/${propertyId}/pricing-source/currency`,
+      { expectedPricingCurrencyRevision: 0, currency: "EUR" },
+      expect.any(Object),
+    );
+    expect(mocks.put).toHaveBeenCalledWith(
+      `/api/pms/properties/${propertyId}/room-types/${roomTypeId}/flexible-rate-plan`,
+      {
+        expectedRoomFactsRevision: 1,
+        expectedPricingCurrencyRevision: 1,
+        expectedFlexibleRatePlanRevision: 0,
+        baseAmountDecimal: "180.00",
+        cancellationTerms: canonicalCancellationTerms(),
+      },
+      expect.objectContaining({
+        headers: expect.objectContaining({
+          "Idempotency-Key": expect.stringMatching(/^pms-flexible-rate-plan-upsert-/),
+        }),
+      }),
+    );
+  });
+
+  it("reconciles an uppercase room type ID before verifying the added unit", async () => {
+    vi.clearAllMocks();
+    const propertyId = "11111111-1111-4111-8111-111111111111";
+    const roomTypeId = "BBBBBBBB-BBBB-4BBB-8BBB-BBBBBBBBBBBB";
+    const canonicalRoomTypeId = roomTypeId.toLowerCase();
+    const existingUnitId = "33333333-3333-4333-8333-333333333332";
+    const roomUnitId = "33333333-3333-4333-8333-333333333333";
+    mocks.resolvePropertyId.mockResolvedValue(propertyId);
+    mocks.patch.mockResolvedValue({
+      propertyId,
+      item: pmsRoomTypeItem({
+        roomTypeId: canonicalRoomTypeId,
+        name: "Castrop Suite",
+        roomCount: 1,
+      }),
+    });
+    mocks.get
+      .mockResolvedValueOnce({
+        contractVersion: "pms-room-facts.v1",
+        propertyId,
+        roomTypeId: canonicalRoomTypeId,
+        roomUnitsRevision: 4,
+        activeUnitCount: 1,
+        capturedAt: "2026-09-04T00:00:00.000Z",
+      })
+      .mockResolvedValueOnce({
+        items: [
+          {
+            contractVersion: "pms-room-facts.v1",
+            propertyId,
+            roomTypeId: canonicalRoomTypeId,
+            roomUnitId: existingUnitId,
+            lifecycle: "active",
+            operationalLabel: "Castrop Suite 1",
+            operationalLabelStatus: "verified",
+          },
+          {
+            contractVersion: "pms-room-facts.v1",
+            propertyId,
+            roomTypeId: canonicalRoomTypeId,
+            roomUnitId: "33333333-3333-4333-8333-333333333331",
+            lifecycle: "retired",
+            operationalLabel: "Castrop Suite 2",
+            operationalLabelStatus: "unverified",
+          },
+          {
+            contractVersion: "pms-room-facts.v1",
+            propertyId,
+            roomTypeId: canonicalRoomTypeId,
+            roomUnitId,
+            lifecycle: "active",
+            operationalLabel: null,
+            operationalLabelStatus: "unverified",
+          },
+        ],
+      })
+      .mockResolvedValueOnce({
+        propertyId,
+        item: pmsRoomTypeItem({
+          roomTypeId: canonicalRoomTypeId,
+          name: "Castrop Suite",
+          roomCount: 2,
+        }),
+      })
+      .mockResolvedValueOnce(canonicalPricingSource(propertyId, canonicalRoomTypeId))
+      .mockResolvedValueOnce(canonicalRoomFacts(propertyId, canonicalRoomTypeId));
+    mocks.put
+      .mockResolvedValueOnce({
+        contractVersion: "pms-room-facts.v1",
+        outcome: "reconciled",
+        propertyId,
+        roomTypeId: canonicalRoomTypeId,
+        previousActiveUnitCount: 1,
+        capacity: {
+          contractVersion: "pms-room-facts.v1",
+          propertyId,
+          roomTypeId: canonicalRoomTypeId,
+          roomUnitsRevision: 5,
+          activeUnitCount: 2,
+          capturedAt: "2026-09-04T00:00:00.000Z",
+        },
+        addedUnits: [
+          {
+            contractVersion: "pms-room-facts.v1",
+            propertyId,
+            roomTypeId: canonicalRoomTypeId,
+            roomUnitId,
+            lifecycle: "active",
+            operationalLabel: null,
+            operationalLabelStatus: "unverified",
+          },
+        ],
+        retiredUnitIds: [],
+        acceptedAt: "2026-09-04T00:00:00.000Z",
+      })
+      .mockResolvedValueOnce({
+        contractVersion: "pms-room-facts.v1",
+        outcome: "updated",
+        propertyId,
+        roomTypeId: canonicalRoomTypeId,
+        roomUnitId,
+        roomUnitsRevision: 6,
+        operationalLabel: "Castrop Suite 3",
+        operationalLabelStatus: "verified",
+        acceptedAt: "2026-09-04T00:00:00.000Z",
+      });
+
+    const updated = await roomsService.update(roomTypeId, { totalRooms: 2 });
+
+    expect(mocks.put.mock.calls[0]?.[0]).toContain("/physical-units/reconcile");
+    expect(mocks.put.mock.calls[0]?.[1]).toEqual({
+      expectedRevision: 4,
+      targetActiveUnitCount: 2,
+    });
+    expect(mocks.put.mock.calls[1]?.[1]).toEqual({
+      expectedRevision: 5,
+      operationalLabel: "Castrop Suite 3",
+    });
+    expect(updated.totalRooms).toBe(2);
+  });
+
+  it("resumes verification without shrinking partially labeled physical capacity", async () => {
+    vi.clearAllMocks();
+    const propertyId = "11111111-1111-4111-8111-111111111111";
+    const roomTypeId = "22222222-2222-4222-8222-222222222222";
+    const unitIds = [
+      "33333333-3333-4333-8333-333333333331",
+      "33333333-3333-4333-8333-333333333332",
+      "33333333-3333-4333-8333-333333333333",
+    ];
+    mocks.resolvePropertyId.mockResolvedValue(propertyId);
+    mocks.patch.mockResolvedValue({
+      propertyId,
+      item: pmsRoomTypeItem({ roomTypeId, name: "Castrop Suite", roomCount: 3 }),
+    });
+    mocks.get
+      .mockResolvedValueOnce({
+        contractVersion: "pms-room-facts.v1",
+        propertyId,
+        roomTypeId,
+        roomUnitsRevision: 5,
+        activeUnitCount: 3,
+        capturedAt: "2026-09-04T00:00:00.000Z",
+      })
+      .mockResolvedValueOnce({
+        items: unitIds.map((roomUnitId, index) => ({
+          contractVersion: "pms-room-facts.v1",
+          propertyId,
+          roomTypeId,
+          roomUnitId,
+          lifecycle: "active",
+          operationalLabel: index === 0 ? "Castrop Suite 1" : null,
+          operationalLabelStatus: index === 0 ? "verified" : "unverified",
+        })),
+      })
+      .mockResolvedValueOnce({
+        propertyId,
+        item: pmsRoomTypeItem({ roomTypeId, name: "Castrop Suite", roomCount: 3 }),
+      })
+      .mockResolvedValueOnce(canonicalPricingSource(propertyId, roomTypeId))
+      .mockResolvedValueOnce(canonicalRoomFacts(propertyId, roomTypeId));
+    mocks.put.mockImplementation(async (endpoint, body) => ({
+      contractVersion: "pms-room-facts.v1",
+      outcome: "updated",
+      propertyId,
+      roomTypeId,
+      roomUnitId: endpoint.split("/").at(-2),
+      roomUnitsRevision: body.expectedRevision + 1,
+      operationalLabel: body.operationalLabel,
+      operationalLabelStatus: "verified",
+      acceptedAt: "2026-09-04T00:00:00.000Z",
+    }));
+
+    await expect(roomsService.update(roomTypeId, { totalRooms: 3 })).resolves.toMatchObject({
+      totalRooms: 3,
+    });
+    expect(
+      mocks.put.mock.calls.some(([endpoint]) => endpoint.endsWith("/physical-units/reconcile")),
+    ).toBe(false);
+    expect(mocks.put.mock.calls.map(([, body]) => body.operationalLabel)).toEqual([
+      "Castrop Suite 2",
+      "Castrop Suite 3",
+    ]);
+  });
+
+  it("reduces a generated verified room count through canonical reconciliation", async () => {
+    vi.clearAllMocks();
+    const propertyId = "11111111-1111-4111-8111-111111111111";
+    const roomTypeId = "22222222-2222-4222-8222-222222222222";
+    mocks.resolvePropertyId.mockResolvedValue(propertyId);
+    mocks.patch.mockResolvedValue({
+      propertyId,
+      item: pmsRoomTypeItem({ roomTypeId, name: "Castrop Suite", roomCount: 3 }),
+    });
+    mocks.get
+      .mockResolvedValueOnce({
+        contractVersion: "pms-room-facts.v1",
+        propertyId,
+        roomTypeId,
+        roomUnitsRevision: 7,
+        activeUnitCount: 3,
+        capturedAt: "2026-09-04T00:00:00.000Z",
+      })
+      .mockResolvedValueOnce({
+        items: [1, 2].map((position) => ({
+          contractVersion: "pms-room-facts.v1",
+          propertyId,
+          roomTypeId,
+          roomUnitId: `33333333-3333-4333-8333-33333333333${position}`,
+          lifecycle: "active",
+          operationalLabel: `Castrop Suite ${position}`,
+          operationalLabelStatus: "verified",
+        })),
+      })
+      .mockResolvedValueOnce({
+        propertyId,
+        item: pmsRoomTypeItem({ roomTypeId, name: "Castrop Suite", roomCount: 2 }),
+      })
+      .mockResolvedValueOnce(canonicalPricingSource(propertyId, roomTypeId))
+      .mockResolvedValueOnce(canonicalRoomFacts(propertyId, roomTypeId));
+    mocks.put.mockResolvedValueOnce({
+      contractVersion: "pms-room-facts.v1",
+      outcome: "reconciled",
+      propertyId,
+      roomTypeId,
+      previousActiveUnitCount: 3,
+      capacity: {
+        contractVersion: "pms-room-facts.v1",
+        propertyId,
+        roomTypeId,
+        roomUnitsRevision: 8,
+        activeUnitCount: 2,
+        capturedAt: "2026-09-04T00:00:00.000Z",
+      },
+      addedUnits: [],
+      retiredUnitIds: ["33333333-3333-4333-8333-333333333333"],
+      acceptedAt: "2026-09-04T00:00:00.000Z",
+    });
+
+    await expect(roomsService.update(roomTypeId, { totalRooms: 2 })).resolves.toMatchObject({
+      totalRooms: 2,
+    });
+    expect(mocks.put).toHaveBeenCalledWith(
+      expect.stringContaining("/physical-units/reconcile"),
+      { expectedRevision: 7, targetActiveUnitCount: 2 },
       expect.any(Object),
     );
   });

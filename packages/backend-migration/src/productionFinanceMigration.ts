@@ -13,7 +13,10 @@ import type {
   ProductionFinancePlan,
   ProductionFinanceTargetState,
 } from "./productionFinanceTypes.js";
-import { writeProductionFinanceRecords } from "./productionFinanceWriter.js";
+import {
+  writeProductionFinanceDispositions,
+  writeProductionFinanceRecords,
+} from "./productionFinanceWriter.js";
 
 type QueryClient = Pick<pg.ClientBase, "query">;
 export type ProductionFinanceMigrationMode = "dry-run" | "apply";
@@ -23,6 +26,7 @@ export type ProductionFinanceMigrationReport = {
   applied: boolean;
   checksum: string;
   counts: ProductionFinancePlan["counts"];
+  dispositionCountsByReason: ProductionFinancePlan["parity"]["dispositionCountsByReason"];
   parity: ProductionFinancePlan["parity"];
   blockers: ProductionFinancePlan["blockers"];
 };
@@ -32,6 +36,7 @@ export type ProductionFinanceMigrationServices = {
   readTarget: typeof readProductionFinanceTargetState;
   buildPlan: typeof buildProductionFinancePlan;
   writeRecords: typeof writeProductionFinanceRecords;
+  writeDispositions: typeof writeProductionFinanceDispositions;
   writeProvenance: typeof writeProductionMigrationProvenance;
 };
 
@@ -41,6 +46,7 @@ const productionServices: ProductionFinanceMigrationServices = {
   readTarget: readProductionFinanceTargetState,
   buildPlan: buildProductionFinancePlan,
   writeRecords: writeProductionFinanceRecords,
+  writeDispositions: writeProductionFinanceDispositions,
   writeProvenance: writeProductionMigrationProvenance,
 };
 
@@ -117,6 +123,15 @@ export async function runProductionFinanceTransaction(
     }
     const written = await services.writeRecords(client, plan.writes);
     assertWriteCounts(plan.writes, written);
+    const dispositionCount = await services.writeDispositions(
+      client,
+      plan.dispositions,
+      input.sourceRunId,
+    );
+    if (dispositionCount !== plan.dispositions.length)
+      throw new Error(
+        `Finance disposition writer preserved ${dispositionCount} of ${plan.dispositions.length} planned rows`,
+      );
     const provenanceCount = await services.writeProvenance(
       client,
       plan.provenance,
@@ -170,7 +185,8 @@ async function lockFinanceTargets(client: QueryClient): Promise<void> {
     `LOCK TABLE finance.payment_provider_accounts, finance.payment_settings, finance.payout_settings,
                 finance.payments, finance.payouts, finance.commission_rules, finance.commission_rate_changes,
                 finance.billing_entitlements, finance.stripe_provider_account_compensation_claims,
-                platform.production_migration_source_links
+                platform.production_migration_source_links,
+                platform.production_finance_migration_dispositions
      IN SHARE ROW EXCLUSIVE MODE`,
   );
 }
@@ -191,6 +207,7 @@ function report(
     applied,
     checksum: plan.checksum,
     counts: plan.counts,
+    dispositionCountsByReason: plan.parity.dispositionCountsByReason,
     parity: plan.parity,
     blockers: plan.blockers,
   };

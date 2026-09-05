@@ -235,6 +235,7 @@ describe("PMS property profile", () => {
         targetOpenThrough: "2028-03-31",
       },
       warnings: [],
+      setupError: null,
       outcome: "updated",
       enqueueIntentId: "calendar-auto-open-intent-1",
     } as const;

@@ -3,6 +3,7 @@ import type { ProductionMigrationSourceLink } from "./productionBookingTypes.js"
 import {
   block,
   createProductionFinanceContext,
+  disposition,
   organizationFor,
   propertyFor,
   sourceId,
@@ -62,6 +63,7 @@ export function reconcileProductionFinanceRecords(
   const records: FinanceTargetRecord[] = [];
   const writes: FinanceTargetRecord[] = [];
   const links: ProductionMigrationSourceLink[] = [];
+  const actions = new Map<string, Action>();
   const counts = {
     sourceRows: context.rows.length,
     plannedRecords: 0,
@@ -70,6 +72,8 @@ export function reconcileProductionFinanceRecords(
     unchanged: 0,
     preservedNewerTarget: 0,
     preservedTargetDeletions: 0,
+    dispositions: 0,
+    omittedSourceRows: 0,
   };
   for (const candidate of candidates) {
     if (duplicateKeys.has(targetKey(candidate)) || blockedProviderRefs.has(providerRef(candidate)))
@@ -77,6 +81,7 @@ export function reconcileProductionFinanceRecords(
     const prior = provenance.get(provenanceKey(candidate));
     const action = reconcile(candidate, existing.get(targetKey(candidate)), prior, context);
     if (action === "block") continue;
+    actions.set(targetKey(candidate), action);
     records.push(candidate);
     if (["insert", "update", "unchanged"].includes(action))
       links.push(linkFor(candidate, prior, context, action));
@@ -87,37 +92,100 @@ export function reconcileProductionFinanceRecords(
     else if (action === "preserve_newer") counts.preservedNewerTarget += 1;
     else counts.preservedTargetDeletions += 1;
   }
+  validateReconciledReferentialClosure(context, writes, actions);
+  addUnboundBookingAllocationDispositions(context, records);
   counts.plannedRecords = records.length;
+  const dispositions = [...context.dispositions].sort((left, right) =>
+    dispositionKey(left).localeCompare(dispositionKey(right)),
+  );
+  counts.dispositions = dispositions.length;
+  counts.omittedSourceRows = omittedSourceKeys(context).size;
   const parity = {
     sourceTableCounts: countBy(context.rows, (row) => `${row.sourceDatabase}.${row.sourceTable}`),
     targetTableCounts: countBy(records, (row) => `finance.${row.targetTable}`),
-    sourcePaymentAmountsByCurrencyStatusOwner: rawEconomicSums(context, "payments", "amount"),
+    dispositionCountsByReason: countBy(dispositions, (row) => row.reasonCode),
+    omittedSourceRowCounts: countBy(
+      dispositions.filter((row) => row.disposition === "omitted_row"),
+      (row) => `${row.sourceDatabase}.${row.sourceTable}`,
+    ),
+    sourcePaymentAmountsByCurrencyStatusOwner: rawEconomicSums(
+      context,
+      "payments",
+      "amount",
+      "all",
+    ),
+    omittedPaymentAmountsByCurrencyStatusOwner: rawEconomicSums(
+      context,
+      "payments",
+      "amount",
+      "omitted",
+    ),
     targetPaymentAmountsByCurrencyStatusOwner: economicSums(records, "payments", "amount"),
-    sourcePaymentCountsByCurrencyStatusOwner: rawEconomicCounts(context, "payments"),
+    sourcePaymentCountsByCurrencyStatusOwner: rawEconomicCounts(context, "payments", "all"),
+    omittedPaymentCountsByCurrencyStatusOwner: rawEconomicCounts(context, "payments", "omitted"),
     targetPaymentCountsByCurrencyStatusOwner: economicCounts(records, "payments"),
-    sourcePaymentFeesByCurrencyStatusOwner: rawEconomicSums(context, "payments", "feeAmount"),
+    sourcePaymentFeesByCurrencyStatusOwner: rawEconomicSums(
+      context,
+      "payments",
+      "feeAmount",
+      "all",
+    ),
+    omittedPaymentFeesByCurrencyStatusOwner: rawEconomicSums(
+      context,
+      "payments",
+      "feeAmount",
+      "omitted",
+    ),
     targetPaymentFeesByCurrencyStatusOwner: economicSums(records, "payments", "feeAmount"),
-    sourcePaymentNetByCurrencyStatusOwner: rawEconomicSums(context, "payments", "netAmount"),
+    sourcePaymentNetByCurrencyStatusOwner: rawEconomicSums(context, "payments", "netAmount", "all"),
+    omittedPaymentNetByCurrencyStatusOwner: rawEconomicSums(
+      context,
+      "payments",
+      "netAmount",
+      "omitted",
+    ),
     targetPaymentNetByCurrencyStatusOwner: economicSums(records, "payments", "netAmount"),
     sourcePaymentRefundsByCurrencyStatusOwner: rawEconomicSums(
       context,
       "payments",
       "refundedAmount",
+      "all",
+    ),
+    omittedPaymentRefundsByCurrencyStatusOwner: rawEconomicSums(
+      context,
+      "payments",
+      "refundedAmount",
+      "omitted",
     ),
     targetPaymentRefundsByCurrencyStatusOwner: economicSums(records, "payments", "refundedAmount"),
-    sourcePayoutAmountsByCurrencyStatusOwner: rawEconomicSums(context, "payouts", "amount"),
+    sourcePayoutAmountsByCurrencyStatusOwner: rawEconomicSums(context, "payouts", "amount", "all"),
+    omittedPayoutAmountsByCurrencyStatusOwner: rawEconomicSums(
+      context,
+      "payouts",
+      "amount",
+      "omitted",
+    ),
     targetPayoutAmountsByCurrencyStatusOwner: economicSums(records, "payouts", "amount"),
-    sourcePayoutCountsByCurrencyStatusOwner: rawEconomicCounts(context, "payouts"),
+    sourcePayoutCountsByCurrencyStatusOwner: rawEconomicCounts(context, "payouts", "all"),
+    omittedPayoutCountsByCurrencyStatusOwner: rawEconomicCounts(context, "payouts", "omitted"),
     targetPayoutCountsByCurrencyStatusOwner: economicCounts(records, "payouts"),
-    sourcePayoutNetByCurrencyStatusOwner: rawEconomicSums(context, "payouts", "netAmount"),
+    sourcePayoutNetByCurrencyStatusOwner: rawEconomicSums(context, "payouts", "netAmount", "all"),
+    omittedPayoutNetByCurrencyStatusOwner: rawEconomicSums(
+      context,
+      "payouts",
+      "netAmount",
+      "omitted",
+    ),
     targetPayoutNetByCurrencyStatusOwner: economicSums(records, "payouts", "netAmount"),
-    sourcePayoutAllocationsByBookingOwner: rawPayoutAllocations(context),
+    sourcePayoutAllocationsByBookingOwner: rawPayoutAllocations(context, "all"),
+    omittedPayoutAllocationsByBookingOwner: rawPayoutAllocations(context, "omitted"),
     targetPayoutAllocationsByBookingOwner: targetPayoutAllocations(context, records),
   };
-  for (const [source, target, code, table, message] of [
+  for (const [source, target, omitted, code, table, message] of [
     [
       parity.sourcePaymentAmountsByCurrencyStatusOwner,
       parity.targetPaymentAmountsByCurrencyStatusOwner,
+      parity.omittedPaymentAmountsByCurrencyStatusOwner,
       "FINANCE_PAYMENT_MONETARY_PARITY_MISMATCH",
       "payments",
       "gross amounts",
@@ -125,6 +193,7 @@ export function reconcileProductionFinanceRecords(
     [
       parity.sourcePaymentCountsByCurrencyStatusOwner,
       parity.targetPaymentCountsByCurrencyStatusOwner,
+      parity.omittedPaymentCountsByCurrencyStatusOwner,
       "FINANCE_PAYMENT_DIMENSION_COUNT_MISMATCH",
       "payments",
       "counts",
@@ -132,6 +201,7 @@ export function reconcileProductionFinanceRecords(
     [
       parity.sourcePaymentFeesByCurrencyStatusOwner,
       parity.targetPaymentFeesByCurrencyStatusOwner,
+      parity.omittedPaymentFeesByCurrencyStatusOwner,
       "FINANCE_PAYMENT_FEE_PARITY_MISMATCH",
       "payments",
       "fees",
@@ -139,6 +209,7 @@ export function reconcileProductionFinanceRecords(
     [
       parity.sourcePaymentNetByCurrencyStatusOwner,
       parity.targetPaymentNetByCurrencyStatusOwner,
+      parity.omittedPaymentNetByCurrencyStatusOwner,
       "FINANCE_PAYMENT_NET_PARITY_MISMATCH",
       "payments",
       "net amounts",
@@ -146,6 +217,7 @@ export function reconcileProductionFinanceRecords(
     [
       parity.sourcePaymentRefundsByCurrencyStatusOwner,
       parity.targetPaymentRefundsByCurrencyStatusOwner,
+      parity.omittedPaymentRefundsByCurrencyStatusOwner,
       "FINANCE_PAYMENT_REFUND_PARITY_MISMATCH",
       "payments",
       "refunds",
@@ -153,6 +225,7 @@ export function reconcileProductionFinanceRecords(
     [
       parity.sourcePayoutAmountsByCurrencyStatusOwner,
       parity.targetPayoutAmountsByCurrencyStatusOwner,
+      parity.omittedPayoutAmountsByCurrencyStatusOwner,
       "FINANCE_PAYOUT_MONETARY_PARITY_MISMATCH",
       "payouts",
       "gross amounts",
@@ -160,6 +233,7 @@ export function reconcileProductionFinanceRecords(
     [
       parity.sourcePayoutCountsByCurrencyStatusOwner,
       parity.targetPayoutCountsByCurrencyStatusOwner,
+      parity.omittedPayoutCountsByCurrencyStatusOwner,
       "FINANCE_PAYOUT_DIMENSION_COUNT_MISMATCH",
       "payouts",
       "counts",
@@ -167,6 +241,7 @@ export function reconcileProductionFinanceRecords(
     [
       parity.sourcePayoutNetByCurrencyStatusOwner,
       parity.targetPayoutNetByCurrencyStatusOwner,
+      parity.omittedPayoutNetByCurrencyStatusOwner,
       "FINANCE_PAYOUT_NET_PARITY_MISMATCH",
       "payouts",
       "net amounts",
@@ -174,12 +249,13 @@ export function reconcileProductionFinanceRecords(
     [
       parity.sourcePayoutAllocationsByBookingOwner,
       parity.targetPayoutAllocationsByBookingOwner,
+      parity.omittedPayoutAllocationsByBookingOwner,
       "FINANCE_PAYOUT_ALLOCATION_PARITY_MISMATCH",
       "payouts",
       "booking-owner allocations",
     ],
   ] as const)
-    if (sha256(source) !== sha256(target))
+    if (sha256(source) !== sha256(combineDimensions(target, omitted)))
       block(
         context,
         code,
@@ -193,14 +269,20 @@ export function reconcileProductionFinanceRecords(
     ["commission_rate_changes", "commission_rate_changes"],
   ] as const) {
     const sourceCount = context.rows.filter((row) => row.sourceTable === sourceTable).length;
+    const omittedCount = context.dispositions.filter(
+      (row) =>
+        row.sourceTable === sourceTable &&
+        row.disposition === "omitted_row" &&
+        row.sourceField === "*",
+    ).length;
     const targetCount = records.filter((row) => row.targetTable === targetTable).length;
-    if (sourceCount !== targetCount)
+    if (sourceCount !== targetCount + omittedCount)
       block(
         context,
         "FINANCE_EXACT_COUNT_PARITY_MISMATCH",
         `finance.${targetTable}`,
         context.sourceRunId,
-        `${sourceCount} source ${sourceTable} rows produced ${targetCount} planned target rows`,
+        `${sourceCount} source ${sourceTable} rows produced ${targetCount} planned target rows and ${omittedCount} explicit row omissions`,
       );
   }
   const blockers = context.blockers.sort((left, right) =>
@@ -218,10 +300,12 @@ export function reconcileProductionFinanceRecords(
       })),
       blockers,
       parity,
+      dispositions,
     }),
     records,
     writes,
     provenance: links,
+    dispositions,
     blockers,
     parity,
     counts,
@@ -229,6 +313,47 @@ export function reconcileProductionFinanceRecords(
 }
 
 type Action = "insert" | "update" | "unchanged" | "preserve_newer" | "preserve_deletion" | "block";
+
+function validateReconciledReferentialClosure(
+  context: FinanceBuildContext,
+  writes: FinanceTargetRecord[],
+  actions: Map<string, Action>,
+): void {
+  const dependencyFields: Record<string, Array<[field: string, parentTable: string]>> = {
+    payment_settings: [["providerAccountId", "payment_provider_accounts"]],
+    payments: [["providerAccountId", "payment_provider_accounts"]],
+    payout_settings: [
+      ["propertyProviderAccountId", "payment_provider_accounts"],
+      ["organizationProviderAccountId", "payment_provider_accounts"],
+    ],
+    payouts: [
+      ["payoutSettingId", "payout_settings"],
+      ["propertyProviderAccountId", "payment_provider_accounts"],
+      ["organizationProviderAccountId", "payment_provider_accounts"],
+      ["paymentId", "payments"],
+    ],
+    commission_rate_changes: [["commissionRuleId", "commission_rules"]],
+  };
+  for (const record of writes)
+    for (const [field, parentTable] of dependencyFields[record.targetTable] ?? []) {
+      const parentId = record.row[field];
+      if (!parentId) continue;
+      const parentAction = actions.get(`finance:${parentTable}:${String(parentId)}`);
+      if (parentAction && parentAction !== "preserve_deletion" && parentAction !== "block")
+        continue;
+      block(
+        context,
+        "FINANCE_REFERENTIAL_CLOSURE_FAILED",
+        `finance.${record.targetTable}`,
+        `source_${sha256({
+          sourceDatabase: record.sourceDatabase,
+          sourceTable: record.sourceTable,
+          sourceId: record.sourceId,
+        }).slice(0, 16)}`,
+        `Finance write has an unavailable ${field} dependency after target reconciliation`,
+      );
+    }
+}
 
 function reconcile(
   candidate: FinanceTargetRecord,
@@ -348,22 +473,44 @@ function rawEconomicSums(
   context: FinanceBuildContext,
   targetTable: "payments" | "payouts",
   field: "amount" | "feeAmount" | "netAmount" | "refundedAmount",
+  selection: "all" | "omitted",
 ): Record<string, string> {
   const sums = new Map<string, bigint>();
+  const omitted = omittedSourceKeys(context);
   for (const row of sourceRows(context, "pms", targetTable)) {
+    if (selection === "omitted" && !omitted.has(sourceRowKey(row))) continue;
+    let value: string;
     try {
-      const key = rawEconomicDimension(context, targetTable, row);
-      sums.set(key, (sums.get(key) ?? 0n) + minor(rawEconomicValue(targetTable, field, row)));
+      value = rawEconomicValue(targetTable, field, row);
     } catch {
-      // The row transformation already emits an auditable blocker and exact-count mismatch.
+      blockUnreadableEconomicValue(context, targetTable, row);
+      continue;
     }
+    let key: string;
+    try {
+      key = rawEconomicDimension(context, targetTable, row);
+    } catch {
+      key = invalidEconomicDimension(targetTable, row);
+    }
+    sums.set(key, (sums.get(key) ?? 0n) + minor(value));
   }
   return formattedSums(sums);
 }
 
-function rawPaymentProvider(row: IdentitySourceRow): string {
-  if (row.data["stripe_account_id"] || row.data["stripe_payment_intent_id"]) return "stripe";
-  if (row.data["xendit_invoice_id"]) return "xendit";
+function rawPaymentProvider(context: FinanceBuildContext, row: IdentitySourceRow): string {
+  const id = sourceId(row);
+  if (
+    context.dispositions.some(
+      (entry) =>
+        entry.sourceDatabase === row.sourceDatabase &&
+        entry.sourceTable === row.sourceTable &&
+        entry.sourceId === id &&
+        entry.disposition === "unbound_history" &&
+        entry.targetTable === "payments",
+    )
+  )
+    return "unbound";
+  if (row.data["stripe_account_id"]) return "stripe";
   return "unbound";
 }
 
@@ -397,19 +544,21 @@ function rawEconomicDimension(
   const propertyId = propertyFor(context, "pms", "hotels", hotelId);
   const currency = supportedCurrency(row.data["currency"]);
   if (targetTable === "payments")
-    return `${currency}:${rawPaymentProvider(row)}:${paymentStatus(row.data["status"])}:${organizationFor(context, "pms", "pms_hotel", hotelId)}`;
+    return `${currency}:${rawPaymentProvider(context, row)}:${paymentStatus(row.data["status"])}:${dimension(
+      "owner",
+      organizationFor(context, "pms", "pms_hotel", hotelId),
+    )}`;
   const recipientType = requiredText(row.data["recipient_type"], "recipient_type").toLowerCase();
   const recipientId = uuid(row.data["recipient_id"], "recipient_id");
   const owner =
     recipientType === "hotel"
       ? propertyId
       : organizationFor(context, "affiliate", "affiliate", recipientId);
-  const provider = row.data["stripe_transfer_id"]
-    ? "stripe"
-    : row.data["xendit_payout_id"]
-      ? "xendit"
-      : "unbound";
-  return `${currency}:${provider}:${payoutStatus(row.data["status"])}:${owner}`;
+  // Legacy payouts do not retain row-level provider-account ownership. Keep
+  // their immutable provider transaction reference, but reconcile the binding
+  // dimension as intentionally unbound.
+  const provider = "unbound";
+  return `${currency}:${provider}:${payoutStatus(row.data["status"])}:${dimension("owner", owner)}`;
 }
 
 function providerIndex(records: FinanceTargetRecord[]): Map<string, string> {
@@ -432,7 +581,7 @@ function targetEconomicDimension(
       ? record.row["providerAccountId"]
       : (record.row["propertyProviderAccountId"] ?? record.row["organizationProviderAccountId"]);
   const provider = accountId ? (providerByAccount.get(String(accountId)) ?? "unknown") : "unbound";
-  return `${String(record.row["currency"])}:${provider}:${status}:${owner}`;
+  return `${String(record.row["currency"])}:${provider}:${status}:${dimension("owner", owner)}`;
 }
 
 function economicCounts(
@@ -449,45 +598,93 @@ function economicCounts(
 function rawEconomicCounts(
   context: FinanceBuildContext,
   targetTable: "payments" | "payouts",
+  selection: "all" | "omitted",
 ): Record<string, number> {
   const dimensions: string[] = [];
+  const omitted = omittedSourceKeys(context);
   for (const row of sourceRows(context, "pms", targetTable)) {
+    if (selection === "omitted" && !omitted.has(sourceRowKey(row))) continue;
     try {
       dimensions.push(rawEconomicDimension(context, targetTable, row));
     } catch {
-      // Exact-count blockers cover invalid rows that cannot be dimensioned.
+      dimensions.push(invalidEconomicDimension(targetTable, row));
     }
   }
   return countBy(dimensions, (value) => value);
 }
 
-function rawPayoutAllocations(context: FinanceBuildContext): Record<string, string> {
+function invalidEconomicDimension(
+  targetTable: "payments" | "payouts",
+  row: IdentitySourceRow,
+): string {
+  return `invalid_${sha256({ targetTable, sourceRow: sourceRowKey(row) }).slice(0, 16)}`;
+}
+
+function blockUnreadableEconomicValue(
+  context: FinanceBuildContext,
+  targetTable: "payments" | "payouts",
+  row: IdentitySourceRow,
+): void {
+  const sourceIdHash = `source_${sha256(sourceRowKey(row)).slice(0, 16)}`;
+  if (
+    context.blockers.some(
+      (entry) =>
+        entry.code === "FINANCE_SOURCE_MONETARY_VALUE_UNREADABLE" &&
+        entry.source === `pms.${targetTable}` &&
+        entry.sourceId === sourceIdHash,
+    )
+  )
+    return;
+  block(
+    context,
+    "FINANCE_SOURCE_MONETARY_VALUE_UNREADABLE",
+    `pms.${targetTable}`,
+    sourceIdHash,
+    "A source economic row cannot be represented in the raw monetary ledger",
+  );
+}
+
+type BookingPayoutAllocation = {
+  key: string;
+  amount: string;
+  sourceField: "affiliate_commission_amount" | "property_payout_amount";
+};
+
+function addUnboundBookingAllocationDispositions(
+  context: FinanceBuildContext,
+  records: FinanceTargetRecord[],
+): void {
+  const target = targetPayoutAllocations(context, records, true);
+  for (const booking of sourceRows(context, "pms", "bookings")) {
+    try {
+      if (hasInvalidBookingAllocation(context, booking)) continue;
+      for (const allocation of bookingPayoutAllocations(context, booking)) {
+        if (target[allocation.key] !== undefined) continue;
+        disposition(context, booking, {
+          sourceField: allocation.sourceField,
+          sourceValue: allocation.amount,
+          reasonCode: "BOOKING_FINANCE_ALLOCATION_EVIDENCE_REQUIRED",
+          disposition: "unbound_history",
+        });
+      }
+    } catch {
+      // Booking allocation validation already records incomplete or invalid evidence.
+    }
+  }
+}
+
+function rawPayoutAllocations(
+  context: FinanceBuildContext,
+  selection: "all" | "omitted",
+): Record<string, string> {
   const sums = new Map<string, bigint>();
   for (const booking of sourceRows(context, "pms", "bookings")) {
     try {
-      const bookingId = sourceId(booking);
-      const fields = [
-        "platform_fee_amount",
-        "affiliate_commission_amount",
-        "property_payout_amount",
-      ];
-      if (fields.every((field) => booking.data[field] == null || booking.data[field] === ""))
-        continue;
-      const hotelId = uuid(booking.data["hotel_id"], "hotel_id");
-      const propertyId = propertyFor(context, "pms", "hotels", hotelId);
-      addAllocation(
-        sums,
-        `${bookingId}:property:${propertyId}`,
-        exactMoney(booking.data["property_payout_amount"], "property_payout_amount"),
-      );
-      const affiliateAmount = exactMoney(
-        booking.data["affiliate_commission_amount"],
-        "affiliate_commission_amount",
-      );
-      if (minor(affiliateAmount) > 0n) {
-        const affiliateId = uuid(booking.data["affiliate_id"], "affiliate_id");
-        const organizationId = organizationFor(context, "affiliate", "affiliate", affiliateId);
-        addAllocation(sums, `${bookingId}:organization:${organizationId}`, affiliateAmount);
+      if (hasInvalidBookingAllocation(context, booking)) continue;
+      for (const allocation of bookingPayoutAllocations(context, booking)) {
+        if (selection === "omitted" && !hasAllocationDisposition(context, booking, allocation))
+          continue;
+        addAllocation(sums, allocation.key, allocation.amount);
       }
     } catch {
       // Booking allocation validation emits the blocking evidence.
@@ -499,6 +696,7 @@ function rawPayoutAllocations(context: FinanceBuildContext): Record<string, stri
 function targetPayoutAllocations(
   context: FinanceBuildContext,
   records: FinanceTargetRecord[],
+  includeZero = false,
 ): Record<string, string> {
   const sourceBookingByTarget = new Map(
     context.target.guestBookings.map((booking) => [booking.id, booking.sourceBookingId]),
@@ -507,15 +705,90 @@ function targetPayoutAllocations(
   for (const record of records.filter((row) => row.targetTable === "payouts")) {
     const bookingId = sourceBookingByTarget.get(String(record.row["guestBookingId"]));
     if (!bookingId) continue;
+    const booking = context.pmsBookingById.get(bookingId);
+    if (!booking || hasInvalidBookingAllocation(context, booking)) continue;
     const scope = String(record.row["ownerScope"]);
     const owner = String(record.row[scope === "property" ? "propertyId" : "organizationId"]);
-    addAllocation(sums, `${bookingId}:${scope}:${owner}`, String(record.row["amount"]));
+    addAllocation(
+      sums,
+      `${dimension("booking", bookingId)}:${scope}:${dimension("owner", owner)}`,
+      String(record.row["amount"]),
+      includeZero,
+    );
   }
   return formattedSums(sums);
 }
 
-function addAllocation(sums: Map<string, bigint>, key: string, amount: string): void {
-  if (minor(amount) > 0n) sums.set(key, (sums.get(key) ?? 0n) + minor(amount));
+function bookingPayoutAllocations(
+  context: FinanceBuildContext,
+  booking: IdentitySourceRow,
+): BookingPayoutAllocation[] {
+  const fields = ["platform_fee_amount", "affiliate_commission_amount", "property_payout_amount"];
+  if (fields.every((field) => booking.data[field] == null || booking.data[field] === "")) return [];
+  const bookingId = sourceId(booking);
+  const hotelId = uuid(booking.data["hotel_id"], "hotel_id");
+  const propertyId = propertyFor(context, "pms", "hotels", hotelId);
+  const allocations: BookingPayoutAllocation[] = [
+    {
+      key: `${dimension("booking", bookingId)}:property:${dimension("owner", propertyId)}`,
+      amount: exactMoney(booking.data["property_payout_amount"], "property_payout_amount"),
+      sourceField: "property_payout_amount",
+    },
+  ];
+  const affiliateAmount = exactMoney(
+    booking.data["affiliate_commission_amount"],
+    "affiliate_commission_amount",
+  );
+  if (minor(affiliateAmount) > 0n) {
+    const affiliateId = uuid(booking.data["affiliate_id"], "affiliate_id");
+    const organizationId = organizationFor(context, "affiliate", "affiliate", affiliateId);
+    allocations.push({
+      key: `${dimension("booking", bookingId)}:organization:${dimension("owner", organizationId)}`,
+      amount: affiliateAmount,
+      sourceField: "affiliate_commission_amount",
+    });
+  }
+  return allocations.filter((allocation) => minor(allocation.amount) > 0n);
+}
+
+function hasInvalidBookingAllocation(
+  context: FinanceBuildContext,
+  booking: IdentitySourceRow,
+): boolean {
+  const bookingId = sourceId(booking);
+  return context.dispositions.some(
+    (row) =>
+      row.sourceId === bookingId &&
+      row.sourceField === "finance_allocation" &&
+      [
+        "INVALID_BOOKING_FINANCE_ALLOCATION",
+        "BOOKING_FINANCE_ALLOCATION_EVIDENCE_REQUIRED",
+      ].includes(row.reasonCode),
+  );
+}
+
+function hasAllocationDisposition(
+  context: FinanceBuildContext,
+  booking: IdentitySourceRow,
+  allocation: BookingPayoutAllocation,
+): boolean {
+  const bookingId = sourceId(booking);
+  return context.dispositions.some(
+    (row) =>
+      row.sourceId === bookingId &&
+      row.sourceField === allocation.sourceField &&
+      row.reasonCode === "BOOKING_FINANCE_ALLOCATION_EVIDENCE_REQUIRED" &&
+      row.disposition === "unbound_history",
+  );
+}
+
+function addAllocation(
+  sums: Map<string, bigint>,
+  key: string,
+  amount: string,
+  includeZero = false,
+): void {
+  if (minor(amount) > 0n || includeZero) sums.set(key, (sums.get(key) ?? 0n) + minor(amount));
 }
 
 function formattedSums(sums: Map<string, bigint>): Record<string, string> {
@@ -603,59 +876,76 @@ function addExternalReferenceBlockers(
   context: FinanceBuildContext,
   records: FinanceTargetRecord[],
 ): void {
-  const paymentIntents = records.filter(
-    (record) => record.targetTable === "payments" && record.row["providerPaymentIntentId"],
+  const paymentIntents = sourceRows(context, "pms", "payments").filter(
+    (row) => providerSourceReference(row, "stripe_payment_intent_id") !== null,
   );
   for (const reference of duplicates(
-    paymentIntents.map((record) => String(record.row["providerPaymentIntentId"])),
+    paymentIntents.map((row) => providerSourceReference(row, "stripe_payment_intent_id")!),
   )) {
-    const record = paymentIntents.find(
-      (candidate) => candidate.row["providerPaymentIntentId"] === reference,
+    const row = paymentIntents.find(
+      (candidate) => providerSourceReference(candidate, "stripe_payment_intent_id") === reference,
     )!;
-    addRecordBlocker(
+    block(
       context,
       "DUPLICATE_PROVIDER_PAYMENT_INTENT_ID",
-      record,
+      "pms.payments",
+      sourceId(row),
       "Multiple source payments use the same provider PaymentIntent identity",
     );
   }
-  for (const field of ["billingSubscriptionRef", "checkoutSessionRef"] as const) {
-    const billing = records.filter(
-      (record) => record.targetTable === "billing_entitlements" && record.row[field],
+  for (const field of [
+    "stripe_billing_subscription_id",
+    "stripe_billing_checkout_session_id",
+  ] as const) {
+    const billing = sourceRows(context, "pms", "hotel_payment_settings").filter(
+      (row) => providerSourceReference(row, field) !== null,
     );
-    const duplicateRefs = duplicates(billing.map((record) => String(record.row[field])));
+    const duplicateRefs = duplicates(billing.map((row) => providerSourceReference(row, field)!));
     for (const reference of duplicateRefs) {
-      const record = billing.find((candidate) => candidate.row[field] === reference)!;
-      addRecordBlocker(
+      const row = billing.find(
+        (candidate) => providerSourceReference(candidate, field) === reference,
+      )!;
+      block(
         context,
         "DUPLICATE_BILLING_PROVIDER_REFERENCE",
-        record,
-        `Multiple billing entitlements use ${field} ${reference}`,
+        "pms.hotel_payment_settings",
+        sourceId(row),
+        `Multiple billing entitlements use the same ${field} reference`,
       );
     }
   }
-  const payouts = records.filter(
-    (record) => record.targetTable === "payouts" && record.row["providerPayoutId"],
+  const payouts = sourceRows(context, "pms", "payouts").filter(
+    (row) =>
+      providerSourceReference(row, "stripe_transfer_id") !== null ||
+      providerSourceReference(row, "xendit_payout_id") !== null,
   );
   const duplicatePayouts = duplicates(
-    payouts.map(
-      (record) =>
-        `${record.row["propertyProviderAccountId"] ?? record.row["organizationProviderAccountId"] ?? "unbound"}:${record.row["providerPayoutId"]}`,
+    payouts.map((row) =>
+      String(
+        providerSourceReference(row, "stripe_transfer_id") ??
+          providerSourceReference(row, "xendit_payout_id"),
+      ),
     ),
   );
   for (const reference of duplicatePayouts) {
-    const record = payouts.find(
+    const row = payouts.find(
       (candidate) =>
-        `${candidate.row["propertyProviderAccountId"] ?? candidate.row["organizationProviderAccountId"] ?? "unbound"}:${candidate.row["providerPayoutId"]}` ===
-        reference,
+        (providerSourceReference(candidate, "stripe_transfer_id") ??
+          providerSourceReference(candidate, "xendit_payout_id")) === reference,
     )!;
-    addRecordBlocker(
+    block(
       context,
       "DUPLICATE_PROVIDER_PAYOUT_ID",
-      record,
+      "pms.payouts",
+      sourceId(row),
       "Multiple source payouts use the same provider identity within one account",
     );
   }
+}
+
+function providerSourceReference(row: IdentitySourceRow, field: string): string | null {
+  const value = row.data[field];
+  return typeof value === "string" && value.trim() ? value.trim() : null;
 }
 
 function duplicates(values: string[]): Set<string> {
@@ -684,4 +974,60 @@ function countBy<T>(values: T[], key: (value: T) => string): Record<string, numb
     result.set(label, (result.get(label) ?? 0) + 1);
   }
   return Object.fromEntries([...result].sort(([left], [right]) => left.localeCompare(right)));
+}
+
+function dispositionKey(value: {
+  sourceDatabase: string;
+  sourceTable: string;
+  sourceId: string;
+  sourceField: string;
+  reasonCode: string;
+}): string {
+  return `${value.sourceDatabase}:${value.sourceTable}:${value.sourceId}:${value.sourceField}:${value.reasonCode}`;
+}
+
+function sourceRowKey(row: IdentitySourceRow): string {
+  try {
+    return `${row.sourceDatabase}:${row.sourceTable}:${sourceId(
+      row,
+      row.sourceTable === "affiliate_payout_settings"
+        ? "user_id"
+        : row.sourceTable === "stripe_billing_webhook_events"
+          ? "event_id"
+          : "id",
+    )}`;
+  } catch {
+    return `${row.sourceDatabase}:${row.sourceTable}:${row.rowOrdinal}`;
+  }
+}
+
+function omittedSourceKeys(context: FinanceBuildContext): Set<string> {
+  return new Set(
+    context.dispositions
+      .filter((row) => row.disposition === "omitted_row")
+      .map((row) => `${row.sourceDatabase}:${row.sourceTable}:${row.sourceId}`),
+  );
+}
+
+function dimension(label: "booking" | "owner", value: string): string {
+  return `${label}_${sha256(value).slice(0, 16)}`;
+}
+
+function combineDimensions(
+  target: Record<string, string> | Record<string, number>,
+  omitted: Record<string, string> | Record<string, number>,
+): Record<string, string> | Record<string, number> {
+  if (
+    Object.values(target).some((value) => typeof value === "string") ||
+    Object.values(omitted).some((value) => typeof value === "string")
+  ) {
+    const sums = new Map<string, bigint>();
+    for (const [key, value] of [...Object.entries(target), ...Object.entries(omitted)])
+      sums.set(key, (sums.get(key) ?? 0n) + minor(String(value)));
+    return formattedSums(sums);
+  }
+  const counts = new Map<string, number>();
+  for (const [key, value] of [...Object.entries(target), ...Object.entries(omitted)])
+    counts.set(key, (counts.get(key) ?? 0) + Number(value));
+  return Object.fromEntries([...counts].sort(([left], [right]) => left.localeCompare(right)));
 }

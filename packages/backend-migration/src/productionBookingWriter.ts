@@ -8,6 +8,7 @@ import type {
 } from "./productionBookingTypes.js";
 
 type QueryClient = Pick<pg.ClientBase, "query">;
+const PROVENANCE_WRITE_BATCH_SIZE = 500;
 type Column = readonly [jsonKey: string, sqlName: string, type: string];
 type WriterDefinition = {
   table: string;
@@ -391,8 +392,7 @@ export async function writeProductionMigrationProvenance(
   sourceRunId: string,
 ): Promise<number> {
   if (!links.length) return 0;
-  const result = await client.query(
-    `INSERT INTO platform.production_migration_source_links
+  const sql = `INSERT INTO platform.production_migration_source_links
        (source_database, source_table, source_id, target_product, target_table, target_id,
         first_run_id, last_run_id, source_checksum, source_updated_at)
      SELECT source."sourceDatabase", source."sourceTable", source."sourceId",
@@ -407,10 +407,17 @@ export async function writeProductionMigrationProvenance(
      DO UPDATE SET last_run_id = EXCLUDED.last_run_id,
                    source_checksum = EXCLUDED.source_checksum,
                    source_updated_at = EXCLUDED.source_updated_at,
-                   last_migrated_at = now()`,
-    [JSON.stringify(links), sourceRunId],
-  );
-  return result.rowCount ?? 0;
+                   last_migrated_at = now()`;
+  let count = 0;
+  // PMS inventory produces a large provenance cohort; all batches stay in the caller's transaction.
+  for (let offset = 0; offset < links.length; offset += PROVENANCE_WRITE_BATCH_SIZE) {
+    const result = await client.query(sql, [
+      JSON.stringify(links.slice(offset, offset + PROVENANCE_WRITE_BATCH_SIZE)),
+      sourceRunId,
+    ]);
+    count += result.rowCount ?? 0;
+  }
+  return count;
 }
 
 export async function writeProductionBookingQuarantines(

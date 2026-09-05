@@ -418,20 +418,27 @@ TARGET_DATABASE_URL=<target database> npm run target:finance:migrate -- \
   --source-run-id vay1351-<24 lowercase hex characters> --dry-run
 ```
 
-Any ambiguous owner, duplicate provider identity, invalid amount, newer target
-economic fact, unattributed webhook, checkout row lacking encrypted folio
-recipient evidence, or payout destination lacking an approved secrets-store
-reference is a hard blocker. Resolve every blocker and rerun the same immutable
-source run. The legacy extraction has no standalone expense rows and does not
-contain the encrypted recipient revisions, invoice identity, or immutable
-affiliate-payout command evidence required by the target. The migration never
-fabricates those records: affected checkout and completed affiliate-payout rows
-remain explicit blockers until reviewed canonical evidence is supplied. Legacy
-fixed-plan Stripe subscriptions also remain suspended and block migration until
-a reviewed provider cutover rebinds them to the target canonical tiered price
-and target property/organization metadata. After
-backup, source write freeze/queue, a reviewed blocker-free dry
-run, and explicit human go/no-go approval, apply with the run-bound guard:
+Ambiguous ownership, duplicate provider identities, unexplained monetary
+variance, newer target economic facts, unattributed webhooks, checkout rows
+lacking encrypted folio-recipient evidence, and completed affiliate payouts
+lacking immutable command evidence remain hard blockers. Invalid source rows
+and capture-incomplete payments are omitted only through immutable hash-only
+dispositions; raw source totals must equal planned target totals plus those
+explicit omissions. Bank, PayPal, and payout destinations never enter target
+product state: their target settings remain disabled or setup-incomplete until
+approved re-entry. Historical provider transactions without account ownership
+remain unbound, and disagreeing payment flags cannot enable a method.
+
+Legacy fixed-plan subscriptions and noncanonical pricing are preserved only as
+immutable review evidence on a suspended, provider-free Commission baseline;
+the migration does not activate a corrected price or expose a legacy billing
+reference to runtime provider commands. Every child reference must resolve to a
+parent that will actually exist after target reconciliation. Missing or
+deliberately deleted parents either leave the child unbound/setup-incomplete or
+block before SQL. Resolve every remaining blocker and rerun the same immutable
+source run. After backup, source write freeze/queue, a reviewed
+blocker-free dry run, and explicit human go/no-go approval, apply with the
+run-bound guard:
 
 ```bash
 TARGET_DATABASE_URL=<target database> npm run target:finance:migrate -- \
@@ -439,10 +446,11 @@ TARGET_DATABASE_URL=<target database> npm run target:finance:migrate -- \
   --confirm production-finance:vay1351-<same 24 lowercase hex characters>
 ```
 
-Apply is transactional, locks Finance and its prerequisites, verifies exact
-write and provenance counts, then rereads the target before commit. Finance
-success does not authorize legacy shutdown: VAY-1359 through VAY-1363, the
-rollback window, and final human approval remain mandatory.
+Apply is transactional, locks Finance and its prerequisites, writes immutable
+dispositions in the same transaction, verifies exact target, disposition, and
+provenance counts, then rereads the target before commit. Finance success does
+not authorize legacy shutdown: VAY-1359 through VAY-1363, the rollback window,
+and final human approval remain mandatory.
 
 ## Production Full Parity and Go/No-Go
 
@@ -528,6 +536,20 @@ schema, extraction, and domain commands are transactional and idempotent. A
 failed or interrupted run requires `--resume`; completed steps are not executed
 again. The run ID and all guard inputs are immutable, and a PostgreSQL advisory
 lock excludes concurrent orchestration.
+
+Staging and pre-production targets must run on a PostgreSQL instance/cluster
+that does not serve production. A separate database on the production instance
+does not isolate memory, CPU, or restart risk. The restored rehearsal instance
+may host a separate target database only while every source role remains
+read-only and the immutable source attestations remain unchanged. Record and
+verify the source/target instance identities before starting; a changed target
+identity or application release requires a fresh run and clean-target evidence.
+
+PMS collision checks exclude tables without secondary-unique predicates and
+process at most 500 candidates per statement. PMS row and shared provenance
+writes also use 500-row statements inside the existing single domain transaction;
+a later batch failure still rolls back every earlier batch. Batching does not
+replace the resource-isolation requirement.
 
 All run modes require these inputs in addition to the four source database URLs
 and `TARGET_DATABASE_URL`:

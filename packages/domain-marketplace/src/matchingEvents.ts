@@ -44,6 +44,16 @@ export const MARKETPLACE_MATCHING_REASON_CODES = [
   "positive_outcome_history",
 ] as const;
 
+export const MARKETPLACE_MATCHING_DISMISSAL_REASON_CODES = [
+  "destination_not_suitable",
+  "dates_not_suitable",
+  "compensation_not_suitable",
+  "deliverables_not_suitable",
+  "brief_not_suitable",
+  "not_interested",
+  "other",
+] as const;
+
 export const MARKETPLACE_MATCHING_EVENT_FORBIDDEN_FIELDS = [
   "rawDemographics",
   "providerPayload",
@@ -61,6 +71,8 @@ export type MarketplaceMatchingEventType = (typeof MARKETPLACE_MATCHING_EVENT_TY
 export type MarketplaceMatchingEligibilityRuleCode =
   (typeof MARKETPLACE_MATCHING_ELIGIBILITY_RULE_CODES)[number];
 export type MarketplaceMatchingReasonCode = (typeof MARKETPLACE_MATCHING_REASON_CODES)[number];
+export type MarketplaceMatchingDismissalReasonCode =
+  (typeof MARKETPLACE_MATCHING_DISMISSAL_REASON_CODES)[number];
 export type MarketplaceMatchingParticipantSide = "creator" | "hotel";
 export type MarketplaceMatchingPresentationMode = "ranked" | "exploration";
 export type MarketplaceMatchingForbiddenEventFields = Readonly<{
@@ -88,8 +100,7 @@ export type MarketplaceMatchingOrganicAttribution = Readonly<{
 }>;
 
 export type MarketplaceMatchingAttribution =
-  | MarketplaceMatchingRecommendedAttribution
-  | MarketplaceMatchingOrganicAttribution;
+  MarketplaceMatchingRecommendedAttribution | MarketplaceMatchingOrganicAttribution;
 
 type EventBase<T extends MarketplaceMatchingEventType> = Readonly<{
   eventId: string;
@@ -152,7 +163,11 @@ export type MarketplaceMatchSavedEvent = AttributedEvent<
 >;
 export type MarketplaceMatchDismissedEvent = AttributedEvent<
   "marketplace.match.dismissed.v1",
-  { dismissalId: string; revision: number; reasonCode: string | null }
+  {
+    dismissalId: string;
+    revision: number;
+    reasonCode: MarketplaceMatchingDismissalReasonCode | null;
+  }
 >;
 export type MarketplaceMatchApplicationSubmittedEvent = AttributedEvent<
   "marketplace.match.application_submitted.v1",
@@ -250,7 +265,8 @@ export function parseMarketplaceMatchingEvent(value: unknown): MarketplaceMatchi
     case "marketplace.match.dismissed.v1":
       return validAttributed(value, ["dismissalId", "revision", "reasonCode"]) &&
         uuid(value.dismissalId) &&
-        (value.reasonCode === null || code(value.reasonCode))
+        (value.reasonCode === null ||
+          oneOf(value.reasonCode, MARKETPLACE_MATCHING_DISMISSAL_REASON_CODES))
         ? (value as MarketplaceMatchDismissedEvent)
         : null;
     case "marketplace.match.application_submitted.v1":
@@ -627,9 +643,6 @@ function uuid(value: unknown): value is string {
 }
 function hash(value: unknown): value is string {
   return typeof value === "string" && /^[0-9a-f]{64}$/.test(value);
-}
-function code(value: unknown): value is string {
-  return typeof value === "string" && /^[a-z][a-z0-9_]{0,39}$/.test(value);
 }
 function version(value: unknown): value is string {
   return typeof value === "string" && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,99}$/.test(value);

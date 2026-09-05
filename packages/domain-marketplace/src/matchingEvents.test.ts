@@ -107,7 +107,7 @@ const validEvents = [
     attribution: recommended,
     dismissalId: ids.subject,
     revision: 1,
-    reasonCode: "not_relevant",
+    reasonCode: "not_interested",
   },
   {
     ...base,
@@ -257,6 +257,7 @@ describe("Marketplace matching events", () => {
   it("enforces evaluation and event-specific invariants", () => {
     const evaluated = validEvents[0];
     const impression = validEvents[1];
+    const dismissed = validEvents[3];
     const rating = validEvents[9];
     expect(parseMarketplaceMatchingEvent({ ...evaluated, pairFitBps: 8_000 })).toBeNull();
     expect(parseMarketplaceMatchingEvent({ ...evaluated, confidence: "insufficient" })).toBeNull();
@@ -298,6 +299,7 @@ describe("Marketplace matching events", () => {
     expect(
       parseMarketplaceMatchingEvent({ ...impression, impressionId: "0".repeat(64) }),
     ).toBeNull();
+    expect(parseMarketplaceMatchingEvent({ ...dismissed, reasonCode: "not_relevant" })).toBeNull();
     expect(parseMarketplaceMatchingEvent({ ...rating, subjectSide: "creator" })).toBeNull();
     expect(parseMarketplaceMatchingEvent({ ...rating, score: 6 })).toBeNull();
   });

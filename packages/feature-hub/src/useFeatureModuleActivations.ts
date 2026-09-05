@@ -129,6 +129,7 @@ export function useFeatureModuleActivations(client: FeatureActivationClient) {
         setSupportedModuleIds(supported);
       }
       setActiveModuleIds(activeModuleIds);
+      if (detail?.source === "read") setLoading(false);
     };
 
     const onChange = (event: Event) => {

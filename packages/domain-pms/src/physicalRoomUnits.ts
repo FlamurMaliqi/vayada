@@ -83,7 +83,8 @@ export type ReconcilePhysicalRoomUnitsResult =
  * the active canonical room type before replay lookup. A changed reconcile
  * increments only roomUnitsRevision. New rows use opaque UUIDs, NULL labels,
  * and unverified label state. Decreases retire a deterministic subset of
- * unverified, available, unreferenced units; protected rows produce blockers.
+ * available, unreferenced units that are either unverified or retain canonical
+ * setup-generated provenance; protected rows produce blockers.
  * Domain state, idempotency result, and audit commit atomically. This
  * synchronous PMS-local command emits no outbox work or status operation.
  */
@@ -252,9 +253,7 @@ export type PhysicalRoomOperationalIdentityResult =
       readonly use: PhysicalRoomOperationalUse;
       readonly roomUnitId: string;
       readonly code:
-        | "room_unit_not_active"
-        | "missing_operational_label"
-        | "unverified_operational_label";
+        "room_unit_not_active" | "missing_operational_label" | "unverified_operational_label";
     };
 
 export function parseReconcilePhysicalRoomUnitsCommand(

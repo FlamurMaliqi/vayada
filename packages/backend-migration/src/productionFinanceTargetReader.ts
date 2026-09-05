@@ -45,18 +45,11 @@ export async function readProductionFinancePrerequisites(
   const users = await client.query<{ id: string }>(
     `SELECT id::text FROM identity.users ORDER BY id`,
   );
-  const identityEntitlements = await client.query<
-    ProductionFinancePrerequisites["identityEntitlements"][number]
-  >(
-    `SELECT id::text, organization_id::text AS "organizationId", product, resource_id AS "resourceId"
-     FROM identity.product_entitlements WHERE product = 'booking' ORDER BY organization_id, resource_id, id`,
-  );
   return {
     propertyLinks: propertyLinks.rows,
     resourceLinks: resourceLinks.rows,
     guestBookings: guestBookings.rows,
     userIds: users.rows.map((row) => row.id),
-    identityEntitlements: identityEntitlements.rows,
   };
 }
 

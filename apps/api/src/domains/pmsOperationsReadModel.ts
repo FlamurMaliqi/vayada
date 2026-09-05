@@ -297,6 +297,8 @@ export function createTargetPmsOperationsReadRepository(config: {
            ON room_type.id = room.room_type_id
           AND room_type.property_id = room.property_id
          WHERE room.property_id = $1
+           AND room.operational_label_status = 'verified'
+           AND room.room_number IS NOT NULL
          ORDER BY room.sort_order ASC, room.room_number ASC, room.id ASC`,
         [propertyId],
       );

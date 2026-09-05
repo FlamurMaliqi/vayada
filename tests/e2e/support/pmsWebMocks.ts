@@ -5,6 +5,7 @@ export const PMS_WEB_PROPERTY_ID = "f6853000-0000-4000-8000-000000000001";
 export const PMS_WEB_ROOM_TYPE_ID = "room_type_alpine_suite";
 export const PMS_WEB_ROOM_ID = "room_101";
 export const PMS_WEB_RESERVATION_ID = "guest_booking_ada";
+export const PMS_WEB_INBOX_THREAD_ID = "thread_ada";
 
 export const pmsWebChannexSnapshot = {
   contractVersion: "pms-channex-management.v1",
@@ -166,6 +167,50 @@ export const pmsWebReservation = {
   checkout: { completedAt: null, pendingFlags: [] },
   privateNoteCount: 0,
   additionalGuestCount: 0,
+};
+
+export const pmsWebInboxThread = {
+  id: PMS_WEB_INBOX_THREAD_ID,
+  version: 3,
+  attentionState: "needs_attention",
+  followUpAt: null,
+  assignedTo: null,
+  channel: "ota",
+  providerChannel: "booking_com",
+  guest: {
+    displayName: "Ada Lovelace",
+    email: "ada@example.com",
+    phone: "+431234567",
+  },
+  conversationContext: {
+    state: "linked",
+    bookingId: PMS_WEB_RESERVATION_ID,
+    reference: "VAY-ADA",
+    stay: {
+      checkIn: "2026-08-15",
+      checkOut: "2026-08-17",
+      nights: 2,
+      adults: 2,
+      children: 0,
+      roomCount: 1,
+      roomName: "Alpine Suite",
+      roomNumber: "101",
+      status: "confirmed",
+    },
+  },
+  unreadCount: 1,
+  activityAt: "2026-09-04T08:12:00.000Z",
+  lastMessage: {
+    preview: "Could we arrive a little early?",
+    at: "2026-09-04T08:12:00.000Z",
+    hasAttachments: false,
+  },
+  replyRoute: {
+    state: "ready",
+    channel: "ota",
+    providerChannel: "booking_com",
+    reasonCode: null,
+  },
 };
 
 export async function mockPmsWebAuthenticatedSession(
@@ -417,14 +462,25 @@ export async function mockPmsWebTargetRoutes(page: Page): Promise<void> {
   await page.route(`**/api/pms/properties/${PMS_WEB_PROPERTY_ID}/room-blocks*`, (route) =>
     route.fulfill({ json: targetList([]) }),
   );
-  await page.route(`**/api/pms/properties/${PMS_WEB_PROPERTY_ID}/reservations*`, (route) =>
-    route.fulfill({
+  await page.route(`**/api/pms/properties/${PMS_WEB_PROPERTY_ID}/reservations*`, (route) => {
+    const pathname = new URL(route.request().url()).pathname;
+    if (pathname.endsWith(`/reservations/${PMS_WEB_RESERVATION_ID}`)) {
+      return route.fulfill({
+        json: {
+          contractVersion: "pms-operations.v1",
+          propertyId: PMS_WEB_PROPERTY_ID,
+          item: pmsWebReservation,
+          sourceFreshness: {},
+        },
+      });
+    }
+    return route.fulfill({
       json: {
         ...targetList([pmsWebReservation]),
         pagination: { total: 1, limit: 500, offset: 0 },
       },
-    }),
-  );
+    });
+  });
   await page.route(`**/api/pms/properties/${PMS_WEB_PROPERTY_ID}/profile`, async (route) => {
     if (route.request().method() === "PATCH") {
       return route.fulfill({ json: { ...propertyProfile, ...readJson(route) } });
@@ -548,6 +604,7 @@ export async function mockPmsWebTargetRoutes(page: Page): Promise<void> {
               },
             ]
           : [],
+        setupError: null,
         ...(isUpdate ? { outcome: "updated", enqueueIntentId: "calendar-auto-open-intent-1" } : {}),
       },
     });
@@ -555,9 +612,271 @@ export async function mockPmsWebTargetRoutes(page: Page): Promise<void> {
   await page.route(`**/api/pms/properties/${PMS_WEB_PROPERTY_ID}/channex`, (route) =>
     route.fulfill({ json: pmsWebChannexSnapshot }),
   );
+  let inboxThread = { ...pmsWebInboxThread };
+  let providerActionAccepted = false;
+  let inboxTimeline: Array<Record<string, unknown>> = [
+    {
+      kind: "message",
+      message: {
+        id: "message_inbound_ada",
+        direction: "inbound",
+        sender: { type: "guest", name: "Ada Lovelace" },
+        text: "Could we arrive a little early?",
+        occurredAt: "2026-09-04T08:12:00.000Z",
+        readAt: null,
+        attachments: [],
+        delivery: null,
+      },
+    },
+  ];
   await page.route(`**/api/pms/properties/${PMS_WEB_PROPERTY_ID}/messaging/unread-count`, (route) =>
-    route.fulfill({ json: { unreadCount: 0 } }),
+    route.fulfill({
+      json: {
+        contractVersion: "native-guest-inbox.v2",
+        propertyId: PMS_WEB_PROPERTY_ID,
+        threadCount: inboxThread.unreadCount > 0 ? 1 : 0,
+        messageCount: inboxThread.unreadCount,
+      },
+    }),
   );
+  await page.route(
+    `**/api/pms/properties/${PMS_WEB_PROPERTY_ID}/messaging/direct-bookings`,
+    (route) =>
+      route.fulfill({
+        json: {
+          contractVersion: "native-guest-inbox.v2",
+          propertyId: PMS_WEB_PROPERTY_ID,
+          items: [
+            {
+              guestBookingId: PMS_WEB_RESERVATION_ID,
+              bookingReference: pmsWebReservation.bookingReference,
+              source: "direct_booking",
+              status: "confirmed",
+              primaryGuest: {
+                displayName: pmsWebReservation.primaryGuest.displayName,
+              },
+              stay: pmsWebReservation.stay,
+            },
+          ],
+        },
+      }),
+  );
+  await page.route(
+    `**/api/pms/properties/${PMS_WEB_PROPERTY_ID}/messaging/quick-replies**`,
+    (route) => {
+      const path = new URL(route.request().url()).pathname;
+      if (path.endsWith("/preview")) {
+        return route.fulfill({
+          json: {
+            contractVersion: "native-guest-inbox.v2",
+            propertyId: PMS_WEB_PROPERTY_ID,
+            threadId: PMS_WEB_INBOX_THREAD_ID,
+            quickReplyId: "quick_reply_arrival",
+            renderedText: "Early check-in is subject to availability. We will let you know.",
+            unresolvedVariables: [],
+            composerUseAllowed: true,
+          },
+        });
+      }
+      return route.fulfill({
+        json: {
+          contractVersion: "native-guest-inbox.v2",
+          propertyId: PMS_WEB_PROPERTY_ID,
+          items: [
+            {
+              id: "quick_reply_arrival",
+              name: "Early arrival",
+              text: "Early check-in is subject to availability. We will let you know.",
+              approvedVariables: [],
+              version: 1,
+              createdAt: "2026-09-04T08:00:00.000Z",
+              updatedAt: "2026-09-04T08:00:00.000Z",
+            },
+          ],
+        },
+      });
+    },
+  );
+  await page.route(`**/api/pms/properties/${PMS_WEB_PROPERTY_ID}/messaging/threads**`, (route) => {
+    const request = route.request();
+    const url = new URL(request.url());
+    const basePath = `/api/pms/properties/${PMS_WEB_PROPERTY_ID}/messaging/threads`;
+    const suffix = url.pathname.slice(basePath.length);
+
+    if (request.method() === "GET" && suffix === "") {
+      const attentionState = url.searchParams.get("attentionState") ?? "needs_attention";
+      return route.fulfill({
+        json: {
+          contractVersion: "native-guest-inbox.v2",
+          items: inboxThread.attentionState === attentionState ? [inboxThread] : [],
+          nextCursor: null,
+        },
+      });
+    }
+    if (request.method() === "POST" && suffix === "") {
+      return route.fulfill({
+        status: 200,
+        json: {
+          contractVersion: "native-guest-inbox.v2",
+          propertyId: PMS_WEB_PROPERTY_ID,
+          bookingId: PMS_WEB_RESERVATION_ID,
+          created: false,
+          thread: inboxThread,
+        },
+      });
+    }
+    if (request.method() === "GET" && suffix === `/${PMS_WEB_INBOX_THREAD_ID}`) {
+      return route.fulfill({
+        json: {
+          contractVersion: "native-guest-inbox.v2",
+          thread: inboxThread,
+          availableProviderActions: providerActionAccepted ? [] : ["booking_com_no_reply_needed"],
+          timeline: inboxTimeline,
+          previousCursor: null,
+        },
+      });
+    }
+    if (request.method() === "POST" && suffix.endsWith("/read")) {
+      inboxThread = { ...inboxThread, unreadCount: 0 };
+      return route.fulfill({
+        json: {
+          contractVersion: "native-guest-inbox.v2",
+          propertyId: PMS_WEB_PROPERTY_ID,
+          threadId: PMS_WEB_INBOX_THREAD_ID,
+          readThroughMessageId: "message_inbound_ada",
+          unreadCount: 0,
+        },
+      });
+    }
+    if (request.method() === "POST" && suffix.endsWith("/done")) {
+      inboxThread = {
+        ...inboxThread,
+        attentionState: "done",
+        followUpAt: null,
+        version: inboxThread.version + 1,
+      };
+      return route.fulfill({
+        json: {
+          contractVersion: "native-guest-inbox.v2",
+          propertyId: PMS_WEB_PROPERTY_ID,
+          threadId: PMS_WEB_INBOX_THREAD_ID,
+          attentionState: inboxThread.attentionState,
+          followUpAt: null,
+          threadVersion: inboxThread.version,
+        },
+      });
+    }
+    if (request.method() === "POST" && suffix.endsWith("/reopen")) {
+      inboxThread = {
+        ...inboxThread,
+        attentionState: "needs_attention",
+        followUpAt: null,
+        version: inboxThread.version + 1,
+      };
+      return route.fulfill({
+        json: {
+          contractVersion: "native-guest-inbox.v2",
+          propertyId: PMS_WEB_PROPERTY_ID,
+          threadId: PMS_WEB_INBOX_THREAD_ID,
+          attentionState: inboxThread.attentionState,
+          followUpAt: null,
+          threadVersion: inboxThread.version,
+        },
+      });
+    }
+    if (request.method() === "POST" && suffix.endsWith("/notes")) {
+      const body = readJson(route);
+      const note = {
+        id: `note_${inboxTimeline.length}`,
+        author: { membershipId: "staff_membership_ada", displayName: "PMS Owner" },
+        text: String(body["text"] ?? ""),
+        occurredAt: "2026-09-04T08:20:00.000Z",
+      };
+      inboxThread = { ...inboxThread, version: inboxThread.version + 1 };
+      inboxTimeline = [...inboxTimeline, { kind: "internal_note", note }];
+      return route.fulfill({
+        status: 201,
+        json: {
+          contractVersion: "native-guest-inbox.v2",
+          propertyId: PMS_WEB_PROPERTY_ID,
+          threadId: PMS_WEB_INBOX_THREAD_ID,
+          note,
+          threadVersion: inboxThread.version,
+        },
+      });
+    }
+    if (request.method() === "POST" && suffix.endsWith("/messages")) {
+      const body = readJson(route);
+      inboxThread = { ...inboxThread, version: inboxThread.version + 1 };
+      const messageId = `message_outbound_${inboxThread.version}`;
+      const delivery = {
+        state: "queued",
+        channel: "ota",
+        reasonCode: null,
+        providerAcknowledgedAt: null,
+      };
+      inboxTimeline = [
+        ...inboxTimeline,
+        {
+          kind: "message",
+          message: {
+            id: messageId,
+            direction: "outbound",
+            sender: { type: "property_user", name: "You" },
+            text: String(body["text"] ?? ""),
+            occurredAt: "2026-09-04T08:25:00.000Z",
+            readAt: null,
+            attachments: [],
+            delivery,
+          },
+        },
+      ];
+      return route.fulfill({
+        status: 202,
+        json: {
+          contractVersion: "native-guest-inbox.v2",
+          propertyId: PMS_WEB_PROPERTY_ID,
+          threadId: PMS_WEB_INBOX_THREAD_ID,
+          messageId,
+          threadVersion: inboxThread.version,
+          delivery,
+          acceptedAt: "2026-09-04T08:25:00.000Z",
+          echoedText: body["text"],
+        },
+      });
+    }
+    if (request.method() === "POST" && suffix.endsWith("/assist")) {
+      const body = readJson(route);
+      const kind = String(body["kind"]);
+      return route.fulfill({
+        json: {
+          contractVersion: "native-guest-inbox.v2",
+          propertyId: PMS_WEB_PROPERTY_ID,
+          threadId: PMS_WEB_INBOX_THREAD_ID,
+          kind,
+          assistedText:
+            kind === "summarize"
+              ? "The guest is asking about early arrival."
+              : "We will gladly check early-arrival availability for you.",
+          attribution: "ai_assisted",
+          reviewRequired: true,
+          basedThroughMessageId: "message_inbound_ada",
+        },
+      });
+    }
+    if (request.method() === "POST" && suffix.endsWith("/provider-actions/no-reply-needed")) {
+      providerActionAccepted = true;
+    }
+    return route.fulfill({
+      status: 202,
+      json: {
+        contractVersion: "native-guest-inbox.v2",
+        propertyId: PMS_WEB_PROPERTY_ID,
+        threadId: PMS_WEB_INBOX_THREAD_ID,
+        acceptedAt: "2026-09-04T08:30:00.000Z",
+      },
+    });
+  });
 }
 
 function targetList<T>(items: T[]) {

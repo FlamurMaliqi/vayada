@@ -70,6 +70,8 @@ import {
 import { createPublicRuntimeRepositories } from "./publicRuntime.js";
 import { createTargetPmsOperationsCommandRepository } from "./domains/pmsOperationsCommandRepository.js";
 import { createPgPmsLinkedInventoryGroupCommandRepository } from "./domains/pmsLinkedInventoryGroupRepository.js";
+import { createPgPmsInboxAttachmentMediaReadPort } from "./domains/pmsInboxAttachmentMedia.js";
+import { createPmsInboxProductionRuntime } from "./domains/pmsInboxProductionRuntime.js";
 import { createTargetBookingAcceptanceSettingsPort } from "./domains/bookingAcceptanceSettings.js";
 import { createTargetSameDayBookingSettingsPort } from "./domains/sameDayBookingSettings.js";
 import { createTargetPmsInventoryPublicOfferProjection } from "./domains/pmsInventoryPublicOfferProjection.js";
@@ -84,6 +86,9 @@ import { createPgPropertySetupDraftCommandRepository } from "./domains/propertyS
 import { createPgPropertySetupDraftRepository } from "./domains/propertySetupDraftRepository.js";
 import { createPgPropertyPlanReadRepository } from "./domains/propertyPlanReadModel.js";
 import { createPgPmsRoomFactsReadModel } from "./domains/pmsRoomFactsReadModel.js";
+import { createPgPmsRoomFactsCommandRepository } from "./domains/pmsRoomFactsCommandRepository.js";
+import { createPmsRoomFactsVocabularyValidationPort } from "./domains/pmsRoomFactsVocabulary.js";
+import { createPgPmsPhysicalRoomUnitReconcileRepository } from "./domains/pmsPhysicalRoomUnitReconcileRepository.js";
 import { createPgPmsPhysicalRoomOperationalLabelRepository } from "./domains/pmsPhysicalRoomOperationalLabelRepository.js";
 import { createPmsRoomAmenityVocabularyValidationPort } from "./domains/pmsRoomAmenityVocabulary.js";
 import { createPgPmsRoomPublicationCommandRepository } from "./domains/pmsRoomPublicationCommandRepository.js";
@@ -135,6 +140,12 @@ import { createPropertySetupFinanceStateProvider } from "./platform/propertySetu
 import { createPropertySetupReviewLifecycleStateProvider } from "./platform/propertySetupReviewLifecycleState.js";
 import { createPropertySetupRouteStateReadPort } from "./platform/propertySetupRouteState.js";
 import { runPlatformMediaCleanupJobs } from "./jobs/platformMediaCleanup.js";
+import { startPmsInboxAssignmentReconciliationWorker } from "./jobs/pmsInboxAssignmentReconciliation.js";
+import { startPmsInboxFollowUpReleaseWorker } from "./jobs/pmsInboxFollowUpRelease.js";
+import { createPgPmsInboxDeliveryStore } from "./jobs/pmsInboxDeliveryPg.js";
+import { createPgPmsInboxDeliveryReceiptPort } from "./jobs/pmsInboxDeliveryReceipts.js";
+import { relayPmsInboxDeliveryOutbox } from "./jobs/pmsInboxDeliveryOutbox.js";
+import { runPmsInboxDeliveryJobs } from "./jobs/pmsInboxDeliveryWorker.js";
 import {
   createPgBookingLifecycleStore,
   runBookingLifecycleSchedulerJobs,
@@ -148,6 +159,8 @@ import { createPgCreatorPlatformSyncStore } from "./jobs/creatorPlatformSyncStor
 import { runChannexReviewJobs } from "./jobs/channexReviews.js";
 import { runChannexBookingJobs } from "./jobs/channexBookings.js";
 import { createChannexManagementProvider } from "./integrations/channexManagement.js";
+import { createChannexMessageDelivery } from "./integrations/channexMessageDelivery.js";
+import { createResendPmsInboxDelivery } from "./integrations/resendPmsInboxDelivery.js";
 import { createPgChannexManagementPlanPort } from "./integrations/channexManagementPlans.js";
 import { runPmsChannexManagementWorkerOnce } from "./jobs/pmsChannexManagementWorker.js";
 import { createPgPmsChannexManagementWorkerStore } from "./jobs/pmsChannexManagementWorkerStore.js";
@@ -565,6 +578,7 @@ const providerWebhookSecrets = {
   stripe: config.providerWebhooks.stripeSecret,
   xendit: config.providerWebhooks.xenditSecret,
   channex: config.providerWebhooks.channexSecret,
+  resend: config.providerWebhooks.resendSecret,
 };
 const hasProviderWebhookSecret = Object.values(providerWebhookSecrets).some(Boolean);
 
@@ -660,10 +674,54 @@ const bookingPropertyAccessRepository = createPgPropertyAccessRepository({
 
 const platformMediaRuntime = composePlatformMediaRuntime({
   auth: config.auth,
+  pmsInboxEnabled: Boolean(pmsOperationsRepository),
   targetDatabaseUrl,
   platformMediaServing: config.platformMediaServing,
   allowedOrigins: config.authSession?.authAllowedOrigins,
 });
+const pmsInboxRuntime = pmsOperationsRepository
+  ? createPmsInboxProductionRuntime({
+      connectionString: targetDatabaseUrl,
+      attachmentMediaAccessEnabled: Boolean(platformMediaRuntime),
+    })
+  : undefined;
+
+const pmsInboxDeliveryPool = pmsInboxRuntime
+  ? new pg.Pool({ connectionString: targetDatabaseUrl, max: 4 })
+  : undefined;
+const pmsInboxDeliveryStore =
+  pmsInboxRuntime && pmsInboxDeliveryPool
+    ? createPgPmsInboxDeliveryStore({
+        connectionString: targetDatabaseUrl,
+        pool: pmsInboxDeliveryPool,
+        emailReplyRoutes: pmsInboxRuntime.emailReplyRoutes,
+        emailDeliveryRoutes: pmsInboxRuntime.emailDeliveryRoutes,
+        media: {
+          async read(input) {
+            if (!platformMediaRuntime) throw new Error("PMS Inbox attachment media is unavailable");
+            return platformMediaRuntime.privateDownloads.reader.readPrivateObject(input);
+          },
+        },
+      })
+    : undefined;
+const pmsInboxDeliveryReceipts = pmsInboxDeliveryPool
+  ? createPgPmsInboxDeliveryReceiptPort({
+      connectionString: targetDatabaseUrl,
+      pool: pmsInboxDeliveryPool,
+    })
+  : undefined;
+const pmsInboxChannexDelivery =
+  config.channexManagement.capabilityModes.messaging === "mutating" &&
+  config.channexManagement.apiBaseUrl &&
+  config.channexManagement.apiKey
+    ? createChannexMessageDelivery({
+        apiBaseUrl: config.channexManagement.apiBaseUrl,
+        apiKey: config.channexManagement.apiKey,
+      })
+    : undefined;
+const pmsInboxEmailDelivery = config.bookingEmailDelivery
+  ? createResendPmsInboxDelivery({ apiKey: config.bookingEmailDelivery.apiKey })
+  : undefined;
 
 const marketplaceSetupLifecycleStatusRepository = createPgMarketplaceSetupLifecycleStatusRepository(
   { connectionString: targetDatabaseUrl },
@@ -781,10 +839,23 @@ const pmsGuestPolicySetupCommands =
         }),
       }
     : undefined;
-const pmsPhysicalRoomOperationalLabels =
+const pmsRoomSetupRuntime =
   config.pmsOperationsSource === "target"
-    ? createPgPmsPhysicalRoomOperationalLabelRepository({ connectionString: targetDatabaseUrl })
+    ? (() => {
+        const roomFactsCommands = createPgPmsRoomFactsCommandRepository({
+          connectionString: targetDatabaseUrl,
+          vocabularyValidator: createPmsRoomFactsVocabularyValidationPort(),
+        });
+        const physicalUnits = createPgPmsPhysicalRoomUnitReconcileRepository({
+          connectionString: targetDatabaseUrl,
+        });
+        const operationalLabels = createPgPmsPhysicalRoomOperationalLabelRepository({
+          connectionString: targetDatabaseUrl,
+        });
+        return { roomFactsCommands, physicalUnits, operationalLabels };
+      })()
     : undefined;
+const pmsPhysicalRoomOperationalLabels = pmsRoomSetupRuntime?.operationalLabels;
 
 const pmsRoomPublicationRuntime = bookingDesignMediaAdapter
   ? (() => {
@@ -1117,6 +1188,7 @@ const app = buildApp({
           stripeConnectProvider,
           stripePaymentProvider: stripeBookingPaymentProvider,
         }),
+        pmsInboxDeliveryReceipts,
       }
     : undefined,
   bookingReservationsRepository,
@@ -1132,6 +1204,7 @@ const app = buildApp({
   bookingDashboardMetricsReadPort,
   bookingPropertyAccessRepository,
   pmsOperationsRepository,
+  ...(pmsInboxRuntime?.routes ?? {}),
   pmsChannexManagement: pmsChannexManagementRepository
     ? {
         repository: pmsChannexManagementRepository,
@@ -1185,6 +1258,18 @@ const app = buildApp({
       }
     : undefined,
   pmsOperatingCalendar: pmsOperatingCalendarRuntime?.routes,
+  pmsRoomSetup: pmsRoomSetupRuntime
+    ? {
+        facts: {
+          commandPort: pmsRoomSetupRuntime.roomFactsCommands,
+          factsReadPort: propertySetupPmsRuntime.roomFacts,
+          bindingReadPort: propertySetupPmsRuntime.roomFacts,
+          unitReadPort: propertySetupPmsRuntime.roomFacts,
+          capacityReadPort: propertySetupPmsRuntime.roomFacts,
+        },
+        physicalUnits: { commandPort: pmsRoomSetupRuntime.physicalUnits },
+      }
+    : undefined,
   pmsPhysicalRoomOperationalLabels: pmsPhysicalRoomOperationalLabels
     ? { commandPort: pmsPhysicalRoomOperationalLabels }
     : undefined,
@@ -1224,6 +1309,14 @@ const app = buildApp({
       }
     : undefined,
   financeFolios: financeFolioRuntime?.routes,
+  pmsInboxAttachmentMedia:
+    pmsInboxRuntime && platformMediaRuntime
+      ? {
+          read: createPgPmsInboxAttachmentMediaReadPort({ connectionString: targetDatabaseUrl }),
+          signer: platformMediaRuntime.privateDownloads.signer,
+          serving: platformMediaRuntime.privateDownloads.serving,
+        }
+      : undefined,
   pmsFinanceCompatibilityRepository,
   financeXenditBankValidator: xenditBankValidator,
   financePublicHotelProfileRepository,
@@ -1390,6 +1483,22 @@ const staffRemovalWorker = staffInvitationRuntime
     })
   : undefined;
 
+const pmsInboxAssignmentReconciliationWorker = pmsInboxRuntime
+  ? startPmsInboxAssignmentReconciliationWorker({
+      connectionString: targetDatabaseUrl,
+      workerId: `pms-inbox-assignment-reconciliation:${process.pid}`,
+      warn: (error, message) => app.log.warn({ error }, message),
+    })
+  : undefined;
+
+const pmsInboxFollowUpReleaseWorker = pmsInboxRuntime
+  ? startPmsInboxFollowUpReleaseWorker({
+      connectionString: targetDatabaseUrl,
+      workerId: `pms-inbox-follow-up-release:${process.pid}`,
+      warn: (error, message) => app.log.warn({ error }, message),
+    })
+  : undefined;
+
 const stopPostgresTelemetry = postgresRuntime.startTelemetry(app.log);
 app.addHook("onClose", async () => {
   stopPostgresTelemetry();
@@ -1407,6 +1516,8 @@ const bookingPublicationWorker = bookingPublicationRuntime
 app.addHook("onClose", async () => {
   await creatorPlatformSyncWorker?.close();
   await staffRemovalWorker?.close();
+  await pmsInboxAssignmentReconciliationWorker?.close();
+  await pmsInboxFollowUpReleaseWorker?.close();
   await bookingPublicationWorker?.close();
   await bookingPublicationRuntime?.close();
   await Promise.all([
@@ -1427,8 +1538,11 @@ app.addHook("onClose", async () => {
     pmsGuestPolicySetupCommands?.pricing.close(),
     pmsGuestPolicySetupCommands?.recurringPricing.close(),
     pmsGuestPolicySetupCommands?.mandatoryCharges.close(),
+    pmsRoomSetupRuntime?.roomFactsCommands.close(),
+    pmsRoomSetupRuntime?.physicalUnits.close(),
     pmsPhysicalRoomOperationalLabels?.close(),
     pmsOperatingCalendarRuntime?.close(),
+    pmsInboxRuntime?.close(),
     ...(!platformMediaRuntime ? [hotelCatalogStep1Repository.close()] : []),
   ]);
 });
@@ -1828,6 +1942,33 @@ const bookingLifecycleTimer = setInterval(runBookingLifecycle, 60_000);
 bookingLifecycleTimer.unref();
 runBookingLifecycle();
 
+let activePmsInboxDelivery: Promise<void> | undefined;
+const runPmsInboxDelivery = () => {
+  if (!pmsInboxDeliveryStore || !pmsInboxDeliveryPool || activePmsInboxDelivery) return;
+  activePmsInboxDelivery = relayPmsInboxDeliveryOutbox(targetDatabaseUrl, {
+    pool: pmsInboxDeliveryPool,
+  })
+    .then(() =>
+      runPmsInboxDeliveryJobs(pmsInboxDeliveryStore, {
+        ...(pmsInboxChannexDelivery ? { channex: pmsInboxChannexDelivery } : {}),
+        ...(pmsInboxEmailDelivery ? { resend: pmsInboxEmailDelivery } : {}),
+      }),
+    )
+    .then((result) => {
+      if (result.failed || result.deadLettered)
+        app.log.warn({ result }, "PMS Inbox delivery completed with failures");
+    })
+    .catch((error: unknown) => app.log.warn({ err: error }, "PMS Inbox delivery failed"))
+    .finally(() => {
+      activePmsInboxDelivery = undefined;
+    });
+};
+const pmsInboxDeliveryTimer = pmsInboxDeliveryStore
+  ? setInterval(runPmsInboxDelivery, 2_000)
+  : undefined;
+pmsInboxDeliveryTimer?.unref();
+if (pmsInboxDeliveryStore) runPmsInboxDelivery();
+
 const bookingEmailDelivery = config.bookingEmailDelivery
   ? createResendBookingEmailDelivery(config.bookingEmailDelivery)
   : undefined;
@@ -1856,6 +1997,10 @@ app.addHook("onClose", async () => {
   await activeBookingLifecycleRun;
   await activeBookingEmailDelivery;
   await bookingLifecycleStore.close();
+  if (pmsInboxDeliveryTimer) clearInterval(pmsInboxDeliveryTimer);
+  await activePmsInboxDelivery;
+  await pmsInboxDeliveryStore?.close();
+  await pmsInboxDeliveryPool?.end();
 });
 
 const propertySetupDraftRetentionWorker = startPropertySetupDraftRetentionWorker({

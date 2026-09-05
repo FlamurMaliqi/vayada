@@ -58,6 +58,12 @@ export type PmsCalendarAutoOpenRead = {
     from: string;
     through: string;
   }>;
+  setupError: {
+    code:
+      | "operating_calendar_not_configured"
+      | "operating_calendar_room_bindings_stale"
+      | "physical_room_labels_unverified";
+  } | null;
 };
 
 export type PmsCalendarAutoOpenUpdate = Pick<

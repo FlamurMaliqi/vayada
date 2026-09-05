@@ -11,6 +11,33 @@ import type { BookingTargetRecord } from "./productionBookingTypes.js";
 const RUN = "vay1351-0123456789abcdef01234567";
 
 describe("production Booking writers", () => {
+  it("bounds the shared provenance writer without changing run evidence or row order", async () => {
+    const batches: unknown[][] = [];
+    const client = {
+      async query(sql: string, values: unknown[]) {
+        expect(sql).toContain("INSERT INTO platform.production_migration_source_links");
+        expect(values[1]).toBe(RUN);
+        const rows = JSON.parse(String(values[0]));
+        batches.push(rows);
+        return { rowCount: rows.length };
+      },
+    };
+    const links = Array.from({ length: 1_001 }, (_, index) => ({
+      sourceDatabase: "pms" as const,
+      sourceTable: "room_types",
+      sourceId: "room",
+      targetProduct: "pms",
+      targetTable: "inventory_days",
+      targetId: `inventory-${index}`,
+      sourceChecksum: "a".repeat(64),
+      sourceUpdatedAt: "2026-08-30T00:00:00.000Z",
+      lastMigratedAt: "2026-08-30T01:00:00.000Z",
+    }));
+    expect(await writeProductionMigrationProvenance(client as never, links, RUN)).toBe(1_001);
+    expect(batches.map((batch) => batch.length)).toEqual([500, 500, 1]);
+    expect(batches.flat()).toEqual(links);
+  });
+
   it("upserts mutable rows but keeps immutable rows conflict-safe", async () => {
     const client = new WriterFixture();
     const counts = await writeProductionBookingRecords(client as never, [

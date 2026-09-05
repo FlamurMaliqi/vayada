@@ -18,6 +18,13 @@ export type PlatformMediaUploadResult = {
   url: string;
 };
 
+export type PmsInboxAttachmentUploadResult = {
+  mediaId: string;
+  filename: string;
+  contentType: string;
+  size: number;
+};
+
 type UploadTarget = {
   uploadTargetId: string;
   clientFileId: string;
@@ -106,6 +113,72 @@ export async function uploadPlatformMedia(input: {
       mediaObject.publicVariants[0]?.publicUrl ??
       "",
   }));
+}
+
+export async function uploadPmsInboxAttachment(input: {
+  propertyId: string;
+  threadId: string;
+  file: File;
+}): Promise<PmsInboxAttachmentUploadResult> {
+  const create = await platformMediaClient.post<UploadSessionResponse>(
+    "/api/media/upload-sessions",
+    {
+      purpose: "pms.messaging.attachment",
+      visibility: "private",
+      resource: {
+        product: "pms",
+        resourceType: "pms_property",
+        resourceId: input.propertyId,
+        propertyId: input.propertyId,
+        targetResourceId: input.threadId,
+      },
+      files: [
+        {
+          clientFileId: "file_1",
+          filename: input.file.name || "attachment",
+          contentType: input.file.type || "application/octet-stream",
+          sizeBytes: input.file.size,
+        },
+      ],
+    },
+  );
+  const target = create.uploadTargets[0];
+  if (!target) {
+    throw new ApiErrorResponse(400, { detail: "Attachment upload target was not returned" });
+  }
+  if (!isDeterministicLocalUploadTarget(target.uploadUrl)) {
+    const response = await fetch(target.uploadUrl, {
+      method: target.method,
+      headers: target.headers,
+      body: input.file,
+    });
+    if (!response.ok) {
+      throw new ApiErrorResponse(response.status, {
+        detail: `Attachment upload failed for ${input.file.name || "the selected file"}`,
+      });
+    }
+  }
+  const finalized = await platformMediaClient.post<{
+    mediaObjects: Array<{ mediaObjectId: string }>;
+  }>(`/api/media/upload-sessions/${create.uploadSession.sessionId}/finalize`, {
+    files: [
+      {
+        uploadTargetId: target.uploadTargetId,
+        contentType: input.file.type || "application/octet-stream",
+        sizeBytes: input.file.size,
+      },
+    ],
+  });
+  const mediaId = finalized.mediaObjects[0]?.mediaObjectId;
+  if (!mediaId) {
+    throw new ApiErrorResponse(500, { detail: "Attachment did not finish preparing" });
+  }
+  return {
+    mediaId,
+    filename: input.file.name || "Attachment",
+    contentType: input.file.type || "application/octet-stream",
+    size: input.file.size,
+  };
 }
 
 function isDeterministicLocalUploadTarget(uploadUrl: string): boolean {
