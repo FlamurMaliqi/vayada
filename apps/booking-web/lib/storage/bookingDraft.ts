@@ -20,6 +20,7 @@ export interface GuestDetailsDraft {
   referralCode?: string;
   addonIds?: string[];
   addonQuantities?: Record<string, number>;
+  addonPackageQuantities?: Record<string, number>;
   /** Per-day addon date selections — ISO strings keyed by addon id. */
   addonDates?: Record<string, string[]>;
 }
@@ -334,6 +335,7 @@ export function toConfirmationBooking(
     addonIds: context.addonIds ?? source.addonIds,
     addonNames: context.addonNames ?? source.addonNames,
     addonQuantities: context.addonQuantities ?? source.addonQuantities,
+    addonPackageQuantities: context.addonPackageQuantities ?? source.addonPackageQuantities,
     addonDates: context.addonDates ?? source.addonDates,
     currency:
       nonEmptyString(source.currency)?.toUpperCase() ??

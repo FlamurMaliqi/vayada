@@ -164,6 +164,7 @@ export interface Booking {
   addonIds?: string[];
   addonNames?: string[];
   addonQuantities?: Record<string, number>;
+  addonPackageQuantities?: Record<string, number>;
   addonDates?: Record<string, string[]>;
   currency: string;
   // 'draft' is the placeholder shape returned for the card-payment flow
@@ -198,6 +199,8 @@ export interface Addon {
   category: string;
   image: string;
   images?: string[];
+  maxQuantity?: number;
+  leadTime?: string;
   duration?: string;
   perPerson?: boolean;
   perNight?: boolean;
