@@ -2049,5 +2049,7 @@
   "dashboard.noArrivalsOnDate": "Keine Anreisen an diesem Datum",
   "dashboard.noDeparturesOnDate": "Keine Abreisen an diesem Datum",
   "dashboard.previousDay": "Vorheriger Tag",
-  "dashboard.nextDay": "Nächster Tag"
+  "dashboard.nextDay": "Nächster Tag",
+  "settings.autoOpen.openSetup": "Zimmer- und Kalendereinrichtung abschließen",
+  "settings.autoOpen.setupAuthority": "Für die Einrichtung ist Zugriff auf die Unterkunftsverwaltung erforderlich. Falls du sie nicht bearbeiten kannst, bitte deine Unterkunftsverwaltung, diesen Schritt abzuschließen."
 }
