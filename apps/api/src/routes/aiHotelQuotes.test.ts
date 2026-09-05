@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   createTargetPublicHotelQuoteRepository,
+  serializePublicHotelQuoteProjection,
   type PublicHotelQuoteReadPool,
 } from "./aiHotelQuotes.js";
 import type { PublicHotelProfileRepository } from "./aiHotels.js";
@@ -140,6 +141,58 @@ function cachedOffer(overrides: Record<string, unknown> = {}): Record<string, un
 }
 
 describe("target public hotel quote stay restrictions", () => {
+  it.each(["MIDWEEK", "EXTENDED_STAY"])(
+    "projects named %s discounts for unequal nights and multiple rooms",
+    async (type) => {
+      const { repository, queries } = targetRepository([
+        {
+          ...snapshotOffer("promoted", {}),
+          roomTotal: "600.00",
+          taxesAndFees: "60.00",
+          nightlyRoomAmounts: [
+            { stayDate: "2026-09-06", grossRoomAmount: 100 },
+            { stayDate: "2026-09-07", grossRoomAmount: 200 },
+          ],
+          promotionSettings: {
+            promotions: [
+              {
+                type,
+                active: true,
+                roomTypeIds: [],
+                discountPercent: type === "MIDWEEK" ? 25 : 0,
+                threshold: 2,
+                freeNights: type === "EXTENDED_STAY" ? 1 : 0,
+                weekdays: type === "MIDWEEK" ? [0] : [],
+                tiers: [],
+              },
+            ],
+          },
+        },
+      ]);
+      const projection = await repository.findQuoteBySlug(profile.hotel.slug, {
+        check_in: "2026-09-06",
+        check_out: "2026-09-08",
+        adults: "2",
+        rooms: "2",
+        currency: "EUR",
+        locale: "en",
+      });
+      expect(projection?.status).toBe("bookable");
+      const response = serializePublicHotelQuoteProjection(projection!);
+      expect(response.quote?.offers[0]?.totals).toMatchObject({
+        roomTotal: 600,
+        taxesAndFees: 60,
+        discounts: type === "MIDWEEK" ? 50 : 200,
+        grandTotal: type === "MIDWEEK" ? 610 : 460,
+        promotion: {
+          name: type === "MIDWEEK" ? "Midweek getaway" : "Extended stay",
+          discountAmount: type === "MIDWEEK" ? 50 : 200,
+        },
+      });
+      expect(queries[1]?.text).toContain("settings.last_minute_discount");
+    },
+  );
+
   it("returns min_stay_not_met when every otherwise available rate requires a longer stay", async () => {
     const { repository } = targetRepository([
       snapshotOffer("minimum-three", { minStayNights: 3 }),

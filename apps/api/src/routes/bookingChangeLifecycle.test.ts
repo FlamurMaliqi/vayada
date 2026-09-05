@@ -1,5 +1,5 @@
 import type { QueryResultRow } from "pg";
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   bookingHotelChangeDecisionFingerprint,
@@ -17,6 +17,7 @@ const inventoryReceiptId = "41c26768-bf64-4202-a41d-613621f6a8b7";
 class LifecyclePool {
   calls: Array<{ text: string; values?: readonly unknown[] }> = [];
   offerAvailable = true;
+  promotionSettings: unknown;
   offerStayDates = ["2026-08-15", "2026-08-16"];
   booking = {
     guestBookingId: bookingId,
@@ -80,6 +81,8 @@ class LifecyclePool {
         ],
       };
     }
+    if (text.includes("FROM hotel_catalog.properties p\n"))
+      return { rows: [{ promotionSettings: this.promotionSettings } as unknown as T] };
     if (text.includes("FROM hotel_catalog.properties property")) {
       return {
         rows: [
@@ -294,6 +297,61 @@ function inventoryPort() {
 }
 
 describe("target booking date-change lifecycle", () => {
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-07-22T10:00:00.000Z"));
+  });
+  afterEach(() => vi.useRealTimers());
+
+  it("recalculates automatic promotion eligibility in date-change previews and acceptance", async () => {
+    const pool = new LifecyclePool();
+    pool.promotionSettings = {
+      promotions: [
+        {
+          type: "EARLY_BIRD",
+          active: true,
+          roomTypeIds: [],
+          discountPercent: 30,
+          threshold: 10,
+          freeNights: 0,
+          weekdays: [],
+          tiers: [],
+        },
+      ],
+    };
+    const inventory = inventoryPort();
+    const adapter = createTargetBookingWebCheckoutAdapter({
+      connectionString: "postgres://unused",
+      pool: pool as never,
+      inventoryReservationPort: inventory.port,
+    });
+    await expect(
+      adapter.submitChangeRequest(
+        "hotel",
+        bookingId,
+        { guestEmail: "guest@example.test", checkIn: "2026-08-15", checkOut: "2026-08-17" },
+        command("booking-change-submit", "e"),
+      ),
+    ).resolves.toMatchObject({ newTotal: 223 });
+    await expect(
+      adapter.acceptChangeRequest(propertyId, bookingId, changeId, {
+        ...decisionCommand({
+          bookingId,
+          changeRequestId: changeId,
+          decision: "accept",
+          note: null,
+          idempotencyKey: "accept-promoted",
+          requestId: "accept-promoted",
+        }),
+        actorUserId: "6fdb0d6a-aafb-44ee-83b0-2b070c33d46e",
+      }),
+    ).resolves.toMatchObject({ newTotal: 223 });
+    expect(pool.booking.totalAmount).toBe("223.00");
+    expect(pool.booking.bookingMetadata.selectedOffer).toMatchObject({
+      promotion: { name: "Early bird", discountAmount: 87 },
+    });
+  });
+
   it("resolves opaque reservation credit through the exact PMS receipt scope", async () => {
     const pool = new LifecyclePool();
     const inventory = inventoryPort();
