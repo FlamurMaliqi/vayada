@@ -654,3 +654,4 @@ function isRetryableFailure(error: PmsReservationError): boolean {
 }
 
 export * from "./conversionFunnel.js";
+export * from "./bookingPromotions.js";
