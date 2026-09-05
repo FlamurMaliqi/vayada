@@ -1,3 +1,8 @@
+import {
+  collaborationToday,
+  collaborationDateError,
+  collaborationAvailabilityError,
+} from "@vayada/domain-marketplace/collaborationDates";
 import { createHash } from "node:crypto";
 
 import {
@@ -129,6 +134,7 @@ type MarketplaceCollaborationRow = {
   status: string;
   compensationType: string | null;
   offerTitle: string;
+  propertyTimezone?: string | null;
   hotelLocation: string | null;
   applicationMessage: string | null;
   selectedCompensationOptionId: string | null;
@@ -1402,6 +1408,30 @@ async function createPgCollaboration(
   const terms = selectedCompensationOption
     ? snapshotSelectedCompensationOption(selectedCompensationOption, proposedTerms)
     : proposedTerms;
+  if (input.side === "hotel") {
+    for (const [from, to, fromField, toField, sameDay] of [
+      [terms.travelDateFrom, terms.travelDateTo, "travelDateFrom", "travelDateTo", false],
+      [
+        terms.preferredDateFrom,
+        terms.preferredDateTo,
+        "preferredDateFrom",
+        "preferredDateTo",
+        true,
+      ],
+    ] as const) {
+      const result = validateDateRange(from, to, fromField, toField, sameDay);
+      if (!result.ok)
+        throw new MarketplaceCollaborationWriteError(400, "invalid_query", result.error.message);
+    }
+  }
+  if (input.side === "creator") {
+    await validatePgCollaborationDates(
+      client,
+      offer.propertyId,
+      terms,
+      selectedCompensationOption?.availabilityMonths,
+    );
+  }
   const newId = await client.query<{ id: string }>(`SELECT gen_random_uuid()::text AS id`);
   const collaborationId = newId.rows[0]?.id;
   if (!collaborationId) {
@@ -1524,6 +1554,32 @@ async function mutateExistingPgCollaboration(
   return mutate(client, input, collaboration);
 }
 
+async function validatePgCollaborationDates(
+  client: MarketplaceCollaborationQueryable,
+  propertyId: string,
+  terms: {
+    travelDateFrom: string | null;
+    travelDateTo: string | null;
+    preferredDateFrom?: string | null;
+    preferredDateTo?: string | null;
+  },
+  availabilityMonths?: readonly string[],
+): Promise<void> {
+  const result = await client.query<{ timezone: string | null }>(
+    `SELECT location->>'timezone' AS timezone
+     FROM hotel_catalog.property_public_profile_read_model WHERE property_id = $1::uuid`,
+    [propertyId],
+  );
+  const today = collaborationToday(result.rows[0]?.timezone);
+  const error =
+    collaborationDateError(terms.travelDateFrom, terms.travelDateTo, today) ??
+    (terms.preferredDateFrom || terms.preferredDateTo
+      ? collaborationDateError(terms.preferredDateFrom, terms.preferredDateTo, today)
+      : null) ??
+    collaborationAvailabilityError(availabilityMonths ?? [], today);
+  if (error) throw new MarketplaceCollaborationWriteError(400, "invalid_query", error);
+}
+
 async function respondPgCollaboration(
   client: PoolClient,
   input: MarketplaceCollaborationLifecycleWriteInput,
@@ -1605,6 +1661,12 @@ async function editPgCollaborationApplication(
       "Choose a compensation option belonging to this offer.",
     );
   const terms = snapshotSelectedCompensationOption(option, readTermsInput(input.payload));
+  await validatePgCollaborationDates(
+    client,
+    collaboration.propertyId,
+    terms,
+    option.availabilityMonths,
+  );
   await client.query(
     `UPDATE marketplace.collaborations SET
        application_message = $2, creator_consent = TRUE,
@@ -1664,6 +1726,38 @@ async function updatePgCollaborationTerms(
     );
   }
   const terms = readTermsInput(input.payload);
+  const stored = await client.query<{
+    travelDateFrom: string | null;
+    travelDateTo: string | null;
+    preferredDateFrom: string | null;
+    preferredDateTo: string | null;
+  }>(
+    `SELECT travel_date_from::text AS "travelDateFrom", travel_date_to::text AS "travelDateTo",
+            preferred_date_from::text AS "preferredDateFrom", preferred_date_to::text AS "preferredDateTo"
+     FROM marketplace.collaborations WHERE id = $1::uuid FOR UPDATE`,
+    [collaboration.id],
+  );
+  const previous = stored.rows[0];
+  await validatePgCollaborationDates(client, collaboration.propertyId, {
+    preferredDateFrom:
+      terms.preferredDateFrom ??
+      (terms.travelDateFrom && terms.travelDateTo ? null : previous?.preferredDateFrom),
+    preferredDateTo:
+      terms.preferredDateTo ??
+      (terms.travelDateFrom && terms.travelDateTo ? null : previous?.preferredDateTo),
+    travelDateFrom:
+      terms.travelDateFrom ??
+      previous?.travelDateFrom ??
+      terms.preferredDateFrom ??
+      previous?.preferredDateFrom ??
+      null,
+    travelDateTo:
+      terms.travelDateTo ??
+      previous?.travelDateTo ??
+      terms.preferredDateTo ??
+      previous?.preferredDateTo ??
+      null,
+  });
   await client.query(
     `UPDATE marketplace.collaborations
      SET lifecycle_status = 'negotiating',
@@ -1680,8 +1774,8 @@ async function updatePgCollaborationTerms(
          END,
          travel_date_from = COALESCE($10, travel_date_from),
          travel_date_to = COALESCE($11, travel_date_to),
-         preferred_date_from = COALESCE($12, preferred_date_from),
-         preferred_date_to = COALESCE($13, preferred_date_to),
+         preferred_date_from = CASE WHEN $10::date IS NOT NULL AND $11::date IS NOT NULL THEN NULL ELSE COALESCE($12, preferred_date_from) END,
+         preferred_date_to = CASE WHEN $10::date IS NOT NULL AND $11::date IS NOT NULL THEN NULL ELSE COALESCE($13, preferred_date_to) END,
          preferred_months = CASE WHEN $14::text[] IS NULL THEN preferred_months ELSE $14::text[] END,
          term_last_updated_at = now(),
          creator_agreed_at = CASE WHEN $15 = 'creator' THEN now() ELSE NULL END,
@@ -2593,6 +2687,7 @@ function collaborationSelectSql(side: MarketplaceCollaborationAuthorizationSide)
           collaboration.creator_consent AS "creatorConsent",
           collaboration.creator_agreed_at AS "creatorAgreedAt",
           collaboration.hotel_agreed_at AS "hotelAgreedAt",
+          public_profile.location->>'timezone' AS "propertyTimezone",
           offer.title AS "offerTitle",
           NULLIF(concat_ws(
             ', ',
@@ -2708,6 +2803,7 @@ function mapCollaborationRow(
     collaborationId: row.collaborationId,
     offerId: row.offerId,
     creatorId: row.creatorId,
+    propertyTimezone: row.propertyTimezone ?? null,
     hotelProfileId: row.hotelProfileId,
     side,
     initiatorSide: toCollaborationSide(row.initiatorSide),
@@ -3568,6 +3664,7 @@ function parseLifecycleWriteBody(
       "travelDateFrom",
       "travelDateTo",
       false,
+      true,
     );
     if (!travelDates.ok) return travelDates;
     const preferredDates = validateDateRange(
@@ -3575,6 +3672,7 @@ function parseLifecycleWriteBody(
       terms?.preferredDateTo,
       "preferredDateFrom",
       "preferredDateTo",
+      true,
       true,
     );
     if (!preferredDates.ok) return preferredDates;
@@ -3651,6 +3749,7 @@ function validateDateRange(
   fromField: string,
   toField: string,
   allowSameDay: boolean,
+  deferOrdering = false,
 ): ParseResult<undefined> {
   const hasFrom = rawFrom !== undefined && rawFrom !== null && rawFrom !== "";
   const hasTo = rawTo !== undefined && rawTo !== null && rawTo !== "";
@@ -3661,7 +3760,8 @@ function validateDateRange(
   const to = readDateString(rawTo);
   if (!from) return invalidQuery(`${fromField} must be a real ISO date in YYYY-MM-DD format.`);
   if (!to) return invalidQuery(`${toField} must be a real ISO date in YYYY-MM-DD format.`);
-  if (allowSameDay ? to < from : to <= from) {
+  // Property-local past-date errors take precedence over ordering errors.
+  if (!deferOrdering && (allowSameDay ? to < from : to <= from)) {
     return invalidQuery(
       allowSameDay
         ? `${toField} must be on or after ${fromField}.`
