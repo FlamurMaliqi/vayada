@@ -44,6 +44,7 @@ interface ListingMarketplaceResponse {
   id: string;
   hotel_profile_id: string;
   hotel_name: string;
+  propertyTimezone?: string;
   hotel_picture: string | null;
   name: string;
   location: string;
@@ -1083,6 +1084,7 @@ function toLegacyListingMarketplaceResponse(
     id: offer.offerId,
     hotel_profile_id: offer.offerPublicId,
     hotel_name: offer.hotelName,
+    propertyTimezone: offer.hotelLocation.timezone,
     hotel_picture: offer.hotelCoverImageUrl,
     name: offer.offerTitle,
     location: offer.hotelLocation.displayText,

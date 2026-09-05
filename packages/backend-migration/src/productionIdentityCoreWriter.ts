@@ -94,7 +94,11 @@ export async function writeProductionIdentityCore(
        SET status = EXCLUDED.status, starts_at = EXCLUDED.starts_at,
            expires_at = EXCLUDED.expires_at, metadata = EXCLUDED.metadata,
            updated_at = EXCLUDED.updated_at
-     WHERE identity.product_entitlements.updated_at < EXCLUDED.updated_at`,
+     WHERE identity.product_entitlements.updated_at < EXCLUDED.updated_at
+        OR (
+          identity.product_entitlements.status = 'active'
+          AND EXCLUDED.status IN ('suspended', 'expired')
+        )`,
   );
 }
 

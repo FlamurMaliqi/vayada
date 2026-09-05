@@ -41,6 +41,9 @@ describe("production identity core writer", () => {
     const membershipSql = client.calls[2]!.sql;
     expect(membershipSql).toContain("access_origin");
     expect(membershipSql).not.toContain("access_origin = EXCLUDED.access_origin");
+    const entitlementSql = client.calls[4]!.sql;
+    expect(entitlementSql).toContain("identity.product_entitlements.status = 'active'");
+    expect(entitlementSql).toContain("EXCLUDED.status IN ('suspended', 'expired')");
     expect(JSON.parse(client.calls[0]!.values[0] as string)).toEqual(plan.users);
   });
 
