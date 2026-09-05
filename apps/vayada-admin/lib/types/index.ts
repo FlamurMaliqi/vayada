@@ -206,6 +206,7 @@ export interface PlatformResponse {
 }
 
 export interface HotelProfileDetail {
+  profileComplete?: boolean;
   id: string;
   userId: string;
   name: string;

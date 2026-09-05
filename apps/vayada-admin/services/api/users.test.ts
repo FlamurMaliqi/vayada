@@ -178,6 +178,11 @@ describe("usersService media writes", () => {
     });
 
     await usersService.verifyOffer("user-hotel", "offer-801", ["media-offer-801"]);
-    expect(mocks.verifyOffer).toHaveBeenCalledWith("user-hotel", "offer-801", ["media-offer-801"]);
+    expect(mocks.verifyOffer).toHaveBeenCalledWith(
+      "user-hotel",
+      "offer-801",
+      ["media-offer-801"],
+      undefined,
+    );
   });
 });
