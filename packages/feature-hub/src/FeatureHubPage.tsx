@@ -63,6 +63,7 @@ export function FeatureHubPage({
   const [category, setCategory] = useState<"All" | FeatureCategory>("All");
   const [selectedModule, setSelectedModule] = useState<FeatureModule | null>(null);
   const [notice, setNotice] = useState("");
+  const [updateError, setUpdateError] = useState("");
   const [savingModuleId, setSavingModuleId] = useState<string | null>(null);
   const {
     activeModuleIds,
@@ -121,16 +122,9 @@ export function FeatureHubPage({
   }, [category, displayedProduct, query, supportedModuleSet]);
 
   const toggleModule = async (module: FeatureModule, isActive: boolean) => {
-    if (!isActive) {
-      const message =
-        module.category === "Payments"
-          ? `Disabling ${module.name} will prevent new ${module.name} payments. Existing bookings are unaffected. Continue?`
-          : module.navItem
-            ? `Deactivating ${module.name} hides it from your navigation. Your data is preserved and will be available if you reactivate. Continue?`
-            : `Deactivating ${module.name} hides its setup controls. Existing data is preserved. Continue?`;
-      if (!window.confirm(message)) return;
-    }
-
+    if (savingModuleId) return;
+    setNotice("");
+    setUpdateError("");
     setSavingModuleId(module.id);
     try {
       await setModuleActive(module.id, isActive);
@@ -140,7 +134,7 @@ export function FeatureHubPage({
           : `${module.name} ${isActive ? "activated" : "deactivated"}.`,
       );
     } catch (err) {
-      setNotice(err instanceof Error ? err.message : "Could not update module activation.");
+      setUpdateError(err instanceof Error ? err.message : "Could not update module activation.");
     } finally {
       setSavingModuleId(null);
     }
@@ -198,9 +192,12 @@ export function FeatureHubPage({
 
       <div>
         <div className="max-w-5xl">
-          {error && (
-            <div className="mb-4 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">
-              {error}
+          {(error || (updateError && !selectedModule)) && (
+            <div
+              role="alert"
+              className="mb-4 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800"
+            >
+              {updateError || error}
             </div>
           )}
           {notice && (
@@ -286,7 +283,7 @@ export function FeatureHubPage({
                         key={module.id}
                         module={module}
                         isActive={activeModuleSet.has(module.id)}
-                        disabled={loading || !canManage}
+                        disabled={loading || !canManage || savingModuleId !== null}
                         saving={savingModuleId === module.id}
                         onOpen={() => setSelectedModule(module)}
                         onToggle={(isActive) => toggleModule(module, isActive)}
@@ -310,8 +307,9 @@ export function FeatureHubPage({
         <DetailModal
           module={selectedModule}
           isActive={activeModuleSet.has(selectedModule.id)}
-          disabled={loading || !canManage}
+          disabled={loading || !canManage || savingModuleId !== null}
           saving={savingModuleId === selectedModule.id}
+          error={updateError}
           onClose={() => setSelectedModule(null)}
           onToggle={(isActive) => toggleModule(selectedModule, isActive)}
         />
@@ -558,6 +556,7 @@ function NavigationPreview({
 }
 
 function DetailModal({
+  error,
   module,
   isActive,
   disabled,
@@ -569,6 +568,7 @@ function DetailModal({
   isActive: boolean;
   disabled: boolean;
   saving: boolean;
+  error: string;
   onClose: () => void;
   onToggle: (isActive: boolean) => void;
 }) {
@@ -632,6 +632,11 @@ function DetailModal({
         aria-labelledby={titleId}
         className="flex max-h-[100dvh] w-full flex-col overflow-hidden rounded-t-lg bg-white shadow-2xl sm:max-h-[92vh] sm:max-w-3xl sm:rounded-lg"
       >
+        {error && (
+          <div role="alert" className="bg-amber-50 px-4 py-3 text-sm text-amber-800">
+            {error}
+          </div>
+        )}
         <div className="flex items-start gap-3 border-b border-gray-100 px-4 py-4 sm:px-5">
           <ModuleIcon module={module} active={isActive} />
           <div className="min-w-0 flex-1">
