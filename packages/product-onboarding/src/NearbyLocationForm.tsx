@@ -67,6 +67,7 @@ export default function NearbyLocationForm({
                 change({
                   [key]:
                     key === "countryCode" ? event.target.value.toUpperCase() : event.target.value,
+                  ...(key !== "timezone" ? { latitude: null, longitude: null } : {}),
                 })
               }
             />
