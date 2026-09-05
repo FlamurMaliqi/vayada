@@ -17,11 +17,25 @@ test.describe("booking-web promo validation", () => {
     await expect(banner).toContainText("€144");
     await page.getByRole("button", { name: "View Details", exact: true }).first().click();
     const modal = page.getByRole("dialog", { name: "Alpine Suite" });
-    await expect(modal.getByText(/Early bird:/).filter({ visible: true }).first()).toBeVisible();
-    await expect(modal.getByText("€192", { exact: true }).filter({ visible: true }).first()).toBeVisible();
-    await expect(modal.getByText("€168", { exact: true }).filter({ visible: true }).first()).toBeVisible();
+    await expect(
+      modal
+        .getByText(/Early bird:/)
+        .filter({ visible: true })
+        .first(),
+    ).toBeVisible();
+    await expect(
+      modal.getByText("€192", { exact: true }).filter({ visible: true }).first(),
+    ).toBeVisible();
+    await expect(
+      modal.getByText("€168", { exact: true }).filter({ visible: true }).first(),
+    ).toBeVisible();
     await modal.getByRole("button", { name: /Non-Refundable Rate/ }).click();
-    await expect(modal.getByText(/Early bird:/).filter({ visible: true }).first()).toContainText("€126");
+    await expect(
+      modal
+        .getByText(/Early bird:/)
+        .filter({ visible: true })
+        .first(),
+    ).toContainText("€126");
     await page.goBack();
     await expect(modal).toHaveCount(0);
   });
