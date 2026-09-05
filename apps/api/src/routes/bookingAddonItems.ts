@@ -1,3 +1,4 @@
+import { queryCurrency } from "../domains/pmsPricingReadModel.js";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { parseAddonEconomicTerms, type AddonEconomicTerms } from "@vayada/domain-booking";
 import type { PropertyPlanReadModel } from "@vayada/domain-finance";
@@ -11,6 +12,15 @@ const PRICING_MODELS = new Set(["per_stay", "per_night", "per_guest", "per_guest
 const WRITABLE_STATUSES = new Set(["active", "disabled"]);
 
 export type BookingAddonPricingModel = "per_stay" | "per_night" | "per_guest" | "per_guest_night";
+
+export type AddonPhoto = { mediaObjectId: string | null; imageUrl: string; isCover: boolean };
+type AddonDetails = {
+  photos?: AddonPhoto[];
+  location?: string | null;
+  maxGuests?: number | null;
+  leadTime?: string | null;
+  maxQuantity?: number;
+};
 
 export type BookingAddonItemStatus = "active" | "disabled" | "retired";
 
@@ -32,7 +42,8 @@ export type BookingAddonItem = {
   sortOrder: number;
   createdAt: string;
   updatedAt: string;
-} & AddonEconomicTerms;
+} & AddonEconomicTerms &
+  AddonDetails;
 
 export type CreateBookingAddonItemBody = {
   name: string;
@@ -46,7 +57,8 @@ export type CreateBookingAddonItemBody = {
   publicVisible: boolean;
   status: Exclude<BookingAddonItemStatus, "retired">;
   sortOrder: number;
-} & AddonEconomicTerms;
+} & AddonEconomicTerms &
+  AddonDetails;
 
 type UpdateAddonEconomicTerms =
   | { ownershipKind?: never; partnerCommissionRate?: never }
@@ -59,6 +71,7 @@ export type UpdateBookingAddonItemBody = Partial<
 
 export type BookingAddonItemsContext = {
   addonItems: BookingAddonItem[];
+  propertyCurrency?: string;
   propertyPlan: PropertyPlanReadModel;
 };
 
@@ -275,7 +288,7 @@ export function createPgTargetBookingAddonItemsRepository(config: {
     async listAddonItemsByHotelId(hotelId) {
       const propertyId = await resolvePropertyId(pool, hotelId);
       if (!propertyId) return null;
-      const [result, propertyPlan] = await Promise.all([
+      const [result, propertyPlan, pricingCurrency] = await Promise.all([
         pool.query<AddonItemRow>(
           `${addonItemSelectSql()}
          WHERE addon_definitions.property_id = $1
@@ -286,8 +299,10 @@ export function createPgTargetBookingAddonItemsRepository(config: {
           [propertyId],
         ),
         readPropertyPlan(pool, propertyId),
+        queryCurrency(pool, propertyId),
       ]);
       return {
+        propertyCurrency: pricingCurrency?.currency,
         addonItems: result.rows.map((row) => toAddonItem(row, hotelId)),
         propertyPlan,
       };
@@ -320,7 +335,20 @@ export function createPgTargetBookingAddonItemsRepository(config: {
           await client.query("COMMIT");
           return { outcome: "plan_limit_reached", currentCount, propertyPlan };
         }
-        const image = await resolveAddonImage(client, propertyId, body.imageMediaObjectId);
+        const currency = await queryCurrency(client, propertyId);
+        if (!currency)
+          throw new BookingAddonImageInvalidError("Property pricing currency is unavailable.");
+        body = { ...body, currency: currency.currency };
+        const photos = await resolveAddonPhotos(client, propertyId, body.photos);
+        const image =
+          photos === undefined
+            ? await resolveAddonImage(client, propertyId, body.imageMediaObjectId)
+            : (photos.find((photo) => photo.isCover) ?? null);
+        const order = await client.query<{ nextOrder: number }>(
+          `SELECT COALESCE(MAX((metadata ->> 'sortOrder')::int), -1) + 1 AS "nextOrder" FROM booking.addon_definitions WHERE property_id = $1::uuid AND status <> 'retired'`,
+          [propertyId],
+        );
+        body = { ...body, photos, sortOrder: order.rows[0]?.nextOrder ?? 0 };
         const insertResult = await client.query<{ addonItemId: string }>(
           `INSERT INTO booking.addon_definitions (
              property_id, name, description, category, pricing_model,
@@ -372,7 +400,18 @@ export function createPgTargetBookingAddonItemsRepository(config: {
       }
       const propertyId = await resolvePropertyId(pool, hotelId);
       if (!propertyId) return null;
-      const image = await resolveAddonImage(pool, propertyId, body.imageMediaObjectId);
+      if (body.price !== undefined || body.currency !== undefined) {
+        const currency = await queryCurrency(pool, propertyId);
+        if (!currency)
+          throw new BookingAddonImageInvalidError("Property pricing currency is unavailable.");
+        body = { ...body, currency: currency.currency };
+      }
+      const photos = await resolveAddonPhotos(pool, propertyId, body.photos, addonItemId);
+      const image =
+        photos === undefined
+          ? await resolveAddonImage(pool, propertyId, body.imageMediaObjectId)
+          : (photos.find((photo) => photo.isCover) ?? null);
+      body = { ...body, photos };
       const values: unknown[] = [propertyId, addonItemId];
       const sets: string[] = [];
       addSet(sets, values, "name", body.name);
@@ -541,6 +580,15 @@ function toAddonItem(row: AddonItemRow, hotelId: string): BookingAddonItem {
     imageUrl,
     imageMediaObjectId,
     duration,
+    photos: Array.isArray(metadata.photos)
+      ? (metadata.photos as AddonPhoto[])
+      : imageUrl
+        ? [{ imageUrl, mediaObjectId: imageMediaObjectId, isCover: true }]
+        : [],
+    location: nullableString(metadata.location),
+    leadTime: nullableString(metadata.leadTime),
+    maxGuests: typeof metadata.maxGuests === "number" ? metadata.maxGuests : null,
+    maxQuantity: typeof metadata.maxQuantity === "number" ? metadata.maxQuantity : 1,
     pricingModel: row.pricingModel,
     publicVisible: row.publicVisible,
     status: row.status,
@@ -553,7 +601,7 @@ function toAddonItem(row: AddonItemRow, hotelId: string): BookingAddonItem {
 
 function metadataFromBody(
   body: Partial<CreateBookingAddonItemBody>,
-  image: { mediaObjectId: string; imageUrl: string } | null | undefined,
+  image: { mediaObjectId: string | null; imageUrl: string } | null | undefined,
 ): Record<string, unknown> {
   const metadata: Record<string, unknown> = {};
   if (image !== undefined) {
@@ -562,6 +610,9 @@ function metadataFromBody(
   }
   if ("duration" in body) metadata.duration = body.duration ?? null;
   if ("sortOrder" in body) metadata.sortOrder = body.sortOrder ?? 0;
+  for (const key of ["photos", "location", "leadTime", "maxGuests", "maxQuantity"] as const) {
+    if (body[key] !== undefined) metadata[key] = body[key];
+  }
   return metadata;
 }
 
@@ -581,6 +632,7 @@ function parseCreateBody(body: unknown): ValidationResult<CreateBookingAddonItem
   const publicVisible = optionalBoolean(input, "publicVisible", details) ?? true;
   const status = optionalEnum(input, "status", WRITABLE_STATUSES, details) ?? "active";
   const sortOrder = optionalInteger(input, "sortOrder", details) ?? 0;
+  const extra = parseAddonDetails(input, details);
   const economicTerms = parseEconomicTerms(input, details, true) ?? {
     ownershipKind: "property",
     partnerCommissionRate: null,
@@ -601,6 +653,7 @@ function parseCreateBody(body: unknown): ValidationResult<CreateBookingAddonItem
       status: status as CreateBookingAddonItemBody["status"],
       sortOrder,
       ...economicTerms,
+      ...extra,
     },
   };
 }
@@ -612,7 +665,7 @@ function parseUpdateBody(body: unknown): ValidationResult<UpdateBookingAddonItem
   const details = unknownFields(input);
   if (Object.keys(input).length === 0) details.push("At least one add-on item field is required.");
 
-  const value: UpdateBookingAddonItemBody = {};
+  const value: UpdateBookingAddonItemBody = parseAddonDetails(input, details);
   if ("name" in input) value.name = requiredString(input, "name", details);
   if ("description" in input) value.description = optionalString(input, "description", details);
   if ("price" in input) value.price = requiredPrice(input, details);
@@ -654,6 +707,11 @@ function parseUpdateBody(body: unknown): ValidationResult<UpdateBookingAddonItem
 }
 
 const KNOWN_FIELDS = new Set([
+  "photos",
+  "location",
+  "leadTime",
+  "maxGuests",
+  "maxQuantity",
   "name",
   "description",
   "price",
@@ -1000,4 +1058,82 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function nullableString(value: unknown): string | null {
   return typeof value === "string" && value.trim() ? value : null;
+}
+
+function parseAddonDetails(input: Record<string, unknown>, details: string[]): AddonDetails {
+  const value: AddonDetails = {};
+  for (const key of ["location", "leadTime"] as const)
+    if (key in input) value[key] = optionalNullableString(input, key, details);
+  for (const key of ["maxGuests", "maxQuantity"] as const) {
+    if (!(key in input)) continue;
+    if (key === "maxGuests" && input[key] === null) {
+      value.maxGuests = null;
+      continue;
+    }
+    const number = input[key];
+    if (
+      typeof number !== "number" ||
+      !Number.isSafeInteger(number) ||
+      number < 1 ||
+      number > 2147483647
+    )
+      details.push(`${key} must be a positive integer.`);
+    else value[key] = number;
+  }
+  if ("photos" in input) {
+    const photos = input.photos;
+    if (
+      !Array.isArray(photos) ||
+      photos.length > 5 ||
+      photos.some(
+        (photo) =>
+          !isRecord(photo) ||
+          typeof photo.isCover !== "boolean" ||
+          (photo.mediaObjectId !== null &&
+            (typeof photo.mediaObjectId !== "string" ||
+              !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+                photo.mediaObjectId,
+              ))) ||
+          (photo.mediaObjectId === null && typeof photo.imageUrl !== "string"),
+      ) ||
+      (photos.length > 0 && photos.filter((photo) => photo.isCover).length !== 1)
+    )
+      details.push("photos must contain up to five images and exactly one cover.");
+    else if (
+      new Set(photos.map((photo) => photo.mediaObjectId ?? photo.imageUrl)).size !== photos.length
+    )
+      details.push("photos must be unique.");
+    else value.photos = photos as AddonPhoto[];
+  }
+  return value;
+}
+
+async function resolveAddonPhotos(
+  queryable: BookingAddonItemsQueryable,
+  propertyId: string,
+  photos: AddonPhoto[] | undefined,
+  addonItemId?: string,
+): Promise<AddonPhoto[] | undefined> {
+  if (photos === undefined) return undefined;
+  const result: AddonPhoto[] = [];
+  for (const photo of photos) {
+    if (photo.mediaObjectId) {
+      const image = await resolveAddonImage(queryable, propertyId, photo.mediaObjectId);
+      result.push({ ...image!, isCover: photo.isCover });
+    } else {
+      // Imported images can be retained only on the same property's existing add-on.
+      const existing = addonItemId
+        ? await queryable.query<{ allowed: boolean }>(
+            `SELECT true AS allowed FROM booking.addon_definitions WHERE property_id = $1::uuid AND id::text = $2 AND ((metadata ->> 'imageUrl' = $3 AND metadata ->> 'mediaObjectId' IS NULL) OR EXISTS (SELECT 1 FROM jsonb_array_elements(COALESCE(metadata -> 'photos', '[]'::jsonb)) photo WHERE photo ->> 'imageUrl' = $3 AND photo ->> 'mediaObjectId' IS NULL))`,
+            [propertyId, addonItemId, photo.imageUrl],
+          )
+        : null;
+      if (!existing?.rows[0]?.allowed)
+        throw new BookingAddonImageInvalidError(
+          "Photos must reference approved images belonging to this property.",
+        );
+      result.push({ mediaObjectId: null, imageUrl: photo.imageUrl, isCover: photo.isCover });
+    }
+  }
+  return result;
 }

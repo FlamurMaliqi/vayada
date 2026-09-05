@@ -12,12 +12,25 @@ describe("target booking add-on plan enforcement", () => {
     const queries: Array<{ text: string; values?: unknown[] }> = [];
     const addonItemId = "d3000000-0000-0000-0000-000000000683";
     const mediaObjectId = "d3000000-0000-4000-8000-000000000684";
+    let persistedMetadata: unknown;
     const client: BookingAddonItemsPoolClient = {
       async query<T extends QueryResultRow = QueryResultRow>(text: string, values?: unknown[]) {
         queries.push({ text, values });
+        if (text.includes("FROM pms.property_pricing_settings"))
+          return {
+            rows: [
+              {
+                propertyId: "d3000000-0000-4000-8000-000000000682",
+                currency: "EUR",
+                pricingCurrencyRevision: 1,
+                createdAt: "2026-08-11T10:00:00.000Z",
+                updatedAt: "2026-08-11T10:00:00.000Z",
+              },
+            ] as unknown as T[],
+          };
         if (text.includes("WITH direct_property AS")) {
           return {
-            rows: [{ propertyId: "d3000000-0000-0000-0000-000000000682" }] as unknown as T[],
+            rows: [{ propertyId: "d3000000-0000-4000-8000-000000000682" }] as unknown as T[],
           };
         }
         if (text.includes('count(*)::text AS "currentCount"')) {
@@ -26,11 +39,16 @@ describe("target booking add-on plan enforcement", () => {
         if (text.includes("FROM platform.media_objects media")) {
           return {
             rows: [
-              { mediaObjectId, imageUrl: "https://media.example.test/addons/spa.webp" },
+              {
+                mediaObjectId: values?.[0],
+                imageUrl: `https://media.example.test/${values?.[0]}.webp`,
+              },
             ] as unknown as T[],
           };
         }
+        if (text.includes('AS "nextOrder"')) return { rows: [{ nextOrder: 3 }] as unknown as T[] };
         if (text.includes("INSERT INTO booking.addon_definitions")) {
+          persistedMetadata = JSON.parse(String(values?.[11]));
           return { rows: [{ addonItemId }] as unknown as T[] };
         }
         if (text.includes("WHERE addon_definitions.id = $1::uuid")) {
@@ -38,7 +56,7 @@ describe("target booking add-on plan enforcement", () => {
             rows: [
               {
                 addonItemId,
-                propertyId: "d3000000-0000-0000-0000-000000000682",
+                propertyId: "d3000000-0000-4000-8000-000000000682",
                 name: "Spa ritual",
                 description: "Private treatment.",
                 category: "wellness",
@@ -49,12 +67,7 @@ describe("target booking add-on plan enforcement", () => {
                 status: "active",
                 ownershipKind: "property",
                 partnerCommissionRate: null,
-                metadata: {
-                  imageUrl: "https://media.example.test/addons/spa.webp",
-                  mediaObjectId,
-                  duration: null,
-                  sortOrder: 3,
-                },
+                metadata: persistedMetadata,
                 createdAt: "2026-08-11T10:00:00.000Z",
                 updatedAt: "2026-08-11T10:00:00.000Z",
               },
@@ -83,7 +96,19 @@ describe("target booking add-on plan enforcement", () => {
       price: "125.50",
       currency: "EUR",
       category: "wellness",
-      imageMediaObjectId: mediaObjectId,
+      imageMediaObjectId: null,
+      photos: [
+        {
+          mediaObjectId: "d3000000-0000-4000-8000-000000000685",
+          imageUrl: "ignored",
+          isCover: false,
+        },
+        { mediaObjectId, imageUrl: "ignored", isCover: true },
+      ],
+      maxQuantity: 2,
+      maxGuests: 6,
+      leadTime: "24h before",
+      location: "Lobby",
       duration: null,
       pricingModel: "per_guest",
       publicVisible: true,
@@ -104,6 +129,26 @@ describe("target booking add-on plan enforcement", () => {
         partnerCommissionRate: null,
       },
     });
+    expect(persistedMetadata).toMatchObject({
+      maxQuantity: 2,
+      maxGuests: 6,
+      leadTime: "24h before",
+      location: "Lobby",
+      sortOrder: 3,
+      mediaObjectId,
+    });
+    expect(result?.outcome === "created" && result.addonItem.photos).toEqual([
+      {
+        mediaObjectId: "d3000000-0000-4000-8000-000000000685",
+        imageUrl: "https://media.example.test/d3000000-0000-4000-8000-000000000685.webp",
+        isCover: false,
+      },
+      {
+        mediaObjectId,
+        imageUrl: `https://media.example.test/${mediaObjectId}.webp`,
+        isCover: true,
+      },
+    ]);
     const insertIndex = queries.findIndex((query) =>
       query.text.includes("INSERT INTO booking.addon_definitions"),
     );
@@ -127,9 +172,21 @@ describe("target booking add-on plan enforcement", () => {
   it("rejects an add-on image outside the canonical active media registry", async () => {
     const client: BookingAddonItemsPoolClient = {
       async query<T extends QueryResultRow = QueryResultRow>(text: string) {
+        if (text.includes("FROM pms.property_pricing_settings"))
+          return {
+            rows: [
+              {
+                propertyId: "d3000000-0000-4000-8000-000000000682",
+                currency: "EUR",
+                pricingCurrencyRevision: 1,
+                createdAt: "2026-08-11T10:00:00.000Z",
+                updatedAt: "2026-08-11T10:00:00.000Z",
+              },
+            ] as unknown as T[],
+          };
         if (text.includes("WITH direct_property AS"))
           return {
-            rows: [{ propertyId: "d3000000-0000-0000-0000-000000000682" }] as unknown as T[],
+            rows: [{ propertyId: "d3000000-0000-4000-8000-000000000682" }] as unknown as T[],
           };
         if (text.includes('count(*)::text AS "currentCount"'))
           return { rows: [{ currentCount: "0" }] as unknown as T[] };
@@ -174,9 +231,21 @@ describe("target booking add-on plan enforcement", () => {
     const client: BookingAddonItemsPoolClient = {
       async query<T extends QueryResultRow = QueryResultRow>(text: string, values?: unknown[]) {
         queries.push({ text, values });
+        if (text.includes("FROM pms.property_pricing_settings"))
+          return {
+            rows: [
+              {
+                propertyId: "d3000000-0000-4000-8000-000000000682",
+                currency: "EUR",
+                pricingCurrencyRevision: 1,
+                createdAt: "2026-08-11T10:00:00.000Z",
+                updatedAt: "2026-08-11T10:00:00.000Z",
+              },
+            ] as unknown as T[],
+          };
         if (text.includes("WITH direct_property AS")) {
           return {
-            rows: [{ propertyId: "d3000000-0000-0000-0000-000000000682" }] as unknown as T[],
+            rows: [{ propertyId: "d3000000-0000-4000-8000-000000000682" }] as unknown as T[],
           };
         }
         if (text.includes('count(*)::text AS "currentCount"')) {
@@ -238,9 +307,21 @@ describe("target booking add-on plan enforcement", () => {
       pool: {
         async query<T extends QueryResultRow = QueryResultRow>(text: string, values?: unknown[]) {
           queries.push({ text, values });
+          if (text.includes("FROM pms.property_pricing_settings"))
+            return {
+              rows: [
+                {
+                  propertyId: "d3000000-0000-4000-8000-000000000682",
+                  currency: "EUR",
+                  pricingCurrencyRevision: 1,
+                  createdAt: "2026-08-11T10:00:00.000Z",
+                  updatedAt: "2026-08-11T10:00:00.000Z",
+                },
+              ] as unknown as T[],
+            };
           if (text.includes("WITH direct_property AS")) {
             return {
-              rows: [{ propertyId: "d3000000-0000-0000-0000-000000000682" }] as unknown as T[],
+              rows: [{ propertyId: "d3000000-0000-4000-8000-000000000682" }] as unknown as T[],
             };
           }
           return { rows: [] as T[] };
