@@ -189,6 +189,7 @@ export interface CollaborationResponse {
   hotel_id: string;
   hotel_name: string;
   hotel_picture?: string | null;
+  propertyTimezone?: string | null;
   hotel_location?: string | null;
   hotel_website?: string | null;
   hotel_about?: string | null;
@@ -891,6 +892,7 @@ export function transformCollaborationResponse(
     preferredMonths: response.preferred_months,
     whyGreatFit: response.why_great_fit,
     platformDeliverables: response.platform_deliverables,
+    propertyTimezone: response.propertyTimezone,
     hotelLocation: response.hotel_location,
     hotelWebsite: response.hotel_website,
     hotelAbout: response.hotel_about,
@@ -992,6 +994,7 @@ function toLegacyCollaborationResponse(
     hotel_id: collaboration.hotelProfileId,
     hotel_name: collaboration.hotel.displayName,
     hotel_picture: collaboration.hotel.avatarUrl,
+    propertyTimezone: collaboration.propertyTimezone,
     hotel_location: collaboration.hotelLocation,
     listing_id: collaboration.offerId,
     listing_name: collaboration.offerTitle,

@@ -73,6 +73,7 @@ export interface SectionContent {
 // Hotel types
 // Hotel represents a single property/listing
 export interface Hotel {
+  propertyTimezone?: string | null;
   id: string;
   hotelProfileId: string; // Reference to the hotel profile that owns this listing
   name: string;
@@ -268,6 +269,7 @@ export interface Collaboration {
   hasRated?: boolean; // Whether the hotel has rated this completed collaboration
   whyGreatFit?: string;
   platformDeliverables?: PlatformDeliverablesItem[];
+  propertyTimezone?: string | null;
   travelDateFrom?: string | null;
   travelDateTo?: string | null;
   preferredDateFrom?: string | null;

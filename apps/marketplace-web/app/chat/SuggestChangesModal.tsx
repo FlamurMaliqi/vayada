@@ -1,3 +1,7 @@
+import {
+  collaborationToday,
+  collaborationDateError,
+} from "@vayada/domain-marketplace/collaborationDates";
 import React, { useState } from "react";
 import {
   XMarkIcon,
@@ -26,6 +30,7 @@ interface PlatformDeliverables {
 interface SuggestChangesModalProps {
   isOpen: boolean;
   onClose: () => void;
+  propertyTimezone?: string | null;
   initialCheckIn: string;
   initialCheckOut: string;
   initialPlatformDeliverables: PlatformDeliverables[];
@@ -53,6 +58,7 @@ interface SuggestChangesModalProps {
 export default function SuggestChangesModal({
   isOpen,
   onClose,
+  propertyTimezone,
   initialCheckIn,
   initialCheckOut,
   initialPlatformDeliverables,
@@ -100,6 +106,8 @@ export default function SuggestChangesModal({
   );
 
   if (!isOpen) return null;
+  const today = collaborationToday(propertyTimezone);
+  const dateError = collaborationDateError(checkIn, checkOut, today);
 
   const handlePlatformChange = (index: number, platform: PlatformDeliverables["platform"]) => {
     const next = [...platformDeliverables];
@@ -190,6 +198,7 @@ export default function SuggestChangesModal({
                 </label>
                 <input
                   type="date"
+                  min={today ?? undefined}
                   value={checkIn}
                   onChange={(e) => setCheckIn(e.target.value)}
                   className="w-full px-4 py-3 bg-white border border-gray-200 rounded-xl text-sm text-gray-900 focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all font-medium"
@@ -201,6 +210,7 @@ export default function SuggestChangesModal({
                 </label>
                 <input
                   type="date"
+                  min={checkIn > (today ?? "") ? checkIn : (today ?? undefined)}
                   value={checkOut}
                   onChange={(e) => setCheckOut(e.target.value)}
                   className="w-full px-4 py-3 bg-white border border-gray-200 rounded-xl text-sm text-gray-900 focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all font-medium"
@@ -464,6 +474,12 @@ export default function SuggestChangesModal({
           </div>
         </div>
 
+        {dateError && (
+          <p role="alert" className="px-6 text-sm text-red-700">
+            {dateError}
+          </p>
+        )}
+
         {/* Footer */}
         <div className="p-6 bg-gray-50 border-t border-gray-100 flex items-center justify-end gap-3">
           <button
@@ -473,7 +489,9 @@ export default function SuggestChangesModal({
             Cancel
           </button>
           <button
+            disabled={Boolean(dateError)}
             onClick={() =>
+              !collaborationDateError(checkIn, checkOut, collaborationToday(propertyTimezone)) &&
               onSubmit({
                 travel_date_from: checkIn,
                 travel_date_to: checkOut,

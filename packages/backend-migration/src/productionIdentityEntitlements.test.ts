@@ -47,37 +47,88 @@ describe("production identity entitlements", () => {
     expect(plan.entitlements).toEqual([target]);
   });
 
-  it("does not let newer access-ending state lose to a stale target", () => {
-    const januaryModule = moduleRow({ updated_at: "2026-01-15T00:00:00.000Z" });
-    const archivedResource = {
-      ...resource("pms", "pms_hotel"),
-      status: "archived" as const,
-      updatedAt: "2026-03-01T00:00:00.000Z",
-    };
-    const retiredModule = moduleRow({
-      is_active: false,
-      deactivated_at: "2026-03-01T00:00:00.000Z",
-      updated_at: "2026-01-15T00:00:00.000Z",
-    });
-    const scenarios = [
-      (existing: ExistingEntitlement[] = []) =>
-        planIdentityEntitlements([januaryModule], [archivedResource], existing),
-      (existing: ExistingEntitlement[] = []) =>
-        planIdentityEntitlements([retiredModule], [resource("pms", "pms_hotel")], existing),
-    ];
-    for (const scenario of scenarios) {
-      const source = scenario();
-      const staleTarget = {
-        ...source.entitlements[0]!,
-        status: "active" as const,
-        expiresAt: null,
-        updatedAt: "2026-02-01T00:00:00.000Z",
+  it.each([
+    ["2026-01-15T00:00:00.000Z", UPDATED],
+    [UPDATED, UPDATED],
+    ["2026-03-01T00:00:00.000Z", "2026-03-01T00:00:00.000Z"],
+  ])(
+    "lets a source access-ending state close active target access from %s",
+    (targetUpdatedAt, expectedUpdatedAt) => {
+      const archivedResource = {
+        ...resource("marketplace", "hotel_profile"),
+        status: "archived" as const,
       };
-      const plan = scenario([staleTarget]);
+      const source = planIdentityEntitlements([], [archivedResource]);
+      const target: ExistingEntitlement = {
+        ...source.entitlements[0]!,
+        status: "active",
+        updatedAt: targetUpdatedAt,
+      };
+
+      const plan = planIdentityEntitlements([], [archivedResource], [target]);
+
       expect(plan.blockers).toEqual([]);
-      expect(plan.entitlements[0]?.status).toBe("expired");
-      expect(plan.entitlements[0]?.updatedAt).toBe("2026-03-01T00:00:00.000Z");
-    }
+      expect(plan.entitlements[0]).toMatchObject({
+        status: "expired",
+        updatedAt: expectedUpdatedAt,
+      });
+    },
+  );
+
+  it.each(["2026-01-15T00:00:00.000Z", UPDATED, "2026-03-01T00:00:00.000Z"])(
+    "does not reactivate target access ending at %s",
+    (targetUpdatedAt) => {
+      const activeResource = resource("marketplace", "hotel_profile");
+      const source = planIdentityEntitlements([], [activeResource]);
+      const target: ExistingEntitlement = {
+        ...source.entitlements[0]!,
+        status: "suspended",
+        updatedAt: targetUpdatedAt,
+      };
+
+      const plan = planIdentityEntitlements([], [activeResource], [target]);
+
+      expect(plan.blockers).toEqual([]);
+      expect(plan.entitlements).toEqual([target]);
+    },
+  );
+
+  it.each(["2026-01-15T00:00:00.000Z", UPDATED, "2026-03-01T00:00:00.000Z"])(
+    "preserves an existing access-ending representation from %s",
+    (targetUpdatedAt) => {
+      const archivedResource = {
+        ...resource("marketplace", "hotel_profile"),
+        status: "archived" as const,
+      };
+      const source = planIdentityEntitlements([], [archivedResource]);
+      const target: ExistingEntitlement = {
+        ...source.entitlements[0]!,
+        status: "suspended",
+        updatedAt: targetUpdatedAt,
+      };
+
+      const plan = planIdentityEntitlements([], [archivedResource], [target]);
+
+      expect(plan.blockers).toEqual([]);
+      expect(plan.entitlements).toEqual([target]);
+    },
+  );
+
+  it("still blocks conflicting access-ending entitlement details", () => {
+    const archivedResource = {
+      ...resource("marketplace", "hotel_profile"),
+      status: "archived" as const,
+    };
+    const source = planIdentityEntitlements([], [archivedResource]);
+    const target: ExistingEntitlement = {
+      ...source.entitlements[0]!,
+      status: "suspended",
+      metadata: { source: "unrelated_target" },
+    };
+
+    const plan = planIdentityEntitlements([], [archivedResource], [target]);
+
+    expect(plan.blockers.map((row) => row.code)).toContain("ENTITLEMENT_STATE_CONFLICT");
   });
 
   it("blocks orphan and contradictory module activation state", () => {
@@ -109,7 +160,7 @@ describe("production identity entitlements", () => {
     const rejected = planIdentityEntitlements(
       [moduleRow()],
       [resource("pms", "pms_hotel")],
-      [{ ...equivalent, status: "expired" }],
+      [{ ...equivalent, metadata: { ...equivalent.metadata, unexpected: true } }],
     );
     expect(rejected.blockers.map((row) => row.code)).toContain("ENTITLEMENT_STATE_CONFLICT");
   });

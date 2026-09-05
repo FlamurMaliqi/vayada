@@ -1,3 +1,8 @@
+import {
+  collaborationToday,
+  collaborationDateError,
+  collaborationAvailabilityError,
+} from "@vayada/domain-marketplace/collaborationDates";
 import { createHash } from "node:crypto";
 
 import {
@@ -129,8 +134,11 @@ type MarketplaceCollaborationRow = {
   status: string;
   compensationType: string | null;
   offerTitle: string;
+  propertyTimezone?: string | null;
   hotelLocation: string | null;
   applicationMessage: string | null;
+  selectedCompensationOptionId: string | null;
+  cancelledBy: string | null;
   creatorConsent: boolean | null;
   creatorAgreedAt: Date | string | null;
   hotelAgreedAt: Date | string | null;
@@ -223,6 +231,7 @@ type CollaborationDeliverableParams = CollaborationParams & {
 type MarketplaceCollaborationLifecycleWriteAction =
   | "create"
   | "respond"
+  | "edit_application"
   | "update_terms"
   | "approve_terms"
   | "cancel"
@@ -504,6 +513,18 @@ export function registerMarketplaceCollaborationRoutes(
         reply,
         options,
         "respond",
+        request.params.collaborationId,
+      ),
+  );
+
+  app.put<{ Params: CollaborationParams; Body: LifecycleWriteBody }>(
+    "/collaborations/:collaborationId/application",
+    async (request, reply) =>
+      executeLifecycleWriteRoute(
+        request,
+        reply,
+        options,
+        "edit_application",
         request.params.collaborationId,
       ),
   );
@@ -845,6 +866,8 @@ export function createPgMarketplaceCollaborationReadRepository(config: {
 type CollaborationMutationRow = {
   id: string;
   propertyId: string;
+  offerId: string;
+  updatedAt: Date | string;
   lifecycleStatus: string;
   initiatorSide: string;
   sourceCollaborationId: string;
@@ -902,6 +925,8 @@ async function executePgLifecycleWrite(
           return createPgCollaboration(client, input);
         case "respond":
           return mutateExistingPgCollaboration(client, input, respondPgCollaboration);
+        case "edit_application":
+          return mutateExistingPgCollaboration(client, input, editPgCollaborationApplication);
         case "update_terms":
           return mutateExistingPgCollaboration(client, input, updatePgCollaborationTerms);
         case "approve_terms":
@@ -1383,6 +1408,30 @@ async function createPgCollaboration(
   const terms = selectedCompensationOption
     ? snapshotSelectedCompensationOption(selectedCompensationOption, proposedTerms)
     : proposedTerms;
+  if (input.side === "hotel") {
+    for (const [from, to, fromField, toField, sameDay] of [
+      [terms.travelDateFrom, terms.travelDateTo, "travelDateFrom", "travelDateTo", false],
+      [
+        terms.preferredDateFrom,
+        terms.preferredDateTo,
+        "preferredDateFrom",
+        "preferredDateTo",
+        true,
+      ],
+    ] as const) {
+      const result = validateDateRange(from, to, fromField, toField, sameDay);
+      if (!result.ok)
+        throw new MarketplaceCollaborationWriteError(400, "invalid_query", result.error.message);
+    }
+  }
+  if (input.side === "creator") {
+    await validatePgCollaborationDates(
+      client,
+      offer.propertyId,
+      terms,
+      selectedCompensationOption?.availabilityMonths,
+    );
+  }
   const newId = await client.query<{ id: string }>(`SELECT gen_random_uuid()::text AS id`);
   const collaborationId = newId.rows[0]?.id;
   if (!collaborationId) {
@@ -1484,11 +1533,51 @@ async function mutateExistingPgCollaboration(
   ) => Promise<MarketplaceCollaborationLifecycleMutationResult | null>,
 ): Promise<MarketplaceCollaborationLifecycleMutationResult | null> {
   if (!input.collaborationId) return null;
+  await client.query(
+    `SELECT id FROM marketplace.collaborations WHERE source_collaboration_id = $1 FOR UPDATE`,
+    [input.collaborationId],
+  );
   const collaboration = await findPgCollaborationForSide(client, input.context, input.side, {
     collaborationId: input.collaborationId,
   });
   if (!collaboration) return null;
+  if (
+    input.payload.expectedUpdatedAt !== undefined &&
+    input.payload.expectedUpdatedAt !== toIsoString(collaboration.updatedAt)
+  ) {
+    throw new MarketplaceCollaborationWriteError(
+      409,
+      "invalid_transition",
+      "This request changed. Review the latest details before trying again.",
+    );
+  }
   return mutate(client, input, collaboration);
+}
+
+async function validatePgCollaborationDates(
+  client: MarketplaceCollaborationQueryable,
+  propertyId: string,
+  terms: {
+    travelDateFrom: string | null;
+    travelDateTo: string | null;
+    preferredDateFrom?: string | null;
+    preferredDateTo?: string | null;
+  },
+  availabilityMonths?: readonly string[],
+): Promise<void> {
+  const result = await client.query<{ timezone: string | null }>(
+    `SELECT location->>'timezone' AS timezone
+     FROM hotel_catalog.property_public_profile_read_model WHERE property_id = $1::uuid`,
+    [propertyId],
+  );
+  const today = collaborationToday(result.rows[0]?.timezone);
+  const error =
+    collaborationDateError(terms.travelDateFrom, terms.travelDateTo, today) ??
+    (terms.preferredDateFrom || terms.preferredDateTo
+      ? collaborationDateError(terms.preferredDateFrom, terms.preferredDateTo, today)
+      : null) ??
+    collaborationAvailabilityError(availabilityMonths ?? [], today);
+  if (error) throw new MarketplaceCollaborationWriteError(400, "invalid_query", error);
 }
 
 async function respondPgCollaboration(
@@ -1540,6 +1629,90 @@ async function respondPgCollaboration(
   };
 }
 
+async function editPgCollaborationApplication(
+  client: PoolClient,
+  input: MarketplaceCollaborationLifecycleWriteInput,
+  collaboration: CollaborationMutationRow,
+): Promise<MarketplaceCollaborationLifecycleMutationResult> {
+  if (input.side !== "creator" || collaboration.initiatorSide !== "creator") {
+    throw new MarketplaceCollaborationWriteError(
+      403,
+      "forbidden",
+      "Only the creator can edit their application.",
+    );
+  }
+  if (collaboration.lifecycleStatus !== "pending") {
+    throw new MarketplaceCollaborationWriteError(
+      409,
+      "invalid_transition",
+      "Only pending applications can be edited.",
+    );
+  }
+  const application = parseCreatePayload("creator", input.payload);
+  if (!application.ok)
+    throw new MarketplaceCollaborationWriteError(400, "invalid_query", application.error.message);
+  const optionId = readString(input.payload.compensationOptionId);
+  const option =
+    optionId && (await resolveCompensationOptionForCreate(client, collaboration.offerId, optionId));
+  if (!option)
+    throw new MarketplaceCollaborationWriteError(
+      400,
+      "invalid_query",
+      "Choose a compensation option belonging to this offer.",
+    );
+  const terms = snapshotSelectedCompensationOption(option, readTermsInput(input.payload));
+  await validatePgCollaborationDates(
+    client,
+    collaboration.propertyId,
+    terms,
+    option.availabilityMonths,
+  );
+  await client.query(
+    `UPDATE marketplace.collaborations SET
+       application_message = $2, creator_consent = TRUE,
+       compensation_type = $3, free_stay_min_nights = $4, free_stay_max_nights = $5,
+       paid_amount = $6, currency = $7, discount_percentage = $8,
+       affiliate_enabled = $9, affiliate_commission_percentage = $10,
+       travel_date_from = $11, travel_date_to = $12,
+       preferred_date_from = $13, preferred_date_to = $14, preferred_months = $15::text[],
+       collaboration_metadata = collaboration_metadata || jsonb_build_object(
+         'whyGreatFit', $2::text, 'selectedCompensationOptionId', $16::text,
+         'selectedCompensationOption', $17::jsonb),
+       creator_agreed_at = NULL, hotel_agreed_at = NULL, updated_at = GREATEST(clock_timestamp(), updated_at + interval '1 millisecond')
+     WHERE id = $1::uuid`,
+    [
+      collaboration.id,
+      application.value.whyGreatFit,
+      terms.compensationType,
+      terms.freeStayMinNights,
+      terms.freeStayMaxNights,
+      terms.paidAmount,
+      terms.currency ?? "USD",
+      terms.discountPercentage,
+      terms.affiliateEnabled,
+      terms.affiliateCommissionPercentage,
+      terms.travelDateFrom,
+      terms.travelDateTo,
+      terms.preferredDateFrom,
+      terms.preferredDateTo,
+      terms.preferredMonths ?? [],
+      optionId,
+      JSON.stringify(option),
+    ],
+  );
+  await replacePgDeliverables(
+    client,
+    collaboration.id,
+    collaboration.propertyId,
+    readDeliverables(input.payload),
+  );
+  return {
+    collaborationResourceId: collaboration.id,
+    command: { action: "edit_application", idempotencyKey: input.idempotencyKey },
+    sideEffects: [{ type: "marketplace.collaboration.notification_requested" }],
+  };
+}
+
 async function updatePgCollaborationTerms(
   client: PoolClient,
   input: MarketplaceCollaborationLifecycleWriteInput,
@@ -1553,6 +1726,38 @@ async function updatePgCollaborationTerms(
     );
   }
   const terms = readTermsInput(input.payload);
+  const stored = await client.query<{
+    travelDateFrom: string | null;
+    travelDateTo: string | null;
+    preferredDateFrom: string | null;
+    preferredDateTo: string | null;
+  }>(
+    `SELECT travel_date_from::text AS "travelDateFrom", travel_date_to::text AS "travelDateTo",
+            preferred_date_from::text AS "preferredDateFrom", preferred_date_to::text AS "preferredDateTo"
+     FROM marketplace.collaborations WHERE id = $1::uuid FOR UPDATE`,
+    [collaboration.id],
+  );
+  const previous = stored.rows[0];
+  await validatePgCollaborationDates(client, collaboration.propertyId, {
+    preferredDateFrom:
+      terms.preferredDateFrom ??
+      (terms.travelDateFrom && terms.travelDateTo ? null : previous?.preferredDateFrom),
+    preferredDateTo:
+      terms.preferredDateTo ??
+      (terms.travelDateFrom && terms.travelDateTo ? null : previous?.preferredDateTo),
+    travelDateFrom:
+      terms.travelDateFrom ??
+      previous?.travelDateFrom ??
+      terms.preferredDateFrom ??
+      previous?.preferredDateFrom ??
+      null,
+    travelDateTo:
+      terms.travelDateTo ??
+      previous?.travelDateTo ??
+      terms.preferredDateTo ??
+      previous?.preferredDateTo ??
+      null,
+  });
   await client.query(
     `UPDATE marketplace.collaborations
      SET lifecycle_status = 'negotiating',
@@ -1569,8 +1774,8 @@ async function updatePgCollaborationTerms(
          END,
          travel_date_from = COALESCE($10, travel_date_from),
          travel_date_to = COALESCE($11, travel_date_to),
-         preferred_date_from = COALESCE($12, preferred_date_from),
-         preferred_date_to = COALESCE($13, preferred_date_to),
+         preferred_date_from = CASE WHEN $10::date IS NOT NULL AND $11::date IS NOT NULL THEN NULL ELSE COALESCE($12, preferred_date_from) END,
+         preferred_date_to = CASE WHEN $10::date IS NOT NULL AND $11::date IS NOT NULL THEN NULL ELSE COALESCE($13, preferred_date_to) END,
          preferred_months = CASE WHEN $14::text[] IS NULL THEN preferred_months ELSE $14::text[] END,
          term_last_updated_at = now(),
          creator_agreed_at = CASE WHEN $15 = 'creator' THEN now() ELSE NULL END,
@@ -1665,6 +1870,13 @@ async function cancelPgCollaboration(
   input: MarketplaceCollaborationLifecycleWriteInput,
   collaboration: CollaborationMutationRow,
 ): Promise<MarketplaceCollaborationLifecycleMutationResult | null> {
+  if (input.payload.pendingOnly === true && collaboration.lifecycleStatus !== "pending") {
+    throw new MarketplaceCollaborationWriteError(
+      409,
+      "invalid_transition",
+      "Only pending requests can be withdrawn.",
+    );
+  }
   if (["completed", "cancelled"].includes(collaboration.lifecycleStatus)) {
     throw new MarketplaceCollaborationWriteError(
       409,
@@ -1676,7 +1888,7 @@ async function cancelPgCollaboration(
     `UPDATE marketplace.collaborations
      SET lifecycle_status = 'cancelled',
          cancelled_at = now(),
-         collaboration_metadata = jsonb_set(
+         collaboration_metadata = jsonb_build_object('cancelledBy', $3::text) || jsonb_set(
            collaboration_metadata,
            '{cancellationReason}',
            to_jsonb($2::text),
@@ -1684,7 +1896,7 @@ async function cancelPgCollaboration(
          ),
          updated_at = now()
      WHERE id = $1::uuid`,
-    [collaboration.id, readString(input.payload.reason) ?? ""],
+    [collaboration.id, readString(input.payload.reason) ?? "", input.side],
   );
   return {
     collaborationResourceId: collaboration.id,
@@ -1795,6 +2007,8 @@ async function findPgCollaborationForSide(
       side,
       `collaboration.id::text AS id,
        collaboration.property_id::text AS "propertyId",
+       collaboration.offer_id::text AS "offerId",
+       collaboration.updated_at AS "updatedAt",
        collaboration.lifecycle_status AS "lifecycleStatus",
        collaboration.initiator_type AS "initiatorSide",
        collaboration.source_collaboration_id AS "sourceCollaborationId",
@@ -2468,9 +2682,12 @@ function collaborationSelectSql(side: MarketplaceCollaborationAuthorizationSide)
           collaboration.lifecycle_status AS status,
           collaboration.compensation_type AS "compensationType",
           collaboration.application_message AS "applicationMessage",
+          collaboration.collaboration_metadata->>'selectedCompensationOptionId' AS "selectedCompensationOptionId",
+          collaboration.collaboration_metadata->>'cancelledBy' AS "cancelledBy",
           collaboration.creator_consent AS "creatorConsent",
           collaboration.creator_agreed_at AS "creatorAgreedAt",
           collaboration.hotel_agreed_at AS "hotelAgreedAt",
+          public_profile.location->>'timezone' AS "propertyTimezone",
           offer.title AS "offerTitle",
           NULLIF(concat_ws(
             ', ',
@@ -2586,6 +2803,7 @@ function mapCollaborationRow(
     collaborationId: row.collaborationId,
     offerId: row.offerId,
     creatorId: row.creatorId,
+    propertyTimezone: row.propertyTimezone ?? null,
     hotelProfileId: row.hotelProfileId,
     side,
     initiatorSide: toCollaborationSide(row.initiatorSide),
@@ -2595,6 +2813,9 @@ function mapCollaborationRow(
     offerTitle: row.offerTitle,
     hotelLocation: row.hotelLocation,
     applicationMessage: row.applicationMessage,
+    selectedCompensationOptionId: row.selectedCompensationOptionId,
+    cancelledBy:
+      row.cancelledBy === "creator" || row.cancelledBy === "hotel" ? row.cancelledBy : null,
     creatorConsent: row.creatorConsent,
     creatorAgreedAt: toIsoStringOrNull(row.creatorAgreedAt),
     hotelAgreedAt: toIsoStringOrNull(row.hotelAgreedAt),
@@ -3432,7 +3653,10 @@ function parseLifecycleWriteBody(
       }
     }
   }
-  if (action === "create" || action === "update_terms") {
+  if (action === "edit_application" && !isValidIsoTimestamp(body?.expectedUpdatedAt)) {
+    return invalidQuery("Editing requires expectedUpdatedAt.");
+  }
+  if (action === "create" || action === "update_terms" || action === "edit_application") {
     const terms = isRecord(body?.terms) ? body.terms : body;
     const travelDates = validateDateRange(
       terms?.travelDateFrom,
@@ -3440,6 +3664,7 @@ function parseLifecycleWriteBody(
       "travelDateFrom",
       "travelDateTo",
       false,
+      true,
     );
     if (!travelDates.ok) return travelDates;
     const preferredDates = validateDateRange(
@@ -3447,6 +3672,7 @@ function parseLifecycleWriteBody(
       terms?.preferredDateTo,
       "preferredDateFrom",
       "preferredDateTo",
+      true,
       true,
     );
     if (!preferredDates.ok) return preferredDates;
@@ -3523,6 +3749,7 @@ function validateDateRange(
   fromField: string,
   toField: string,
   allowSameDay: boolean,
+  deferOrdering = false,
 ): ParseResult<undefined> {
   const hasFrom = rawFrom !== undefined && rawFrom !== null && rawFrom !== "";
   const hasTo = rawTo !== undefined && rawTo !== null && rawTo !== "";
@@ -3533,7 +3760,8 @@ function validateDateRange(
   const to = readDateString(rawTo);
   if (!from) return invalidQuery(`${fromField} must be a real ISO date in YYYY-MM-DD format.`);
   if (!to) return invalidQuery(`${toField} must be a real ISO date in YYYY-MM-DD format.`);
-  if (allowSameDay ? to < from : to <= from) {
+  // Property-local past-date errors take precedence over ordering errors.
+  if (!deferOrdering && (allowSameDay ? to < from : to <= from)) {
     return invalidQuery(
       allowSameDay
         ? `${toField} must be on or after ${fromField}.`

@@ -1,4 +1,5 @@
 "use client";
+import { formatTimezoneLabel } from "@/lib/timezoneLabel";
 
 import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
@@ -840,7 +841,9 @@ export default function InboxWorkspace() {
     const thread = detail.thread;
     const followUpInstant = propertyLocalDateTimeToIso(followUpAt, propertyTimezone);
     if (!followUpInstant || new Date(followUpInstant).getTime() <= Date.now()) {
-      setComposerError(t("inbox.errorFutureTime", { timezone: propertyTimezone }));
+      setComposerError(
+        t("inbox.errorFutureTime", { timezone: formatTimezoneLabel(propertyTimezone) }),
+      );
       return;
     }
     await handleMutation(
@@ -2832,7 +2835,9 @@ function FollowUpDialog({
       }
     >
       <h2 className="text-lg font-bold text-gray-950">{t("inbox.followUpLater")}</h2>
-      <p className="mt-1 text-sm text-gray-500">{t("inbox.followUpExplanation", { timezone })}</p>
+      <p className="mt-1 text-sm text-gray-500">
+        {t("inbox.followUpExplanation", { timezone: formatTimezoneLabel(timezone) })}
+      </p>
       <div className="mt-5 flex gap-2">
         <button
           type="button"

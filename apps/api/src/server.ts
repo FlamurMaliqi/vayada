@@ -159,6 +159,7 @@ import { startCreatorPlatformSyncWorker } from "./jobs/creatorPlatformSync.js";
 import { createPgCreatorPlatformSyncStore } from "./jobs/creatorPlatformSyncStore.js";
 import { runChannexReviewJobs } from "./jobs/channexReviews.js";
 import { runChannexBookingJobs } from "./jobs/channexBookings.js";
+import { runChannexMessageJobs } from "./jobs/channexMessages.js";
 import { createChannexManagementProvider } from "./integrations/channexManagement.js";
 import { createChannexMessageDelivery } from "./integrations/channexMessageDelivery.js";
 import { createResendPmsInboxDelivery } from "./integrations/resendPmsInboxDelivery.js";
@@ -1601,6 +1602,36 @@ const channexBookingTimer = channexBookingWorkerEnabled
   ? setInterval(runChannexBookings, 2_000)
   : undefined;
 
+let activeChannexMessageBatch: Promise<void> | undefined;
+const channexMessageAbort = new AbortController();
+const channexMessageWorkerEnabled =
+  config.providerWebhooks.channexMode === "mutating" &&
+  config.channexManagement.workerEnabled &&
+  config.channexManagement.capabilityModes.messaging === "mutating" &&
+  Boolean(config.channexManagement.apiBaseUrl && config.channexManagement.apiKey);
+const runChannexMessages = () => {
+  if (activeChannexMessageBatch || !channexMessageWorkerEnabled) return;
+  activeChannexMessageBatch = runChannexMessageJobs(targetDatabaseUrl, {
+    apiBaseUrl: config.channexManagement.apiBaseUrl!,
+    apiKey: config.channexManagement.apiKey!,
+    attachmentMedia: platformMediaRuntime?.inboundAttachments,
+    signal: channexMessageAbort.signal,
+    ownsMutation: () =>
+      config.providerWebhooks.channexMode === "mutating" &&
+      config.channexManagement.capabilityModes.messaging === "mutating",
+  })
+    .then(({ deadLettered }) => {
+      if (deadLettered) app.log.error({ deadLettered }, "Channex messages were dead-lettered");
+    })
+    .catch((error: unknown) => app.log.warn({ err: error }, "Channex message ingestion failed"))
+    .finally(() => {
+      activeChannexMessageBatch = undefined;
+    });
+};
+const channexMessageTimer = channexMessageWorkerEnabled
+  ? setInterval(runChannexMessages, 2_000)
+  : undefined;
+
 app.addHook("onClose", async () => {
   await Promise.all([
     pmsPricingReadModel.close(),
@@ -1617,11 +1648,19 @@ channexReviewTimer?.unref();
 if (hasProviderWebhookSecret) runChannexReviews();
 channexBookingTimer?.unref();
 if (channexBookingWorkerEnabled) runChannexBookings();
+channexMessageTimer?.unref();
+if (channexMessageWorkerEnabled) runChannexMessages();
 app.addHook("onClose", async () => {
   if (channexReviewTimer) clearInterval(channexReviewTimer);
   if (channexBookingTimer) clearInterval(channexBookingTimer);
+  if (channexMessageTimer) clearInterval(channexMessageTimer);
   channexBookingAbort.abort();
-  await Promise.all([activeChannexReviewBatch, activeChannexBookingBatch]);
+  channexMessageAbort.abort();
+  await Promise.all([
+    activeChannexReviewBatch,
+    activeChannexBookingBatch,
+    activeChannexMessageBatch,
+  ]);
 });
 
 let activeChannexManagementRun: Promise<void> | undefined;

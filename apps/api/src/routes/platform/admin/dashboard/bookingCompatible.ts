@@ -1,3 +1,5 @@
+import { readGrowthTelemetry } from "../../../../platform/growthTelemetry.js";
+
 import { createHmac, timingSafeEqual } from "node:crypto";
 
 import type { FastifyInstance, FastifyRequest } from "fastify";
@@ -76,6 +78,9 @@ export type PlatformAdminDashboardRepository = {
     runId: string;
   }): Promise<PlatformAdminSmokeRecoveryBooking[]>;
   listGrowthProperties(input: { excludeTestData: boolean }): Promise<PlatformAdminProperty[]>;
+  readGrowthTelemetry?: (
+    input: Parameters<typeof readGrowthTelemetry>[1],
+  ) => ReturnType<typeof readGrowthTelemetry>;
   close?(): Promise<void>;
 };
 
@@ -231,7 +236,40 @@ export async function registerPlatformAdminDashboardRoutes(
       ? await options.repository.listGrowthProperties({ excludeTestData: query.excludeTestData })
       : [];
 
-    return toGrowthDashboard(query, properties);
+    const dashboard = toGrowthDashboard(query, properties);
+    if (options.repository?.readGrowthTelemetry) {
+      const propertyIds = query.bookingPropertyId
+        ? dashboard.selectedPropertyIds.filter((id) => id === query.bookingPropertyId)
+        : dashboard.selectedPropertyIds;
+      const telemetry = await options.repository.readGrowthTelemetry({
+        propertyIds,
+        granularity: query.granularity,
+        excludeTestData: query.excludeTestData,
+      });
+      dashboard.pageViews = telemetry.pageViews;
+      dashboard.bookingRequests = telemetry.bookingRequests;
+      const views = telemetry.pageViews.reduce((sum, point) => sum + point.value, 0);
+      const requests = telemetry.bookingRequests.reduce((sum, point) => sum + point.value, 0);
+      dashboard.metrics = [
+        metric(
+          "live_properties",
+          "Live properties",
+          properties.filter(
+            (property) => propertyIds.includes(property.id) && property.status === "live",
+          ).length,
+        ),
+        metric("page_views", "Page views", views),
+        metric("booking_requests", "Booking requests", requests),
+        metric(
+          "conversion_rate",
+          "Conversion rate",
+          views ? (requests / views) * 100 : 0,
+          `${views ? ((requests / views) * 100).toFixed(1) : "0"}%`,
+        ),
+      ];
+      dashboard.emptyMessage = views || requests ? null : "No data for the selected properties.";
+    }
+    return dashboard;
   });
 }
 
@@ -253,6 +291,7 @@ export function createTargetPlatformAdminDashboardRepository(config: {
     });
 
   return {
+    readGrowthTelemetry: (input) => readGrowthTelemetry(pool, input),
     async listBookings(input) {
       const result = await pool.query<PlatformAdminBookingDbRow>(TARGET_PLATFORM_BOOKINGS_SQL, [
         input.status ?? null,

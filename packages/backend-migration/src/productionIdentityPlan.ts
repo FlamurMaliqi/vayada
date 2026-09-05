@@ -268,7 +268,7 @@ function pendingTargetWrites(
       (row) =>
         `${row.organizationId}:${row.product}:${row.resourceType}:${row.resourceId}:${row.relationship}`,
     ) +
-    pendingMutable(
+    pendingEntitlements(
       plan.entitlements,
       current.entitlements,
       (row) =>
@@ -284,6 +284,22 @@ function pendingTargetWrites(
       (row) => `${row.product}:${row.auditKey}`,
     )
   );
+}
+
+function pendingEntitlements(
+  planned: PlannedEntitlement[],
+  existing: ExistingEntitlement[],
+  key: (row: PlannedEntitlement) => string,
+): number {
+  const current = new Map(existing.map((row) => [key(row), row]));
+  return planned.filter((row) => {
+    const target = current.get(key(row));
+    return (
+      !target ||
+      Date.parse(row.updatedAt) > Date.parse(target.updatedAt) ||
+      (target.status === "active" && (row.status === "suspended" || row.status === "expired"))
+    );
+  }).length;
 }
 
 function pendingMutable<T extends { updatedAt: string }>(

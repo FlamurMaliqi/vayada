@@ -13,6 +13,7 @@ import { assertSafeTestDatabase } from "./testUtils.js";
 
 const URL = process.env["TEST_DATABASE_URL"];
 const RUN_ID = `vay1351-${"9".repeat(24)}`;
+const STALE_RUN_ID = `vay1351-${"8".repeat(24)}`;
 const MIGRATIONS_DIR = join(dirname(fileURLToPath(import.meta.url)), "../migrations");
 const PROPERTY_ID = "13590000-0000-4000-8000-000000000001";
 const PROPERTY_MEDIA_ID = "13590000-0000-4000-8000-000000000002";
@@ -25,6 +26,8 @@ const CREATOR_PROFILE_ID = "13590000-0000-4000-8000-000000000008";
 const LISTING_ID = "13590000-0000-4000-8000-000000000009";
 const COLLABORATION_ID = "13590000-0000-4000-8000-000000000010";
 const MESSAGE_ID = "13590000-0000-4000-8000-000000000011";
+const ROOM_TYPE_ID = "13590000-0000-4000-8000-000000000012";
+const ROOM_MEDIA_OBJECT_ID = "13590000-0000-4000-8000-000000000013";
 
 describe.skipIf(!URL)("production parity evidence reader (PostgreSQL)", () => {
   beforeEach(async () => {
@@ -242,6 +245,54 @@ describe.skipIf(!URL)("production parity evidence reader (PostgreSQL)", () => {
       await client.end();
     }
   });
+
+  it("accepts canonical private Catalog and PMS assignments without exposing legacy URLs", async () => {
+    assertSafeTestDatabase(URL!);
+    const client = new pg.Client({ connectionString: URL });
+    await client.connect();
+    try {
+      await insertPrivateAssignments(client);
+
+      const evidence = await readProductionParityEvidence(config());
+
+      expect(evidence.rawLegacyMediaReferenceCount).toBe(0);
+    } finally {
+      await cleanup(client);
+      await client.end();
+    }
+  });
+
+  const invalidPrivateAssignments: Array<[string, PrivateAssignmentOptions, number]> = [
+    ["stale migration provenance", { migrationRunId: STALE_RUN_ID }, 2],
+    ["no completed migration ledger", { ledger: false }, 2],
+    ["a completed ledger from another run", { ledgerRunId: STALE_RUN_ID }, 2],
+    ["wrong private variant", { variantName: "thumbnail" }, 2],
+    ["a Catalog object carrying the PMS purpose", { catalogPurpose: "pms.room_type.media" }, 1],
+    ["a PMS object bound to another room", { roomResourceId: PROPERTY_ID }, 1],
+    ["missing object checksum evidence", { integrity: "missing_catalog_checksum" }, 1],
+    ["mismatched variant checksum evidence", { integrity: "mismatched_room_checksum" }, 1],
+    ["a malformed Catalog content type", { catalogContentType: "not-a-mime" }, 1],
+    ["a non-image PMS content type", { roomContentType: "text/plain" }, 1],
+  ];
+
+  it.each(invalidPrivateAssignments)(
+    "rejects private assignments with %s",
+    async (_case, options, expected) => {
+      assertSafeTestDatabase(URL!);
+      const client = new pg.Client({ connectionString: URL });
+      await client.connect();
+      try {
+        await insertPrivateAssignments(client, options);
+
+        const evidence = await readProductionParityEvidence(config());
+
+        expect(evidence.rawLegacyMediaReferenceCount).toBeGreaterThanOrEqual(expected);
+      } finally {
+        await cleanup(client);
+        await client.end();
+      }
+    },
+  );
 
   it.each([
     [
@@ -559,10 +610,21 @@ function config(): ProductionParityConfig {
 async function cleanup(client: pg.Client): Promise<void> {
   await client.query("DELETE FROM booking.booking_settings WHERE property_id = $1", [PROPERTY_ID]);
   await client.query("DELETE FROM booking.addon_definitions WHERE property_id = $1", [PROPERTY_ID]);
+  await client.query("DELETE FROM pms.room_type_media WHERE property_id = $1", [PROPERTY_ID]);
+  await client.query("DELETE FROM pms.room_types WHERE property_id = $1", [PROPERTY_ID]);
   await client.query("DELETE FROM hotel_catalog.property_media WHERE property_id = $1", [
     PROPERTY_ID,
   ]);
-  await client.query("DELETE FROM platform.media_objects WHERE id = $1", [MEDIA_OBJECT_ID]);
+  await client.query(
+    "DELETE FROM platform.production_media_migration_runs WHERE source_run_id = ANY($1::text[])",
+    [[RUN_ID, STALE_RUN_ID]],
+  );
+  await client.query("DELETE FROM platform.media_objects WHERE id = ANY($1::uuid[])", [
+    [MEDIA_OBJECT_ID, ROOM_MEDIA_OBJECT_ID],
+  ]);
+  await client.query("DELETE FROM platform.source_extraction_runs WHERE run_id = ANY($1::text[])", [
+    [RUN_ID, STALE_RUN_ID],
+  ]);
   await client.query("DELETE FROM hotel_catalog.properties WHERE id = $1", [PROPERTY_ID]);
   await client.query("DELETE FROM marketplace.creator_profiles WHERE id = $1", [
     CREATOR_PROFILE_ID,
@@ -570,4 +632,158 @@ async function cleanup(client: pg.Client): Promise<void> {
   await client.query("DELETE FROM identity.organizations WHERE id = ANY($1::uuid[])", [
     [CREATOR_ORGANIZATION_ID, HOTEL_ORGANIZATION_ID],
   ]);
+}
+
+type PrivateAssignmentOptions = {
+  migrationRunId?: string;
+  variantName?: string;
+  catalogPurpose?: string;
+  roomResourceId?: string;
+  catalogContentType?: string;
+  roomContentType?: string;
+  ledger?: boolean;
+  ledgerRunId?: string;
+  integrity?: "missing_catalog_checksum" | "mismatched_room_checksum";
+};
+
+async function insertPrivateAssignments(
+  client: pg.Client,
+  options: PrivateAssignmentOptions = {},
+): Promise<void> {
+  const migrationRunId = options.migrationRunId ?? RUN_ID;
+  const variantName = options.variantName ?? "provider_original";
+  const catalogContentType = options.catalogContentType ?? "image/webp";
+  const roomContentType = options.roomContentType ?? "image/webp";
+  const catalogChecksum = "a".repeat(64);
+  const roomChecksum = "b".repeat(64);
+  const catalogStorageKey = `private/media/${MEDIA_OBJECT_ID}/provider_original/sha256-${catalogChecksum}.webp`;
+  const roomStorageKey = `private/media/${ROOM_MEDIA_OBJECT_ID}/provider_original/sha256-${roomChecksum}.webp`;
+  await client.query(
+    `INSERT INTO hotel_catalog.properties (id, public_id, display_name)
+     VALUES ($1, 'parity-private-property-media', 'Parity private property media')`,
+    [PROPERTY_ID],
+  );
+  await client.query(
+    `INSERT INTO pms.room_types (id, property_id, name, base_rate_amount, currency)
+     VALUES ($1, $2, 'Parity private room', 0, 'EUR')`,
+    [ROOM_TYPE_ID, PROPERTY_ID],
+  );
+  await client.query(
+    `INSERT INTO platform.media_objects
+       (id, bucket, storage_key, storage_kind, visibility, purpose, property_id,
+        resource_product, resource_type, resource_id, lifecycle_status, source_system,
+        source_table, source_row_id, source_metadata, public_approved, content_type,
+        size_bytes, checksum_sha256)
+     VALUES
+       ($1::uuid, 'platform-media-test', $2, 'vayada_managed', 'private', $3, $4,
+        'hotel_catalog', 'property', $4::uuid::text, 'active', 'marketplace',
+        'hotel_profiles', 'private-hero', jsonb_build_object('migrationRunId', $5::text),
+        FALSE, $11, 123, $6),
+       ($7::uuid, 'platform-media-test', $8, 'vayada_managed', 'private',
+        'pms.room_type.media', $4, 'pms', 'room_type', $9::uuid::text, 'active', 'pms',
+        'room_types', 'private-room', jsonb_build_object('migrationRunId', $5::text),
+        FALSE, $12, 456, $10)`,
+    [
+      MEDIA_OBJECT_ID,
+      catalogStorageKey,
+      options.catalogPurpose ?? "property.hero_image",
+      PROPERTY_ID,
+      migrationRunId,
+      options.integrity === "missing_catalog_checksum" ? null : catalogChecksum,
+      ROOM_MEDIA_OBJECT_ID,
+      roomStorageKey,
+      options.roomResourceId ?? ROOM_TYPE_ID,
+      roomChecksum,
+      catalogContentType,
+      roomContentType,
+    ],
+  );
+  await client.query(
+    `INSERT INTO platform.media_variants
+       (media_object_id, variant_name, visibility, storage_key, content_type,
+        size_bytes, checksum_sha256)
+     VALUES
+       ($1::uuid, $2, 'private', $3, $8, 123, $4),
+       ($5::uuid, $2, 'private', $6, $9, 456, $7)`,
+    [
+      MEDIA_OBJECT_ID,
+      variantName,
+      catalogStorageKey,
+      catalogChecksum,
+      ROOM_MEDIA_OBJECT_ID,
+      roomStorageKey,
+      options.integrity === "mismatched_room_checksum" ? "c".repeat(64) : roomChecksum,
+      catalogContentType,
+      roomContentType,
+    ],
+  );
+  if (options.ledger !== false)
+    await insertPrivateMediaLedger(client, {
+      sourceRunId: options.ledgerRunId ?? migrationRunId,
+      catalogPurpose: options.catalogPurpose ?? "property.hero_image",
+      catalogChecksum,
+      roomChecksum,
+    });
+  await client.query(
+    `INSERT INTO hotel_catalog.property_media
+       (id, property_id, media_type, url, source_system, public_approved,
+        platform_media_object_id)
+     VALUES ($1, $2, 'hero_image', $3, 'platform', FALSE, $4)`,
+    [PROPERTY_MEDIA_ID, PROPERTY_ID, `platform-media:${MEDIA_OBJECT_ID}`, MEDIA_OBJECT_ID],
+  );
+  await client.query(
+    `INSERT INTO pms.room_type_media
+       (property_id, room_type_id, platform_media_object_id, sort_order)
+     VALUES ($1, $2, $3, 0)`,
+    [PROPERTY_ID, ROOM_TYPE_ID, ROOM_MEDIA_OBJECT_ID],
+  );
+}
+
+async function insertPrivateMediaLedger(
+  client: pg.Client,
+  input: {
+    sourceRunId: string;
+    catalogPurpose: string;
+    catalogChecksum: string;
+    roomChecksum: string;
+  },
+): Promise<void> {
+  await client.query(
+    `INSERT INTO platform.source_extraction_runs
+       (run_id, environment, source_schema_revision, status, finished_at, duration_ms)
+     VALUES ($1, 'local', $2, 'completed', now(), 1)`,
+    [input.sourceRunId, "1".repeat(40)],
+  );
+  await client.query(
+    `INSERT INTO platform.production_media_migration_runs
+       (source_run_id, inventory_sha256, config_sha256, status, planned_count,
+        completed_count, report_checksum_sha256, completed_at)
+     VALUES ($1, $2, $3, 'completed', 2, 2, $4, now())`,
+    [input.sourceRunId, "2".repeat(64), "3".repeat(64), "4".repeat(64)],
+  );
+  await client.query(
+    `INSERT INTO platform.production_media_migration_items
+       (source_run_id, source_system, source_table, source_row_id, purpose,
+        source_field, source_url, source_updated_at, source_reference_sha256,
+        media_object_id, item_status, content_checksum_sha256, size_bytes,
+        evidence, completed_at)
+     VALUES
+       ($1, 'marketplace', 'hotel_profiles', 'private-hero', $2, 'hero_image',
+        'https://legacy.example.test/private-hero.webp', $3, $4, $5, 'completed',
+        $6, 123, '{}'::jsonb, now()),
+       ($1, 'pms', 'room_types', 'private-room', 'pms.room_type.media', 'media',
+        'https://legacy.example.test/private-room.webp', $3, $7, $8, 'completed',
+        $9, 456, '{}'::jsonb, now())`,
+    [
+      input.sourceRunId,
+      input.catalogPurpose,
+      "2026-01-01T00:00:00.000Z",
+      "5".repeat(64),
+      MEDIA_OBJECT_ID,
+      input.catalogChecksum,
+      "6".repeat(64),
+      ROOM_MEDIA_OBJECT_ID,
+      input.roomChecksum,
+    ],
+  );
 }
