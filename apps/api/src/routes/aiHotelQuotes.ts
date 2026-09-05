@@ -18,7 +18,11 @@ import {
   type PublicBookabilityStatus,
   type PublicBookabilityUnavailableReason,
 } from "@vayada/domain-distribution";
-import { evaluateSameDayBooking, SAME_DAY_BOOKING_POLICY_DEFAULTS } from "@vayada/domain-booking";
+import {
+  bestBookingPromotion,
+  evaluateSameDayBooking,
+  SAME_DAY_BOOKING_POLICY_DEFAULTS,
+} from "@vayada/domain-booking";
 import type { FastifyInstance } from "fastify";
 import pg, { type QueryResult, type QueryResultRow } from "pg";
 
@@ -73,6 +77,8 @@ type TargetPublicHotelQuoteRow = {
 };
 
 type TargetRoomOfferSnapshotQuoteRow = {
+  promotionSettings?: unknown;
+  nightlyRoomAmounts?: { stayDate: string; grossRoomAmount: string }[];
   publicOfferKey: string;
   roomTypeId: string;
   ratePlanId: string | null;
@@ -213,6 +219,9 @@ export function createTargetPublicHotelQuoteRepository(config: {
            AND profile.profile_status = 'public'
            AND profile.freshness_status = 'fresh'
            AND (profile.expires_at IS NULL OR profile.expires_at > $11::timestamptz)
+           AND NOT EXISTS (SELECT 1 FROM booking.booking_settings settings
+             WHERE settings.property_id = read_model.property_id
+               AND (settings.last_minute_discount -> 'promotions' IS NOT NULL OR settings.last_minute_discount ->> 'enabled' = 'true'))
            AND read_model.public_visibility = 'public_safe'
            AND read_model.freshness_status = 'fresh'
            AND read_model.request_snapshot ->> 'checkIn' = $2
@@ -299,6 +308,8 @@ async function quoteFromTargetOfferSnapshots(
   const generatedAt = config.requestedAt.toISOString();
   const result = await pool.query<TargetRoomOfferSnapshotQuoteRow>(
     `SELECT
+       (SELECT last_minute_discount FROM booking.booking_settings WHERE property_id = offer.property_id) AS "promotionSettings",
+       jsonb_agg(jsonb_build_object('stayDate', offer.stay_date, 'grossRoomAmount', offer.base_price_amount - offer.discounts_amount) ORDER BY offer.stay_date) AS "nightlyRoomAmounts",
        offer.public_offer_key AS "publicOfferKey",
        offer.room_type_id::text AS "roomTypeId",
        offer.rate_plan_id::text AS "ratePlanId",
@@ -333,7 +344,7 @@ async function quoteFromTargetOfferSnapshots(
        AND COALESCE((offer.occupancy ->> 'maxChildren')::int, $6::int) >= $6::int
        AND COALESCE((offer.occupancy ->> 'maxOccupancy')::int, $5::int + $6::int) >= ($5::int + $6::int)
        AND (offer.expires_at IS NULL OR offer.expires_at > $9::timestamptz)
-     GROUP BY offer.public_offer_key, offer.room_type_id, offer.rate_plan_id, offer.currency
+     GROUP BY offer.property_id, offer.public_offer_key, offer.room_type_id, offer.rate_plan_id, offer.currency
      HAVING COUNT(DISTINCT offer.stay_date) = $8::int
         AND MIN(offer.available_rooms) >= $7::int
      ORDER BY SUM(offer.base_price_amount), offer.public_offer_key
@@ -352,7 +363,23 @@ async function quoteFromTargetOfferSnapshots(
   );
 
   const stayRestrictions = applyStayRestrictions(result.rows, config.request.nights);
-  const offers = stayRestrictions.eligibleRows.map((row) => snapshotOfferInput(row));
+  const offers = stayRestrictions.eligibleRows.map((row) => {
+    const offer = snapshotOfferInput(row);
+    const promotion = bestBookingPromotion({
+      settings: row.promotionSettings,
+      roomTypeId: row.roomTypeId,
+      today: propertyDateOnly(config.hotel.timezone, config.requestedAt),
+      nights: row.nightlyRoomAmounts ?? [],
+      roomTotal: offer.totals.roomTotal - offer.totals.discounts,
+      roomCount: config.request.rooms,
+    });
+    if (promotion) {
+      offer.totals.promotion = promotion;
+      offer.totals.discounts += promotion.discountAmount;
+      offer.totals.grandTotal = roundMoney(offer.totals.grandTotal - promotion.discountAmount);
+    }
+    return offer;
+  });
   const offerPolicies = stayRestrictions.eligibleRows.map((row) => snapshotOfferPolicy(row));
   const quoteId = buildPublicQuoteId(config.request);
   const expiresAt = new Date(config.requestedAt.getTime() + 15 * 60 * 1_000).toISOString();
@@ -1191,6 +1218,15 @@ function serializeOffer(offer: PublicBookabilityOffer): PublicBookabilityOffer {
       taxesAndFees: offer.totals.taxesAndFees,
       discounts: offer.totals.discounts,
       grandTotal: offer.totals.grandTotal,
+      ...(offer.totals.promotion
+        ? {
+            promotion: {
+              name: offer.totals.promotion.name,
+              discountAmount: offer.totals.promotion.discountAmount,
+              discountPercent: offer.totals.promotion.discountPercent,
+            },
+          }
+        : {}),
     },
     policies: {
       cancellation: offer.policies.cancellation ?? null,
