@@ -22,6 +22,35 @@ const SOURCE_IMAGE = "https://legacy-media-test.s3.amazonaws.com/rooms/suite.jpg
 const CDN_IMAGE = `https://media.example.test/media/${MEDIA}/original-safe.webp`;
 
 describe("production PMS room records", () => {
+  it("preserves non-v1 room location overrides and their source identity on replay", () => {
+    const rows = sourceRows();
+    Object.assign(rows.find((row) => row.sourceTable === "room_types")!.data, {
+      location_address: "Separate annex",
+      latitude: 0,
+      longitude: 1.005,
+    });
+    const before = JSON.stringify(rows);
+    const build = () => {
+      const context = createProductionPmsContext({
+        sourceRunId: "run",
+        completedAt: "2026-08-30T00:00:00Z",
+        rows,
+        target: target(),
+      });
+      const result = buildPmsRoomRecords(context);
+      expect(context.blockers).toEqual([]);
+      return result.records.find((record) => record.targetTable === "room_types")!;
+    };
+    const first = build();
+    expect(first.row).toMatchObject({
+      propertyId: PROPERTY,
+      sourceSystem: "pms",
+      sourceRoomTypeId: ROOM_TYPE,
+      locationSummary: { address: "Separate annex", latitude: 0, longitude: 1.005 },
+    });
+    expect(build()).toEqual(first);
+    expect(JSON.stringify(rows)).toBe(before);
+  });
   it("preserves room facts, linked inventory, pricing, and channel plans", () => {
     const context = createProductionPmsContext({
       sourceRunId: "run",
