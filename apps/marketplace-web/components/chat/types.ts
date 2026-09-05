@@ -8,6 +8,7 @@ export interface PlatformInfo {
 }
 
 export interface PendingRequest {
+  updatedAt?: string;
   id: string;
   name: string;
   time: string;
