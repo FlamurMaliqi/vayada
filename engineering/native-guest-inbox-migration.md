@@ -26,6 +26,18 @@ Historical Channex `message` webhook receipts are non-replayable evidence:
   them or modify append-only receipt history.
 - Importing historical receipts creates no jobs, domain events or outbound sends.
 
+## Source Inbox consistency gate
+
+The mapper checks provider natural keys using the target schema's property/source/
+thread identity and thread/message identity. It also checks each thread's cached
+unread count against inbound messages with no read timestamp, and its summary
+against the latest message by `sent_at DESC, id DESC` (the target intake order).
+Previews use the first 280 Unicode code points, preserving whitespace. Empty
+threads require empty summary fields and zero unread. Mismatches block apply;
+reports contain canonical property/record IDs and field names, never message
+content or provider keys. Reconcile inconsistent source evidence explicitly.
+These are source checks, not proof of actual-target parity or inquiry semantics.
+
 ## Remaining release gates
 
 Before a production apply or guest Inbox acceptance, record evidence for:
