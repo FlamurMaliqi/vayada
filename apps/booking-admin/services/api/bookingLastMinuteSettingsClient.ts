@@ -1,3 +1,5 @@
+import type { BookingPromotion } from "@vayada/domain-booking";
+export type { BookingPromotion };
 import { apiClient, omitHotelContext, type ApiClient } from "./client";
 import {
   toBookingSettingsClientErrorInput,
@@ -21,6 +23,7 @@ export interface BookingLastMinuteTier {
 }
 
 export interface BookingLastMinuteSettings {
+  promotions?: BookingPromotion[];
   enabled: boolean;
   stackWithPromo: boolean;
   tiers: BookingLastMinuteTier[];

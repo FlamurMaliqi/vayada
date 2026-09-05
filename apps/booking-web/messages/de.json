@@ -72,7 +72,7 @@
     "priceHighLow": "Preis: Absteigend",
     "upToGuests": "Bis zu {count} Gäste",
     "viewDetails": "Details ansehen",
-    "viewFullAmenities": "Alle Ausstattungen anzeigen ({count} weitere)",
+    "viewFullAmenities": "Alle Ausstattungen anzeigen ({count})",
     "showLess": "Weniger anzeigen",
     "rateOptions": "Tarifoptionen",
     "selectYourRate": "Wähle deinen Tarif",
@@ -146,7 +146,11 @@
     "pricePerDay": "Preis pro Tag",
     "priceLabel": "Preis",
     "addedToTrip": "Zur Reise hinzugefügt",
-    "addToTrip": "Zur Reise hinzufügen"
+    "addToTrip": "Zur Reise hinzufügen",
+    "pricePerPersonNight": "Preis pro Person / Nacht",
+    "leadTime": "Vorlaufzeit",
+    "showPhoto": "Foto {number} anzeigen",
+    "closeDetails": "Zusatzleistungsdetails schließen"
   },
   "book": {
     "guestInformation": "Gastinformationen",

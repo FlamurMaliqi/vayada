@@ -1,3 +1,5 @@
+import { requireAuthContext } from "@vayada/backend-auth";
+
 import { createHash } from "node:crypto";
 
 import type { FastifyInstance, FastifyReply } from "fastify";
@@ -89,6 +91,7 @@ export function registerPlatformContactIntakeRoutes(
   });
 
   app.addHook("onRequest", async (request, reply) => {
+    if (request.url.split("?", 1)[0] !== "/api/contact") return;
     reply.header("Vary", "Origin");
     const origin = request.headers.origin;
     if (origin && allowedOrigins.has(origin)) {
@@ -99,6 +102,64 @@ export function registerPlatformContactIntakeRoutes(
   });
 
   app.options("/contact", async (_request, reply) => reply.status(204).send());
+
+  app.post<{ Body: { kind?: unknown; message?: unknown; page?: unknown; product?: unknown } }>(
+    "/support",
+    { bodyLimit: 24_000 },
+    async (request, reply) => {
+      // Identity-only exception: support must remain available without product permissions,
+      // entitlements or linked resources, including when users report access problems.
+      const context = requireAuthContext(request);
+      const { kind, message, page, product } = request.body ?? {};
+      if (
+        (kind !== "support" && kind !== "bug") ||
+        typeof message !== "string" ||
+        !message.trim() ||
+        message.trim().length > 4000 ||
+        typeof page !== "string" ||
+        page.length > 500 ||
+        !/^\/(?!\/)[^?#\\\s]*$/.test(page) ||
+        typeof product !== "string" ||
+        !["marketplace", "booking", "pms", "affiliate"].includes(product)
+      ) {
+        return sendContactIntakeError(reply, 400, {
+          code: "invalid_request",
+          category: "validation",
+          message: "Choose a request type and enter a message (up to 4000 characters).",
+        });
+      }
+      try {
+        const result = await options.repository.submitContact({
+          requestId: request.id,
+          receivedAt: new Date().toISOString(),
+          payload: {
+            name: context.actor.name || context.actor.email,
+            email: context.actor.email,
+            phone: null,
+            company: null,
+            country: null,
+            userType: kind,
+            message: JSON.stringify({
+              kind,
+              message: message.trim(),
+              page,
+              product,
+              userId: context.actor.internalUserId,
+              organizationId: context.selectedOrganization.organizationId,
+            }),
+          },
+        });
+        return reply.status(201).send({ status: result.status, reference: result.intakeId });
+      } catch {
+        request.log.error({ requestId: request.id }, "Support intake failed");
+        return sendContactIntakeError(reply, 503, {
+          code: "intake_unavailable",
+          category: "write_model",
+          message: "We could not save your request. Please try again.",
+        });
+      }
+    },
+  );
 
   app.post<{ Body: PlatformContactIntakeRequest }>("/contact", async (request, reply) => {
     const parsed = parseContactPayload(request.body);
@@ -439,7 +500,7 @@ function normalizeEmail(value: unknown): string | null {
 
 function sendContactIntakeError(
   reply: FastifyReply,
-  statusCode: 400 | 500,
+  statusCode: 400 | 500 | 503,
   error: ContactIntakeRouteError,
 ): FastifyReply {
   return reply.status(statusCode).send({ ...error, statusCode });

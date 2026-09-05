@@ -7,9 +7,6 @@ import {
   SparklesIcon,
   CheckBadgeIcon,
   ClipboardDocumentListIcon,
-  ClockIcon,
-  PlusIcon,
-  XMarkIcon,
 } from "@heroicons/react/24/outline";
 import { settingsService, type AddonItem, type AddonSettings } from "@/services/settings";
 import {
@@ -37,13 +34,6 @@ import {
 } from "@/services/api/bookingGuestFormSettingsClient";
 import { getBookingLocalizationSettings } from "@/services/api/bookingLocalizationSettingsClient";
 import {
-  BookingLastMinuteSettingsClientError,
-  getBookingLastMinuteSettings,
-  updateBookingLastMinuteSettings,
-  type BookingLastMinuteSettings,
-  type BookingLastMinuteTier,
-} from "@/services/api/bookingLastMinuteSettingsClient";
-import {
   getBookingRoomFilterSettings,
   updateBookingRoomFilterSettings,
   type BookingRoomFilterSettings,
@@ -57,7 +47,6 @@ import { apiClient } from "@/services/api/client";
 import { FeedbackAlert } from "@/components/ui";
 import { uploadSingleImageWithMediaReference } from "@/lib/utils/uploadImage";
 import { SettingsLayout, type SettingsNavSection } from "@vayada/settings-ui";
-import { DEFAULT_LAST_MINUTE_TIERS } from "@vayada/product-onboarding";
 
 import RoomsTab from "@/components/booking-flow/RoomsTab";
 import AddonsTab, { type AddonItemFormValues } from "@/components/booking-flow/AddonsTab";
@@ -111,13 +100,6 @@ const DEFAULT_ROOM_FILTER_SETTINGS: BookingRoomFilterSettings = {
   filterRooms: {},
 };
 
-const DEFAULT_LAST_MINUTE_SETTINGS: BookingLastMinuteSettings = {
-  enabled: false,
-  stackWithPromo: false,
-  tiers: [],
-  updatedAt: "",
-};
-
 function pickRecordByKeys<T>(record: Record<string, T>, keys: string[]): Record<string, T> {
   const allowedKeys = new Set(keys);
   return Object.fromEntries(Object.entries(record).filter(([key]) => allowedKeys.has(key)));
@@ -138,6 +120,11 @@ function toSettingsAddonItem(item: BookingAddonItem): AddonItem {
     category: item.category,
     image: item.imageUrl ?? "",
     imageMediaObjectId: item.imageMediaObjectId,
+    photos: item.photos,
+    location: item.location ?? undefined,
+    maxGuests: item.maxGuests == null ? undefined : String(item.maxGuests),
+    maxQuantity: item.maxQuantity,
+    leadTime: item.leadTime ?? undefined,
     duration: item.duration ?? undefined,
     perPerson: item.pricingModel === "per_guest" || item.pricingModel === "per_guest_night",
     perNight: item.pricingModel === "per_night" || item.pricingModel === "per_guest_night",
@@ -162,6 +149,10 @@ function toAddonWritableFields(values: AddonItemFormValues) {
     currency: values.currency,
     category: values.category,
     duration: values.duration || null,
+    location: values.location || null,
+    maxGuests: values.maxGuests ? Number(values.maxGuests) : null,
+    maxQuantity: Number(values.maxQuantity),
+    leadTime: values.leadTime || null,
     pricingModel: toAddonPricingModel(values) as BookingAddonPricingModel,
   };
   return values.ownershipKind === "partner"
@@ -177,17 +168,19 @@ function toAddonWritableFields(values: AddonItemFormValues) {
       };
 }
 
-async function addonImageMediaObjectId(
-  values: AddonItemFormValues,
-  bookingHotelId: string,
-): Promise<string | null> {
-  if (!values.imageFile) return values.imageMediaObjectId;
-  const uploaded = await uploadSingleImageWithMediaReference(
-    values.imageFile,
-    "booking.addon.image",
-    bookingHotelId,
-  );
-  return uploaded.mediaObjectId;
+async function addonPhotos(values: AddonItemFormValues, bookingHotelId: string) {
+  const photos = [];
+  for (const photo of values.photos) {
+    const uploaded = photo.file
+      ? await uploadSingleImageWithMediaReference(photo.file, "booking.addon.image", bookingHotelId)
+      : photo;
+    photos.push({
+      mediaObjectId: uploaded.mediaObjectId,
+      imageUrl: photo.file ? "" : photo.imageUrl,
+      isCover: photo.isCover,
+    });
+  }
+  return photos;
 }
 
 function toAddonCreateBody(
@@ -256,10 +249,7 @@ export default function BookingFlowPage() {
   const [savingFilters, setSavingFilters] = useState(false);
   const [pmsRooms, setPmsRooms] = useState<{ id: string; name: string }[]>([]);
   const [pmsRoomsLoading, setPmsRoomsLoading] = useState(false);
-  const [lastMinuteSettings, setLastMinuteSettings] = useState<BookingLastMinuteSettings>(
-    DEFAULT_LAST_MINUTE_SETTINGS,
-  );
-  const [savingLastMinute, setSavingLastMinute] = useState(false);
+  const [addonCurrency, setAddonCurrency] = useState("");
   const [defaultCurrency, setDefaultCurrency] = useState("EUR");
 
   const { t } = useTranslation();
@@ -324,8 +314,13 @@ export default function BookingFlowPage() {
         getBookingAddonItemsContext({ hotelId }).then((context) => ({
           addonItems: context.addonItems.map(toSettingsAddonItem),
           propertyPlan: context.propertyPlan,
+          propertyCurrency: context.propertyCurrency,
         })),
-      { addonItems: [] as AddonItem[], propertyPlan: DEFAULT_PROPERTY_PLAN },
+      {
+        addonItems: [] as AddonItem[],
+        propertyPlan: DEFAULT_PROPERTY_PLAN,
+        propertyCurrency: undefined as string | undefined,
+      },
     );
     const guestFormSettingsPromise = loadTypedSetting(
       (hotelId) => getBookingGuestFormSettings({ hotelId }),
@@ -344,10 +339,6 @@ export default function BookingFlowPage() {
       (hotelId) => getBookingRoomFilterSettings({ hotelId }),
       DEFAULT_ROOM_FILTER_SETTINGS,
     );
-    const lastMinuteSettingsPromise = loadTypedSetting(
-      (hotelId) => getBookingLastMinuteSettings({ hotelId }),
-      DEFAULT_LAST_MINUTE_SETTINGS,
-    );
 
     Promise.all([
       addonSettingsPromise,
@@ -356,7 +347,6 @@ export default function BookingFlowPage() {
       guestFormSettingsPromise,
       localizationSettingsPromise,
       roomFilterSettingsPromise,
-      lastMinuteSettingsPromise,
       propertyPromise,
     ])
       .then(
@@ -367,7 +357,6 @@ export default function BookingFlowPage() {
           guestFormSettings,
           localizationCurrency,
           roomFilterSettings,
-          lastMinuteSettings,
           property,
         ]) => {
           setBookingHotelId(selectedHotelId || property?.id || null);
@@ -375,6 +364,7 @@ export default function BookingFlowPage() {
           setAddonSettings(settings);
           setAddons(orderAddons(addonContext.addonItems));
           setPropertyPlan(addonContext.propertyPlan);
+          setAddonCurrency(addonContext.propertyCurrency ?? "");
           setBenefits(
             normalizeBookingBenefitsSettings(benefitsRes, DEFAULT_BENEFITS_SETTINGS).benefits,
           );
@@ -388,7 +378,6 @@ export default function BookingFlowPage() {
           setFiltersEnabled(normalizedRoomFilterSettings.bookingFilters.length > 0);
           setCustomFilters(normalizedRoomFilterSettings.customFilters);
           setFilterRooms(normalizedRoomFilterSettings.filterRooms);
-          setLastMinuteSettings(lastMinuteSettings);
           if (property?.id) {
             setPmsRoomsLoading(true);
             apiClient
@@ -447,7 +436,7 @@ export default function BookingFlowPage() {
         hotelId,
         body: {
           ...toAddonCreateBody(values, nextAddonSortOrder(addons)),
-          imageMediaObjectId: await addonImageMediaObjectId(values, hotelId),
+          photos: await addonPhotos(values, hotelId),
         },
       });
       setAddons((current) => orderAddons([...current, toSettingsAddonItem(saved)]));
@@ -481,7 +470,7 @@ export default function BookingFlowPage() {
         addonItemId: addonId,
         body: {
           ...toAddonWritableFields(values),
-          imageMediaObjectId: await addonImageMediaObjectId(values, hotelId),
+          photos: await addonPhotos(values, hotelId),
         },
       });
       setAddons((current) =>
@@ -595,43 +584,6 @@ export default function BookingFlowPage() {
     }
   };
 
-  const updateLastMinuteTier = (
-    index: number,
-    field: keyof BookingLastMinuteTier,
-    value: number | null,
-  ) => {
-    setLastMinuteSettings((current) => ({
-      ...current,
-      tiers: current.tiers.map((tier, tierIndex) =>
-        tierIndex === index ? { ...tier, [field]: value } : tier,
-      ),
-    }));
-  };
-
-  const handleSaveLastMinute = async () => {
-    try {
-      setSavingLastMinute(true);
-      const saved = await updateBookingLastMinuteSettings({
-        hotelId: getBookingHotelIdForSave(),
-        body: {
-          enabled: lastMinuteSettings.enabled,
-          stackWithPromo: lastMinuteSettings.stackWithPromo,
-          tiers: lastMinuteSettings.tiers,
-        },
-      });
-      setLastMinuteSettings(saved);
-      showFeedback("success", "Last-minute settings saved.");
-    } catch (error) {
-      const detail =
-        error instanceof BookingLastMinuteSettingsClientError
-          ? error.detail
-          : "Last-minute settings could not be saved.";
-      showFeedback("error", detail);
-    } finally {
-      setSavingLastMinute(false);
-    }
-  };
-
   const sections: SettingsNavSection[] = [
     { id: "rooms", label: t("bookingFlow.tabs.filters"), icon: HomeIcon },
     { id: "addons", label: t("bookingFlow.tabs.addons"), icon: SparklesIcon },
@@ -641,7 +593,6 @@ export default function BookingFlowPage() {
       label: t("bookingFlow.tabs.guestForm"),
       icon: ClipboardDocumentListIcon,
     },
-    { id: "last-minute", label: "Last-Minute", icon: ClockIcon },
   ];
 
   if (loading) {
@@ -687,7 +638,7 @@ export default function BookingFlowPage() {
           <AddonsTab
             addons={addons}
             addonSettings={addonSettings}
-            propertyCurrency={defaultCurrency}
+            propertyCurrency={addonCurrency}
             propertyPlan={propertyPlan}
             handleToggleAddonSetting={handleToggleAddonSetting}
             onCreateAddon={handleCreateAddon}
@@ -725,204 +676,6 @@ export default function BookingFlowPage() {
             onSave={handleSaveGuestForm}
             saving={savingGuestForm}
           />
-        )}
-
-        {activeTab === "last-minute" && (
-          <div className="max-w-2xl space-y-4">
-            <div className="rounded-lg border border-gray-200 bg-white px-4 py-4">
-              <div className="flex items-center justify-between gap-4">
-                <div>
-                  <h2 className="text-sm font-semibold text-gray-900">Last-minute discounts</h2>
-                  <p className="mt-0.5 text-[12px] text-gray-500">
-                    Apply a discount when check-in is close.
-                  </p>
-                </div>
-                <button
-                  type="button"
-                  aria-label={
-                    lastMinuteSettings.enabled
-                      ? "Disable last-minute discounts"
-                      : "Enable last-minute discounts"
-                  }
-                  aria-pressed={lastMinuteSettings.enabled}
-                  onClick={() =>
-                    setLastMinuteSettings((current) =>
-                      current.enabled
-                        ? DEFAULT_LAST_MINUTE_SETTINGS
-                        : { ...current, enabled: true },
-                    )
-                  }
-                  className={`relative h-[22px] w-10 shrink-0 rounded-full transition-colors ${
-                    lastMinuteSettings.enabled ? "bg-primary-500" : "bg-gray-300"
-                  }`}
-                >
-                  <span
-                    className={`absolute top-[2px] h-[18px] w-[18px] rounded-full bg-white shadow transition-transform ${
-                      lastMinuteSettings.enabled ? "left-[20px]" : "left-[2px]"
-                    }`}
-                  />
-                </button>
-              </div>
-            </div>
-
-            {lastMinuteSettings.enabled && (
-              <>
-                <div className="rounded-lg border border-gray-200 bg-white px-4 py-4">
-                  <div className="flex items-center justify-between gap-4">
-                    <div>
-                      <p className="text-[13px] font-medium text-gray-900">
-                        Stack with promo codes
-                      </p>
-                      <p className="mt-0.5 text-[12px] text-gray-500">
-                        When off, only the larger discount applies.
-                      </p>
-                    </div>
-                    <button
-                      type="button"
-                      aria-label={
-                        lastMinuteSettings.stackWithPromo
-                          ? "Disable stack with promo codes"
-                          : "Enable stack with promo codes"
-                      }
-                      aria-pressed={lastMinuteSettings.stackWithPromo}
-                      onClick={() =>
-                        setLastMinuteSettings((current) => ({
-                          ...current,
-                          stackWithPromo: !current.stackWithPromo,
-                        }))
-                      }
-                      className={`relative h-[22px] w-10 shrink-0 rounded-full transition-colors ${
-                        lastMinuteSettings.stackWithPromo ? "bg-primary-500" : "bg-gray-300"
-                      }`}
-                    >
-                      <span
-                        className={`absolute top-[2px] h-[18px] w-[18px] rounded-full bg-white shadow transition-transform ${
-                          lastMinuteSettings.stackWithPromo ? "left-[20px]" : "left-[2px]"
-                        }`}
-                      />
-                    </button>
-                  </div>
-                </div>
-
-                <div className="rounded-lg border border-gray-200 bg-white px-4 py-4">
-                  <div className="mb-3 flex items-center justify-between gap-3">
-                    <h2 className="text-sm font-semibold text-gray-900">Discount tiers</h2>
-                    <button
-                      type="button"
-                      onClick={() =>
-                        setLastMinuteSettings((current) => ({
-                          ...current,
-                          tiers: [...DEFAULT_LAST_MINUTE_TIERS],
-                        }))
-                      }
-                      className="text-[12px] font-medium text-primary-600 hover:text-primary-700"
-                    >
-                      Use recommended tiers
-                    </button>
-                  </div>
-
-                  <div className="space-y-2.5">
-                    {lastMinuteSettings.tiers.map((tier, index) => (
-                      <div
-                        key={index}
-                        className="grid grid-cols-[1fr_1fr_1fr_auto] items-end gap-2 rounded-lg bg-gray-50 p-3"
-                      >
-                        <label className="text-[10px] text-gray-500">
-                          From
-                          <input
-                            type="number"
-                            min={0}
-                            value={tier.daysBeforeMin}
-                            onChange={(event) =>
-                              updateLastMinuteTier(
-                                index,
-                                "daysBeforeMin",
-                                parseInt(event.target.value) || 0,
-                              )
-                            }
-                            className="mt-1 w-full rounded-lg border border-gray-200 px-2 py-1.5 text-[13px]"
-                          />
-                        </label>
-                        <label className="text-[10px] text-gray-500">
-                          To
-                          <input
-                            type="number"
-                            min={0}
-                            value={tier.daysBeforeMax ?? ""}
-                            onChange={(event) =>
-                              updateLastMinuteTier(
-                                index,
-                                "daysBeforeMax",
-                                event.target.value ? parseInt(event.target.value) : null,
-                              )
-                            }
-                            placeholder="∞"
-                            className="mt-1 w-full rounded-lg border border-gray-200 px-2 py-1.5 text-[13px]"
-                          />
-                        </label>
-                        <label className="text-[10px] text-gray-500">
-                          Discount %
-                          <input
-                            type="number"
-                            min={1}
-                            max={100}
-                            value={tier.discountPercent}
-                            onChange={(event) =>
-                              updateLastMinuteTier(
-                                index,
-                                "discountPercent",
-                                parseInt(event.target.value) || 0,
-                              )
-                            }
-                            className="mt-1 w-full rounded-lg border border-gray-200 px-2 py-1.5 text-[13px] font-semibold"
-                          />
-                        </label>
-                        <button
-                          type="button"
-                          onClick={() =>
-                            setLastMinuteSettings((current) => ({
-                              ...current,
-                              tiers: current.tiers.filter((_, tierIndex) => tierIndex !== index),
-                            }))
-                          }
-                          className="mb-1 rounded-md p-1.5 text-gray-400 hover:text-red-500"
-                          aria-label="Remove tier"
-                        >
-                          <XMarkIcon className="h-4 w-4" />
-                        </button>
-                      </div>
-                    ))}
-
-                    <button
-                      type="button"
-                      onClick={() =>
-                        setLastMinuteSettings((current) => ({
-                          ...current,
-                          tiers: [
-                            ...current.tiers,
-                            { daysBeforeMin: 0, daysBeforeMax: null, discountPercent: 10 },
-                          ],
-                        }))
-                      }
-                      className="inline-flex items-center gap-1.5 text-[12px] font-medium text-gray-600 hover:text-primary-600"
-                    >
-                      <PlusIcon className="h-3.5 w-3.5" />
-                      Add tier
-                    </button>
-                  </div>
-                </div>
-              </>
-            )}
-
-            <button
-              type="button"
-              onClick={handleSaveLastMinute}
-              disabled={savingLastMinute}
-              className="rounded-lg bg-primary-600 px-4 py-2 text-[13px] font-semibold text-white hover:bg-primary-700 disabled:opacity-60"
-            >
-              {savingLastMinute ? "Saving..." : "Save Last-Minute Settings"}
-            </button>
-          </div>
         )}
       </div>
     </SettingsLayout>

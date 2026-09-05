@@ -97,7 +97,7 @@ export const usersService = {
   /**
    * Get user by ID with full details (profile, platforms, listings)
    */
-  getUserById: async (userId: string): Promise<UserDetailResponse> => {
+  getUserById: async (userId: string, propertyId?: string | null): Promise<UserDetailResponse> => {
     const response = await apiClient.get<any>(`/api/identity/admin/users/${userId}`);
     const identityUser = transformSnakeToCamel(response) as UserDetailResponse;
     if (identityUser.type === "creator") {
@@ -109,7 +109,8 @@ export const usersService = {
       };
     }
     if (identityUser.type !== "hotel") return identityUser;
-    const review = await getMarketplaceAdminHotelReview(userId);
+    if (propertyId === null) return { ...identityUser, profile: null };
+    const review = await getMarketplaceAdminHotelReview(userId, propertyId);
     return {
       ...identityUser,
       profile: review.profile ? toHotelProfileDetail(identityUser, review) : null,
@@ -231,6 +232,7 @@ export const usersService = {
       phone?: string;
       picture?: string;
     },
+    propertyId?: string,
   ): Promise<any> => {
     const unsupportedFields = Object.entries(data)
       .filter(([key, value]) => key !== "about" && value !== undefined)
@@ -242,7 +244,7 @@ export const usersService = {
     }
     if (data.about === undefined) return {};
     const response = await apiClient.put<any>(
-      `/api/marketplace/admin/users/${userId}/profile/hotel`,
+      `/api/marketplace/admin/users/${userId}/profile/hotel${propertyId ? `?propertyId=${encodeURIComponent(propertyId)}` : ""}`,
       {
         hostSummary: data.about,
       },
@@ -256,6 +258,8 @@ export const usersService = {
   createOffer: async (
     hotelUserId: string,
     data: {
+      propertyId?: string;
+      idempotencyKey?: string;
       name: string;
       location: string;
       description: string;
@@ -265,7 +269,10 @@ export const usersService = {
       creatorRequirements?: any;
     },
   ): Promise<MarketplaceAdminOffer> => {
-    return createMarketplaceAdminOffer(hotelUserId, toMarketplaceAdminCreateOfferRequest(data));
+    return createMarketplaceAdminOffer(hotelUserId, toMarketplaceAdminCreateOfferRequest(data), {
+      propertyId: data.propertyId,
+      idempotencyKey: data.idempotencyKey,
+    });
   },
 
   /**
@@ -275,6 +282,7 @@ export const usersService = {
     hotelUserId: string,
     listingId: string,
     data: {
+      propertyId?: string;
       name?: string;
       location?: string;
       description?: string;
@@ -288,6 +296,7 @@ export const usersService = {
       hotelUserId,
       listingId,
       toMarketplaceAdminUpdateOfferRequest(data),
+      data.propertyId,
     );
     return transformSnakeToCamel(response);
   },
@@ -299,8 +308,9 @@ export const usersService = {
     hotelUserId: string,
     listingId: string,
     mediaObjectIds?: string[],
+    propertyId?: string,
   ): Promise<MarketplaceAdminOffer> =>
-    verifyMarketplaceAdminOffer(hotelUserId, listingId, mediaObjectIds),
+    verifyMarketplaceAdminOffer(hotelUserId, listingId, mediaObjectIds, propertyId),
 
   /**
    * Delete a listing
@@ -310,6 +320,7 @@ export const usersService = {
   deleteOffer: async (
     hotelUserId: string,
     listingId: string,
+    propertyId?: string,
   ): Promise<{
     message: string;
     deletedOffer: {
@@ -319,7 +330,7 @@ export const usersService = {
     imagesDeleted: number;
     imagesFailed: number;
   }> => {
-    const response = await deleteMarketplaceAdminOffer(hotelUserId, listingId);
+    const response = await deleteMarketplaceAdminOffer(hotelUserId, listingId, propertyId);
     return {
       message: "Offer archived.",
       deletedOffer: {
@@ -376,6 +387,7 @@ function toHotelProfileDetail(
     email: identityUser.email,
     phone: null,
     status: profile.profileStatus,
+    profileComplete: profile.profileComplete,
     createdAt: profile.createdAt,
     updatedAt: profile.updatedAt,
     listings: review.offers.map((offer) => toListingResponse(offer, profile.location)),

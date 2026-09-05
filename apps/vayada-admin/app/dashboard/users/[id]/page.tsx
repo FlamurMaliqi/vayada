@@ -1,5 +1,7 @@
 "use client";
 
+import { MarketplaceAccountSetup } from "@/components/users/MarketplaceAccountSetup";
+
 import { Suspense, useState, useEffect, useRef } from "react";
 import { useRouter, useParams, useSearchParams } from "next/navigation";
 import { Button } from "@/components/ui";
@@ -45,15 +47,7 @@ import { getCurrencySymbol } from "@/lib/utils/getCurrencySymbol";
 
 const PLATFORMS = ["Instagram", "TikTok", "YouTube", "Facebook"] as const;
 const AGE_GROUPS = ["18-24", "25-34", "35-44", "45-54", "55+"] as const;
-const ACCOMMODATION_TYPES = [
-  "Hotel",
-  "Boutiques Hotel",
-  "City Hotel",
-  "Luxury Hotel",
-  "Apartment",
-  "Villa",
-  "Lodge",
-] as const;
+
 const COLLABORATION_TYPES = ["Free Stay", "Paid", "Discount", "Affiliate"] as const;
 const CREATOR_PLATFORM_EDITING_ENABLED = false;
 const MONTHS = [
@@ -150,6 +144,11 @@ function UserDetailContent() {
   const params = useParams();
   const searchParams = useSearchParams();
   const userId = params.id as string;
+  const selectedPropertyId = searchParams?.get("propertyId") || undefined;
+  const draftKey = useRef<string | undefined>(undefined);
+  const detailRequest = useRef(0);
+  const [publishingOfferId, setPublishingOfferId] = useState<string | null>(null);
+  const [publicationError, setPublicationError] = useState("");
 
   const initialTab = (() => {
     const t = searchParams?.get("tab");
@@ -261,7 +260,7 @@ function UserDetailContent() {
 
   useEffect(() => {
     loadUserDetail();
-  }, [userId]);
+  }, [userId, selectedPropertyId]);
 
   // Auto-open the listing edit modal when deep-linked via ?tab=listings&listingId=...
   useEffect(() => {
@@ -353,14 +352,17 @@ function UserDetailContent() {
   }, [isEditing, userDetail]);
 
   const loadUserDetail = async (showLoading = true) => {
+    const sequence = ++detailRequest.current;
     try {
       if (showLoading) setLoading(true);
       if (showLoading) setError("");
       else setRefreshWarning("");
-      const data = await usersService.getUserById(userId);
+      const data = await usersService.getUserById(userId, selectedPropertyId ?? null);
+      if (sequence !== detailRequest.current) return;
       setUserDetail(data);
       setRefreshWarning("");
     } catch (err) {
+      if (sequence !== detailRequest.current) return;
       if (!showLoading) {
         setRefreshWarning(
           "The latest creator profile could not be refreshed. Reload this page before another decision.",
@@ -379,7 +381,7 @@ function UserDetailContent() {
         setError("Failed to load user details");
       }
     } finally {
-      if (showLoading) setLoading(false);
+      if (showLoading && sequence === detailRequest.current) setLoading(false);
     }
   };
 
@@ -542,7 +544,7 @@ function UserDetailContent() {
           profileUpdateData.about = editFormData.about || null;
         }
 
-        await usersService.updateHotelProfile(userDetail.id, profileUpdateData);
+        await usersService.updateHotelProfile(userDetail.id, profileUpdateData, selectedPropertyId);
       }
 
       // Reload user details
@@ -660,10 +662,11 @@ function UserDetailContent() {
   };
 
   const handleStartCreateListing = () => {
+    draftKey.current = crypto.randomUUID();
     setEditingListingId("new");
     setEditListingData({
       name: "",
-      location: "",
+      location: userDetail?.profile?.location ?? "",
       description: "",
       accommodationType: "",
       collaborationOfferings: [],
@@ -685,7 +688,7 @@ function UserDetailContent() {
       id: "new",
       hotelProfileId: userDetail?.id || "",
       name: "",
-      location: "",
+      location: userDetail?.profile?.location ?? "",
       description: "",
       accommodationType: null,
       media: [],
@@ -710,18 +713,9 @@ function UserDetailContent() {
         setSavingListing(false);
         return;
       }
-      if (!editListingData.location.trim()) {
-        setListingSaveError("Location is required");
-        setSavingListing(false);
-        return;
-      }
-      if (!editListingData.description.trim()) {
-        setListingSaveError("Description is required");
-        setSavingListing(false);
-        return;
-      }
-
       const createData: any = {
+        propertyId: selectedPropertyId,
+        idempotencyKey: draftKey.current,
         name: editListingData.name,
         location: editListingData.location,
         description: editListingData.description,
@@ -794,7 +788,10 @@ function UserDetailContent() {
       }
 
       // Reload user details to get new listing
-      const updatedUserDetail = await usersService.getUserById(userDetail.id);
+      const updatedUserDetail = await usersService.getUserById(
+        userDetail.id,
+        selectedPropertyId ?? null,
+      );
       setUserDetail(updatedUserDetail);
 
       // Exit create mode and clear state
@@ -803,12 +800,14 @@ function UserDetailContent() {
       setListingExistingImages([]);
       setListingImageFiles([]);
       setListingImagePreviews([]);
-      setListingSaveSuccess("Offer created successfully!");
+      setListingSaveSuccess("Draft saved. It stays private until published.");
 
       setTimeout(() => setListingSaveSuccess(""), 5000);
     } catch (err) {
       if (err instanceof OfferMediaPublicationError) {
-        const updatedUserDetail = await usersService.getUserById(userDetail.id).catch(() => null);
+        const updatedUserDetail = await usersService
+          .getUserById(userDetail.id, selectedPropertyId ?? null)
+          .catch(() => null);
         if (updatedUserDetail) setUserDetail(updatedUserDetail);
         setEditingListingId(null);
         setSelectedListing(null);
@@ -836,10 +835,17 @@ function UserDetailContent() {
       setDeletingListing(true);
       setListingDeleteError("");
 
-      const response = await usersService.deleteOffer(userDetail.id, listingToDelete.id);
+      const response = await usersService.deleteOffer(
+        userDetail.id,
+        listingToDelete.id,
+        selectedPropertyId,
+      );
 
       // Reload user details to get updated listings
-      const updatedUserDetail = await usersService.getUserById(userDetail.id);
+      const updatedUserDetail = await usersService.getUserById(
+        userDetail.id,
+        selectedPropertyId ?? null,
+      );
       setUserDetail(updatedUserDetail);
 
       // Close modals
@@ -891,7 +897,9 @@ function UserDetailContent() {
       setListingSaveError("");
       setListingSaveSuccess("");
 
-      const updateData: any = {};
+      const updateData: any = {
+        propertyId: selectedPropertyId,
+      };
 
       if (editListingData.name !== selectedListing.name) {
         updateData.name = editListingData.name;
@@ -980,7 +988,10 @@ function UserDetailContent() {
       }
 
       // Reload user details to get updated listing
-      const updatedUserDetail = await usersService.getUserById(userDetail.id);
+      const updatedUserDetail = await usersService.getUserById(
+        userDetail.id,
+        selectedPropertyId ?? null,
+      );
       setUserDetail(updatedUserDetail);
 
       // Update selected listing in modal
@@ -2583,9 +2594,40 @@ function UserDetailContent() {
               </div>
             )}
 
+            {isHotel && (
+              <MarketplaceAccountSetup
+                userId={userId}
+                propertyId={selectedPropertyId}
+                onActivated={() => {
+                  void loadUserDetail(false);
+                }}
+                onSelect={(propertyId) => {
+                  const query = new URLSearchParams(searchParams?.toString());
+                  if (propertyId) query.set("propertyId", propertyId);
+                  else query.delete("propertyId");
+                  query.set("tab", "listings");
+                  setActiveTab("listings");
+                  setSelectedListing(null);
+                  setEditingListingId(null);
+                  setUserDetail((current) => (current ? { ...current, profile: null } : current));
+                  router.replace(`/dashboard/users/${userId}?${query.toString()}`);
+                }}
+              />
+            )}
+            {publicationError && (
+              <p role="alert" className="p-4 text-red-700">
+                {publicationError}
+              </p>
+            )}
             {/* Offers Tab */}
             {activeTab === "listings" && isHotel && profile && (
               <div className="space-y-4">
+                {(profile as HotelProfileDetail).profileComplete === false && (
+                  <p className="text-sm text-amber-800">
+                    The hotel’s Marketplace setup is incomplete. Drafts can be saved, but the hotel
+                    must complete its Marketplace setup before publication.
+                  </p>
+                )}
                 <div className="flex justify-end">
                   <Button
                     variant="primary"
@@ -2593,7 +2635,7 @@ function UserDetailContent() {
                     className="flex items-center gap-2"
                   >
                     <PlusIcon className="w-5 h-5" />
-                    Create New Offer
+                    Create Draft Offer
                   </Button>
                 </div>
                 {(profile as HotelProfileDetail).listings &&
@@ -2627,6 +2669,29 @@ function UserDetailContent() {
                                 {listing.description}
                               </p>
                             )}
+                            {listing.status === "draft" && (
+                              <p className="text-sm text-gray-600">
+                                Private draft. Before publishing:{" "}
+                                {[
+                                  ...((profile as HotelProfileDetail).profileComplete === false
+                                    ? ["complete Marketplace setup"]
+                                    : []),
+                                  ...(!listing.media.some(
+                                    (media) =>
+                                      (media.approvalStatus === "pending_domain_approval" &&
+                                        media.lifecycleStatus === "staged") ||
+                                      (media.approvalStatus === "approved" &&
+                                        media.lifecycleStatus === "active"),
+                                  )
+                                    ? ["add a photo"]
+                                    : []),
+                                  ...(!listing.collaborationOfferings?.length
+                                    ? ["add collaboration terms and deliverables"]
+                                    : []),
+                                ].join(", ") || "review the offer and publish when ready"}
+                                .
+                              </p>
+                            )}
                             <div className="flex items-center justify-between mt-3">
                               <span
                                 className={`px-2 py-1 text-xs font-semibold rounded-full ${getStatusBadgeColor(listing.status)}`}
@@ -2641,6 +2706,40 @@ function UserDetailContent() {
                             </div>
                           </div>
                         </div>
+                        {["draft", "pending", "verified"].includes(listing.status) && (
+                          <button
+                            type="button"
+                            className="m-4 rounded border px-3 py-2 text-sm disabled:opacity-50"
+                            disabled={publishingOfferId !== null}
+                            onClick={async () => {
+                              setPublishingOfferId(listing.id);
+                              setPublicationError("");
+                              try {
+                                await usersService.verifyOffer(
+                                  userId,
+                                  listing.id,
+                                  undefined,
+                                  selectedPropertyId,
+                                );
+                                await loadUserDetail(false);
+                              } catch (failure) {
+                                setPublicationError(
+                                  failure instanceof Error
+                                    ? failure.message
+                                    : "Could not publish offer.",
+                                );
+                              } finally {
+                                setPublishingOfferId(null);
+                              }
+                            }}
+                          >
+                            {publishingOfferId === listing.id
+                              ? "Publishing…"
+                              : listing.status === "verified"
+                                ? "Publish updated photos"
+                                : "Verify & publish"}
+                          </button>
+                        )}
                         <button
                           onClick={(e) => {
                             e.stopPropagation();
@@ -2840,46 +2939,11 @@ function UserDetailContent() {
                     )}
                   </div>
                   <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-2">Location</label>
-                    {editingListingId === selectedListing.id || editingListingId === "new" ? (
-                      <Input
-                        value={editListingData.location}
-                        onChange={(e) =>
-                          setEditListingData((prev) => ({ ...prev, location: e.target.value }))
-                        }
-                        placeholder="Location"
-                      />
-                    ) : (
-                      <p className="mt-1 text-sm text-gray-900">{selectedListing.location}</p>
-                    )}
-                  </div>
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-2">
-                      Accommodation Type
-                    </label>
-                    {editingListingId === selectedListing.id || editingListingId === "new" ? (
-                      <select
-                        value={editListingData.accommodationType}
-                        onChange={(e) =>
-                          setEditListingData((prev) => ({
-                            ...prev,
-                            accommodationType: e.target.value,
-                          }))
-                        }
-                        className="block w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500 text-gray-900"
-                      >
-                        <option value="">Select type</option>
-                        {ACCOMMODATION_TYPES.map((type) => (
-                          <option key={type} value={type}>
-                            {type}
-                          </option>
-                        ))}
-                      </select>
-                    ) : (
-                      <p className="mt-1 text-sm text-gray-900">
-                        {selectedListing.accommodationType || "-"}
-                      </p>
-                    )}
+                    <p className="text-sm font-medium text-gray-700">Property</p>
+                    <p className="text-sm text-gray-900">
+                      {(profile as HotelProfileDetail)?.name} ·{" "}
+                      {profile?.location || "Location missing in the shared hotel profile"}
+                    </p>
                   </div>
                   <div>
                     <label className="block text-sm font-medium text-gray-700">Status</label>

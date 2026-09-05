@@ -46,6 +46,7 @@ export type BookingCreateRequest = {
   rateType?: string;
   addonIds?: string[];
   addonQuantities?: Record<string, number>;
+  addonPackageQuantities?: Record<string, number>;
   addonDates?: Record<string, string[]>;
   promoCode?: string;
   quoteId?: string;
@@ -54,6 +55,8 @@ export type BookingCreateRequest = {
 };
 
 export interface BookingQuote {
+  promotion?: { name: string; discountAmount: number; discountPercent: number } | null;
+  promotionDiscount?: number;
   quoteId?: string;
   expiresAt?: string;
   roomTypeId: string;
@@ -169,6 +172,7 @@ export const bookingService = {
       rateType?: string;
       addonIds?: string[];
       addonQuantities?: Record<string, number>;
+      addonPackageQuantities?: Record<string, number>;
       addonDates?: Record<string, string[]>;
       promoCode?: string;
     },

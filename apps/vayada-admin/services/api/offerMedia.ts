@@ -11,7 +11,7 @@ export class OfferMediaPublicationError extends Error {
     readonly offerId: string,
     options: { cause: unknown },
   ) {
-    super("The offer was saved, but its media was not published.", options);
+    super("The offer was saved, but its photos could not be uploaded.", options);
     this.name = "OfferMediaPublicationError";
   }
 }
@@ -23,7 +23,7 @@ export async function createOfferWithMedia(
 ): Promise<MarketplaceAdminOffer> {
   const offer = await usersService.createOffer(hotelUserId, data);
   try {
-    await publishOfferMedia(hotelUserId, offer.offerId, files);
+    if (files.length) await uploadService.uploadListingImages(files, offer.offerId);
   } catch (cause) {
     throw new OfferMediaPublicationError(offer.offerId, { cause });
   }
@@ -38,18 +38,8 @@ export async function updateOfferWithMedia(
 ): Promise<void> {
   await usersService.updateOffer(hotelUserId, offerId, data);
   try {
-    await publishOfferMedia(hotelUserId, offerId, files);
+    if (files.length) await uploadService.uploadListingImages(files, offerId);
   } catch (cause) {
     throw new OfferMediaPublicationError(offerId, { cause });
   }
-}
-
-async function publishOfferMedia(
-  hotelUserId: string,
-  offerId: string,
-  files: File[],
-): Promise<void> {
-  if (files.length === 0) return;
-  const uploaded = await uploadService.uploadListingImages(files, offerId);
-  await usersService.verifyOffer(hotelUserId, offerId, uploaded.mediaObjectIds);
 }

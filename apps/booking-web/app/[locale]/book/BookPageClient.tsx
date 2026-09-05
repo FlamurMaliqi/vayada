@@ -61,7 +61,6 @@ function BookPageContent() {
   const searchParams = useSearchParams();
   const roomId = searchParams.get("room") || "";
 
-
   // Defensively coerce a same-day or invalid URL range to a valid one-night
   // window before anything downstream computes nights / pricing.
   const { checkIn, checkOut } = ensureMinOneNight(
@@ -90,6 +89,11 @@ function BookPageContent() {
     selectedAddonIds.push(id);
     if (qtyStr) addonQuantities[id] = parseInt(qtyStr);
   }
+  const addonPackageQuantities: Record<string, number> = {};
+  for (const entry of (searchParams.get("addonPackages") || "").split(",").filter(Boolean)) {
+    const [id, quantity] = entry.split(":");
+    if (selectedAddonIds.includes(id)) addonPackageQuantities[id] = Number(quantity);
+  }
   const addonDates: Record<string, string[]> = {};
   for (const entry of (searchParams.get("addonDates") || "").split(",").filter(Boolean)) {
     const [id, datesStr] = entry.split(":");
@@ -106,6 +110,7 @@ function BookPageContent() {
     variableNightlyRates,
     roomTotal,
     promoDiscount,
+    promotion,
     promoError,
     discountAmount,
     grandTotal,
@@ -118,6 +123,7 @@ function BookPageContent() {
     adults: adultsParam,
     selectedAddonIds,
     addonQuantities,
+    addonPackageQuantities,
     addonDates,
     promoCode: promoCodeParam,
   });
@@ -254,6 +260,7 @@ function BookPageContent() {
         referralCode,
         addonIds: selectedAddonIds,
         addonQuantities,
+        addonPackageQuantities,
         addonDates,
       });
 
@@ -362,15 +369,21 @@ function BookPageContent() {
                           )
                         : 1;
                       const days = addon.perNight
-                        ? Math.max(1, Math.min(dates?.length ?? count ?? nights, nights))
+                        ? Math.max(1, Math.min(dates?.length ?? (addon.perPerson ? nights : count ?? nights), nights))
                         : 1;
                       const items =
                         !addon.perPerson && !addon.perNight ? Math.max(1, count ?? 1) : 1;
                       const linePrice = convertAndRound(
-                        addon.price * people * days * items,
+                        addon.price *
+                          people *
+                          days *
+                          items *
+                          (addonPackageQuantities[addon.id] ?? 1),
                         addon.currency,
                       );
                       const parts: string[] = [];
+                      if ((addonPackageQuantities[addon.id] ?? 1) > 1)
+                        parts.push(`×${addonPackageQuantities[addon.id]}`);
                       if (addon.perPerson && people < adultsParam)
                         parts.push(`${people}/${adultsParam} ${tc("guests").toLowerCase()}`);
                       if (addon.perNight && days < nights)
@@ -397,6 +410,12 @@ function BookPageContent() {
                 <p role="alert" className="border-b border-red-100 py-3 text-sm text-red-600">
                   {promoError}
                 </p>
+              )}
+              {promotion && (
+                <div className="flex justify-between pt-2 text-sm text-primary-600">
+                  <span>{promotion.name}</span>
+                  <span>-{formatPrice(promotion.discountAmount, selectedCurrency)}</span>
+                </div>
               )}
               {promoDiscount && (
                 <div className="flex items-center justify-between pt-3 pb-3 border-b border-gray-100">
@@ -735,14 +754,16 @@ function BookPageContent() {
                         )
                       : 1;
                     const days = addon.perNight
-                      ? Math.max(1, Math.min(dates?.length ?? count ?? nights, nights))
+                      ? Math.max(1, Math.min(dates?.length ?? (addon.perPerson ? nights : count ?? nights), nights))
                       : 1;
                     const items = !addon.perPerson && !addon.perNight ? Math.max(1, count ?? 1) : 1;
                     const linePrice = convertAndRound(
-                      addon.price * people * days * items,
+                      addon.price * people * days * items * (addonPackageQuantities[addon.id] ?? 1),
                       addon.currency,
                     );
                     const parts: string[] = [];
+                    if ((addonPackageQuantities[addon.id] ?? 1) > 1)
+                      parts.push(`×${addonPackageQuantities[addon.id]}`);
                     if (addon.perPerson && people < adultsParam)
                       parts.push(`${people}/${adultsParam}`);
                     if (addon.perNight && days < nights) parts.push(`${days}/${nights}`);
@@ -767,6 +788,12 @@ function BookPageContent() {
                 <p role="alert" className="pt-2 text-sm text-red-600">
                   {promoError}
                 </p>
+              )}
+              {promotion && (
+                <div className="flex justify-between pt-2 text-sm text-primary-600">
+                  <span>{promotion.name}</span>
+                  <span>-{formatPrice(promotion.discountAmount, selectedCurrency)}</span>
+                </div>
               )}
               {promoDiscount && (
                 <div className="flex justify-between text-sm pt-2">

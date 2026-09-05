@@ -16,7 +16,7 @@ import {
 } from "@/lib/constants/booking";
 import { bookingImageSizes } from "@/components/booking/imageSizes";
 
-const AMENITIES_PREVIEW_COUNT = 6;
+const AMENITIES_PREVIEW_COUNT = 8;
 
 interface RoomDetailModalProps {
   room: RoomType;
@@ -116,6 +116,11 @@ export default function RoomDetailModal({
     }
   }, [open]);
 
+  const closeFromHistory = useRef(onClose);
+  useEffect(() => {
+    closeFromHistory.current = onClose;
+  }, [onClose]);
+
   // Map browser back button to closing the modal instead of leaving the page
   useEffect(() => {
     if (!open) return;
@@ -128,7 +133,7 @@ export default function RoomDetailModal({
     }, 0);
     const onPop = () => {
       closedByPop = true;
-      onClose();
+      closeFromHistory.current();
     };
     window.addEventListener("popstate", onPop);
     return () => {
@@ -144,7 +149,7 @@ export default function RoomDetailModal({
         window.history.back();
       }
     };
-  }, [open, onClose]);
+  }, [open]);
 
   if (!open) return null;
 
@@ -152,23 +157,39 @@ export default function RoomDetailModal({
     convertAndRound(rate, room.currency),
   );
   const flexibleFromNightly = flexibleNightlies.length > 0 ? Math.min(...flexibleNightlies) : 0;
-  const flexibleTotal = flexibleNightlies.reduce((sum, rate) => sum + rate, 0);
+  const flexiblePromotionAmount = convertAndRound(
+    room.promotion?.discountAmount ?? 0,
+    room.currency,
+  );
+  const flexibleTotal =
+    flexibleNightlies.reduce((sum, rate) => sum + rate, 0) - flexiblePromotionAmount;
   const flexibleVaries = hasVariableNightlyRates(flexibleNightlies);
   const nonRefundableNightlies = getNonRefundableNightlyRates(room, nights).map((rate) =>
     convertAndRound(rate, room.currency),
   );
   const nonRefundableFromNightly =
     nonRefundableNightlies.length > 0 ? Math.min(...nonRefundableNightlies) : 0;
-  const nonRefundableTotal = nonRefundableNightlies.reduce((sum, rate) => sum + rate, 0);
+  const nonRefundablePromotionAmount = convertAndRound(
+    room.nonRefundablePromotion?.discountAmount ?? 0,
+    room.currency,
+  );
+  const nonRefundableTotal =
+    nonRefundableNightlies.reduce((sum, rate) => sum + rate, 0) - nonRefundablePromotionAmount;
   const nonRefundableVaries = hasVariableNightlyRates(nonRefundableNightlies);
   const discount =
     flexibleTotal > 0 ? Math.round((1 - nonRefundableTotal / flexibleTotal) * 100) : 0;
-  const flexibleNightlyLabel = flexibleVaries
-    ? tc("fromPrice", { price: formatPrice(flexibleFromNightly, selectedCurrency) })
-    : formatPrice(flexibleFromNightly, selectedCurrency);
-  const nonRefundableNightlyLabel = nonRefundableVaries
-    ? tc("fromPrice", { price: formatPrice(nonRefundableFromNightly, selectedCurrency) })
-    : formatPrice(nonRefundableFromNightly, selectedCurrency);
+  const flexibleNightlyLabel =
+    flexiblePromotionAmount > 0
+      ? formatPrice(flexibleTotal / nights, selectedCurrency)
+      : flexibleVaries
+        ? tc("fromPrice", { price: formatPrice(flexibleFromNightly, selectedCurrency) })
+        : formatPrice(flexibleFromNightly, selectedCurrency);
+  const nonRefundableNightlyLabel =
+    nonRefundablePromotionAmount > 0
+      ? formatPrice(nonRefundableTotal / nights, selectedCurrency)
+      : nonRefundableVaries
+        ? tc("fromPrice", { price: formatPrice(nonRefundableFromNightly, selectedCurrency) })
+        : formatPrice(nonRefundableFromNightly, selectedCurrency);
   const handleSelectRate = () => {
     if (soldOut || selectRateDisabled) return;
     navigatingAwayRef.current = true;
@@ -182,12 +203,23 @@ export default function RoomDetailModal({
   const visibleAmenities = showAllAmenities
     ? room.amenities
     : room.amenities.slice(0, AMENITIES_PREVIEW_COUNT);
-  const remainingAmenities = Math.max(room.amenities.length - AMENITIES_PREVIEW_COUNT, 0);
   const amenitiesId = `room-amenities-${room.id}`;
 
   // Rate option buttons — shared between mobile scroll body and desktop sticky footer
   const rateOptionsJsx = (
     <div className="space-y-3">
+      {(selectedRate === "nonrefundable" ? room.nonRefundablePromotion : room.promotion) && (
+        <p className="text-sm text-emerald-700">
+          {(selectedRate === "nonrefundable" ? room.nonRefundablePromotion : room.promotion)?.name}:
+          −
+          {formatPrice(
+            selectedRate === "nonrefundable"
+              ? nonRefundablePromotionAmount
+              : flexiblePromotionAmount,
+            selectedCurrency,
+          )}
+        </p>
+      )}
       {/* Flexible Rate */}
       {showFlexibleRate && (
         <button
@@ -571,7 +603,7 @@ export default function RoomDetailModal({
                       </span>
                     ))}
                   </div>
-                  {remainingAmenities > 0 && (
+                  {room.amenities.length > AMENITIES_PREVIEW_COUNT && (
                     <button
                       type="button"
                       onClick={() => setShowAllAmenities((expanded) => !expanded)}
@@ -581,7 +613,7 @@ export default function RoomDetailModal({
                     >
                       {showAllAmenities
                         ? t("showLess")
-                        : t("viewFullAmenities", { count: remainingAmenities })}
+                        : t("viewFullAmenities", { count: room.amenities.length })}
                       <svg
                         className={`w-4 h-4 transition-transform ${showAllAmenities ? "rotate-180" : ""}`}
                         fill="none"

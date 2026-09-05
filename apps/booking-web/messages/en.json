@@ -72,7 +72,7 @@
     "priceHighLow": "Price: High to Low",
     "upToGuests": "Up to {count} guests",
     "viewDetails": "View Details",
-    "viewFullAmenities": "View Full Amenities ({count} more)",
+    "viewFullAmenities": "View Full Amenities ({count})",
     "showLess": "Show less",
     "rateOptions": "Rate Options",
     "selectYourRate": "Select Your Rate",
@@ -146,7 +146,11 @@
     "pricePerDay": "Price per day",
     "priceLabel": "Price",
     "addedToTrip": "Added to Trip",
-    "addToTrip": "Add to Trip"
+    "addToTrip": "Add to Trip",
+    "pricePerPersonNight": "Price per person / night",
+    "leadTime": "Lead time",
+    "showPhoto": "Show photo {number}",
+    "closeDetails": "Close add-on details"
   },
   "book": {
     "guestInformation": "Guest Information",

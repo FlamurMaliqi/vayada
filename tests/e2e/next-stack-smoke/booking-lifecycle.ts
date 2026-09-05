@@ -33,6 +33,11 @@ export async function runQuoteLifecycle(
   offer: Offer,
   mode: "instant" | "request",
   bookings: BookingResource[],
+  checkout?: {
+    key: string;
+    promoCode: string;
+    assertQuote: (quote: Record<string, unknown>) => void;
+  },
 ): Promise<void> {
   const api = publicApi(request);
   const guestEmail = `qa-next-guest-${environment.runId}@${environment.emailDomain}`;
@@ -50,14 +55,16 @@ export async function runQuoteLifecycle(
     numberOfRooms: 1,
     paymentMethod: "pay_at_property",
     rateType: "flexible",
+    ...(checkout ? { promoCode: checkout.promoCode } : {}),
   };
   const quote = await api.json<Record<string, unknown>>(
     "POST",
     `/api/booking-web/hotels/${slug}/bookings/quote`,
     booking,
-    { "Idempotency-Key": `next-smoke:${environment.runId}:${mode}:quote` },
+    { "Idempotency-Key": `next-smoke:${environment.runId}:${checkout?.key ?? mode}:quote` },
   );
   expect(quote.acceptanceMode).toBe(mode);
+  checkout?.assertQuote(quote);
   const created = await api.json<Record<string, unknown>>(
     "POST",
     `/api/booking-web/hotels/${slug}/bookings`,
@@ -67,7 +74,7 @@ export async function runQuoteLifecycle(
       expectedTotalAmount: numberField(quote, "totalAmount"),
       balanceAmount: numberField(quote, "balanceAmount"),
     },
-    { "Idempotency-Key": `next-smoke:${environment.runId}:${mode}:booking` },
+    { "Idempotency-Key": `next-smoke:${environment.runId}:${checkout?.key ?? mode}:booking` },
   );
   const persisted = recordField(created, "booking");
   const resource: BookingResource = {
@@ -78,6 +85,8 @@ export async function runQuoteLifecycle(
     slug,
   };
   bookings.push(resource);
+  expect(persisted.totalAmount).toBe(numberField(quote, "totalAmount"));
+  expect(persisted.balanceAmount).toBe(numberField(quote, "balanceAmount"));
   await waitForAvailability(request, slug, stay, offer.availableRooms - 1);
   if (mode === "request") {
     await api.json(

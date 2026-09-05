@@ -7,6 +7,9 @@ on:
       - main
     paths:
       - "apps/affiliate-dashboard/**"
+      - "packages/settings-ui/**"
+      - "package.json"
+      - "package-lock.json"
       - ".github/workflows/deploy-next-affiliate-dashboard.yml"
 
 permissions:
@@ -48,7 +51,7 @@ jobs:
       - name: Build and push Docker image
         uses: docker/build-push-action@v7
         with:
-          context: ./${{ env.APP_DIR }}
+          context: .
           file: ./${{ env.APP_DIR }}/Dockerfile
           platforms: linux/amd64
           push: true

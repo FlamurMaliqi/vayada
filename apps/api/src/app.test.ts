@@ -9288,16 +9288,28 @@ describe("vayada-api", () => {
   });
 
   it.each([
-    ["canonical property id", "d3000000-0000-0000-0000-000000000682"],
+    ["canonical property id", "d3000000-0000-4000-8000-000000000682"],
     ["legacy booking-hotel id", "booking_hotel_alpenrose"],
   ])("serves and updates target booking add-on items by %s", async (_label, hotelId) => {
     const queries: { text: string; values?: unknown[] }[] = [];
-    const canonicalPropertyId = "d3000000-0000-0000-0000-000000000682";
+    const canonicalPropertyId = "d3000000-0000-4000-8000-000000000682";
     async function query<T extends QueryResultRow = QueryResultRow>(
       text: string,
       values?: unknown[],
     ): Promise<Pick<QueryResult<T>, "rows">> {
       queries.push({ text, values });
+      if (text.includes("FROM pms.property_pricing_settings"))
+        return {
+          rows: [
+            {
+              propertyId: canonicalPropertyId,
+              currency: "EUR",
+              pricingCurrencyRevision: 1,
+              createdAt: "2026-08-11T10:00:00.000Z",
+              updatedAt: "2026-08-11T10:00:00.000Z",
+            },
+          ] as unknown as T[],
+        };
       if (text.includes("WITH direct_property AS")) {
         return {
           rows: [{ propertyId: canonicalPropertyId }] as unknown as T[],
@@ -9310,7 +9322,7 @@ describe("vayada-api", () => {
         rows: [
           {
             addonItemId: "0f840001-0000-4000-8000-000000000001",
-            propertyId: "d3000000-0000-0000-0000-000000000682",
+            propertyId: "d3000000-0000-4000-8000-000000000682",
             name: "Migrated add-on",
             description: null,
             category: "food",
@@ -9343,17 +9355,23 @@ describe("vayada-api", () => {
     const items = await repository.listAddonItemsByHotelId(hotelId);
 
     expect(items).toEqual({
+      propertyCurrency: "EUR",
       addonItems: [
         {
           addonItemId: "0f840001-0000-4000-8000-000000000001",
           hotelId,
-          propertyId: "d3000000-0000-0000-0000-000000000682",
+          propertyId: "d3000000-0000-4000-8000-000000000682",
           name: "Migrated add-on",
           description: "",
           price: "45.00",
           currency: "EUR",
           category: "dining",
           imageUrl: null,
+          photos: [],
+          location: null,
+          leadTime: null,
+          maxGuests: null,
+          maxQuantity: 1,
           imageMediaObjectId: null,
           duration: null,
           pricingModel: "per_stay",
@@ -9422,11 +9440,11 @@ describe("vayada-api", () => {
   });
 
   it.each([
-    ["canonical property id", "d3000000-0000-0000-0000-000000000682"],
+    ["canonical property id", "d3000000-0000-4000-8000-000000000682"],
     ["legacy booking-hotel id", "booking_hotel_alpenrose"],
   ])("serves target booking promo codes by %s", async (_label, hotelId) => {
     const queries: { text: string; values?: unknown[] }[] = [];
-    const canonicalPropertyId = "d3000000-0000-0000-0000-000000000682";
+    const canonicalPropertyId = "d3000000-0000-4000-8000-000000000682";
     const pool: BookingPromoCodesPool = {
       async query<T extends QueryResultRow = QueryResultRow>(
         text: string,
@@ -9445,7 +9463,7 @@ describe("vayada-api", () => {
           rows: [
             {
               promoCodeId: "0f850001-0000-4000-8000-000000000001",
-              propertyId: "d3000000-0000-0000-0000-000000000682",
+              propertyId: "d3000000-0000-4000-8000-000000000682",
               code: "SUMMER20",
               discountType: "percentage",
               discountValue: "20.00",
@@ -9499,7 +9517,7 @@ describe("vayada-api", () => {
       {
         promoCodeId: "0f850001-0000-4000-8000-000000000001",
         hotelId,
-        propertyId: "d3000000-0000-0000-0000-000000000682",
+        propertyId: "d3000000-0000-4000-8000-000000000682",
         code: "SUMMER20",
         discountType: "percentage",
         discountValue: "20.00",

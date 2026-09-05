@@ -15,6 +15,423 @@ const ATTACHMENT = "60000000-0000-4000-a000-000000000001";
 const MEDIA = "70000000-0000-4000-a000-000000000001";
 
 describe("production PMS messaging", () => {
+  it.each(["guest", "system", "channel", "property", "property_user", "host", "hotel"])(
+    "preserves explicit %s inquiry context, sender/read history and source evidence",
+    (sender) => {
+      const source = explicitInquiryRows(sender);
+      const checksum = sha256(source);
+      const context = contextFor(source);
+      const records = buildPmsMessagingRecords(context);
+      expect(context.blockers).toEqual([]);
+      const inbound = sender === "guest" || sender === "system";
+      expect(records.find((entry) => entry.targetId === MESSAGE)?.row).toMatchObject({
+        body: "Can we stay these dates?",
+        direction: inbound ? "inbound" : "outbound",
+        senderType: ["guest", "system", "channel"].includes(sender) ? sender : "property_user",
+        readAt: null,
+        rawPayload: {},
+      });
+      expect(records.find((entry) => entry.targetId === THREAD)?.row).toMatchObject({
+        guestBookingId: null,
+        conversationContextState: "inquiry",
+        sourceBookingId: "inquiry-ext",
+        inquiryArrivalDate: "2026-09-01",
+        inquiryDepartureDate: "2026-09-03",
+        inquiryAdults: 2,
+        inquiryChildren: 0,
+        unreadCount: inbound ? 1 : 0,
+      });
+      expect(sha256(source)).toBe(checksum);
+      expect(buildPmsMessagingRecords(contextFor(source))).toEqual(records);
+      expect(JSON.stringify(records)).not.toContain("private-token");
+    },
+  );
+
+  it.each(["inquiry_id", "nested", "read-linked"])(
+    "retains alternate explicit inquiry evidence: %s",
+    (kind) => {
+      const source = explicitInquiryRows();
+      const raw = inquiryPayload(source);
+      delete raw["provider_inquiry_id"];
+      raw["inquiry"] = kind === "nested" ? { id: "inquiry-ext" } : {};
+      if (kind !== "nested") raw["inquiry_id"] = "inquiry-ext";
+      if (kind === "read-linked") {
+        Object.assign(source.find((entry) => entry.sourceTable === "message_threads")!.data, {
+          booking_id: BOOKING,
+          source_booking_id: "booking-ext",
+          status: "closed",
+          unread_count: 0,
+        });
+        source.find((entry) => entry.sourceTable === "messages")!.data["read_at"] =
+          "2026-09-01T12:01:00Z";
+      }
+      const context = contextFor(source);
+      const records = buildPmsMessagingRecords(context);
+      expect(context.blockers).toEqual([]);
+      expect(records.find((entry) => entry.targetId === THREAD)?.row).toMatchObject({
+        sourceBookingId: kind === "read-linked" ? "booking-ext" : "inquiry-ext",
+        conversationContextState: kind === "read-linked" ? "linked" : "inquiry",
+        inquiryAdults: null,
+        inquiryArrivalDate: null,
+        ...(kind === "read-linked"
+          ? { unreadCount: 0, attentionState: "done", guestBookingId: BOOKING }
+          : {}),
+      });
+      if (kind === "read-linked")
+        expect(records.find((entry) => entry.targetId === MESSAGE)?.row["readAt"]).toBe(
+          "2026-09-01T12:01:00.000Z",
+        );
+    },
+  );
+
+  it.each([true, false])(
+    "handles flat meta identity without inventing context (identity: %s)",
+    (hasIdentity) => {
+      const source = explicitInquiryRows();
+      const raw: Record<string, unknown> = inquiryPayload(source);
+      delete raw["provider_inquiry_id"];
+      raw["inquiry"] = {};
+      raw["meta"] = hasIdentity ? { live_feed_event_id: "inquiry-ext" } : {};
+      const context = contextFor(source);
+      const records = buildPmsMessagingRecords(context);
+      expect(context.blockers).toEqual([]);
+      expect(records.find((entry) => entry.targetId === THREAD)?.row).toMatchObject({
+        conversationContextState: hasIdentity ? "inquiry" : "unlinked",
+        sourceBookingId: hasIdentity ? "inquiry-ext" : null,
+        inquiryArrivalDate: null,
+        inquiryAdults: null,
+      });
+    },
+  );
+
+  it.each([
+    { inquiry_id: "private-token" },
+    { inquiry: { id: "private-token" } },
+    { meta: { live_feed_event_id: "private-token" } },
+    { meta: [] },
+    { meta: { booking_details: [] } },
+    { meta: { property_id: HOTEL } },
+    { property_id: HOTEL },
+    { property_id: null },
+    { inquiry: { property_id: HOTEL } },
+    { provider: "booking.com" },
+    { channel: "booking.com" },
+    { id: "private-token" },
+    { message_id: "private-token" },
+    { thread_id: "private-token" },
+    { booking_id: "private-token" },
+    { source_booking_id: "private-token" },
+    { sender: "unknown" },
+    { sender: { type: "guest" } },
+    { sender: "host" },
+    { message: "private-token" },
+    { inquiry: [] },
+    { inquiry: { adults: "2" } },
+    { provider_inquiry_id: null, inquiry: {}, message_type: "inquiry" },
+  ])("blocks unverified explicit inquiry evidence %j", (fields) => {
+    const source = explicitInquiryRows();
+    Object.assign(inquiryPayload(source), fields);
+    const context = contextFor(source);
+    buildPmsMessagingRecords(context);
+    expect(context.blockers).toContainEqual(
+      expect.objectContaining({
+        code: "INBOX_INQUIRY_REQUIRES_REVIEW",
+        sourceId: MESSAGE,
+        message: expect.stringContaining(PROPERTY),
+      }),
+    );
+    expect(JSON.stringify(context.blockers)).not.toContain("private-token");
+  });
+
+  it.each(["open", "closed", "no_reply_needed"])(
+    "counts unknown system-inquiry read history as unread without changing %s attention",
+    (status) => {
+      const source = systemInquiryRows();
+      source.find((entry) => entry.sourceTable === "message_threads")!.data["status"] = status;
+      const checksum = sha256(source);
+      const context = contextFor(source);
+      const records = buildPmsMessagingRecords(context);
+      expect(context.blockers).toEqual([]);
+      expect(records.find((entry) => entry.targetTable === "messages")?.row).toMatchObject({
+        direction: "inbound",
+        senderType: "system",
+        readAt: null,
+        rawPayload: {},
+      });
+      expect(records.find((entry) => entry.targetTable === "message_threads")?.row).toMatchObject({
+        unreadCount: 1,
+        lastMessageDirection: "inbound",
+        attentionState: status === "open" ? "needs_attention" : "done",
+        doneReason: status === "open" ? null : `legacy_${status}`,
+        guestBookingId: null,
+        conversationContextState: "inquiry",
+        sourceBookingId: "inquiry-ext",
+        inquiryArrivalDate: null,
+        inquiryDepartureDate: null,
+        inquiryAdults: null,
+        inquiryChildren: null,
+      });
+      expect(sha256(source)).toBe(checksum);
+      expect(buildPmsMessagingRecords(contextFor(source))).toEqual(records);
+      expect(JSON.stringify(records)).not.toContain("private-token");
+    },
+  );
+
+  it("preserves explicit inquiry read timestamps and a later reply's summary", () => {
+    const source = systemInquiryRows();
+    const message = source.find((entry) => entry.sourceTable === "messages")!;
+    message.data["read_at"] = "2026-09-01T12:01:00Z";
+    source.push(
+      row("messages", {
+        ...message.data,
+        id: MEDIA,
+        source_message_id: "reply-ext",
+        body: "Later reply",
+        sent_at: "2026-09-01T12:02:00Z",
+        read_at: null,
+        raw_payload: {},
+      }),
+    );
+    Object.assign(source.find((entry) => entry.sourceTable === "message_threads")!.data, {
+      last_message_at: "2026-09-01T12:02:00Z",
+      last_message_preview: "Later reply",
+    });
+    const context = contextFor(source);
+    const records = buildPmsMessagingRecords(context);
+    expect(context.blockers).toEqual([]);
+    expect(records.find((entry) => entry.targetId === MESSAGE)?.row).toMatchObject({
+      readAt: "2026-09-01T12:01:00.000Z",
+      direction: "inbound",
+      senderType: "system",
+    });
+    expect(records.find((entry) => entry.targetId === THREAD)?.row).toMatchObject({
+      unreadCount: 0,
+      lastMessageDirection: "outbound",
+      lastMessagePreview: "Later reply",
+    });
+  });
+
+  it("does not double-count an already inbound inquiry or unlink its later booking", () => {
+    const source = systemInquiryRows();
+    Object.assign(inquiryPayload(source).meta.booking_details, {
+      arrival_date: "2026-09-01",
+      departure_date: "2026-09-03",
+      adults: 2,
+      children: 0,
+    });
+    source.find((entry) => entry.sourceTable === "messages")!.data["direction"] = "inbound";
+    Object.assign(source.find((entry) => entry.sourceTable === "message_threads")!.data, {
+      unread_count: 1,
+      last_message_direction: "inbound",
+      booking_id: BOOKING,
+      source_booking_id: "booking-ext",
+    });
+    const context = contextFor(source);
+    const records = buildPmsMessagingRecords(context);
+    expect(context.blockers).toEqual([]);
+    expect(records.find((entry) => entry.targetId === THREAD)?.row).toMatchObject({
+      unreadCount: 1,
+      guestBookingId: BOOKING,
+      conversationContextState: "linked",
+      sourceBookingId: "booking-ext",
+      inquiryArrivalDate: null,
+      inquiryDepartureDate: null,
+      inquiryAdults: null,
+      inquiryChildren: null,
+    });
+  });
+
+  it("retains supplied inquiry aliases, zero counts and unchanged source evidence", () => {
+    const source = systemInquiryRows();
+    const raw = inquiryPayload(source);
+    Object.assign(raw.meta.booking_details, {
+      checkin: "2028-02-29",
+      checkout: "2028-03-02",
+      number_of_adults: 100,
+    });
+    raw["children_count"] = 0;
+    raw["inquiry"] = { id: "inquiry-ext", arrival_date: "2028-02-29" };
+    source.find((entry) => entry.sourceTable === "message_threads")!.data["source_booking_id"] =
+      "inquiry-ext";
+    const checksum = sha256(source);
+    const context = contextFor(source);
+    const records = buildPmsMessagingRecords(context);
+    expect(context.blockers).toEqual([]);
+    expect(records.find((entry) => entry.targetId === THREAD)?.row).toMatchObject({
+      conversationContextState: "inquiry",
+      sourceBookingId: "inquiry-ext",
+      guestBookingId: null,
+      inquiryArrivalDate: "2028-02-29",
+      inquiryDepartureDate: "2028-03-02",
+      inquiryAdults: 100,
+      inquiryChildren: 0,
+    });
+    expect(sha256(source)).toBe(checksum);
+    expect(buildPmsMessagingRecords(contextFor(source))).toEqual(records);
+    expect(JSON.stringify(records)).not.toContain("private-token");
+  });
+
+  it.each([
+    { arrival_date: "2026-02-30", departure_date: "2026-03-03" },
+    { arrival_date: "2026-09-01T00:00:00Z", departure_date: "2026-09-03" },
+    { arrival_date: "2026-09-01" },
+    { departure_date: "2026-09-03" },
+    { arrival_date: "2026-09-03", departure_date: "2026-09-03" },
+    { arrival_date: "2026-09-04", departure_date: "2026-09-03" },
+    { adults: -1 },
+    { adults: 101 },
+    { adults: 1.5 },
+    { adults: "2" },
+    { children: false },
+    { children: "private-token" },
+    { adults: 2, adult_count: 3 },
+  ])("blocks invalid or conflicting supplied inquiry details %j", (details) => {
+    const source = systemInquiryRows();
+    Object.assign(inquiryPayload(source).meta.booking_details, details);
+    const context = contextFor(source);
+    buildPmsMessagingRecords(context);
+    expect(context.blockers).toContainEqual(
+      expect.objectContaining({
+        code: "INBOX_SYSTEM_INQUIRY_REQUIRES_REVIEW",
+        sourceId: MESSAGE,
+      }),
+    );
+    expect(JSON.stringify(context.blockers)).not.toContain("private-token");
+  });
+
+  it.each([
+    { inquiry: { id: "private-token" } },
+    { inquiry: [] },
+    { channel_booking_id: "private-token" },
+    { source_booking_id: "private-token" },
+    { adults: 3 },
+    { checkin: "2026-09-02" },
+  ])("blocks contradictory inquiry payload context %j", (fields) => {
+    const source = systemInquiryRows();
+    const raw = inquiryPayload(source);
+    Object.assign(raw.meta.booking_details, {
+      arrival_date: "2026-09-01",
+      departure_date: "2026-09-03",
+      adults: 2,
+    });
+    Object.assign(raw, fields);
+    const context = contextFor(source);
+    buildPmsMessagingRecords(context);
+    expect(context.blockers).toContainEqual(
+      expect.objectContaining({
+        code: "INBOX_SYSTEM_INQUIRY_REQUIRES_REVIEW",
+        sourceId: MESSAGE,
+      }),
+    );
+    expect(JSON.stringify(context.blockers)).not.toContain("private-token");
+  });
+
+  it.each(["identity", "adults", "compatible", "thread-reference"])(
+    "reconciles repeated inquiry %s evidence independently of extraction order",
+    (kind) => {
+      const source = systemInquiryRows();
+      inquiryPayload(source).meta.booking_details["adults"] = 2;
+      const duplicate = structuredClone(source.find((entry) => entry.sourceTable === "messages")!);
+      Object.assign(duplicate.data, { id: MEDIA, source_message_id: "second-inquiry" });
+      source.push(duplicate);
+      const raw = inquiryPayload([duplicate]);
+      if (kind === "identity") raw.meta.live_feed_event_id = "private-token";
+      if (kind === "adults") raw.meta.booking_details["adults"] = 3;
+      if (kind === "compatible") {
+        raw.meta.booking_details["adults"] = null;
+        raw["children"] = 0;
+      }
+      if (kind === "thread-reference")
+        source.find((entry) => entry.sourceTable === "message_threads")!.data["source_booking_id"] =
+          "private-token";
+      const threads = [];
+      for (const ordered of [source, [...source].reverse()]) {
+        const context = contextFor(ordered);
+        const records = buildPmsMessagingRecords(context);
+        if (kind === "compatible") {
+          expect(context.blockers).toEqual([]);
+          const thread = records.find((entry) => entry.targetId === THREAD)?.row;
+          expect(thread).toMatchObject({ inquiryAdults: 2, inquiryChildren: 0, unreadCount: 2 });
+          threads.push(thread);
+        } else
+          expect(context.blockers).toContainEqual(
+            expect.objectContaining({
+              code: "INBOX_SYSTEM_INQUIRY_REQUIRES_REVIEW",
+            }),
+          );
+        expect(JSON.stringify(context.blockers)).not.toContain("private-token");
+      }
+      if (kind === "compatible") expect(threads[0]).toEqual(threads[1]);
+    },
+  );
+
+  it.each(["property", "binding", "message", "thread", "identity", "channel", "booking", "body"])(
+    "blocks conflicting/incomplete inquiry %s evidence without guest content",
+    (conflict) => {
+      const source = systemInquiryRows();
+      const message = source.find((entry) => entry.sourceTable === "messages")!.data;
+      const raw = message["raw_payload"] as Record<string, unknown>;
+      if (conflict === "body") {
+        message["body"] = "changed body";
+        source.find((entry) => entry.sourceTable === "message_threads")!.data[
+          "last_message_preview"
+        ] = "changed body";
+      }
+      if (conflict === "property") raw["property_id"] = HOTEL;
+      if (conflict === "binding")
+        source.find((entry) => entry.sourceTable === "channex_connections")!.data[
+          "channex_property_id"
+        ] = HOTEL;
+      if (conflict === "message") raw["id"] = "private-token";
+      if (conflict === "thread") raw["message_thread_id"] = "private-token";
+      if (conflict === "identity") raw["meta"] = {};
+      if (conflict === "channel")
+        source.find((entry) => entry.sourceTable === "message_threads")!.data["channel"] =
+          "booking.com";
+      if (conflict === "booking") raw["booking_id"] = "private-token";
+      const context = contextFor(source);
+      buildPmsMessagingRecords(context);
+      expect(context.blockers).toContainEqual(
+        expect.objectContaining({
+          code: "INBOX_SYSTEM_INQUIRY_REQUIRES_REVIEW",
+          sourceId: MESSAGE,
+          message: expect.stringContaining(PROPERTY),
+        }),
+      );
+      expect(JSON.stringify(context.blockers)).not.toContain("private-token");
+    },
+  );
+
+  it.each(["guest", { toString: "private-token" }])(
+    "does not classify ordinary text or malformed sender metadata as a system inquiry",
+    (sender) => {
+      const source = systemInquiryRows();
+      const raw = source.find((entry) => entry.sourceTable === "messages")!.data[
+        "raw_payload"
+      ] as Record<string, unknown>;
+      raw["sender"] = sender;
+      // A non-system sender's text alone is not inquiry evidence.
+      delete raw["meta"];
+      const context = contextFor(source);
+      const records = buildPmsMessagingRecords(context);
+      expect(context.blockers).toEqual([]);
+      expect(records.find((entry) => entry.targetId === MESSAGE)?.row).toMatchObject({
+        direction: "outbound",
+        senderType: "property_user",
+      });
+    },
+  );
+
+  it("does not disguise inconsistent source unread counts as inquiry normalization", () => {
+    const source = systemInquiryRows();
+    source.find((entry) => entry.sourceTable === "message_threads")!.data["unread_count"] = 10;
+    const context = contextFor(source);
+    buildPmsMessagingRecords(context);
+    expect(context.blockers).toContainEqual(
+      expect.objectContaining({ code: "INBOX_THREAD_SUMMARY_MISMATCH" }),
+    );
+  });
+
   it("preserves private thread, message, and attachment state", () => {
     const context = createProductionPmsContext({
       sourceRunId: "run",
@@ -345,43 +762,128 @@ describe("production PMS messaging", () => {
     ).toEqual([PROPERTY, otherProperty]);
   });
 
-  it("uses sent time and UUID ties, preserves Unicode previews, and ignores arrival order", () => {
-    const sourceRows = rows();
-    const original = sourceRows.find((entry) => entry.sourceTable === "messages")!;
-    const body = " 🏨".repeat(150);
-    sourceRows.push(
-      row("messages", {
-        ...original.data,
-        id: "50000000-0000-4000-a000-000000000002",
-        source_message_id: "outbound-ext",
-        direction: "outbound",
-        body,
-        read_at: null,
+  it.each([0, 199, 200, 201, 279, 280, 281, 500])(
+    "converts only the exact legacy preview for a %i-code-point body without changing source evidence",
+    (length) => {
+      const source = rows();
+      const body = [..." 🏨e\u0301".repeat(130)].slice(0, length).join("");
+      const thread = source.find((entry) => entry.sourceTable === "message_threads")!;
+      thread.data["last_message_preview"] = [...body].slice(0, 200).join("");
+      source.find((entry) => entry.sourceTable === "messages")!.data["body"] = body;
+      const checksum = sha256(source);
+      const context = contextFor(source);
+      const records = buildPmsMessagingRecords(context);
+      expect(context.blockers).toEqual([]);
+      expect(records.find((entry) => entry.targetId === THREAD)).toMatchObject({
+        sourceChecksum: sha256(thread.data),
+        row: { lastMessagePreview: [...body].slice(0, 280).join("") },
+      });
+      expect(records.find((entry) => entry.targetId === MESSAGE)?.row["body"]).toBe(body);
+      expect(sha256(source)).toBe(checksum);
+      expect(buildPmsMessagingRecords(contextFor(source))).toEqual(records);
+    },
+  );
+
+  it.each([
+    "shorter",
+    "ellipsis",
+    "trimmed",
+    "UTF-16",
+    "stale",
+    "unread",
+    "direction",
+    "timestamp",
+    "duplicate",
+  ])("does not hide %s source inconsistencies when converting a long preview", (kind) => {
+    const source = rows();
+    const body = " 🏨".repeat(160);
+    const legacyPreview = [...body].slice(0, 200).join("");
+    const thread = source.find((entry) => entry.sourceTable === "message_threads")!;
+    const message = source.find((entry) => entry.sourceTable === "messages")!;
+    thread.data["last_message_preview"] = legacyPreview;
+    message.data["body"] = body;
+    if (kind === "shorter") thread.data["last_message_preview"] = [...body].slice(0, 199).join("");
+    if (kind === "ellipsis") thread.data["last_message_preview"] = `${legacyPreview}…`;
+    if (kind === "trimmed") thread.data["last_message_preview"] = legacyPreview.trim();
+    if (kind === "UTF-16") thread.data["last_message_preview"] = body.slice(0, 200);
+    if (kind === "stale") {
+      const stale = "private stale preview".repeat(20);
+      thread.data["last_message_preview"] = stale.slice(0, 200);
+      source.push(
+        row("messages", {
+          ...message.data,
+          id: MEDIA,
+          source_message_id: "old-ext",
+          body: stale,
+          sent_at: "2026-09-01T10:00:00Z",
+          received_at: "2026-09-01T13:00:00Z",
+        }),
+      );
+    }
+    if (kind === "unread") thread.data["unread_count"] = 1;
+    if (kind === "direction") thread.data["last_message_direction"] = "outbound";
+    if (kind === "timestamp") thread.data["last_message_at"] = "2026-09-01T12:00:00Z";
+    if (kind === "duplicate") source.push(row("messages", { ...message.data, id: MEDIA }));
+    const checksum = sha256(source);
+    const context = contextFor(source);
+    const records = buildPmsMessagingRecords(context);
+    expect(context.blockers).toContainEqual(
+      expect.objectContaining({
+        code:
+          kind === "duplicate" ? "INBOX_DUPLICATE_PROVIDER_ID" : "INBOX_THREAD_SUMMARY_MISMATCH",
       }),
     );
-    sourceRows.push(
-      row("messages", {
-        ...original.data,
-        id: "50000000-0000-4000-a000-000000000003",
-        source_message_id: "older-ext",
-        body: "older message",
-        sent_at: "2026-09-01T10:00:00Z",
-        received_at: "2026-09-01T13:00:00Z",
-        read_at: null,
-      }),
+    expect(records.find((entry) => entry.targetId === THREAD)?.row["lastMessagePreview"]).toBe(
+      thread.data["last_message_preview"],
     );
-    Object.assign(sourceRows.find((entry) => entry.sourceTable === "message_threads")!.data, {
-      last_message_direction: "outbound",
-      last_message_preview: [...body].slice(0, 280).join(""),
-      unread_count: 1,
-    });
-    const first = contextFor(sourceRows);
-    buildPmsMessagingRecords(first);
-    expect(first.blockers).toEqual([]);
-    const reordered = contextFor([...sourceRows].reverse());
-    buildPmsMessagingRecords(reordered);
-    expect(reordered.blockers).toEqual([]);
+    expect(sha256(source)).toBe(checksum);
+    expect(JSON.stringify(context.blockers)).not.toMatch(/private stale|old-ext|🏨|thread-ext/);
   });
+
+  it.each([200, 280])(
+    "uses sent time and UUID ties for %i-code-point previews regardless of arrival order",
+    (previewLength) => {
+      const sourceRows = rows();
+      const original = sourceRows.find((entry) => entry.sourceTable === "messages")!;
+      const body = " 🏨".repeat(150);
+      sourceRows.push(
+        row("messages", {
+          ...original.data,
+          id: "50000000-0000-4000-a000-000000000002",
+          source_message_id: "outbound-ext",
+          direction: "outbound",
+          body,
+          read_at: null,
+        }),
+      );
+      sourceRows.push(
+        row("messages", {
+          ...original.data,
+          id: "50000000-0000-4000-a000-000000000003",
+          source_message_id: "older-ext",
+          body: "older message",
+          sent_at: "2026-09-01T10:00:00Z",
+          received_at: "2026-09-01T13:00:00Z",
+          read_at: null,
+        }),
+      );
+      Object.assign(sourceRows.find((entry) => entry.sourceTable === "message_threads")!.data, {
+        last_message_direction: "outbound",
+        last_message_preview: [...body].slice(0, previewLength).join(""),
+        unread_count: 1,
+      });
+      const first = contextFor(sourceRows);
+      const firstRecords = buildPmsMessagingRecords(first);
+      expect(first.blockers).toEqual([]);
+      const reordered = contextFor([...sourceRows].reverse());
+      const reorderedRecords = buildPmsMessagingRecords(reordered);
+      expect(reordered.blockers).toEqual([]);
+      for (const records of [firstRecords, reorderedRecords])
+        expect(records.find((entry) => entry.targetId === THREAD)?.row["lastMessagePreview"]).toBe(
+          [...body].slice(0, 280).join(""),
+        );
+    },
+  );
 
   it("accepts empty threads only with empty summary metadata and zero unread", () => {
     const sourceRows = rows().filter(
@@ -494,6 +996,70 @@ function rows(): IdentitySourceRow[] {
       created_at: "2026-09-01T12:00:00Z",
     }),
   ];
+}
+
+function systemInquiryRows() {
+  const source = rows();
+  Object.assign(source.find((entry) => entry.sourceTable === "message_threads")!.data, {
+    channel: "airbnb",
+    booking_id: null,
+    source_booking_id: null,
+    last_message_preview: "inquiry",
+    last_message_direction: "outbound",
+  });
+  Object.assign(source.find((entry) => entry.sourceTable === "messages")!.data, {
+    body: "inquiry",
+    direction: "outbound",
+    read_at: null,
+    raw_payload: {
+      sender: "system",
+      message: "inquiry",
+      token: "private-token",
+      meta: {
+        live_feed_event_id: "inquiry-ext",
+        booking_details: { property_id: MEDIA },
+      },
+    },
+  });
+  source.push(
+    row("channex_connections", { id: MEDIA, hotel_id: HOTEL, channex_property_id: MEDIA }),
+  );
+  return source;
+}
+
+function inquiryPayload(source: IdentitySourceRow[]) {
+  return source.find((entry) => entry.sourceTable === "messages")!.data["raw_payload"] as {
+    meta: { live_feed_event_id: string; booking_details: Record<string, unknown> };
+    [field: string]: unknown;
+  };
+}
+
+function explicitInquiryRows(sender = "guest") {
+  const source = systemInquiryRows();
+  const body = "Can we stay these dates?";
+  Object.assign(source.find((entry) => entry.sourceTable === "messages")!.data, {
+    body,
+    direction: sender === "guest" ? "inbound" : "outbound",
+    raw_payload: {
+      sender,
+      message: body,
+      property_id: MEDIA,
+      provider_inquiry_id: "inquiry-ext",
+      token: "private-token",
+      inquiry: {
+        arrival_date: "2026-09-01",
+        departure_date: "2026-09-03",
+        adults: 2,
+        children: 0,
+      },
+    },
+  });
+  Object.assign(source.find((entry) => entry.sourceTable === "message_threads")!.data, {
+    last_message_preview: body,
+    last_message_direction: sender === "guest" ? "inbound" : "outbound",
+    unread_count: sender === "guest" ? 1 : 0,
+  });
+  return source;
 }
 
 function target(mediaIds: string[]) {

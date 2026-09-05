@@ -1,6 +1,11 @@
 "use client";
 
-import { useState, type DragEvent, type FormEvent } from "react";
+import { useState, type DragEvent } from "react";
+import {
+  AddonEditor,
+  emptyAddonValues,
+  type AddonEditorValues,
+} from "@vayada/product-onboarding/AddonEditor";
 import Link from "next/link";
 import { PlusIcon, PencilSquareIcon, TrashIcon } from "@heroicons/react/24/outline";
 import { ToggleSwitch } from "@/components/ui";
@@ -14,26 +19,7 @@ const CATEGORY_COLORS: Record<string, string> = {
   experience: "bg-green-100 text-green-700",
 };
 
-const CATEGORY_OPTIONS = ["dining", "experience", "transport", "wellness", "other"] as const;
-const PARTNER_COMMISSION_RATE = /^(?:100(?:\.0{1,4})?|(?:0|[1-9]\d?)(?:\.\d{1,4})?)$/;
-
-export type AddonItemCategory = (typeof CATEGORY_OPTIONS)[number];
-
-export interface AddonItemFormValues {
-  name: string;
-  description: string;
-  price: string;
-  currency: string;
-  category: AddonItemCategory;
-  image: string;
-  imageMediaObjectId: string | null;
-  imageFile: File | null;
-  duration: string;
-  perPerson: boolean;
-  perNight: boolean;
-  ownershipKind: "property" | "partner";
-  partnerCommissionRate: string;
-}
+export type AddonItemFormValues = AddonEditorValues;
 
 function AddonsIcon({ className }: { className?: string }) {
   return (
@@ -51,45 +37,32 @@ function AddonsIcon({ className }: { className?: string }) {
   );
 }
 
-function emptyDraft(currency: string): AddonItemFormValues {
+function toDraft(addon: AddonItem, currency: string): AddonItemFormValues {
   return {
-    name: "",
-    description: "",
-    price: "",
+    ...emptyAddonValues(currency),
+    ...addon,
     currency,
-    category: "experience",
-    image: "",
-    imageMediaObjectId: null,
-    imageFile: null,
-    duration: "",
-    perPerson: false,
-    perNight: false,
-    ownershipKind: "property",
-    partnerCommissionRate: "",
-  };
-}
-
-function toAddonCategory(category: string): AddonItemCategory {
-  return CATEGORY_OPTIONS.includes(category as AddonItemCategory)
-    ? (category as AddonItemCategory)
-    : "other";
-}
-
-function toDraft(addon: AddonItem, fallbackCurrency: string): AddonItemFormValues {
-  return {
-    name: addon.name,
-    description: addon.description,
     price: addon.price.toFixed(2),
-    currency: addon.currency || fallbackCurrency,
-    category: toAddonCategory(addon.category),
-    image: addon.image,
-    imageMediaObjectId: addon.imageMediaObjectId ?? null,
-    imageFile: null,
+    category: addon.category as AddonEditorValues["category"],
     duration: addon.duration ?? "",
+    location: addon.location ?? "",
+    maxGuests: addon.maxGuests ?? "",
+    leadTime: addon.leadTime ?? "",
+    maxQuantity: String(addon.maxQuantity ?? 1),
     perPerson: addon.perPerson === true,
     perNight: addon.perNight === true,
-    ownershipKind: addon.ownershipKind,
     partnerCommissionRate: addon.partnerCommissionRate ?? "",
+    photos:
+      addon.photos ??
+      (addon.image
+        ? [
+            {
+              imageUrl: addon.image,
+              mediaObjectId: addon.imageMediaObjectId ?? null,
+              isCover: true,
+            },
+          ]
+        : []),
   };
 }
 
@@ -131,7 +104,7 @@ export default function AddonsTab({
   onReorderAddon,
 }: AddonsTabProps) {
   const [filterCategory, setFilterCategory] = useState("all");
-  const [draft, setDraft] = useState<AddonItemFormValues>(() => emptyDraft(propertyCurrency));
+  const [draft, setDraft] = useState<AddonItemFormValues>(() => emptyAddonValues(propertyCurrency));
   const [editingAddon, setEditingAddon] = useState<AddonItem | null>(null);
   const [isEditorOpen, setIsEditorOpen] = useState(false);
   const [savingItem, setSavingItem] = useState(false);
@@ -156,7 +129,7 @@ export default function AddonsTab({
 
   const openCreateEditor = () => {
     setEditingAddon(null);
-    setDraft(emptyDraft(propertyCurrency));
+    setDraft(emptyAddonValues(propertyCurrency));
     setItemError(null);
     setIsEditorOpen(true);
   };
@@ -175,45 +148,13 @@ export default function AddonsTab({
     setItemError(null);
   };
 
-  const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
-    const name = draft.name.trim();
-    const price = Number(draft.price);
-    if (!name) {
-      setItemError("Name is required.");
-      return;
-    }
-    if (!Number.isFinite(price) || price < 0) {
-      setItemError("Price must be a non-negative amount.");
-      return;
-    }
-    const partnerCommissionRate = draft.partnerCommissionRate.trim();
-    if (draft.ownershipKind === "partner" && !PARTNER_COMMISSION_RATE.test(partnerCommissionRate)) {
-      setItemError("Partner commission must be between 0 and 100 with up to 4 decimals.");
-      return;
-    }
-
+  const handleSave = async (values: AddonItemFormValues) => {
     setSavingItem(true);
-    setItemError(null);
-    const normalized = {
-      ...draft,
-      name,
-      description: draft.description.trim(),
-      price: price.toFixed(2),
-      currency: draft.currency.trim().toUpperCase(),
-      duration: draft.duration.trim(),
-      partnerCommissionRate: draft.ownershipKind === "partner" ? partnerCommissionRate : "",
-    };
-
     try {
-      if (editingAddon) {
-        await onUpdateAddon(editingAddon.id, normalized);
-      } else {
-        await onCreateAddon(normalized);
-      }
-      closeEditor();
-    } catch (error) {
-      setItemError(error instanceof Error ? error.message : "Failed to save add-on.");
+      if (editingAddon) await onUpdateAddon(editingAddon.id, values);
+      else await onCreateAddon(values);
+      setIsEditorOpen(false);
+      setEditingAddon(null);
     } finally {
       setSavingItem(false);
     }
@@ -478,221 +419,13 @@ export default function AddonsTab({
       </div>
 
       {isEditorOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4">
-          <form
-            onSubmit={handleSubmit}
-            className="w-full max-w-lg rounded-lg bg-white p-5 shadow-xl space-y-4"
-          >
-            <div className="flex items-start justify-between gap-4">
-              <div>
-                <h3 className="text-[15px] font-semibold text-gray-900">
-                  {editingAddon ? "Edit Add-on" : "Create Add-on"}
-                </h3>
-              </div>
-              <button
-                type="button"
-                onClick={closeEditor}
-                className="text-[12px] font-medium text-gray-500 hover:text-gray-900"
-              >
-                Cancel
-              </button>
-            </div>
-
-            {itemError && (
-              <div className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-[12px] text-red-700">
-                {itemError}
-              </div>
-            )}
-
-            <div className="grid gap-3 sm:grid-cols-2">
-              <label className="sm:col-span-2 text-[12px] font-medium text-gray-700">
-                Name
-                <input
-                  value={draft.name}
-                  onChange={(event) =>
-                    setDraft((current) => ({ ...current, name: event.target.value }))
-                  }
-                  className="mt-1 w-full rounded-md border border-gray-300 px-3 py-2 text-[13px] text-gray-900 outline-none focus:border-gray-900"
-                  placeholder="Airport transfer"
-                />
-              </label>
-              <label className="sm:col-span-2 text-[12px] font-medium text-gray-700">
-                Description
-                <textarea
-                  value={draft.description}
-                  onChange={(event) =>
-                    setDraft((current) => ({ ...current, description: event.target.value }))
-                  }
-                  className="mt-1 w-full rounded-md border border-gray-300 px-3 py-2 text-[13px] text-gray-900 outline-none focus:border-gray-900"
-                  rows={3}
-                />
-              </label>
-              <label className="text-[12px] font-medium text-gray-700">
-                Price
-                <input
-                  type="number"
-                  min="0"
-                  step="0.01"
-                  value={draft.price}
-                  onChange={(event) =>
-                    setDraft((current) => ({ ...current, price: event.target.value }))
-                  }
-                  className="mt-1 w-full rounded-md border border-gray-300 px-3 py-2 text-[13px] text-gray-900 outline-none focus:border-gray-900"
-                />
-              </label>
-              <label className="text-[12px] font-medium text-gray-700">
-                Currency
-                <input
-                  value={draft.currency}
-                  maxLength={3}
-                  onChange={(event) =>
-                    setDraft((current) => ({ ...current, currency: event.target.value }))
-                  }
-                  className="mt-1 w-full rounded-md border border-gray-300 px-3 py-2 text-[13px] uppercase text-gray-900 outline-none focus:border-gray-900"
-                />
-              </label>
-              <label className="text-[12px] font-medium text-gray-700">
-                Category
-                <select
-                  value={draft.category}
-                  onChange={(event) =>
-                    setDraft((current) => ({
-                      ...current,
-                      category: event.target.value as AddonItemCategory,
-                    }))
-                  }
-                  className="mt-1 w-full rounded-md border border-gray-300 px-3 py-2 text-[13px] text-gray-900 outline-none focus:border-gray-900"
-                >
-                  {CATEGORY_OPTIONS.map((category) => (
-                    <option key={category} value={category}>
-                      {category.charAt(0).toUpperCase() + category.slice(1)}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <label className="text-[12px] font-medium text-gray-700">
-                Duration
-                <input
-                  value={draft.duration}
-                  onChange={(event) =>
-                    setDraft((current) => ({ ...current, duration: event.target.value }))
-                  }
-                  className="mt-1 w-full rounded-md border border-gray-300 px-3 py-2 text-[13px] text-gray-900 outline-none focus:border-gray-900"
-                  placeholder="45 min"
-                />
-              </label>
-              <label className="text-[12px] font-medium text-gray-700">
-                Ownership
-                <select
-                  value={draft.ownershipKind}
-                  onChange={(event) =>
-                    setDraft((current) => ({
-                      ...current,
-                      ownershipKind: event.target.value as "property" | "partner",
-                      partnerCommissionRate:
-                        event.target.value === "property" ? "" : current.partnerCommissionRate,
-                    }))
-                  }
-                  className="mt-1 w-full rounded-md border border-gray-300 px-3 py-2 text-[13px] text-gray-900 outline-none focus:border-gray-900"
-                >
-                  <option value="property">Own</option>
-                  <option value="partner">Partner</option>
-                </select>
-              </label>
-              {draft.ownershipKind === "partner" && (
-                <label className="text-[12px] font-medium text-gray-700">
-                  Partner commission (%)
-                  <input
-                    type="number"
-                    min="0"
-                    max="100"
-                    step="0.0001"
-                    required
-                    value={draft.partnerCommissionRate}
-                    onChange={(event) =>
-                      setDraft((current) => ({
-                        ...current,
-                        partnerCommissionRate: event.target.value,
-                      }))
-                    }
-                    className="mt-1 w-full rounded-md border border-gray-300 px-3 py-2 text-[13px] text-gray-900 outline-none focus:border-gray-900"
-                  />
-                </label>
-              )}
-              <label className="sm:col-span-2 text-[12px] font-medium text-gray-700">
-                Image
-                <input
-                  type="file"
-                  accept="image/jpeg,image/png,image/webp"
-                  onChange={(event) => {
-                    const file = event.target.files?.[0] ?? null;
-                    setDraft((current) => ({ ...current, imageFile: file }));
-                  }}
-                  className="mt-1 w-full rounded-md border border-gray-300 px-3 py-2 text-[13px] text-gray-900 outline-none focus:border-gray-900"
-                />
-                {(draft.imageFile || draft.image) && (
-                  <span className="mt-1 flex items-center justify-between text-[11px] font-normal text-gray-500">
-                    {draft.imageFile?.name ?? "Current uploaded image"}
-                    <button
-                      type="button"
-                      className="text-red-600 hover:text-red-700"
-                      onClick={() =>
-                        setDraft((current) => ({
-                          ...current,
-                          image: "",
-                          imageMediaObjectId: null,
-                          imageFile: null,
-                        }))
-                      }
-                    >
-                      Remove
-                    </button>
-                  </span>
-                )}
-              </label>
-            </div>
-
-            <div className="grid gap-2 sm:grid-cols-2">
-              <label className="flex items-center gap-2 rounded-md border border-gray-200 px-3 py-2 text-[12px] text-gray-700">
-                <input
-                  type="checkbox"
-                  checked={draft.perPerson}
-                  onChange={(event) =>
-                    setDraft((current) => ({ ...current, perPerson: event.target.checked }))
-                  }
-                />
-                Per person
-              </label>
-              <label className="flex items-center gap-2 rounded-md border border-gray-200 px-3 py-2 text-[12px] text-gray-700">
-                <input
-                  type="checkbox"
-                  checked={draft.perNight}
-                  onChange={(event) =>
-                    setDraft((current) => ({ ...current, perNight: event.target.checked }))
-                  }
-                />
-                Per night
-              </label>
-            </div>
-
-            <div className="flex justify-end gap-2">
-              <button
-                type="button"
-                onClick={closeEditor}
-                className="px-3 py-2 text-[12px] font-medium text-gray-600 hover:text-gray-900"
-              >
-                Cancel
-              </button>
-              <button
-                type="submit"
-                disabled={savingItem}
-                className="rounded-lg bg-gray-900 px-3 py-2 text-[12px] font-medium text-white hover:bg-gray-800 disabled:opacity-50"
-              >
-                {savingItem ? "Saving..." : editingAddon ? "Save Changes" : "Create Add-on"}
-              </button>
-            </div>
-          </form>
-        </div>
+        <AddonEditor
+          initialValues={draft}
+          currency={propertyCurrency}
+          editing={Boolean(editingAddon)}
+          onSave={handleSave}
+          onCancel={closeEditor}
+        />
       )}
     </div>
   );

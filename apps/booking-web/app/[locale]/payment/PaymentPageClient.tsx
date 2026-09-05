@@ -72,10 +72,11 @@ function PaymentPageContent() {
   const [guestDetails, setGuestDetails] = useState<GuestDetailsDraft | null>(null);
   const selectedAddonIds = guestDetails?.addonIds || [];
   const addonQuantities = guestDetails?.addonQuantities || {};
+  const addonPackageQuantities = guestDetails?.addonPackageQuantities || {};
   const addonDates = guestDetails?.addonDates || {};
   const promoCodeParam = searchParams.get("promoCode") || "";
   const selectedAddonIdsKey = selectedAddonIds.join(",");
-  const addonQuantitiesKey = JSON.stringify(addonQuantities);
+  const addonQuantitiesKey = JSON.stringify([addonQuantities, addonPackageQuantities]);
   const addonDatesKey = JSON.stringify(addonDates);
 
   const {
@@ -86,7 +87,6 @@ function PaymentPageContent() {
     rateLineItems,
     variableNightlyRates,
     roomTotal,
-    promoDiscount,
     promoError,
     discountAmount,
     grandTotal,
@@ -99,6 +99,7 @@ function PaymentPageContent() {
     adults: adultsParam,
     selectedAddonIds,
     addonQuantities,
+    addonPackageQuantities,
     addonDates,
     promoCode: promoCodeParam,
   });
@@ -275,6 +276,7 @@ function PaymentPageContent() {
           rateType,
           addonIds: selectedAddonIds,
           addonQuantities,
+          addonPackageQuantities,
           addonDates,
           promoCode: promoCodeParam || undefined,
         },
@@ -341,7 +343,8 @@ function PaymentPageContent() {
       return;
     }
 
-    if (!recovery) trackEvent(slug, "complete_booking_clicked", { paymentMethod: selectedPaymentMethod });
+    if (!recovery)
+      trackEvent(slug, "complete_booking_clicked", { paymentMethod: selectedPaymentMethod });
     setSubmitting(true);
     setError("");
     setSoldOut(false);
@@ -360,6 +363,7 @@ function PaymentPageContent() {
       rateType,
       addonIds: selectedAddonIds,
       addonQuantities,
+      addonPackageQuantities,
       addonDates,
       promoCode: promoCodeParam || undefined,
       quoteId: quote.quoteId,
@@ -415,6 +419,7 @@ function PaymentPageContent() {
           (addonId) => addons.find((addon) => addon.id === addonId)?.name || addonId,
         ),
         addonQuantities: requestBody.addonQuantities,
+        addonPackageQuantities: requestBody.addonPackageQuantities,
         addonDates: requestBody.addonDates,
         currency: quote.currency,
         paymentMethod: selectedPaymentMethod,
@@ -592,6 +597,7 @@ function PaymentPageContent() {
           addons={addons}
           selectedAddonIds={paymentRequest?.addonIds ?? selectedAddonIds}
           addonQuantities={paymentRequest?.addonQuantities ?? addonQuantities}
+          addonPackageQuantities={paymentRequest?.addonPackageQuantities ?? addonPackageQuantities}
           addonDates={paymentRequest?.addonDates ?? addonDates}
           grandTotal={paymentGrandTotal}
           booking={pendingBooking}
@@ -1273,14 +1279,16 @@ function PaymentPageContent() {
                         )
                       : 1;
                     const days = addon.perNight
-                      ? Math.max(1, Math.min(dates?.length ?? count ?? nights, nights))
+                      ? Math.max(1, Math.min(dates?.length ?? (addon.perPerson ? nights : count ?? nights), nights))
                       : 1;
                     const items = !addon.perPerson && !addon.perNight ? Math.max(1, count ?? 1) : 1;
                     const linePrice = convertAndRound(
-                      addon.price * people * days * items,
+                      addon.price * people * days * items * (addonPackageQuantities[addon.id] ?? 1),
                       addon.currency,
                     );
                     const parts: string[] = [];
+                    if ((addonPackageQuantities[addon.id] ?? 1) > 1)
+                      parts.push(`×${addonPackageQuantities[addon.id]}`);
                     if (addon.perPerson && people < adultsParam)
                       parts.push(`${people}/${adultsParam}`);
                     if (addon.perNight && days < nights) parts.push(`${days}/${nights}`);
@@ -1306,19 +1314,16 @@ function PaymentPageContent() {
                   {promoError}
                 </p>
               )}
-              {promoDiscount && (
-                <div className="flex justify-between text-sm pt-2">
-                  <span className="text-primary-600 font-medium">
-                    Promo {promoCodeParam}:{" "}
-                    {promoDiscount.type === "percentage"
-                      ? `-${promoDiscount.value}%`
-                      : `-${formatPrice(quotedPromoDiscount, quotedCurrency)}`}
-                  </span>
-                  {promoDiscount.type === "percentage" && (
-                    <span className="font-semibold text-primary-600">
-                      -{formatPrice(quotedPromoDiscount, quotedCurrency)}
-                    </span>
-                  )}
+              {checkoutQuote?.promotion && (
+                <div className="flex justify-between pt-2 text-sm text-primary-600">
+                  <span>{checkoutQuote.promotion.name}</span>
+                  <span>-{formatPrice(checkoutQuote.promotionDiscount ?? 0, quotedCurrency)}</span>
+                </div>
+              )}
+              {quotedPromoDiscount > 0 && (
+                <div className="flex justify-between pt-2 text-sm text-primary-600">
+                  <span>Promo {checkoutQuote?.promoCode ?? promoCodeParam}</span>
+                  <span>-{formatPrice(quotedPromoDiscount, quotedCurrency)}</span>
                 </div>
               )}
 

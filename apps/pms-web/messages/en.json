@@ -771,6 +771,7 @@
   "rooms.roomNumberPlaceholder": "Room number (e.g. 101)",
   "rooms.floorPlaceholder": "Floor (opt)",
   "rooms.deleteRoom": "Delete room",
+  "rooms.statusLabel": "Room status",
   "rooms.renameRoom": "Rename room",
   "rooms.saveRename": "Save",
   "rooms.cancelRename": "Cancel",
@@ -2035,5 +2036,7 @@
   "dashboard.noArrivalsOnDate": "No arrivals on this date",
   "dashboard.noDeparturesOnDate": "No departures on this date",
   "dashboard.previousDay": "Previous day",
-  "dashboard.nextDay": "Next day"
+  "dashboard.nextDay": "Next day",
+  "settings.autoOpen.openSetup": "Complete room and calendar setup",
+  "settings.autoOpen.setupAuthority": "Setup requires property management access. If you cannot edit it, ask your property administrator to complete this step."
 }
