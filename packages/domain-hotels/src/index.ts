@@ -28,6 +28,7 @@ export * from "./propertySetupDraftRequestSafety.js";
 export * from "./propertySetupDraftReset.js";
 export * from "./propertySetupRoute.js";
 export * from "./propertyProfile.js";
+export * from "./propertyNearby.js";
 export * from "./publicPropertyProfile.js";
 
 // ---------------------------------------------------------------------------
