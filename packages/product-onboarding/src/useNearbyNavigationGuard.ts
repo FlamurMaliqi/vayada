@@ -1,6 +1,10 @@
 "use client";
 import { useEffect } from "react";
-type GuardWindow = Window & { navigation?: EventTarget; __vayadaNearbyLeave?: () => boolean };
+type GuardWindow = Window & {
+  navigation?: EventTarget;
+  __vayadaNearbyLeave?: () => boolean;
+  __vayadaNearbyNavigationDone?: () => void;
+};
 const message = "You have unsaved location or place changes. Discard them and leave?";
 export function useNearbyNavigationGuard(dirty: boolean) {
   useEffect(() => {
@@ -9,6 +13,10 @@ export function useNearbyNavigationGuard(dirty: boolean) {
     let accepted = false;
     const leave = () => accepted || (accepted = window.confirm(message));
     target.__vayadaNearbyLeave = leave;
+    const reset = () => {
+      accepted = false;
+    };
+    target.__vayadaNearbyNavigationDone = reset;
     const unload = (event: BeforeUnloadEvent) => {
       if (accepted) return;
       event.preventDefault();
@@ -30,8 +38,13 @@ export function useNearbyNavigationGuard(dirty: boolean) {
     };
     window.addEventListener("beforeunload", unload);
     target.navigation?.addEventListener("navigate", navigate);
+    target.navigation?.addEventListener("navigatesuccess", reset);
+    target.navigation?.addEventListener("navigateerror", reset);
     return () => {
       if (target.__vayadaNearbyLeave === leave) delete target.__vayadaNearbyLeave;
+      if (target.__vayadaNearbyNavigationDone === reset) delete target.__vayadaNearbyNavigationDone;
+      target.navigation?.removeEventListener("navigatesuccess", reset);
+      target.navigation?.removeEventListener("navigateerror", reset);
       window.removeEventListener("beforeunload", unload);
       target.navigation?.removeEventListener("navigate", navigate);
     };
@@ -59,9 +72,12 @@ export function useNearbyHistoryGuard(router: Router) {
     history.pushState = (state, title, url) => {
       position += 1;
       push({ ...state, [key]: position }, title, url);
+      target.__vayadaNearbyNavigationDone?.();
     };
-    history.replaceState = (state, title, url) =>
+    history.replaceState = (state, title, url) => {
       replace({ ...state, [key]: position }, title, url);
+      target.__vayadaNearbyNavigationDone?.();
+    };
     const pop = (event: PopStateEvent) => {
       const next = Number(event.state?.[key] ?? position - 1);
       if (restoring) {
@@ -77,6 +93,7 @@ export function useNearbyHistoryGuard(router: Router) {
         return;
       }
       position = next;
+      target.__vayadaNearbyNavigationDone?.();
     };
     window.addEventListener("popstate", pop, true);
     const original = {
@@ -88,10 +105,12 @@ export function useNearbyHistoryGuard(router: Router) {
     };
     const allowed = () => !target.__vayadaNearbyLeave || target.__vayadaNearbyLeave();
     router.push = (href, options) => {
-      if (allowed()) original.push(href, options);
+      if (new URL(href, window.location.href).href === window.location.href || allowed())
+        original.push(href, options);
     };
     router.replace = (href, options) => {
-      if (allowed()) original.replace(href, options);
+      if (new URL(href, window.location.href).href === window.location.href || allowed())
+        original.replace(href, options);
     };
     router.back = () => {
       if (allowed()) original.back();
@@ -101,6 +120,7 @@ export function useNearbyHistoryGuard(router: Router) {
     };
     router.refresh = () => {
       if (allowed()) original.refresh();
+      target.__vayadaNearbyNavigationDone?.();
     };
     return () => {
       history.pushState = push;
