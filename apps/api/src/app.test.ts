@@ -4939,6 +4939,45 @@ describe("vayada-api", () => {
 
   const settingsWriteCases = [
     {
+      name: "automatic promotions",
+      url: "/api/booking/hotels/booking_hotel_alpenrose/settings/last-minute",
+      payload: {
+        enabled: false,
+        stackWithPromo: false,
+        tiers: [],
+        promotions: [
+          {
+            type: "EARLY_BIRD",
+            active: true,
+            roomTypeIds: [],
+            discountPercent: 18,
+            threshold: 90,
+            freeNights: 0,
+            weekdays: [],
+            tiers: [],
+          },
+        ],
+      },
+      expected: {
+        enabled: false,
+        stackWithPromo: false,
+        tiers: [],
+        promotions: [
+          {
+            type: "EARLY_BIRD",
+            active: true,
+            roomTypeIds: [],
+            discountPercent: 18,
+            threshold: 90,
+            freeNights: 0,
+            weekdays: [],
+            tiers: [],
+          },
+        ],
+        updatedAt: "2026-06-22T10:00:00.000Z",
+      },
+    },
+    {
       name: "add-on display",
       url: "/api/booking/hotels/booking_hotel_alpenrose/settings/addons",
       payload: {
