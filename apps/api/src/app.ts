@@ -878,13 +878,24 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     app.register(registerOtaSettings, {
       prefix: "/api",
       repository: options.financeOtaCommissionSettingsRepository,
+      propertyAccessRepository: options.auth?.propertyAccessRepository,
     });
   }
   if (options.financeExpenses) {
-    app.register(registerFinanceExpenseRoutes, { prefix: "/api", ...options.financeExpenses });
+    app.register(registerFinanceExpenseRoutes, {
+      prefix: "/api",
+      ...options.financeExpenses,
+      propertyAccessRepository:
+        options.auth?.propertyAccessRepository ?? options.financeExpenses.propertyAccessRepository,
+    });
   }
   if (options.financeFolios) {
-    app.register(registerFinanceFolioRoutes, { prefix: "/api", ...options.financeFolios });
+    app.register(registerFinanceFolioRoutes, {
+      prefix: "/api",
+      ...options.financeFolios,
+      propertyAccessRepository:
+        options.auth?.propertyAccessRepository ?? options.financeFolios.propertyAccessRepository,
+    });
   }
   if (options.financeBankTransfer) {
     app.register(registerFinanceBankTransferRoutes, {

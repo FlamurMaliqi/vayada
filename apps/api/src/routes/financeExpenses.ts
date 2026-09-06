@@ -1,5 +1,9 @@
 import { UnauthorizedError, type RequestContext } from "@vayada/backend-auth";
-import { AuthorizationError } from "@vayada/backend-authorization";
+import {
+  AuthorizationError,
+  requirePropertyAccess,
+  type PropertyAccessRepository,
+} from "@vayada/backend-authorization";
 import {
   FINANCE_EXPENSE_CADENCES,
   FINANCE_EXPENSE_ORIGINS,
@@ -67,6 +71,7 @@ type RecurringPort = {
   disable(command: DisableFinanceRecurringExpenseRuleCommand): Promise<FinanceRecurringExpenseRuleCommandResult>;
 };
 export type FinanceExpenseRoutesOptions = {
+  propertyAccessRepository?: PropertyAccessRepository;
   read: Pick<FinanceExpenseReadModel, "categories" | "expense" | "expenses" | "recurringRule">;
   categories: CategoryPort;
   expenses: ExpensePort;
@@ -89,8 +94,8 @@ const FAILURES = ["invalid_command", "not_found", "revision_conflict", "idempote
 // prettier-ignore
 export async function registerFinanceExpenseRoutes(app: FastifyInstance, options: FinanceExpenseRoutesOptions): Promise<void> {
   const scopes = new WeakMap<FastifyRequest, Scope>();
-  const read = authorize(scopes, "pms.finance.read");
-  const write = authorize(scopes, "pms.finance.manage");
+  const read = authorize(scopes, "pms.finance.read", options.propertyAccessRepository);
+  const write = authorize(scopes, "pms.finance.manage", options.propertyAccessRepository);
   const scope = (request: FastifyRequest) => scopes.get(request)!;
 
   app.get(`${ROOT}/expense-categories`, { onRequest: read }, async (request, reply) => safe(reply, async () => {
@@ -188,7 +193,7 @@ export async function registerFinanceExpenseRoutes(app: FastifyInstance, options
 }
 
 // prettier-ignore
-function authorize(scopes: WeakMap<FastifyRequest, Scope>, permission: "pms.finance.read" | "pms.finance.manage") {
+function authorize(scopes: WeakMap<FastifyRequest, Scope>, permission: "pms.finance.read" | "pms.finance.manage", propertyAccessRepository: PropertyAccessRepository | undefined) {
   return async (request: FastifyRequest, reply: FastifyReply) => {
     try {
       let context = enforceRoutePolicy(request, { permission });
@@ -196,6 +201,8 @@ function authorize(scopes: WeakMap<FastifyRequest, Scope>, permission: "pms.fina
       const propertyId = canonicalUuid((request.params as Partial<Params>).propertyId); if (!propertyId) return void bad(reply);
       const resource = { product: "pms" as const, resourceType: "pms_property" as const, resourceId: propertyId };
       for (const key of ["property-management", "module:financials"]) context = enforceRoutePolicy(request, { permission, entitlement: { product: "pms", key, resource }, resource: { ...resource, allowedRelationships: ["owner", "finance_manager"] } });
+      if (!propertyAccessRepository) throw new AuthorizationError();
+      await requirePropertyAccess(context, propertyAccessRepository, { propertyId, targetResource: resource, allowedRelationships: ["owner", "finance_manager"] });
       reply.header("Cache-Control", "private, no-store").header("Vary", "Authorization");
       scopes.set(request, { context, propertyId, canRead: context.membership.permissions.includes("pms.finance.read") });
     } catch (cause) {
