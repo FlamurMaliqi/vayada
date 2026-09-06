@@ -111,15 +111,15 @@ export default function ManagePropertiesModal({ open, onClose, selectedHotelId }
                   </div>
                   <div
                     className="flex shrink-0 items-center gap-2"
-                    title="Property deletion is not available yet"
+                    title={t("admin.propertyDeletionIsNotAvailableYet")}
                   >
                     <span className="hidden text-[10px] font-medium text-gray-400 sm:inline">
-                      Deletion unavailable
+                      {t("admin.deletionUnavailable")}
                     </span>
                     <button
                       type="button"
                       disabled
-                      aria-label={`${t("manageProperties.delete")} — not available yet`}
+                      aria-label={t("admin.deleteNotAvailableYet")}
                       className="cursor-not-allowed rounded-lg p-2 text-gray-300"
                     >
                       <TrashIcon className="w-4 h-4" />

@@ -1,4 +1,8 @@
 "use client";
+import {
+  buildSharedHotelSetupRedirectPath,
+  crossAppReauthenticationUrl,
+} from "@vayada/product-onboarding";
 import { formatTimezoneLabel } from "@/lib/timezoneLabel";
 
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -11,6 +15,9 @@ import {
 } from "@/services/api/pmsPropertyClient";
 import { ApiErrorResponse } from "@/services/api/client";
 import { useTranslation } from "@/lib/i18n";
+
+const MARKETPLACE_FRONTEND_URL =
+  process.env.NEXT_PUBLIC_MARKETPLACE_URL || "https://app.vayada.com";
 
 const ROLLING_MONTHS = [12, 18, 24] as const;
 const inputClass =
@@ -81,7 +88,15 @@ export function CalendarAutoOpenEditor() {
           setSaveError(t("settings.autoOpen.revisionError"));
         }
       } else if (error instanceof ApiErrorResponse) {
-        const setupMessage = setupErrorMessage(error.data.code, t);
+        const code = error.data.code;
+        const setupMessage = setupErrorMessage(code, t);
+        if (
+          code === "operating_calendar_not_configured" ||
+          code === "operating_calendar_room_bindings_stale" ||
+          code === "physical_room_labels_unverified"
+        ) {
+          setRead((current) => current && { ...current, setupError: { code } });
+        }
         setSaveError(setupMessage ?? t("settings.autoOpen.saveError"));
       } else {
         setSaveError(t("settings.autoOpen.saveError"));
@@ -251,12 +266,27 @@ export function CalendarAutoOpenEditor() {
       </div>
 
       {read.setupError && (
-        <p
+        <div
           role="alert"
           className="mt-3 rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800"
         >
-          {setupErrorMessage(read.setupError.code, t)}
-        </p>
+          <p>{setupErrorMessage(read.setupError.code, t)}</p>
+          <a
+            href={crossAppReauthenticationUrl(
+              MARKETPLACE_FRONTEND_URL,
+              `${buildSharedHotelSetupRedirectPath({
+                entryProduct: "pms",
+                returnProduct: "pms",
+                returnTo: "/settings#calendar",
+                propertyId: read.setting.propertyId,
+              })}&recovery=pms-calendar&step=${read.setupError.code === "physical_room_labels_unverified" ? "rooms" : "calendar"}`,
+            )}
+            className="mt-2 inline-block font-medium underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500"
+          >
+            {t("settings.autoOpen.openSetup")}
+          </a>
+          <p className="mt-2">{t("settings.autoOpen.setupAuthority")}</p>
+        </div>
       )}
 
       {read.warnings.map((warning) => (

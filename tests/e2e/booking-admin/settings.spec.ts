@@ -75,7 +75,7 @@ test.describe("booking-admin settings no-legacy guard", () => {
     await page.goto("/settings?section=booking");
 
     await expect(
-      page.getByRole("alert").filter({ hasText: "Same-day settings unavailable." }),
+      page.getByRole("alert").filter({ hasText: "Same-day booking settings failed to load." }),
     ).toBeVisible();
     await expect(page.getByRole("switch", { name: "Allow same-day bookings" })).toHaveCount(0);
     await expect(page.getByLabel("Same-day booking cutoff")).toHaveCount(0);
@@ -101,7 +101,7 @@ test.describe("booking-admin settings no-legacy guard", () => {
     await cutoff.selectOption("17:00");
     await expect(success).toHaveCount(0);
     await expect(
-      page.getByRole("alert").filter({ hasText: "Same-day settings were not saved." }),
+      page.getByRole("alert").filter({ hasText: "Same-day booking settings could not be saved." }),
     ).toBeVisible();
     await assertNoLegacyCalls();
   });
@@ -283,7 +283,9 @@ test.describe("booking-admin settings no-legacy guard", () => {
 
     await page.goto("/design-studio");
 
-    const canonicalBookingUrl = "hotel-alpenrose.booking.vayada.com";
+    const canonicalBookingUrl = new URL(page.url()).hostname.endsWith(".localhost")
+      ? `hotel-alpenrose.booking.localhost${new URL(page.url()).port ? `:${new URL(page.url()).port}` : ""}`
+      : "hotel-alpenrose.booking.vayada.com";
     await expect(page.getByRole("button", { name: "Content" })).toBeVisible();
     await expect(page.getByRole("button", { name: "Colors" })).toBeVisible();
     await expect(page.getByRole("button", { name: "Typography" })).toBeVisible();
@@ -327,7 +329,9 @@ test.describe("booking-admin settings no-legacy guard", () => {
     await expect(currentBookingUrl).toBeVisible();
     await expect(page.getByRole("heading", { name: "Custom Domain" })).toBeVisible();
     await expect(heroImageHeading).toHaveCount(0);
-    await expect(currentBookingUrl.getByText(canonicalBookingUrl, { exact: true })).toBeVisible();
+    await expect(
+      currentBookingUrl.getByText("hotel-alpenrose.booking.vayada.com", { exact: true }),
+    ).toBeVisible();
     await expect(preview).toContainText(canonicalBookingUrl);
 
     await page.getByPlaceholder("booking.yourdomain.com").fill("book.alpenrose.example");
@@ -1058,4 +1062,77 @@ test.describe("booking-admin settings no-legacy guard", () => {
     expect(forbiddenSetupRequests).toEqual([]);
     await assertNoLegacyCalls();
   });
+});
+
+test("saves direct-only transfers while retaining an existing hosted provider", async ({
+  page,
+}) => {
+  await mockBookingAdminAuthenticatedSession(page);
+  await mockBookingAdminShellRoutes(page);
+  await page.route(
+    `**/api/finance/properties/${BOOKING_ADMIN_PROPERTY_ID}/bank-transfer-destination`,
+    async (route) => {
+      expect(route.request().method()).toBe("GET");
+      await route.fulfill({
+        json: {
+          destination: {
+            id: BOOKING_ADMIN_PROPERTY_ID,
+            revision: 1,
+            version: 1,
+            enabled: true,
+            deleted: false,
+            maskedAccount: "•••• 3000",
+          },
+        },
+      });
+    },
+  );
+  let write: Record<string, unknown> | null = null;
+  await page.route(`**${BOOKING_ADMIN_FINANCE_PAYMENT_SETTINGS_PATH}`, async (route) => {
+    if (route.request().method() === "PATCH") write = route.request().postDataJSON();
+    await route.fulfill({
+      json: {
+        propertyId: BOOKING_ADMIN_PROPERTY_ID,
+        paymentSettings: {
+          paymentsEnabled: true,
+          paymentProvider: "xendit",
+          acceptedMethods: ["bank_transfer"],
+          defaultCurrency: "EUR",
+          supportedCurrencies: ["EUR"],
+          depositPolicy: {},
+          requiresManualReview: false,
+          providerAccount: {
+            providerAccountId: "provider_saved",
+            provider: "xendit",
+            status: "active",
+            onboardingStatus: "completed",
+            chargesEnabled: true,
+            payoutsEnabled: true,
+          },
+        },
+      },
+    });
+  });
+  await page.goto("/settings?section=billing");
+  const transfer = page
+    .getByRole("heading", { name: "Direct guest bank transfers" })
+    .locator("..")
+    .locator("..");
+  await expect(page.getByText(/Saved account: •••• 3000/)).toBeVisible();
+  const response = page.waitForResponse(
+    (response) =>
+      response.request().method() === "PATCH" && response.url().endsWith("/payment-settings"),
+  );
+  await transfer.getByRole("button", { name: "Save Changes", exact: true }).click();
+  await response;
+  expect(write).toMatchObject({ paymentSettings: { acceptedMethods: ["bank_transfer"] } });
+  expect(write?.paymentSettings).not.toHaveProperty("paymentProvider");
+  await transfer.getByPlaceholder("e.g. HSBC Bank").fill("Partial replacement");
+  await transfer.getByRole("button", { name: "Save Changes", exact: true }).click();
+  await expect(
+    page.getByText(
+      "Enter the complete bank details, or leave all fields empty to keep the saved account.",
+      { exact: true },
+    ),
+  ).toBeVisible();
 });

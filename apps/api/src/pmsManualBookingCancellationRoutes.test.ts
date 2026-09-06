@@ -18,6 +18,8 @@ type State = { calls: PmsManualCancellationCommand[] };
 type Auth = Partial<{
   token: boolean;
   operationsPermission: boolean;
+  entitlement: "missing" | "inactive";
+  resource: boolean;
   financePermission: boolean;
   financeEntitlement: boolean;
   relationship: "operator" | "owner" | "finance_manager";
@@ -40,6 +42,19 @@ describe("manual booking cancellation route", () => {
       audit: { actor: { userId: actorId, organizationId }, requestId: "request-1" },
     });
   });
+
+  it.each([undefined, "   ", "Hello\r\n\r\nContact us <help@example.test>"])(
+    "keeps the optional guest message separate from the private reason: %s",
+    async (guestMessage) => {
+      const state: State = { calls: [] };
+      app = await testApp(state);
+      expect((await request(app, { ...body(), guestMessage })).statusCode).toBe(200);
+      expect(state.calls[0]?.reason).toBe("property cancellation");
+      expect(state.calls[0]?.guestMessage).toBe(
+        guestMessage?.replace(/\r\n/g, "\n").trim() || undefined,
+      );
+    },
+  );
 
   it("requires Finance authorization before accepting explicit retained revenue", async () => {
     const denied: State = { calls: [] };
@@ -64,6 +79,11 @@ describe("manual booking cancellation route", () => {
     ["query alias", body(), "?channel=direct"],
     ["unknown body field", { ...body(), channel: "direct" }, ""],
     ["oversized command metadata", { ...body(), commandId: "x".repeat(201) }, ""],
+    ["missing internal reason", { ...body(), reason: undefined }, ""],
+    ["blank internal reason", { ...body(), reason: "  " }, ""],
+    ["non-text internal reason", { ...body(), reason: 42 }, ""],
+    ["non-text guest message", { ...body(), guestMessage: 42 }, ""],
+    ["oversized guest message", { ...body(), guestMessage: "x".repeat(5001) }, ""],
     ["oversized reason", { ...body(), reason: "x".repeat(1001) }, ""],
     [
       "oversized retained-charge list",
@@ -85,6 +105,19 @@ describe("manual booking cancellation route", () => {
     const state: State = { calls: [] };
     app = await testApp(state, { relationship: "owner" });
     expect((await request(app, payload, query)).statusCode).toBe(400);
+    expect(state.calls).toEqual([]);
+  });
+
+  it.each([
+    [{ token: false }, 401],
+    [{ operationsPermission: false }, 403],
+    [{ entitlement: "missing" }, 403],
+    [{ entitlement: "inactive" }, 403],
+    [{ resource: false }, 403],
+  ] as const)("denies unauthorized guest-message cancellation %j", async (auth, status) => {
+    const state: State = { calls: [] };
+    app = await testApp(state, auth);
+    expect((await request(app, { ...body(), guestMessage: "Hello" })).statusCode).toBe(status);
     expect(state.calls).toEqual([]);
   });
 
@@ -111,12 +144,16 @@ async function testApp(state: State, auth: Auth = {}) {
         ],
       },
       entitlements: [
-        {
-          product: "pms",
-          key: "property-management",
-          status: "active",
-          resource: { product: "pms", resourceType: "pms_property", resourceId: propertyId },
-        },
+        ...(auth.entitlement === "missing"
+          ? []
+          : [
+              {
+                product: "pms",
+                key: "property-management",
+                status: auth.entitlement === "inactive" ? "inactive" : "active",
+                resource: { product: "pms", resourceType: "pms_property", resourceId: propertyId },
+              },
+            ]),
         ...(auth.financeEntitlement === false
           ? []
           : [
@@ -132,15 +169,18 @@ async function testApp(state: State, auth: Auth = {}) {
               },
             ]),
       ],
-      linkedResources: [
-        {
-          product: "pms",
-          resourceType: "pms_property",
-          resourceId: propertyId,
-          relationship: auth.relationship ?? "operator",
-          status: "active",
-        },
-      ],
+      linkedResources:
+        auth.resource === false
+          ? []
+          : [
+              {
+                product: "pms",
+                resourceType: "pms_property",
+                resourceId: propertyId,
+                relationship: auth.relationship ?? "operator",
+                status: "active",
+              },
+            ],
       audit: { requestId: "request-1", source: "api", receivedAt: now },
     } as RequestContext;
   });

@@ -150,13 +150,15 @@ export default function PrivacySettingsPage() {
                       <div>
                         <h3 className="text-sm font-medium text-gray-900">Terms of Service</h3>
                         <p className="text-sm text-gray-500">
-                          {consentStatus?.terms_accepted
-                            ? `Accepted on ${formatDate(consentStatus.terms_accepted_at)}`
-                            : "Not accepted"}
+                          {!consentStatus
+                            ? "Unavailable"
+                            : consentStatus.terms_accepted
+                              ? `Accepted on ${formatDate(consentStatus.terms_accepted_at)}`
+                              : "Not accepted"}
                         </p>
                       </div>
                     </div>
-                    {consentStatus?.terms_accepted ? (
+                    {!consentStatus ? null : consentStatus.terms_accepted ? (
                       <CheckCircleIcon className="h-5 w-5 text-green-500" />
                     ) : (
                       <XCircleIcon className="h-5 w-5 text-red-500" />
@@ -170,13 +172,15 @@ export default function PrivacySettingsPage() {
                       <div>
                         <h3 className="text-sm font-medium text-gray-900">Privacy Policy</h3>
                         <p className="text-sm text-gray-500">
-                          {consentStatus?.privacy_accepted
-                            ? `Accepted on ${formatDate(consentStatus.privacy_accepted_at)}`
-                            : "Not accepted"}
+                          {!consentStatus
+                            ? "Unavailable"
+                            : consentStatus.privacy_accepted
+                              ? `Accepted on ${formatDate(consentStatus.privacy_accepted_at)}`
+                              : "Not accepted"}
                         </p>
                       </div>
                     </div>
-                    {consentStatus?.privacy_accepted ? (
+                    {!consentStatus ? null : consentStatus.privacy_accepted ? (
                       <CheckCircleIcon className="h-5 w-5 text-green-500" />
                     ) : (
                       <XCircleIcon className="h-5 w-5 text-red-500" />
@@ -196,22 +200,30 @@ export default function PrivacySettingsPage() {
                         </p>
                       </div>
                     </div>
-                    <button
-                      onClick={handleMarketingConsentToggle}
-                      disabled={isUpdating}
-                      className={`
+                    {!consentStatus ? (
+                      <span className="text-sm text-gray-500">Unavailable</span>
+                    ) : (
+                      <button
+                        type="button"
+                        role="switch"
+                        aria-label="Marketing communications"
+                        aria-checked={consentStatus.marketing_consent}
+                        onClick={handleMarketingConsentToggle}
+                        disabled={isUpdating}
+                        className={`
                         relative inline-flex h-6 w-11 flex-shrink-0 rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2
                         ${consentStatus?.marketing_consent ? "bg-primary-600" : "bg-gray-200"}
                         ${isUpdating ? "cursor-not-allowed opacity-50" : "cursor-pointer"}
                       `}
-                    >
-                      <span
-                        className={`
+                      >
+                        <span
+                          className={`
                           pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out
                           ${consentStatus?.marketing_consent ? "translate-x-5" : "translate-x-0"}
                         `}
-                      />
-                    </button>
+                        />
+                      </button>
+                    )}
                   </div>
                 </div>
               </div>

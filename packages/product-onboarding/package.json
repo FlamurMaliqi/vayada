@@ -24,7 +24,9 @@
     "./returnTo": "./src/returnTo.ts",
     "./RoomsStep": "./src/RoomsStep.tsx",
     "./SharedHotelLoginForm": "./src/SharedHotelLoginForm.tsx",
-    "./SharedSignupPage": "./src/SharedSignupPage.tsx"
+    "./SharedSignupPage": "./src/SharedSignupPage.tsx",
+    "./bankTransferDestination": "./src/bankTransferDestination.ts",
+    "./AddonEditor": "./src/AddonEditor.tsx"
   },
   "dependencies": {
     "@vayada/domain-hotels": "*",

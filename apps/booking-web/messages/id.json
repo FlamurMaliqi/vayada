@@ -1,4 +1,15 @@
 {
+  "analyticsConsent": {
+    "settings": "Pilihan privasi",
+    "title": "Analitik opsional",
+    "description": "Kami menggunakan analitik opsional untuk memahami kunjungan dan langkah pemesanan. Pemesanan tetap berfungsi tanpa analitik. Pilihan Anda hanya berlaku untuk situs pemesanan hotel ini.",
+    "enabled": "Analitik aktif.",
+    "disabled": "Analitik nonaktif.",
+    "saveError": "Pilihan Anda tidak dapat disimpan. Analitik tetap nonaktif.",
+    "reject": "Tolak analitik",
+    "accept": "Izinkan analitik",
+    "close": "Pertahankan pilihan saat ini"
+  },
   "common": {
     "checkAvailability": "Cek Ketersediaan",
     "bookNow": "Pesan Sekarang",
@@ -32,6 +43,8 @@
     "loading": "Memuat...",
     "qty": "Jml",
     "perPerson": "per orang",
+    "checkInWindow": "Check-in: {time}",
+    "checkOutWindow": "Check-out: {time}",
     "checkInFrom": "Check-in mulai {time}",
     "checkOutBy": "Check-out sampai {time}",
     "pricingUpdating": "Harga untuk tanggal ini masih diperbarui. Mohon tunggu sebentar dan coba lagi."
@@ -50,6 +63,12 @@
     "payment": "Pembayaran"
   },
   "home": {
+    "guestCountUnsupported": "Pencarian online tidak mendukung grup Anda sebanyak {count} tamu. Coba kurangi jumlah tamu atau hubungi kami.",
+    "guestCountUnavailable": "Tidak ada akomodasi kami yang tersedia yang dapat menampung grup Anda sebanyak {count} tamu. Coba kurangi jumlah tamu atau pilih tanggal lain.",
+    "noAvailability": "Tidak ada akomodasi tersedia untuk pencarian ini. Coba tanggal atau opsi pencarian lain.",
+    "availabilityError": "Kami tidak dapat memeriksa ketersediaan. Silakan coba lagi.",
+    "noMatchingRooms": "Tidak ada akomodasi yang sesuai dengan filter Anda. Coba hapus filter.",
+
     "yourStay": "Masa Menginap Anda",
     "addPromo": "Tambah promo",
     "promoTitle": "Punya kode promo?",
@@ -104,19 +123,6 @@
       "checkingAvailability": "Memeriksa ketersediaan",
       "availabilityUnavailable": "Ketersediaan untuk tanggal ini sementara tidak dapat dimuat.",
       "availabilityUnavailableTooltip": "Ketersediaan tidak dapat dimuat"
-    },
-    "mobileView": {
-      "list": "Daftar",
-      "map": "Peta"
-    },
-    "roomMap": {
-      "noLocations": "Tidak ada lokasi tersedia",
-      "noLocationsDesc": "Tipe kamar tanpa koordinat yang disimpan masih muncul di daftar.",
-      "locations": "{count, plural, one {# lokasi} other {# lokasi}}",
-      "perNight": "/ malam",
-      "view": "Lihat →",
-      "zoomIn": "Perbesar",
-      "zoomOut": "Perkecil"
     }
   },
   "rooms": {
