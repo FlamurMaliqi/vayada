@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 
-import { productHandoffReturnTo, setupPathForSelectedProperty } from "./SharedHotelSetupPage";
+import {
+  productHandoffReturnTo,
+  setupPathForSelectedProperty,
+  setupExitPathForContext,
+} from "./SharedHotelSetupPage";
 
 describe("setupPathForSelectedProperty", () => {
   it("persists the selected property and leaves add-property mode", () => {
@@ -54,6 +58,30 @@ describe("productHandoffReturnTo", () => {
       }),
     ).toBe(
       "/handoff?redirect=%2Fchoose-property%3Fsetup%3Dincomplete#organization_id=organization-1&workos_organization_id=workos-organization-1",
+    );
+  });
+});
+
+describe("calendar recovery exit", () => {
+  it("returns to calendar settings after repair without an incomplete marker", () => {
+    expect(
+      setupExitPathForContext(
+        "recovery=pms-calendar&returnProduct=pms&returnTo=%2Fsettings%23calendar",
+        "property-1",
+      ),
+    ).toBe("/settings#calendar");
+  });
+  it("rejects an external return destination", () => {
+    expect(
+      setupExitPathForContext(
+        "recovery=pms-calendar&returnProduct=pms&returnTo=https%3A%2F%2Fevil.example",
+        "property-1",
+      ),
+    ).toBe("/settings#calendar");
+  });
+  it("preserves the ordinary incomplete-setup exit", () => {
+    expect(setupExitPathForContext("returnProduct=pms", "property-1")).toBe(
+      "/dashboard?setup=incomplete&propertyId=property-1",
     );
   });
 });

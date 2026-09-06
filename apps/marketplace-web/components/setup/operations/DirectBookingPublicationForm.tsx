@@ -176,7 +176,15 @@ export function DirectBookingPublicationForm({
 
     try {
       if (settingsSaved) await onBeforeSave();
-      const result = await hotelOperationsSetupApi.publishDirectBooking(propertyId);
+      const result =
+        publication &&
+        "status" in publication &&
+        (publication.status === "pending" || publication.status === "unknown")
+          ? await hotelOperationsSetupApi.getDirectBookingPublication(
+              propertyId,
+              publication.operationId,
+            )
+          : await hotelOperationsSetupApi.publishDirectBooking(propertyId);
       setPublication(result);
       if (isPublicationReady(result)) await refreshCompletion();
     } catch (cause) {
@@ -221,7 +229,11 @@ export function DirectBookingPublicationForm({
       "Direct booking is published. Retry the setup refresh to continue."
     ) : publication ? (
       <div className="space-y-2">
-        <p className="font-semibold">Direct booking is not ready to publish yet.</p>
+        <p className="font-semibold">
+          {"status" in publication && publication.status === "pending"
+            ? "Direct booking publication is in progress."
+            : "Direct booking is not ready to publish yet."}
+        </p>
         <ul className="list-disc space-y-1 pl-5">
           {publicationReadinessMessages(publication).map((message) => (
             <li key={message}>{message}</li>
@@ -294,6 +306,13 @@ function directBookingValidationError(
 }
 
 function publicationReadinessMessages(publication: PublicBookabilityPublication): string[] {
+  if ("status" in publication) {
+    if (publication.status === "pending")
+      return ["Publication is still processing. Check again shortly."];
+    if (publication.status === "unknown")
+      return ["Publication could not be confirmed. Retry to check the latest result."];
+    return ["Publication failed. Review your saved settings and retry publishing."];
+  }
   const missing = new Set(publication.missingReadiness);
   const messages: string[] = [];
   if (missing.has("profile") || publication.profileStatus !== "public") {

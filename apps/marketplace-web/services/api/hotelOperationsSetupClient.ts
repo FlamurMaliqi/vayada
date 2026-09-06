@@ -1,3 +1,10 @@
+import type { BookingPublicationOperation } from "@vayada/domain-booking";
+import {
+  readBankTransferDestination,
+  saveBankTransferDestination,
+  type SavedBankTransferDestination,
+  type BankTransferSaveAttempt,
+} from "@vayada/product-onboarding/bankTransferDestination";
 import { createHotelCatalogStep1MediaAssignments } from "@vayada/domain-hotels";
 
 import { ApiErrorResponse } from "./client";
@@ -63,6 +70,7 @@ export type OnlinePaymentProvider = "stripe" | "xendit" | "vayada";
 export type PayAtHotelMethod = "cash" | "card";
 
 export type PaymentSetupDraft = {
+  bankDestination?: SavedBankTransferDestination | null;
   methods: PaymentMethodChoice[];
   onlineProvider: OnlinePaymentProvider;
   payAtHotelMethods: PayAtHotelMethod[];
@@ -74,6 +82,7 @@ export type PaymentSetupDraft = {
 };
 
 export type FinancePaymentSettings = {
+  bankDestination?: SavedBankTransferDestination | null;
   paymentsEnabled: boolean;
   paymentProvider: "stripe" | "xendit" | "vayada" | "manual" | "bank_transfer";
   acceptedMethods: string[];
@@ -116,15 +125,17 @@ export type DirectBookingSetup = {
   defaultLanguage: string;
 };
 
-export type PublicBookabilityPublication = {
-  propertyId: string;
-  canonicalSlug: string;
-  canonicalUrl: string;
-  bookingBaseUrl: string;
-  profileStatus: "public" | "incomplete" | "unpublished" | "stale" | "unavailable";
-  freshnessStatus: "fresh" | "stale" | "unavailable" | "unknown";
-  missingReadiness: string[];
-};
+export type PublicBookabilityPublication =
+  | BookingPublicationOperation
+  | {
+      propertyId: string;
+      canonicalSlug: string;
+      canonicalUrl: string;
+      bookingBaseUrl: string;
+      profileStatus: "public" | "incomplete" | "unpublished" | "stale" | "unavailable";
+      freshnessStatus: "fresh" | "stale" | "unavailable" | "unknown";
+      missingReadiness: string[];
+    };
 
 export const DIRECT_BOOKING_SUBTEXT_MAX_LENGTH = 200;
 
@@ -283,7 +294,8 @@ export const hotelOperationsSetupApi = {
       `/api/finance/properties/${encoded(propertyId)}/payment-settings`,
       signal ? { signal } : undefined,
     );
-    return response.paymentSettings;
+    const bankDestination = await readBankTransferDestination(targetApiClient, propertyId);
+    return { ...response.paymentSettings, bankDestination };
   },
 
   getPlanStatus: async (propertyId: string, signal?: AbortSignal): Promise<FinancePlanStatus> => {
@@ -331,13 +343,30 @@ export const hotelOperationsSetupApi = {
     draft: PaymentSetupDraft,
     canonicalCurrency: string,
     intentRevision: string,
+    bankAttempt: BankTransferSaveAttempt,
+    onDestinationSaved: (destination: SavedBankTransferDestination | null) => void,
   ): Promise<FinancePaymentSettings> => {
     const body = buildPaymentSettingsRequest(propertyId, draft, canonicalCurrency, intentRevision);
+    const bankDestination = await saveBankTransferDestination(targetApiClient, {
+      propertyId,
+      enabled: draft.methods.includes("bank_transfer"),
+      saved: draft.bankDestination,
+      attempt: bankAttempt,
+      details: {
+        bankName: draft.bankName,
+        accountHolder: draft.accountHolder,
+        accountNumber: draft.accountNumber,
+        accountType: /^[A-Za-z]{2}\d{2}/.test(draft.accountNumber) ? "iban" : "account_number",
+        bicSwift: draft.bicSwift,
+        instructions: "",
+      },
+    });
+    onDestinationSaved(bankDestination ?? null);
     const response = await targetApiClient.patch<FinancePaymentSettingsResponse>(
       `/api/finance/properties/${encoded(propertyId)}/payment-settings`,
       body,
     );
-    return response.paymentSettings;
+    return { ...response.paymentSettings, bankDestination };
   },
 
   startStripeOnboarding: async (
@@ -487,6 +516,14 @@ export const hotelOperationsSetupApi = {
     });
     clearPendingDirectBookingHero(propertyId);
   },
+
+  getDirectBookingPublication: async (
+    propertyId: string,
+    operationId: string,
+  ): Promise<BookingPublicationOperation> =>
+    targetApiClient.get(
+      `/api/hotel-setup/properties/${encoded(propertyId)}/publications/booking/${encoded(operationId)}`,
+    ),
 
   publishDirectBooking: async (propertyId: string): Promise<PublicBookabilityPublication> =>
     targetApiClient.post<PublicBookabilityPublication>(
@@ -668,28 +705,16 @@ export function buildPaymentSettingsRequest(
     : selected.has("bank_transfer")
       ? "bank_transfer"
       : "manual";
-  const bankDetails = selected.has("bank_transfer")
-    ? {
-        bankName: requiredText(draft.bankName, "Bank name"),
-        accountHolder: requiredText(draft.accountHolder, "Account holder"),
-        accountNumber: requiredText(draft.accountNumber, "Account number or IBAN"),
-        bicSwift: draft.bicSwift.trim(),
-      }
-    : { bankName: "", accountHolder: "", accountNumber: "", bicSwift: "" };
   const paypalEmail = selected.has("paypal")
     ? requiredEmail(draft.paypalEmail, "PayPal email")
     : "";
   const paymentSettings = {
     paymentsEnabled: true,
-    paymentProvider,
+    ...(selected.has("online_card") ? { paymentProvider } : {}),
     acceptedMethods,
     depositPolicy: {
-      ...bankDetails,
       paypalEmail,
       paypalPaymentWindowHours: 24,
-      bankTransferInstructions: selected.has("bank_transfer")
-        ? bankTransferInstructions(bankDetails)
-        : "",
     },
     requiresManualReview: false,
   };
@@ -699,22 +724,6 @@ export function buildPaymentSettingsRequest(
     intentRevision,
   });
   return { commandId, idempotencyKey: commandId, paymentSettings };
-}
-
-function bankTransferInstructions(details: {
-  bankName: string;
-  accountHolder: string;
-  accountNumber: string;
-  bicSwift: string;
-}): string {
-  return [
-    `Bank: ${details.bankName}`,
-    `Account holder: ${details.accountHolder}`,
-    `Account number / IBAN: ${details.accountNumber}`,
-    details.bicSwift ? `BIC/SWIFT: ${details.bicSwift}` : "",
-  ]
-    .filter(Boolean)
-    .join("\n");
 }
 
 function requiredEmail(value: string, label: string): string {
@@ -746,6 +755,7 @@ export function isStripeReady(settings: FinancePaymentSettings): boolean {
 }
 
 export function isPublicationReady(publication: PublicBookabilityPublication): boolean {
+  if ("status" in publication) return publication.status === "succeeded";
   return (
     publication.profileStatus === "public" &&
     publication.freshnessStatus === "fresh" &&

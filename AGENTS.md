@@ -19,7 +19,6 @@ This file is the **canonical, tool-neutral agent guide**. Claude Code, Codex, an
 | `apps/booking-admin`       | Next.js 14 | 3003 | `https://admin.booking.localhost`   |
 | `apps/pms-api`             | FastAPI    | 8002 | `https://api.pms.localhost`         |
 | `apps/pms-web`             | Next.js 14 | 3004 | `https://pms.localhost`             |
-| `apps/affiliate-dashboard` | Next.js 14 | 3005 | `https://affiliate.localhost`       |
 | `apps/landing`             | Next.js 14 | 3006 | `https://landing.localhost`         |
 
 Local URLs are the recommended way to reach each app — see [Local dev — portless](#local-dev--portless). Plain `localhost:PORT` still works for contributors not on portless.
@@ -165,7 +164,6 @@ Before claiming a change is complete:
 | -------------------------- | --------------------------------- | ------------------------------------------- |
 | `apps/landing`             | `npm run e2e:landing`             | `https://landing.localhost`                 |
 | `apps/booking-web`         | `npm run e2e:booking-web`         | `https://hotel-alpenrose.booking.localhost` |
-| `apps/affiliate-dashboard` | `npm run e2e:affiliate-dashboard` | `https://affiliate.localhost`               |
 | `apps/booking-admin`       | `npm run e2e:booking-admin`       | `https://admin.booking.localhost`           |
 | `apps/marketplace-web`     | `npm run e2e:marketplace-web`     | `https://marketplace.localhost`             |
 | `apps/pms-web`             | `npm run e2e:pms-web`             | `https://pms.localhost`                     |

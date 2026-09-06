@@ -19,10 +19,6 @@ const bookingBaseURL =
     ? "http://hotel-alpenrose.booking.localhost:3002"
     : "https://hotel-alpenrose.booking.localhost");
 
-const affiliateDashboardBaseURL =
-  process.env.E2E_AFFILIATE_BASE_URL ||
-  (startServers ? "http://127.0.0.1:3005" : "https://affiliate.localhost");
-
 const bookingAdminBaseURL =
   process.env.E2E_BOOKING_ADMIN_BASE_URL ||
   (startServers ? "http://127.0.0.1:3003" : "https://admin.booking.localhost");
@@ -58,13 +54,6 @@ const firstPartyAuthServers = [
     command:
       "AUTH_PUBLIC_ORIGIN=http://pms.localhost:3104 AUTH_GATEWAY_UPSTREAM_ORIGIN=http://127.0.0.1:8003 NEXT_PUBLIC_AUTHKIT_LOGIN_ENABLED=true NEXT_PUBLIC_AUTHKIT_COMPATIBILITY_TOKEN_ENABLED=false PORT=3104 npm run dev:pms-web",
     url: "http://127.0.0.1:3104/login",
-    reuseExistingServer: !process.env.CI,
-    timeout: 120_000,
-  },
-  {
-    command:
-      "AUTH_PUBLIC_ORIGIN=http://affiliate.localhost:3105 AUTH_GATEWAY_UPSTREAM_ORIGIN=http://127.0.0.1:8003 PORT=3105 npm run dev:affiliate-dashboard",
-    url: "http://127.0.0.1:3105/login",
     reuseExistingServer: !process.env.CI,
     timeout: 120_000,
   },
@@ -107,12 +96,6 @@ export default defineConfig({
           {
             command: "PORT=3002 npm run dev:booking-web",
             url: "http://127.0.0.1:3002",
-            reuseExistingServer: !process.env.CI,
-            timeout: 120_000,
-          },
-          {
-            command: "PORT=3005 npm run dev:affiliate-dashboard",
-            url: "http://127.0.0.1:3005",
             reuseExistingServer: !process.env.CI,
             timeout: 120_000,
           },
@@ -161,14 +144,6 @@ export default defineConfig({
       use: {
         ...devices["Desktop Chrome"],
         baseURL: bookingBaseURL,
-      },
-    },
-    {
-      name: "affiliate-dashboard-chromium",
-      testMatch: /affiliate-dashboard\/.*\.spec\.ts/,
-      use: {
-        ...devices["Desktop Chrome"],
-        baseURL: affiliateDashboardBaseURL,
       },
     },
     {

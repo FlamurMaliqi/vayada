@@ -1,13 +1,38 @@
 "use client";
 import { useEffect, useState } from "react";
 import dynamic from "next/dynamic";
-import type { NearbyPreview as Preview } from "@vayada/domain-hotels";
+import type { NearbyPreview as Preview, NearbyPublicPlace } from "@vayada/domain-hotels";
 import { bookingWebPublic } from "@/services/api/client";
 
 const NearbyPreview = dynamic(() => import("@vayada/product-onboarding/NearbyPreview"), {
   ssr: false,
 });
 type Response = Preview & { schemaVersion: 1; status: string };
+const categories = new Set(["nature", "food", "activities", "transport"]);
+
+function isPlace(value: unknown): value is NearbyPublicPlace {
+  if (!value || typeof value !== "object") return false;
+  const place = value as Record<string, unknown>;
+  const common =
+    typeof place.category === "string" &&
+    categories.has(place.category) &&
+    typeof place.favorite === "boolean" &&
+    (place.note === null || typeof place.note === "string");
+  if (!common) return false;
+  if (place.source === "google") return typeof place.placeId === "string";
+  return (
+    place.source === "custom" &&
+    typeof place.id === "string" &&
+    typeof place.name === "string" &&
+    (place.address === null || typeof place.address === "string") &&
+    typeof place.latitude === "number" &&
+    Number.isFinite(place.latitude) &&
+    Math.abs(place.latitude) <= 90 &&
+    typeof place.longitude === "number" &&
+    Number.isFinite(place.longitude) &&
+    Math.abs(place.longitude) <= 180
+  );
+}
 
 export default function Surroundings({ slug, locality }: { slug: string; locality: string }) {
   const [opened, setOpened] = useState(false);
@@ -28,7 +53,11 @@ export default function Surroundings({ slug, locality }: { slug: string; localit
       })
       .then((response) => {
         if (disposed) return;
-        if (response.schemaVersion !== 1 || !Array.isArray(response.places))
+        if (
+          response.schemaVersion !== 1 ||
+          !Array.isArray(response.places) ||
+          !response.places.every(isPlace)
+        )
           throw new Error("Invalid surroundings");
         setData(response);
       })

@@ -1,6 +1,7 @@
 // prettier-ignore
 import type { LinkedResource, PermissionKey, ProductEntitlement, RequestContext } from "@vayada/backend-auth";
 import { buildApp } from "./app.js";
+import { agencyPropertyAccessRepository } from "./testAuthorization.js";
 import type { FinanceExpenseRoutesOptions } from "./routes/financeExpenses.js";
 import { describe, expect, it, vi } from "vitest";
 
@@ -29,11 +30,35 @@ function ports() {
   return { read, categories, expenses, recurring, receiptMedia } as unknown as FinanceExpenseRoutesOptions;
 }
 // prettier-ignore
-async function app(options: FinanceExpenseRoutesOptions, auth: RequestContext | null = context()) { const instance = buildApp({ logger: false, financeExpenses: options }); instance.decorateRequest("authContext", null); instance.addHook("onRequest", async (request) => { request.authContext = auth; }); return instance; }
+async function app(options: FinanceExpenseRoutesOptions, auth: RequestContext | null = context()) { const instance = buildApp({ logger: false, financeExpenses: { ...options, propertyAccessRepository: agencyPropertyAccessRepository } }); instance.decorateRequest("authContext", null); instance.addHook("onRequest", async (request) => { request.authContext = auth; }); return instance; }
 // prettier-ignore
 const command = { commandId: ruleId, idempotencyKey: "key-1", expectedRevision: 1 };
 // prettier-ignore
 const write = { commandId: expenseId, idempotencyKey: "key-1", incurredOn: "2026-08-11", vendor: "Vendor", categoryId, amount: { amount: "12.0000", currency: "EUR" }, paymentStatus: "unpaid" };
+
+it("denies unassigned expenses, commands and private receipt signing", async () => {
+  const auth = context();
+  auth.membership.propertyAccess!.assignedPropertyIds = [];
+  const options = ports(),
+    instance = await app(options, auth);
+  try {
+    for (const [method, url, payload] of [
+      ["GET", `${root}/expense-categories`],
+      ["POST", `${root}/expenses`, write],
+      ["GET", `${root}/expenses/${expenseId}/receipt`],
+    ] as const) {
+      const response = await instance.inject({ method, url, payload });
+      expect(response.statusCode).toBe(403);
+      expect(response.json()).toEqual({ code: "forbidden" });
+    }
+    expect(options.read.categories).not.toHaveBeenCalled();
+    expect(options.expenses.create).not.toHaveBeenCalled();
+    expect(options.receiptMedia!.read.receipt).not.toHaveBeenCalled();
+    expect(options.receiptMedia!.signer.signPrivateDownload).not.toHaveBeenCalled();
+  } finally {
+    await instance.close();
+  }
+});
 
 // prettier-ignore
 describe("Financials expense routes", () => {
@@ -59,4 +84,4 @@ describe("Financials expense routes", () => {
 });
 
 // prettier-ignore
-const resource = { product: "pms" as const, resourceType: "pms_property" as const, resourceId: propertyId }, entitlement = (key: string, status: ProductEntitlement["status"] = "active"): ProductEntitlement => ({ product: "pms", key, status, resource }), context = (overrides: { permissions?: PermissionKey[]; entitlements?: ProductEntitlement[]; links?: LinkedResource[]; kind?: "hotel_group" | "platform" } = {}): RequestContext => ({ actor: { internalUserId: "12140000-0000-4000-8000-000000000010" }, selectedOrganization: { organizationId: "12140000-0000-4000-8000-000000000011", kind: overrides.kind ?? "hotel_group" }, membership: { permissions: overrides.permissions ?? ["pms.finance.read", "pms.finance.manage"] }, entitlements: overrides.entitlements ?? [entitlement("property-management"), entitlement("module:financials")], linkedResources: overrides.links ?? [{ ...resource, relationship: "owner", status: "active" }], locale: "en", currency: "EUR", audit: { requestId: "request-1", receivedAt: now, source: "api" } } as unknown as RequestContext);
+const resource = { product: "pms" as const, resourceType: "pms_property" as const, resourceId: propertyId }, entitlement = (key: string, status: ProductEntitlement["status"] = "active"): ProductEntitlement => ({ product: "pms", key, status, resource }), context = (overrides: { permissions?: PermissionKey[]; entitlements?: ProductEntitlement[]; links?: LinkedResource[]; kind?: "hotel_group" | "platform" } = {}): RequestContext => ({ actor: { internalUserId: "12140000-0000-4000-8000-000000000010", status: "active" }, selectedOrganization: { organizationId: "12140000-0000-4000-8000-000000000011", kind: overrides.kind ?? "hotel_group", status: "active" }, membership: { roleKey: "hotel_owner", status: "active", propertyAccess: { mode: "assigned", roleKey: "hotel_owner", accessOrigin: "agency", assignedPropertyIds: [propertyId] }, permissions: overrides.permissions ?? ["pms.finance.read", "pms.finance.manage"] }, entitlements: overrides.entitlements ?? [entitlement("property-management"), entitlement("module:financials")], linkedResources: overrides.links ?? [{ ...resource, relationship: "owner", status: "active" }, { product: "hotel_catalog", resourceType: "property", resourceId: propertyId, relationship: "owner", status: "active" }], locale: "en", currency: "EUR", audit: { requestId: "request-1", receivedAt: now, source: "api" } } as unknown as RequestContext);

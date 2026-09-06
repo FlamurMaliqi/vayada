@@ -195,7 +195,7 @@ export class ApiClient {
 
       return data as T;
     } catch (error) {
-      if (error instanceof ApiErrorResponse) {
+      if (options.signal?.aborted || error instanceof ApiErrorResponse) {
         throw error;
       }
       if (error instanceof SyntaxError && error.message.includes("JSON")) {

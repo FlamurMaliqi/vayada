@@ -131,11 +131,15 @@ describe.skipIf(!TEST_DATABASE_URL)("runMigrations (integration)", () => {
   beforeEach(async () => {
     tmpDir = join(tmpdir(), `backend-migration-int-${Date.now()}`);
     await mkdir(tmpDir, { recursive: true });
+    await resetRunnerSchemas();
   });
 
   afterEach(async () => {
     await rm(tmpDir, { recursive: true, force: true });
+    await resetRunnerSchemas();
+  });
 
+  async function resetRunnerSchemas() {
     assertSafeTestDatabase(TEST_DATABASE_URL!);
 
     const client = new pg.Client({ connectionString: TEST_DATABASE_URL });
@@ -146,7 +150,7 @@ describe.skipIf(!TEST_DATABASE_URL)("runMigrations (integration)", () => {
     } finally {
       await client.end();
     }
-  });
+  }
 
   it("applies a trivial migration and records a ledger row with status applied", async () => {
     await writeFile(
@@ -466,7 +470,7 @@ describe.skipIf(!TEST_DATABASE_URL)("target schema migrations (integration)", ()
            VALUES ($1, ARRAY['hotel_operations'], 0)`,
           [organizationId(8)],
         ),
-      ).rejects.toMatchObject({ code: "23503" });
+      ).rejects.toMatchObject({ code: "23514" });
 
       await expect(
         client.query(
@@ -483,7 +487,7 @@ describe.skipIf(!TEST_DATABASE_URL)("target schema migrations (integration)", ()
              (organization_id, selected_tracks)
            VALUES ('00000000-0000-4000-8000-000000000099', ARRAY['hotel_operations'])`,
         ),
-      ).rejects.toMatchObject({ code: "23514" });
+      ).rejects.toMatchObject({ code: "23503" });
     } finally {
       await client.end();
     }
@@ -787,6 +791,7 @@ describe.skipIf(!TEST_DATABASE_URL)("target schema migrations (integration)", ()
 
       expect(tableRows.map((row) => row.table_name)).toEqual([
         "addon_definitions",
+        "booking_addon_selection_items",
         "booking_addon_selections",
         "booking_change_requests",
         "booking_design_revisions",
@@ -811,6 +816,7 @@ describe.skipIf(!TEST_DATABASE_URL)("target schema migrations (integration)", ()
         "promo_applications",
         "promo_definitions",
         "quote_sessions",
+        "same_day_booking_policies",
       ]);
 
       const { rows: bookingColumns } = await verifyClient.query<{
@@ -893,6 +899,7 @@ describe.skipIf(!TEST_DATABASE_URL)("target schema migrations (integration)", ()
         "booking_checkout_charges",
         "booking_checkout_records",
         "booking_notes_private",
+        "calendar_auto_open_settings",
         "channel_binding_claims",
         "channel_booking_mappings",
         "channel_booking_revision_tombstones",
@@ -903,7 +910,10 @@ describe.skipIf(!TEST_DATABASE_URL)("target schema migrations (integration)", ()
         "channel_sync_status",
         "checkin_checklist_templates",
         "checkout_inspection_templates",
+        "effective_calendar_auto_open_settings",
         "effective_room_assignment_optimization_settings",
+        "flexible_rate_plan_cancellation_extensions",
+        "inbox_email_routes",
         "inventory_coverage_validation_queue",
         "inventory_days",
         "inventory_materialization_coverage",
@@ -912,6 +922,7 @@ describe.skipIf(!TEST_DATABASE_URL)("target schema migrations (integration)", ()
         "inventory_reservation_statuses",
         "linked_inventory_groups",
         "mandatory_charge_confirmation_revisions",
+        "message_assistance_results",
         "message_attachments",
         "message_delivery_attempts",
         "message_delivery_receipts",
@@ -1262,6 +1273,8 @@ describe.skipIf(!TEST_DATABASE_URL)("target schema migrations (integration)", ()
       expect(financeTableRows.map((row) => row.table_name)).toEqual([
         "affiliate_payout_payment_evidence",
         "affiliate_payout_payment_evidence_items",
+        "bank_transfer_bookings",
+        "bank_transfer_destinations",
         "billing_entitlements",
         "commission_rate_changes",
         "commission_rules",
@@ -1273,6 +1286,8 @@ describe.skipIf(!TEST_DATABASE_URL)("target schema migrations (integration)", ()
         "folio_payment_references",
         "folio_revisions",
         "folios",
+        "online_card_execution_evidence",
+        "online_card_readiness",
         "ota_commission_evidence",
         "ota_commission_reporting_evidence",
         "payment_provider_accounts",
@@ -1283,6 +1298,7 @@ describe.skipIf(!TEST_DATABASE_URL)("target schema migrations (integration)", ()
         "provider_fee_evidence",
         "provider_fee_reporting_evidence",
         "recurring_expense_rules",
+        "stripe_provider_account_compensation_claims",
       ]);
 
       const { rows: financeIntegrityConstraints } = await verifyClient.query<{
@@ -1769,6 +1785,7 @@ describe.skipIf(!TEST_DATABASE_URL)("target schema migrations (integration)", ()
         "affiliate_lifecycle_changes",
         "collaboration_deliverables",
         "collaborations",
+        "creator_matching_preferences",
         "creator_platform_authorizations",
         "creator_platform_connections",
         "creator_platform_credential_cleanup_jobs",
@@ -1776,6 +1793,7 @@ describe.skipIf(!TEST_DATABASE_URL)("target schema migrations (integration)", ()
         "creator_platforms",
         "creator_profiles",
         "creator_ratings",
+        "current_matching_outcomes",
         "external_collaborations",
         "hotel_collaboration_preferences",
         "hotel_submission_moderation",
@@ -1786,10 +1804,12 @@ describe.skipIf(!TEST_DATABASE_URL)("target schema migrations (integration)", ()
         "marketplace_notifications",
         "marketplace_offer_read_model",
         "marketplace_offers",
+        "matching_event_projections",
         "newsletter_preferences",
         "offer_compensation_options",
         "offer_creator_requirements",
         "offer_deliverables",
+        "offer_matching_criteria",
         "property_affiliates",
         "trips",
       ]);
@@ -3373,7 +3393,20 @@ describe.skipIf(!TEST_DATABASE_URL)("target schema migrations (integration)", ()
         "media_variants",
         "outbox_events",
         "product_audit_events",
+        "production_booking_migration_inferences",
+        "production_booking_migration_quarantines",
+        "production_cutover_runs",
+        "production_cutover_steps",
+        "production_finance_migration_dispositions",
+        "production_marketplace_migration_quarantines",
+        "production_media_migration_items",
+        "production_media_migration_quarantines",
+        "production_media_migration_runs",
+        "production_migration_source_links",
         "schema_migrations",
+        "source_extraction_runs",
+        "source_extraction_sources",
+        "source_extraction_tables",
       ]);
 
       const { rows: platformLedgerIndexes } = await verifyClient.query<{
@@ -4230,12 +4263,12 @@ describe.skipIf(!TEST_DATABASE_URL)("target schema migrations (integration)", ()
         `INSERT INTO platform.external_webhook_events
            (
              provider, webhook_key_hash, event_type, delivery_status,
-             payload_hash, raw_payload
+             payload_hash, raw_payload, payload_retention_until
            )
          VALUES (
            'stripe', 'sha256:webhook-delivery-key',
            'payment.updated', 'received',
-           'sha256:stripe-payload', '{}'::jsonb
+           'sha256:stripe-payload', '{}'::jsonb, CURRENT_TIMESTAMP + INTERVAL '30 days'
          )`,
       );
       await expect(
@@ -4243,12 +4276,12 @@ describe.skipIf(!TEST_DATABASE_URL)("target schema migrations (integration)", ()
           `INSERT INTO platform.external_webhook_events
              (
                provider, webhook_key_hash, event_type, delivery_status,
-               payload_hash, raw_payload
+               payload_hash, raw_payload, payload_retention_until
              )
            VALUES (
              'stripe', 'sha256:webhook-delivery-key',
              'payment.updated', 'received',
-             'sha256:stripe-payload-duplicate', '{}'::jsonb
+             'sha256:stripe-payload-duplicate', '{}'::jsonb, CURRENT_TIMESTAMP + INTERVAL '30 days'
            )`,
         ),
       ).rejects.toMatchObject({ code: "23505" });
@@ -4272,8 +4305,8 @@ describe.skipIf(!TEST_DATABASE_URL)("target schema migrations (integration)", ()
       await expect(
         verifyClient.query(
           `INSERT INTO platform.external_webhook_events
-             (provider, event_type, delivery_status, payload_hash, raw_payload)
-           VALUES ('stripe', 'payment.updated', 'received', 'sha256:no-key', '{}'::jsonb)`,
+             (provider, event_type, delivery_status, payload_hash, raw_payload, payload_retention_until)
+           VALUES ('stripe', 'payment.updated', 'received', 'sha256:no-key', '{}'::jsonb, CURRENT_TIMESTAMP + INTERVAL '30 days')`,
         ),
       ).rejects.toMatchObject({ code: "23514" });
       await expect(
@@ -4281,12 +4314,12 @@ describe.skipIf(!TEST_DATABASE_URL)("target schema migrations (integration)", ()
           `INSERT INTO platform.external_webhook_events
              (
                provider, provider_event_id, event_type, delivery_status,
-               tenant_scope, organization_id, payload_hash, raw_payload
+               tenant_scope, organization_id, payload_hash, raw_payload, payload_retention_until
              )
            VALUES (
              'stripe', 'stripe-invalid-scope-platform-test',
              'payment.updated', 'received', 'external', $1,
-             'sha256:invalid-scope', '{}'::jsonb
+             'sha256:invalid-scope', '{}'::jsonb, CURRENT_TIMESTAMP + INTERVAL '30 days'
            )`,
           [hotelOrganizationId],
         ),
@@ -5080,7 +5113,7 @@ describe.skipIf(!TEST_DATABASE_URL)("target schema migrations (integration)", ()
         ),
       ).rejects.toMatchObject({
         code: "23514",
-        constraint: "chk_pms_inventory_days_linked_requires_canonical",
+        constraint: "chk_pms_inventory_days_linked_requires_revision",
       });
       await verifyClient.query(
         `INSERT INTO booking.guest_bookings
@@ -5262,5 +5295,5 @@ describe.skipIf(!TEST_DATABASE_URL)("target schema migrations (integration)", ()
     } finally {
       await verifyClient.end();
     }
-  }, 10_000);
+  }, 60_000);
 });

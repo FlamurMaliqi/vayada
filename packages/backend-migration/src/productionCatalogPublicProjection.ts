@@ -68,6 +68,8 @@ export async function rebuildProductionCatalogPublicProjection(
      public_policies AS (
        SELECT property_id, jsonb_strip_nulls(jsonb_build_object(
          'checkInTime', CASE WHEN check_in_time IS NULL THEN NULL ELSE to_char(check_in_time, 'HH24:MI') END,
+         'checkInUntil', to_char(check_in_until, 'HH24:MI'),
+         'checkOutFrom', to_char(check_out_from, 'HH24:MI'),
          'checkOutTime', CASE WHEN check_out_time IS NULL THEN NULL ELSE to_char(check_out_time, 'HH24:MI') END
        )) AS value
        FROM hotel_catalog.property_policy_summaries WHERE property_id = ANY($1::uuid[])

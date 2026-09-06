@@ -1566,8 +1566,8 @@ async function validatePgCollaborationDates(
   availabilityMonths?: readonly string[],
 ): Promise<void> {
   const result = await client.query<{ timezone: string | null }>(
-    `SELECT location->>'timezone' AS timezone
-     FROM hotel_catalog.property_public_profile_read_model WHERE property_id = $1::uuid`,
+    `SELECT timezone
+     FROM hotel_catalog.property_locations WHERE property_id = $1::uuid`,
     [propertyId],
   );
   const today = collaborationToday(result.rows[0]?.timezone);
@@ -2623,6 +2623,8 @@ function collaborationFromSql(
            AND hotel_profile.organization_id = collaboration.hotel_organization_id
           JOIN hotel_catalog.properties property
             ON property.id = collaboration.property_id
+          LEFT JOIN hotel_catalog.property_locations property_location
+            ON property_location.property_id = collaboration.property_id
           LEFT JOIN hotel_catalog.property_public_profile_read_model public_profile
             ON public_profile.property_id = collaboration.property_id
           LEFT JOIN LATERAL (
@@ -2687,7 +2689,7 @@ function collaborationSelectSql(side: MarketplaceCollaborationAuthorizationSide)
           collaboration.creator_consent AS "creatorConsent",
           collaboration.creator_agreed_at AS "creatorAgreedAt",
           collaboration.hotel_agreed_at AS "hotelAgreedAt",
-          public_profile.location->>'timezone' AS "propertyTimezone",
+          property_location.timezone AS "propertyTimezone",
           offer.title AS "offerTitle",
           NULLIF(concat_ws(
             ', ',
