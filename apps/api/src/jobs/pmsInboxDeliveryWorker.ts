@@ -22,6 +22,7 @@ export async function runPmsInboxDeliveryJobs(
     limit?: number;
     now?: () => Date;
     random?: () => number;
+    shouldContinue?: () => boolean;
   } = {},
 ): Promise<{
   processed: number;
@@ -34,6 +35,7 @@ export async function runPmsInboxDeliveryJobs(
   const totals = { processed: 0, sent: 0, retrying: 0, held: 0, failed: 0, deadLettered: 0 };
   const workerId = `${options.workerId ?? "pms-inbox-delivery"}:${randomUUID()}`;
   for (let index = 0; index < (options.limit ?? 25); index += 1) {
+    if (options.shouldContinue?.() === false) break;
     const job = await store.claim(workerId);
     if (!job) break;
     const prepared = await store.prepare(job, {
@@ -108,6 +110,45 @@ export async function runPmsInboxDeliveryJobs(
       totals.deadLettered += 1;
   }
   return totals;
+}
+
+export function startPmsInboxDeliveryWorker(options: {
+  enabled: boolean;
+  store: PmsInboxDeliveryStore;
+  providers: PmsInboxDeliveryProviders;
+  relay(): Promise<unknown>;
+  warn: (details: unknown, message: string) => void;
+}): { close(): Promise<void> } {
+  let closing = false;
+  let active: Promise<void> | undefined;
+  const run = () => {
+    if (!options.enabled || closing || active) return;
+    active = Promise.resolve()
+      .then(() => options.relay())
+      .then(() =>
+        runPmsInboxDeliveryJobs(options.store, options.providers, {
+          shouldContinue: () => !closing,
+        }),
+      )
+      .then((result) => {
+        if (result.failed || result.deadLettered)
+          options.warn({ result }, "PMS Inbox delivery completed with failures");
+      })
+      .catch((error: unknown) => options.warn({ err: error }, "PMS Inbox delivery failed"))
+      .finally(() => {
+        active = undefined;
+      });
+  };
+  const timer = options.enabled ? setInterval(run, 2_000) : undefined;
+  timer?.unref();
+  run();
+  return {
+    async close() {
+      closing = true;
+      if (timer) clearInterval(timer);
+      await active;
+    },
+  };
 }
 
 function failedCompletion(

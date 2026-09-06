@@ -28,6 +28,7 @@ interface StripeConfirmStepProps {
   addons: Addon[];
   selectedAddonIds: string[];
   addonQuantities: Record<string, number>;
+  addonPackageQuantities?: Record<string, number>;
   addonDates?: Record<string, string[]>;
   grandTotal: number;
   // For the VAY-388 card flow this is the draft preview (status='draft',
@@ -63,6 +64,7 @@ export default function StripeConfirmStep({
   addons,
   selectedAddonIds,
   addonQuantities,
+  addonPackageQuantities = {},
   addonDates,
   grandTotal,
   booking,
@@ -182,14 +184,16 @@ export default function StripeConfirmStep({
                   ? Math.max(1, Math.min(count ?? Math.max(1, adults), Math.max(1, adults)))
                   : 1;
                 const days = addon.perNight
-                  ? Math.max(1, Math.min(dates?.length ?? count ?? nights, nights))
+                  ? Math.max(1, Math.min(dates?.length ?? (addon.perPerson ? nights : count ?? nights), nights))
                   : 1;
                 const items = !addon.perPerson && !addon.perNight ? Math.max(1, count ?? 1) : 1;
                 const linePrice = convertAndRound(
-                  addon.price * people * days * items,
+                  addon.price * people * days * items * (addonPackageQuantities[addon.id] ?? 1),
                   addon.currency,
                 );
                 const parts: string[] = [];
+                if ((addonPackageQuantities[addon.id] ?? 1) > 1)
+                  parts.push(`×${addonPackageQuantities[addon.id]}`);
                 if (addon.perPerson && people < adults) parts.push(`${people}/${adults}`);
                 if (addon.perNight && days < nights) parts.push(`${days}/${nights}`);
                 if (!addon.perPerson && !addon.perNight && items > 1) parts.push(`×${items}`);

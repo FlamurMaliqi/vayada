@@ -6,6 +6,7 @@ import {
   type VerifiedSession,
 } from "@vayada/backend-auth";
 import type { FinanceSubscriptionService } from "@vayada/domain-finance";
+import type { PropertyAccessRepository } from "@vayada/backend-authorization";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { buildApp } from "./app.js";
@@ -111,9 +112,42 @@ describe("Finance subscription route authorization", () => {
       expect.objectContaining({ propertyId, organizationId }),
     );
   });
+
+  it("denies unassigned subscription reads and checkout before calling Finance", async () => {
+    const fixture = createApp({
+      permissions: ["pms.finance.read", "booking.settings.manage"],
+      propertyAccessRepository: {
+        findMembershipPropertyScope: async () => ({
+          mode: "assigned",
+          roleKey: "finance_manager",
+          accessOrigin: "agency",
+          assignedPropertyIds: [],
+        }),
+      },
+    });
+    apps.push(fixture.app);
+    for (const route of ["plan-status", "billing"]) {
+      const response = await fixture.app.inject({
+        url: `/api/finance/properties/${propertyId}/${route}`,
+        headers: { authorization: "Bearer valid-token" },
+      });
+      expect(response.statusCode).toBe(403);
+    }
+    expect(fixture.service.getPlanStatus).not.toHaveBeenCalled();
+    expect(fixture.service.getBillingOverview).not.toHaveBeenCalled();
+    const checkout = await fixture.app.inject({
+      method: "POST",
+      url: `/api/finance/properties/${propertyId}/fixed-plan/checkout`,
+      headers: { authorization: "Bearer valid-token" },
+      payload: { commandId: "command-1", idempotencyKey: "checkout-1" },
+    });
+    expect(checkout.statusCode).toBe(403);
+    expect(fixture.service.createFixedPlanCheckout).not.toHaveBeenCalled();
+  });
 });
 
 function createApp(options: {
+  propertyAccessRepository?: PropertyAccessRepository;
   permissions?: PermissionKey[];
   entitlements?: ProductEntitlement[];
   linked?: boolean;
@@ -168,7 +202,7 @@ function createApp(options: {
     auth: {
       verifier: createFakeVerifier(new Map([["valid-token", session]])),
       repository: identityRepository(options.linked !== false),
-      propertyAccessRepository: agencyPropertyAccessRepository,
+      propertyAccessRepository: options.propertyAccessRepository ?? agencyPropertyAccessRepository,
       rolePermissionRepository: {
         async findPermissionsForRole() {
           return options.permissions ?? ["pms.finance.read"];
@@ -216,6 +250,15 @@ function identityRepository(linked: boolean): IdentityRepository {
     async findLinkedResources() {
       return linked
         ? [
+            ...[
+              { product: "hotel_catalog", resourceType: "property" },
+              { product: "pms", resourceType: "pms_property" },
+            ].map((resource) => ({
+              ...resource,
+              resourceId: propertyId,
+              relationship: "finance_manager",
+              status: "active" as const,
+            })),
             {
               product: "pms",
               resourceType: "property",

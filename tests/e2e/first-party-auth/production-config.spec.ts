@@ -6,7 +6,6 @@ const apps = [
   { app: "marketplace-web", auth: "services/auth/auth.ts", workflow: "marketplace-web" },
   { app: "booking-admin", auth: "services/auth/index.ts", workflow: "booking-admin" },
   { app: "pms-web", auth: "services/auth/index.ts", workflow: "pms-web" },
-  { app: "affiliate-dashboard", auth: "services/auth/index.ts", workflow: "affiliate-dashboard" },
   { app: "vayada-admin", auth: "services/auth/auth.ts", workflow: "vayada-admin" },
 ] as const;
 
@@ -50,12 +49,6 @@ test("ordinary product API clients retain configured service origins", async ({}
       env: "NEXT_PUBLIC_AUTH_API_URL",
       fallback: "https://api.booking.localhost",
       workflow: ".github/workflows/deploy-next-pms-web.yml",
-    },
-    {
-      client: "apps/affiliate-dashboard/services/api/client.ts",
-      env: "NEXT_PUBLIC_API_URL",
-      fallback: "https://api.localhost",
-      workflow: ".github/workflows/deploy-next-affiliate-dashboard.yml",
     },
     {
       client: "apps/vayada-admin/services/api/client.ts",

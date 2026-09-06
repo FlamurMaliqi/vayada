@@ -3,6 +3,7 @@ import { propertyEndpoint, resolveSelectedPmsPropertyId } from "../api/pmsProper
 import { pmsManualBookingClient } from "../api/pmsManualBookingClient";
 import { unsupportedPmsNextStackFeature } from "../api/unsupported";
 import { BookingAddon } from "../bookings";
+import { orderRoomsByRoomType } from "../../lib/roomOrdering";
 
 // prettier-ignore
 type ManualAddonApi = { addOns: Array<{ addonItemId: string; name: string; description: string; price: string; currency: string; category: string; pricingModel: "per_stay" | "per_night" | "per_guest" | "per_guest_night"; }> };
@@ -440,7 +441,10 @@ function toCalendarData(
         })),
       seasons: [],
     })),
-    rooms: rooms
+    rooms: orderRoomsByRoomType(
+      rooms,
+      roomTypes.map((roomType) => roomType.roomTypeId),
+    )
       .filter((room) => room.status !== "retired")
       .map((room) => ({
         id: room.roomId,

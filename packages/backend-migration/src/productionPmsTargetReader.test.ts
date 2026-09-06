@@ -9,6 +9,38 @@ import type { PmsTargetRecord } from "./productionPmsTypes.js";
 import { PRODUCTION_PMS_TABLES } from "./productionPmsTables.js";
 
 describe("production PMS target reader", () => {
+  it("checks only distinct candidate Inbox threads in bounded batches and preserves blockers", async () => {
+    const template = candidates()[0]!;
+    const threads = Array.from({ length: 1_001 }, (_, index) => ({
+      ...template,
+      targetTable: "message_threads",
+      targetId: `10000000-0000-4000-a000-${String(index).padStart(12, "0")}`,
+    }));
+    const calls: unknown[][] = [];
+    const client = {
+      async query(sql: string, values?: unknown[]) {
+        if (!sql.includes("INBOX_TARGET_THREAD_SUMMARY_MISMATCH")) return { rows: [] };
+        calls.push(values!);
+        expect(sql).toContain("property_id = thread.property_id AND thread_id = thread.id");
+        expect(sql).toContain("ORDER BY sent_at DESC, id DESC LIMIT 1");
+        return { rows: [{ code: "INBOX_TARGET_THREAD_SUMMARY_MISMATCH", sourceId: "thread" }] };
+      },
+    };
+    const prerequisites = { propertyLinks: [], bookings: [], userIds: [], mediaIds: [] };
+    expect(
+      (await readProductionPmsTargetState(client as never, [], prerequisites)).blockers,
+    ).toEqual([]);
+    expect(calls).toEqual([]);
+    const target = await readProductionPmsTargetState(
+      client as never,
+      [...threads, threads[0]!, template],
+      prerequisites,
+    );
+    expect(calls.map((call) => (call[0] as string[]).length)).toEqual([500, 500, 1]);
+    expect(calls.flatMap((call) => call[0])).toEqual(threads.map((thread) => thread.targetId));
+    expect(target.blockers).toHaveLength(3);
+  });
+
   it("excludes inventory from bounded collision batches while covering every SQL predicate", async () => {
     const [roomType, inventory] = candidates();
     const cohort = [

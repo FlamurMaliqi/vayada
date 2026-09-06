@@ -1,4 +1,15 @@
 {
+  "analyticsConsent": {
+    "settings": "Opciones de privacidad",
+    "title": "Analítica opcional",
+    "description": "Usamos analítica opcional para entender las visitas y los pasos de reserva. Puede reservar sin activarla. Su elección solo se aplica al sitio de reservas de este hotel.",
+    "enabled": "Analítica activada.",
+    "disabled": "Analítica desactivada.",
+    "saveError": "No se pudo guardar su elección. La analítica sigue desactivada.",
+    "reject": "Rechazar analítica",
+    "accept": "Permitir analítica",
+    "close": "Mantener la elección actual"
+  },
   "common": {
     "checkAvailability": "Consultar Disponibilidad",
     "bookNow": "Reservar Ahora",
@@ -50,6 +61,12 @@
     "payment": "Pago"
   },
   "home": {
+    "guestCountUnsupported": "La búsqueda en línea no admite su grupo de {count} huéspedes. Pruebe con menos huéspedes o contáctenos.",
+    "guestCountUnavailable": "Ninguno de nuestros alojamientos disponibles puede acoger a su grupo de {count} huéspedes. Pruebe con menos huéspedes u otras fechas.",
+    "noAvailability": "No hay alojamiento disponible para esta búsqueda. Pruebe otras fechas u opciones.",
+    "availabilityError": "No pudimos comprobar la disponibilidad. Inténtelo de nuevo.",
+    "noMatchingRooms": "Ningún alojamiento coincide con sus filtros. Pruebe a quitar un filtro.",
+
     "yourStay": "Tu Estancia",
     "addPromo": "Añadir promo",
     "promoTitle": "¿Tienes un código promocional?",
@@ -104,19 +121,6 @@
       "checkingAvailability": "Comprobando disponibilidad",
       "availabilityUnavailable": "No podemos consultar temporalmente la disponibilidad para estas fechas.",
       "availabilityUnavailableTooltip": "No se puede consultar la disponibilidad"
-    },
-    "mobileView": {
-      "list": "Lista",
-      "map": "Mapa"
-    },
-    "roomMap": {
-      "noLocations": "No hay ubicaciones disponibles",
-      "noLocationsDesc": "Los tipos de habitación sin coordenadas guardadas aún aparecen en la lista.",
-      "locations": "{count, plural, one {# ubicación} other {# ubicaciones}}",
-      "perNight": "/ noche",
-      "view": "Ver →",
-      "zoomIn": "Acercar",
-      "zoomOut": "Alejar"
     }
   },
   "rooms": {

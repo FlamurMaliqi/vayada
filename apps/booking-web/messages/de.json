@@ -1,4 +1,15 @@
 {
+  "analyticsConsent": {
+    "settings": "Datenschutzeinstellungen",
+    "title": "Optionale Analyse",
+    "description": "Wir nutzen optionale Analysen, um Besuche und Buchungsschritte zu verstehen. Buchungen funktionieren auch ohne Analyse. Ihre Auswahl gilt nur für die Buchungsseite dieses Hotels.",
+    "enabled": "Analyse ist aktiviert.",
+    "disabled": "Analyse ist deaktiviert.",
+    "saveError": "Ihre Auswahl konnte nicht gespeichert werden. Analyse bleibt deaktiviert.",
+    "reject": "Analyse ablehnen",
+    "accept": "Analyse erlauben",
+    "close": "Aktuelle Auswahl behalten"
+  },
   "common": {
     "checkAvailability": "Verfügbarkeit prüfen",
     "bookNow": "Jetzt buchen",
@@ -50,6 +61,12 @@
     "payment": "Zahlung"
   },
   "home": {
+    "guestCountUnsupported": "Die Online-Suche unterstützt Ihre Gruppe von {count} Gästen nicht. Versuchen Sie es mit weniger Gästen oder kontaktieren Sie uns.",
+    "guestCountUnavailable": "Keine unserer verfügbaren Unterkünfte bietet Platz für Ihre Gruppe von {count} Gästen. Versuchen Sie es mit weniger Gästen oder anderen Reisedaten.",
+    "noAvailability": "Für diese Suche ist keine Unterkunft verfügbar. Versuchen Sie andere Reisedaten oder Suchoptionen.",
+    "availabilityError": "Wir konnten die Verfügbarkeit nicht prüfen. Bitte versuchen Sie es erneut.",
+    "noMatchingRooms": "Keine Unterkunft entspricht Ihren Filtern. Entfernen Sie einen Filter.",
+
     "yourStay": "Ihr Aufenthalt",
     "addPromo": "Aktionscode hinzufügen",
     "promoTitle": "Haben Sie einen Aktionscode?",
@@ -104,19 +121,6 @@
       "checkingAvailability": "Verfügbarkeit wird geprüft",
       "availabilityUnavailable": "Die Verfügbarkeit für diese Reisedaten ist vorübergehend nicht abrufbar.",
       "availabilityUnavailableTooltip": "Verfügbarkeit derzeit nicht abrufbar"
-    },
-    "mobileView": {
-      "list": "Liste",
-      "map": "Karte"
-    },
-    "roomMap": {
-      "noLocations": "Keine Standorte verfügbar",
-      "noLocationsDesc": "Zimmertypen ohne gespeicherte Koordinaten werden weiterhin in der Liste angezeigt.",
-      "locations": "{count, plural, one {# Standort} other {# Standorte}}",
-      "perNight": "/ Nacht",
-      "view": "Ansehen →",
-      "zoomIn": "Vergrößern",
-      "zoomOut": "Verkleinern"
     }
   },
   "rooms": {
@@ -146,7 +150,11 @@
     "pricePerDay": "Preis pro Tag",
     "priceLabel": "Preis",
     "addedToTrip": "Zur Reise hinzugefügt",
-    "addToTrip": "Zur Reise hinzufügen"
+    "addToTrip": "Zur Reise hinzufügen",
+    "pricePerPersonNight": "Preis pro Person / Nacht",
+    "leadTime": "Vorlaufzeit",
+    "showPhoto": "Foto {number} anzeigen",
+    "closeDetails": "Zusatzleistungsdetails schließen"
   },
   "book": {
     "guestInformation": "Gastinformationen",
