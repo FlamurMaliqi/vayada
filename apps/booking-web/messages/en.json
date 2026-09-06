@@ -1,4 +1,15 @@
 {
+  "analyticsConsent": {
+    "settings": "Privacy choices",
+    "title": "Optional analytics",
+    "description": "We use optional analytics to understand visits and booking steps. Booking works with analytics off. Your choice applies only to this hotel’s booking site.",
+    "enabled": "Analytics is on.",
+    "disabled": "Analytics is off.",
+    "saveError": "Could not save your choice. Analytics stays off.",
+    "reject": "Reject analytics",
+    "accept": "Allow analytics",
+    "close": "Keep current choice"
+  },
   "common": {
     "checkAvailability": "Check Availability",
     "bookNow": "Book Now",

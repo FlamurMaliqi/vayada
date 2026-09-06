@@ -23,7 +23,7 @@ export const hotelService = {
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             referralCode,
-            sessionId: getBookingWebSessionId(),
+            sessionId: getBookingWebSessionId(slug),
             landingUrl: typeof window === "undefined" ? undefined : window.location.href,
             referrer: typeof document === "undefined" ? undefined : document.referrer,
           }),
