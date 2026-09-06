@@ -423,6 +423,7 @@
     "unavailable": "Esta selección ya no está disponible. Busca de nuevo.",
     "choose": "Elegir este alojamiento",
     "selectedAccommodation": "Alojamiento seleccionado",
-    "partyChanged": "El número de huéspedes ha cambiado. Elija un alojamiento con una plaza para cada huésped antes de revisar el precio."
+    "partyChanged": "El número de huéspedes ha cambiado. Elija un alojamiento con una plaza para cada huésped antes de revisar el precio.",
+    "editRequest": "Editar solicitud"
   }
 }

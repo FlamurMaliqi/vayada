@@ -427,6 +427,7 @@
     "unavailable": "Diese Unterkunftsauswahl ist nicht mehr verfügbar. Bitte suche erneut.",
     "choose": "Diese Unterkunft wählen",
     "selectedAccommodation": "Ausgewählte Unterkunft",
-    "partyChanged": "Die Gästezahl hat sich geändert. Wählen Sie vor der Preisprüfung eine Unterkunft mit einer Zuteilung für alle Gäste."
+    "partyChanged": "Die Gästezahl hat sich geändert. Wählen Sie vor der Preisprüfung eine Unterkunft mit einer Zuteilung für alle Gäste.",
+    "editRequest": "Anfrage bearbeiten"
   }
 }
