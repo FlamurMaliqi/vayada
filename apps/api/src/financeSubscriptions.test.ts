@@ -113,8 +113,9 @@ describe("Finance subscription route authorization", () => {
     );
   });
 
-  it("denies unassigned subscription reads before calling Finance", async () => {
+  it("denies unassigned subscription reads and checkout before calling Finance", async () => {
     const fixture = createApp({
+      permissions: ["pms.finance.read", "booking.settings.manage"],
       propertyAccessRepository: {
         findMembershipPropertyScope: async () => ({
           mode: "assigned",
@@ -134,6 +135,14 @@ describe("Finance subscription route authorization", () => {
     }
     expect(fixture.service.getPlanStatus).not.toHaveBeenCalled();
     expect(fixture.service.getBillingOverview).not.toHaveBeenCalled();
+    const checkout = await fixture.app.inject({
+      method: "POST",
+      url: `/api/finance/properties/${propertyId}/fixed-plan/checkout`,
+      headers: { authorization: "Bearer valid-token" },
+      payload: { commandId: "command-1", idempotencyKey: "checkout-1" },
+    });
+    expect(checkout.statusCode).toBe(403);
+    expect(fixture.service.createFixedPlanCheckout).not.toHaveBeenCalled();
   });
 });
 

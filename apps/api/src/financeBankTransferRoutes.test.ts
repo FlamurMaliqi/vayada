@@ -114,7 +114,6 @@ it.each([
   });
   try {
     for (const method of ["GET", "PUT"] as const) {
-      if (method === "PUT" && ["unassigned", "no-canonical"].includes(variant)) continue;
       const response = await app.inject({
         method,
         url: path,
