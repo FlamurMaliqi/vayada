@@ -81,59 +81,34 @@ describe("Marketplace affiliate admin routes", () => {
     expect(repository.calls.get).toEqual([[propertyId, affiliateId]]);
   });
 
-  it("applies lifecycle commands with server-owned actor and timestamp evidence", async () => {
-    const repository = fakeRepository();
-    const app = await testApp(repository);
-    apps.push(app);
-    const response = await injectJson<MarketplaceAffiliateLifecycleResult>(app, {
-      method: "POST",
-      url: `/api/marketplace/properties/${propertyId}/affiliates/${affiliateId}/lifecycle`,
-      headers: authHeader,
-      payload: { commandId: "command-approve", idempotencyKey: "approve-once", action: "approve" },
-    });
-
-    expect(response.statusCode).toBe(200);
-    expect(response.body).toMatchObject({ outcome: "applied" });
-    expect(repository.calls.lifecycle).toEqual([
-      {
-        propertyId,
-        affiliateId,
-        commandId: "command-approve",
-        idempotencyKey: "approve-once",
-        action: "approve",
-        actorUserId,
-        occurredAt: now,
-      },
-    ]);
-  });
-
-  it.each([
-    { result: { outcome: "not_found" } as const, status: 404, code: "affiliate_not_found" },
-    {
-      result: { outcome: "idempotency_conflict" } as const,
-      status: 409,
-      code: "idempotency_conflict",
+  it.each(["approve", "reject", "suspend", "restore"])(
+    "retires %s without changing lifecycle state",
+    async (action) => {
+      const repository = fakeRepository();
+      const app = await testApp(repository);
+      apps.push(app);
+      const response = await app.inject({
+        method: "POST",
+        url: `/api/marketplace/properties/${propertyId}/affiliates/${affiliateId}/lifecycle`,
+        headers: authHeader,
+        payload: { commandId: "command", idempotencyKey: "key", action },
+      });
+      expect(response.statusCode).toBe(410);
+      expect(response.json()).toMatchObject({ code: "affiliate_administration_retired" });
+      expect(response.headers["cache-control"]).toBe("no-store");
+      expect(repository.calls.lifecycle).toEqual([]);
     },
-    {
-      result: { outcome: "invalid_transition", currentStatus: "approved" } as const,
-      status: 409,
-      code: "invalid_status_transition",
-    },
-  ])("maps $result.outcome lifecycle outcomes", async ({ result, status, code }) => {
-    const app = await testApp(fakeRepository({ lifecycleResult: result }));
-    apps.push(app);
-    const response = await injectJson<{ code: string }>(app, {
-      method: "POST",
-      url: `/api/marketplace/properties/${propertyId}/affiliates/${affiliateId}/lifecycle`,
-      headers: authHeader,
-      payload: { commandId: "command", idempotencyKey: "key", action: "approve" },
-    });
-    expect(response.statusCode).toBe(status);
-    expect(response.body.code).toBe(code);
-  });
+  );
 
   it.each([
     { name: "without authentication", headers: {}, auth: {}, status: 401, code: "unauthenticated" },
+    {
+      name: "with invalid authentication",
+      headers: { authorization: "Bearer invalid-token" },
+      auth: {},
+      status: 401,
+      code: "unauthenticated",
+    },
     {
       name: "without permission",
       headers: authHeader,
@@ -173,6 +148,14 @@ describe("Marketplace affiliate admin routes", () => {
     });
     expect(response.statusCode).toBe(status);
     expect(response.body.code).toBe(code);
+    const write = await injectJson(app, {
+      method: "POST",
+      url: `/api/marketplace/properties/${propertyId}/affiliates/${affiliateId}/lifecycle`,
+      headers,
+      payload: { action: "approve" },
+    });
+    expect(write.statusCode).toBe(status);
+    expect(repository.calls.lifecycle).toEqual([]);
     expect(repository.calls.list).toEqual([]);
   });
 
@@ -207,7 +190,6 @@ async function testApp(repository: FakeRepository, auth: AuthOptions = {}) {
   await app.register(registerMarketplaceAffiliateAdminRoutes, {
     prefix: "/api/marketplace",
     repository,
-    now: () => new Date(now),
   });
   return app;
 }
