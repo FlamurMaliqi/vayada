@@ -104,19 +104,6 @@
       "checkingAvailability": "Verfügbarkeit wird geprüft",
       "availabilityUnavailable": "Die Verfügbarkeit für diese Reisedaten ist vorübergehend nicht abrufbar.",
       "availabilityUnavailableTooltip": "Verfügbarkeit derzeit nicht abrufbar"
-    },
-    "mobileView": {
-      "list": "Liste",
-      "map": "Karte"
-    },
-    "roomMap": {
-      "noLocations": "Keine Standorte verfügbar",
-      "noLocationsDesc": "Zimmertypen ohne gespeicherte Koordinaten werden weiterhin in der Liste angezeigt.",
-      "locations": "{count, plural, one {# Standort} other {# Standorte}}",
-      "perNight": "/ Nacht",
-      "view": "Ansehen →",
-      "zoomIn": "Vergrößern",
-      "zoomOut": "Verkleinern"
     }
   },
   "rooms": {

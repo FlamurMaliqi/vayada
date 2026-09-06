@@ -324,9 +324,6 @@ export function toLegacyHotel(data: BookingWebPublicHotelResponse): Hotel {
     referAGuestEnabled:
       hotel.capabilities.referralCodes && (hotel.branding?.showReferAGuestButton ?? false),
     instantBook: hotel.capabilities.instantBook,
-    mapViewEnabled: false,
-    showRoomDetailMap: false,
-    pointsOfInterest: [],
   };
 }
 

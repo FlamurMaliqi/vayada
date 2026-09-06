@@ -36,16 +36,6 @@ export interface GuestTypeSettings {
   childrenEnabled: boolean;
 }
 
-export interface PointOfInterest {
-  id: string;
-  label: string;
-  travelTime: string;
-  color: string;
-  latitude: number;
-  longitude: number;
-  position: number;
-}
-
 export interface Hotel {
   id: string;
   name: string;
@@ -77,9 +67,6 @@ export interface Hotel {
   guestTypeSettings?: GuestTypeSettings;
   referAGuestEnabled?: boolean;
   instantBook?: boolean;
-  mapViewEnabled?: boolean;
-  showRoomDetailMap?: boolean;
-  pointsOfInterest?: PointOfInterest[];
 }
 
 export interface RoomType {
