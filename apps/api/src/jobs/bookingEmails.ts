@@ -119,6 +119,7 @@ export async function enqueueBookingLifecycleEmailJob(
   const keyHash = sha256(jobKey);
   const copy = emailCopy(input);
   const payload = {
+    emailProduct: "booking",
     to,
     ...copy,
     bookingReference: input.booking.bookingReference,
