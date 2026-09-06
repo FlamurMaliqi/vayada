@@ -6,7 +6,6 @@ const reads = vi.hoisted(() => ({
   design: vi.fn(),
   dashboard: vi.fn(),
   modules: vi.fn(),
-  affiliates: vi.fn(),
   payments: vi.fn(),
   billing: vi.fn(),
 }));
@@ -14,7 +13,6 @@ vi.mock("@/services/settings", () => ({
   settingsService: { getPropertySettings: reads.settings, getDesignSettings: reads.design },
 }));
 vi.mock("@/services/dashboard", () => ({ dashboardService: { getStats: reads.dashboard } }));
-vi.mock("@/services/affiliates", () => ({ affiliatesService: { list: reads.affiliates } }));
 vi.mock("@/services/api/moduleActivationClient", () => ({
   moduleActivationClient: { list: reads.modules },
 }));
@@ -57,5 +55,4 @@ it("hides inaccessible destinations independently and fails closed on read error
 it("does not offer retired affiliate management even when activated", async () => {
   expect((await loadSearchAccess("hotel-1")).has("affiliates")).toBe(false);
   expect(SEARCH_ENTRIES.map((entry) => entry[1])).not.toContain("/affiliates");
-  expect(reads.affiliates).not.toHaveBeenCalled();
 });
