@@ -121,19 +121,6 @@
       "checkingAvailability": "Checking availability",
       "availabilityUnavailable": "Availability is temporarily unavailable for these dates.",
       "availabilityUnavailableTooltip": "Availability unavailable"
-    },
-    "mobileView": {
-      "list": "List",
-      "map": "Map"
-    },
-    "roomMap": {
-      "noLocations": "No locations available",
-      "noLocationsDesc": "Room types without saved coordinates still appear in the list.",
-      "locations": "{count, plural, one {# location} other {# locations}}",
-      "perNight": "/ night",
-      "view": "View →",
-      "zoomIn": "Zoom in",
-      "zoomOut": "Zoom out"
     }
   },
   "rooms": {
