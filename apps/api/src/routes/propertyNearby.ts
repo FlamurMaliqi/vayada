@@ -6,6 +6,8 @@ import {
 import { NEARBY_MAX_REQUEST_BYTES, parseNearbyCurationWrite } from "@vayada/domain-hotels";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import type { PropertyNearbyRepository } from "../domains/propertyNearbyRepository.js";
+import type { PropertyNearbyDiscoveryRepository } from "../domains/propertyNearbyDiscoveryRepository.js";
+import { discoverGoogleNearby } from "../integrations/googleNearbyPlaces.js";
 import { enforceRoutePolicy } from "./policy.js";
 
 export async function registerPropertyNearbyRoutes(
@@ -13,6 +15,11 @@ export async function registerPropertyNearbyRoutes(
   options: {
     repository: PropertyNearbyRepository;
     propertyAccessRepository: PropertyAccessRepository;
+    discovery?: {
+      repository: PropertyNearbyDiscoveryRepository;
+      apiKey?: string;
+      discover?: typeof discoverGoogleNearby;
+    };
   },
 ) {
   app.addHook("onClose", () => options.repository.close());
@@ -67,5 +74,84 @@ export async function registerPropertyNearbyRoutes(
             ? 413
             : 400;
     return reply.code(status).send({ code: result.code });
+  });
+  const discovery = options.discovery;
+  if (!discovery) return;
+  app.addHook("onClose", () => discovery.repository.close());
+  const discoveryPath = "/properties/:propertyId/nearby";
+  app.get(discoveryPath, async (request, reply) => {
+    const scope = await authorize(request, false);
+    if (!discovery.apiKey?.trim()) return reply.code(503).send({ code: "not_configured" });
+    return (
+      (await discovery.repository.read(scope)) ??
+      reply.code(403).send({ code: "missing_property_resource_link" })
+    );
+  });
+  app.post(`${discoveryPath}/refresh`, { bodyLimit: 1024 }, async (request, reply) => {
+    const scope = await authorize(request, true);
+    const body = request.body as { expectedProfileRevision?: number; force?: boolean } | null;
+    if (
+      !body ||
+      typeof body !== "object" ||
+      Array.isArray(body) ||
+      Object.keys(body).some((key) => key !== "expectedProfileRevision" && key !== "force") ||
+      !Number.isSafeInteger(body.expectedProfileRevision) ||
+      body.expectedProfileRevision! < 1 ||
+      (body.force !== undefined && typeof body.force !== "boolean")
+    )
+      return reply.code(400).send({ code: "invalid_request" });
+    if (!discovery.apiKey?.trim()) return reply.code(503).send({ code: "not_configured" });
+    const claim = await discovery.repository.claim(
+      scope,
+      body.expectedProfileRevision!,
+      body.force,
+    );
+    if (claim.status === "missing_property_resource_link")
+      return reply.code(403).send({ code: claim.status });
+    if (claim.status === "revision_conflict") return reply.code(409).send({ code: claim.status });
+    if (claim.status === "cooldown") {
+      reply.header(
+        "Retry-After",
+        Math.max(1, Math.ceil((Date.parse(claim.retryAfter!) - Date.now()) / 1000)),
+      );
+      return reply.code(429).send({ code: "cooldown", retryAfter: claim.retryAfter });
+    }
+    if (claim.status === "state")
+      return reply.code(claim.state.status === "refreshing" ? 202 : 200).send(claim.state);
+    request.log.info(
+      { propertyId: scope.propertyId, profileRevision: claim.profileRevision },
+      "Nearby discovery started",
+    );
+    const result = await (discovery.discover ?? discoverGoogleNearby)({
+      origin: claim.origin,
+      apiKey: discovery.apiKey,
+    });
+    request.log.info(
+      { propertyId: scope.propertyId, status: result.status },
+      "Nearby discovery completed",
+    );
+    const state = await discovery.repository.complete(
+      scope,
+      claim.token,
+      claim.profileRevision,
+      result,
+    );
+    if (!state) return reply.code(403).send({ code: "missing_property_resource_link" });
+    if (state.profileRevision !== claim.profileRevision || state.status === "stale")
+      return reply.code(409).send({ code: "revision_conflict" });
+    const status =
+      state.status === "ready" || state.status === "empty" || state.status === "location_required"
+        ? 200
+        : state.status === "refreshing"
+          ? 202
+          : state.status === "quota_exhausted"
+            ? 429
+            : 503;
+    if (status === 429 && state.retryAfter)
+      reply.header(
+        "Retry-After",
+        Math.max(1, Math.ceil((Date.parse(state.retryAfter) - Date.now()) / 1000)),
+      );
+    return reply.code(status).send(state);
   });
 }

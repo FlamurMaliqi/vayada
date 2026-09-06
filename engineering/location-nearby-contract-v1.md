@@ -208,8 +208,14 @@ returns `NearbyCurationState` (profile/curation/saved-profile revisions, choices
 custom places). The composed editor/discovery response remains a separate
 successor. This endpoint enforces effective member property assignments and the
 shared owner publication permission; no paid subscription is required to save
-catalog content. Provider registration/search and guest publication are still
-gated separately; unregistered new Google references are rejected meanwhile.
+catalog content. Discovery GET and POST `/refresh` use the same property nearby
+prefix and authorization. GET returns `NearbyDiscoveryState`; refresh accepts
+`{ expectedProfileRevision, force?: boolean }`. Only `force: true` bypasses a valid
+snapshot, subject to the independent hourly explicit-refresh cap. Current,
+unexpired discovery IDs are accepted by curation; Add search and guest
+publication remain successor work. Server activation requires both
+`GOOGLE_NEARBY_ENABLED=true` and `GOOGLE_PLACES_SERVER_API_KEY`; missing activation
+returns 503 `not_configured` before any database lease or paid request.
 
 ```typescript
 type Category = "nature" | "food" | "activities" | "transport";

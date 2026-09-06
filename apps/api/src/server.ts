@@ -219,6 +219,7 @@ import { createPgMarketplaceAffiliateAdminRepository } from "./domains/marketpla
 import { createPgFinanceAffiliateCommissionRepository } from "./domains/financeAffiliateCommissionRepository.js";
 import { createPgMarketplaceCreatorSelfServiceRepository } from "./routes/marketplaceCreatorSelfService.js";
 import { createPgSharedHotelSetupStatusRepository } from "./platform/sharedHotelSetupStatusReadModel.js";
+import { createPgPropertyNearbyDiscoveryRepository } from "./domains/propertyNearbyDiscoveryRepository.js";
 import { createPgPropertyNearbyRepository } from "./domains/propertyNearbyRepository.js";
 import { createPgIdentityAdminUsersReadRepository } from "./routes/identityAdminUsers.js";
 import { createPgIdentityPrivacyRepository } from "./routes/identityPrivacy.js";
@@ -1462,6 +1463,13 @@ const app = buildApp({
   marketplaceCreatorProfileMediaRepository: platformMediaRuntime?.profileMediaRepository,
   sharedHotelSetupStatusRepository,
   propertyNearbyRepository: config.auth ? createPgPropertyNearbyRepository(targetDatabaseUrl) : undefined,
+  propertyNearbyDiscovery: config.auth
+    ? {
+        repository: createPgPropertyNearbyDiscoveryRepository(targetDatabaseUrl),
+        apiKey: process.env.GOOGLE_NEARBY_ENABLED === "true"
+          ? process.env.GOOGLE_PLACES_SERVER_API_KEY : undefined,
+      }
+    : undefined,
   hotelSetupTrackCommandRepository,
   propertySetupDraftCommandRepository,
   propertySetupRouteStateReadPort,

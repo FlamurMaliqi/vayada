@@ -7,6 +7,10 @@ import type { PropertyAccessRepository } from "@vayada/backend-authorization";
 import type { NearbyCurationState } from "@vayada/domain-hotels";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { buildApp } from "../app.js";
+import type {
+  NearbyClaim,
+  NearbyDiscoveryState,
+} from "../domains/propertyNearbyDiscoveryRepository.js";
 import type { NearbySaveResult } from "../domains/propertyNearbyRepository.js";
 
 const organizationId = "11111111-1111-4111-8111-111111111111";
@@ -45,6 +49,9 @@ function setup(
     assigned?: boolean;
     suspended?: boolean;
     saveResult?: NearbySaveResult;
+    configured?: boolean;
+    claim?: NearbyClaim;
+    completed?: NearbyDiscoveryState | null;
   } = {},
 ) {
   const repository: IdentityRepository = {
@@ -91,8 +98,34 @@ function setup(
   const save = vi.fn(
     async (): Promise<NearbySaveResult> => options.saveResult ?? { ok: true, state },
   );
+  const discoveryState: NearbyDiscoveryState = {
+    schemaVersion: 1,
+    profileRevision: 1,
+    status: "ready",
+    places: [{ placeId: "beach", category: "nature" }],
+    retryAfter: null,
+  };
+  const claim = vi.fn(
+    async (): Promise<NearbyClaim> =>
+      options.claim ?? {
+        status: "claimed",
+        token: "lease",
+        profileRevision: 1,
+        origin: { latitude: 1, longitude: 2 },
+      },
+  );
+  const complete = vi.fn(async () =>
+    options.completed === undefined ? discoveryState : options.completed,
+  );
+  const discover = vi.fn(async () => ({ status: "empty" as const, places: [] as [] }));
+  const discoveryRead = vi.fn(async () => discoveryState);
   const app = buildApp({
     logger: false,
+    propertyNearbyDiscovery: {
+      repository: { read: discoveryRead, claim, complete, async close() {} },
+      apiKey: options.configured === false ? undefined : "test-only",
+      discover,
+    },
     propertyNearbyRepository: { read, save, async close() {} },
     auth: {
       verifier: createFakeVerifier(
@@ -118,7 +151,7 @@ function setup(
     },
   });
   apps.push(app);
-  return { app, read, save };
+  return { app, read, save, claim, complete, discover, discoveryRead };
 }
 
 describe("protected nearby curation routes", () => {
@@ -231,5 +264,183 @@ describe("protected nearby curation routes", () => {
       ).statusCode,
     ).toBe(403);
     expect(save).toHaveBeenCalledOnce();
+  });
+});
+
+const refreshPath = path.replace("/curation", "/refresh");
+const headers = { authorization: "Bearer valid" };
+const refreshBody = { expectedProfileRevision: 1 };
+describe("protected nearby discovery routes", () => {
+  it("denies auth, link, assignment, membership and permission failures before discovery", async () => {
+    for (const options of [
+      { permissions: [] },
+      { linked: false },
+      { assigned: false },
+      { suspended: true },
+    ]) {
+      const { app, claim, discoveryRead, discover } = setup(options);
+      for (const method of ["GET", "POST"] as const) {
+        const response = await app.inject({
+          method,
+          url: method === "GET" ? path.replace("/curation", "") : refreshPath,
+          headers,
+          ...(method === "POST" ? { payload: refreshBody } : {}),
+        });
+        expect([401, 403]).toContain(response.statusCode);
+      }
+      expect(claim).not.toHaveBeenCalled();
+      expect(discoveryRead).not.toHaveBeenCalled();
+      expect(discover).not.toHaveBeenCalled();
+    }
+    for (const authorization of [undefined, "Bearer invalid"]) {
+      const { app, claim } = setup();
+      expect(
+        (
+          await app.inject({
+            method: "POST",
+            url: refreshPath,
+            headers: authorization ? { authorization } : {},
+            payload: refreshBody,
+          })
+        ).statusCode,
+      ).toBe(401);
+      expect(claim).not.toHaveBeenCalled();
+    }
+    const denied = setup({ permissions: ["hotel_catalog.setup.manage"] });
+    expect(
+      (await denied.app.inject({ method: "POST", url: refreshPath, headers, payload: refreshBody }))
+        .statusCode,
+    ).toBe(403);
+    expect(denied.claim).not.toHaveBeenCalled();
+  });
+  it("rejects missing configuration and caller-controlled search inputs without claiming", async () => {
+    const disabled = setup({ configured: false });
+    expect(
+      (
+        await disabled.app.inject({
+          method: "POST",
+          url: refreshPath,
+          headers,
+          payload: refreshBody,
+        })
+      ).statusCode,
+    ).toBe(503);
+    expect(disabled.claim).not.toHaveBeenCalled();
+    const { app, claim } = setup();
+    for (const payload of [
+      {},
+      { expectedProfileRevision: 0 },
+      { ...refreshBody, force: "true" },
+      { ...refreshBody, origin: { latitude: 0, longitude: 0 } },
+    ])
+      expect(
+        (await app.inject({ method: "POST", url: refreshPath, headers, payload })).statusCode,
+      ).toBe(400);
+    expect(claim).not.toHaveBeenCalled();
+  });
+  it("returns cached/leased states and cooldown/conflict/link errors without provider calls", async () => {
+    for (const [claim, status] of [
+      [{ status: "cooldown", retryAfter: new Date(Date.now() + 60000).toISOString() }, 429],
+      [{ status: "revision_conflict" }, 409],
+      [{ status: "missing_property_resource_link" }, 403],
+      [
+        {
+          status: "state",
+          state: {
+            schemaVersion: 1,
+            profileRevision: 1,
+            status: "refreshing",
+            places: [],
+            retryAfter: null,
+          },
+        },
+        202,
+      ],
+      [
+        {
+          status: "state",
+          state: {
+            schemaVersion: 1,
+            profileRevision: 1,
+            status: "empty",
+            places: [],
+            retryAfter: null,
+          },
+        },
+        200,
+      ],
+    ] as const) {
+      const { app, discover } = setup({ claim: claim as NearbyClaim });
+      const response = await app.inject({
+        method: "POST",
+        url: refreshPath,
+        headers,
+        payload: refreshBody,
+      });
+      expect(response.statusCode).toBe(status);
+      if (status === 429) expect(Number(response.headers["retry-after"])).toBeGreaterThan(0);
+      expect(discover).not.toHaveBeenCalled();
+    }
+  });
+  it("uses only the claimed origin and returns the completed ID snapshot", async () => {
+    const { app, claim, complete, discover } = setup();
+    const response = await app.inject({
+      method: "POST",
+      url: refreshPath,
+      headers,
+      payload: { ...refreshBody, force: true },
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.json().places).toEqual([{ placeId: "beach", category: "nature" }]);
+    expect(response.headers["cache-control"]).toBe("no-store");
+    expect(claim).toHaveBeenCalledWith(
+      expect.objectContaining({ organizationId, propertyId }),
+      1,
+      true,
+    );
+    expect(discover).toHaveBeenCalledWith({
+      origin: { latitude: 1, longitude: 2 },
+      apiKey: "test-only",
+    });
+    expect(complete).toHaveBeenCalledWith(expect.objectContaining({ propertyId }), "lease", 1, {
+      status: "empty",
+      places: [],
+    });
+    expect(
+      (await app.inject({ method: "GET", url: path.replace("/curation", ""), headers })).statusCode,
+    ).toBe(200);
+  });
+  it("maps completion failures, stale revisions and revoked links without leaking provider errors", async () => {
+    for (const [completed, status] of [
+      [null, 403],
+      [
+        { schemaVersion: 1, profileRevision: 2, status: "stale", places: [], retryAfter: null },
+        409,
+      ],
+      [
+        { schemaVersion: 1, profileRevision: 1, status: "timeout", places: [], retryAfter: null },
+        503,
+      ],
+      [
+        {
+          schemaVersion: 1,
+          profileRevision: 1,
+          status: "quota_exhausted",
+          places: [],
+          retryAfter: new Date(Date.now() + 60000).toISOString(),
+        },
+        429,
+      ],
+    ] as const) {
+      const { app } = setup({ completed: completed as NearbyDiscoveryState | null });
+      const response = await app.inject({
+        method: "POST",
+        url: refreshPath,
+        headers,
+        payload: refreshBody,
+      });
+      expect(response.statusCode).toBe(status);
+      expect(response.body).not.toContain("test-only");
+    }
   });
 });

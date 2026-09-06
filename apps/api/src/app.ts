@@ -353,6 +353,7 @@ type BuildAppOptions = Pick<FastifyServerOptions, "logger" | "trustProxy"> & {
   marketplaceCreatorProfileMediaRepository?: MarketplaceCreatorProfileMediaRepository;
   sharedHotelSetupStatusRepository?: SharedHotelSetupStatusRepository;
   propertyNearbyRepository?: PropertyNearbyRepository;
+  propertyNearbyDiscovery?: Parameters<typeof registerPropertyNearbyRoutes>[1]["discovery"];
   propertyLaunchSettingsRepository?: SharedPropertyLaunchSettingsRepository;
   hotelSetupTrackCommandRepository?: HotelSetupTrackCommandRepository;
   propertyMediaCommandRepository?: PropertyMediaCommandRepository;
@@ -591,6 +592,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     app.register(registerPropertyNearbyRoutes, {
       prefix: "/api/hotel-setup",
       repository: options.propertyNearbyRepository,
+      discovery: options.propertyNearbyDiscovery,
       propertyAccessRepository: options.auth.propertyAccessRepository,
     });
   }

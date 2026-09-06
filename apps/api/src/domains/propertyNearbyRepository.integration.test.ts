@@ -56,7 +56,12 @@ describe.skipIf(!url)("nearby curation PostgreSQL transactions", () => {
     await repository.close();
     await admin.query("BEGIN");
     await admin.query("SET LOCAL session_replication_role = replica");
-    await admin.query("DELETE FROM hotel_catalog.property_nearby_curation WHERE property_id=$1", [propertyId]);
+    await admin.query("DELETE FROM hotel_catalog.property_nearby_discovery WHERE property_id=$1", [
+      propertyId,
+    ]);
+    await admin.query("DELETE FROM hotel_catalog.property_nearby_curation WHERE property_id=$1", [
+      propertyId,
+    ]);
     await admin.query("DELETE FROM platform.product_audit_events WHERE organization_id=$1", [
       organizationId,
     ]);
@@ -148,9 +153,39 @@ describe.skipIf(!url)("nearby curation PostgreSQL transactions", () => {
     expect(await repository.read(scope)).toEqual(before);
   });
   it("replaces the complete curation atomically and respects revoked links", async () => {
-    expect(await repository.save(scope, { ...write(2, 2), customPlaces: [] })).toMatchObject({
+    const choice = {
+      placeId: "verified",
+      category: "nature",
+      hidden: true,
+      favorite: false,
+      added: false,
+      note: null,
+    };
+    await admin.query(
+      `INSERT INTO hotel_catalog.property_nearby_discovery
+      (property_id,profile_revision,policy_version,status,places,valid_until,retry_after)
+      VALUES ($1,2,'nearby-v1','ready',$2::jsonb,now()-interval '1 second',now())`,
+      [propertyId, JSON.stringify([{ placeId: "verified", category: "nature" }])],
+    );
+    const registered = { ...write(2, 2), customPlaces: [], choices: [choice] };
+    expect(await repository.save(scope, registered)).toEqual({ ok: false, code: "unknown_place" });
+    await admin.query(
+      "UPDATE hotel_catalog.property_nearby_discovery SET valid_until=now()+interval '1 hour',profile_revision=1 WHERE property_id=$1",
+      [propertyId],
+    );
+    expect(await repository.save(scope, registered)).toEqual({ ok: false, code: "unknown_place" });
+    await admin.query(
+      "UPDATE hotel_catalog.property_nearby_discovery SET profile_revision=2,policy_version='old' WHERE property_id=$1",
+      [propertyId],
+    );
+    expect(await repository.save(scope, registered)).toEqual({ ok: false, code: "unknown_place" });
+    await admin.query(
+      "UPDATE hotel_catalog.property_nearby_discovery SET policy_version='nearby-v1' WHERE property_id=$1",
+      [propertyId],
+    );
+    expect(await repository.save(scope, registered)).toMatchObject({
       ok: true,
-      state: { curationRevision: 3, customPlaces: [] },
+      state: { curationRevision: 3, customPlaces: [], choices: [choice] },
     });
     await admin.query(
       "UPDATE identity.organization_resource_links SET status='archived' WHERE organization_id=$1",
