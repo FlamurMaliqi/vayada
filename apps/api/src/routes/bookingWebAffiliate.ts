@@ -24,21 +24,8 @@ type BookingWebAffiliateParams = BookingWebAffiliateHotelParams & {
   affiliateId: string;
 };
 
-export type BookingWebAffiliateRegistrationRequest = {
-  fullName?: string;
-  email?: string;
-  socialMedia?: string;
-  userType?: "guest" | "creator" | string;
-  paymentMethod?: "stripe" | "paypal" | "bank" | string;
-};
-
 export type BookingWebAffiliateStripeConnectRequest = {
   email?: string;
-};
-
-export type BookingWebAffiliateRegistrationResult = {
-  id: string;
-  referralCode: string;
 };
 
 export type BookingWebAffiliateStripeConnectResult = {
@@ -58,11 +45,6 @@ export type BookingWebAffiliateStripeConnectProvider = {
 };
 
 export type BookingWebAffiliateRepository = {
-  checkEmail(slug: string, email: string): Promise<{ exists: boolean }>;
-  register(
-    slug: string,
-    request: BookingWebAffiliateRegistrationRequest,
-  ): Promise<BookingWebAffiliateRegistrationResult>;
   createStripeConnectLink(
     slug: string,
     affiliateId: string,
@@ -134,53 +116,6 @@ export function createPgBookingWebAffiliateRepository(
   const now = config.now ?? (() => new Date());
 
   return {
-    async checkEmail(slug, email) {
-      const identity = stableAffiliateIdentity(slug, email);
-      const result = await pool.query<{ exists: boolean }>(
-        `SELECT EXISTS (
-           SELECT 1
-           FROM platform.domain_events event
-           WHERE event.source_system = 'marketplace'
-             AND event.event_key = $1
-             AND event.event_type = 'marketplace.affiliate.public_registered'
-             AND event.resource_product = 'marketplace'
-             AND event.resource_type = 'affiliate'
-             AND event.resource_id = $2
-             AND event.payload ->> 'hotelSlug' = lower($3)
-             AND event.payload ->> 'emailHash' = $4
-         ) AS exists`,
-        [registrationEventKey(identity.affiliateId), identity.affiliateId, slug, sha256(email)],
-      );
-      return { exists: result.rows[0]?.exists === true };
-    },
-    async register(slug, request) {
-      const email = normalizeEmail(request.email);
-      const fullName = typeof request.fullName === "string" ? request.fullName.trim() : "";
-      if (!email) throw createHttpError(400, "Email is required.");
-      if (!fullName) throw createHttpError(400, "Full name is required.");
-
-      const identity = stableAffiliateIdentity(slug, email);
-      const timestamp = now().toISOString();
-      const client = await pool.connect();
-      try {
-        await client.query("BEGIN");
-        await insertRegistrationEvent(client, {
-          identity,
-          slug,
-          email,
-          request,
-          timestamp,
-        });
-        await client.query("COMMIT");
-      } catch (error) {
-        await client.query("ROLLBACK");
-        throw error;
-      } finally {
-        client.release();
-      }
-
-      return { id: identity.affiliateId, referralCode: identity.referralCode };
-    },
     async createStripeConnectLink(slug, affiliateId, request) {
       const email = normalizeEmail(request.email);
       if (!email) throw createHttpError(400, "Email is required.");
@@ -351,138 +286,6 @@ async function findAffiliateRegistration(
     ],
   );
   return result.rows[0] ?? null;
-}
-
-async function insertRegistrationEvent(
-  client: pg.PoolClient,
-  input: {
-    identity: StableAffiliateIdentity;
-    slug: string;
-    email: string;
-    request: BookingWebAffiliateRegistrationRequest;
-    timestamp: string;
-  },
-): Promise<void> {
-  const eventKey = registrationEventKey(input.identity.affiliateId);
-  const payload = {
-    affiliateId: input.identity.affiliateId,
-    referralCode: input.identity.referralCode,
-    hotelSlug: input.slug,
-    emailHash: sha256(input.email),
-    userType: input.request.userType ?? null,
-    paymentMethod: input.request.paymentMethod ?? null,
-    hasSocialMedia: Boolean(input.request.socialMedia),
-  };
-
-  const projection = await client.query<{ id: string }>(
-    `INSERT INTO marketplace.property_affiliates (
-       property_id, affiliate_id, referral_code, display_name, contact_email,
-       contact_email_hash, social_media, affiliate_type, lifecycle_status,
-       application_source, applied_at, updated_at
-     )
-     SELECT property_slug.property_id, $1, $2, $3, $4, $5, $6,
-       CASE WHEN $7 = 'creator' THEN 'creator' ELSE 'guest' END,
-       'pending', 'public_registration', $8::timestamptz, $8::timestamptz
-     FROM hotel_catalog.property_slugs property_slug
-     WHERE property_slug.slug = lower($9)
-       AND property_slug.purpose = 'canonical'
-       AND property_slug.status = 'active'
-     ON CONFLICT (property_id, affiliate_id) DO NOTHING
-     RETURNING id::text AS id`,
-    [
-      input.identity.affiliateId,
-      input.identity.referralCode,
-      input.request.fullName,
-      input.email,
-      sha256(input.email),
-      input.request.socialMedia ?? null,
-      input.request.userType ?? null,
-      input.timestamp,
-      input.slug,
-    ],
-  );
-  if (!projection.rows[0]) {
-    const existing = await client.query(
-      `SELECT affiliate.id
-       FROM marketplace.property_affiliates affiliate
-       JOIN hotel_catalog.property_slugs property_slug
-         ON property_slug.property_id = affiliate.property_id
-        AND property_slug.slug = lower($1)
-        AND property_slug.purpose = 'canonical'
-        AND property_slug.status = 'active'
-       WHERE affiliate.affiliate_id = $2
-       LIMIT 1`,
-      [input.slug, input.identity.affiliateId],
-    );
-    if (!existing.rows[0]) throw createHttpError(404, "Booking Web hotel profile not found.");
-  }
-
-  await client.query(
-    `INSERT INTO platform.domain_events
-       (
-         source_system,
-         event_key,
-         event_type,
-         event_version,
-	         occurred_at,
-	         tenant_scope,
-	         organization_id,
-         resource_product,
-         resource_type,
-         resource_id,
-         actor_type,
-         correlation_id,
-         payload,
-         event_metadata,
-         privacy_scope
-	       )
-	     VALUES
-	       ('marketplace', $1, 'marketplace.affiliate.public_registered', 1, $2,
-	        'external', NULL, 'marketplace', 'affiliate', $3, 'system', $4,
-	        $5::jsonb, $6::jsonb, 'confidential')
-	     ON CONFLICT (source_system, event_key) DO NOTHING`,
-    [
-      eventKey,
-      input.timestamp,
-      input.identity.affiliateId,
-      eventKey,
-      JSON.stringify(payload),
-      JSON.stringify({ source: "booking-web-affiliate-target" }),
-    ],
-  );
-
-  await client.query(
-    `INSERT INTO platform.product_audit_events
-       (
-         audit_key,
-         product,
-         action,
-         occurred_at,
-         tenant_scope,
-         organization_id,
-         actor_type,
-         target_resource_product,
-         target_resource_type,
-         target_resource_id,
-         correlation_id,
-         redacted_payload,
-         audit_metadata,
-         retention_class,
-	         privacy_scope
-	       )
-	     VALUES
-	       ($1, 'marketplace', 'marketplace.affiliate.public_registered', $2,
-	        'external', NULL, 'system', 'marketplace', 'affiliate', $3, $1,
-	        $4::jsonb, $5::jsonb, 'standard', 'confidential')
-	     ON CONFLICT (product, audit_key) DO NOTHING`,
-    [
-      eventKey,
-      input.timestamp,
-      input.identity.affiliateId,
-      JSON.stringify(payload),
-      JSON.stringify({ source: "booking-web-affiliate-target" }),
-    ],
-  );
 }
 
 async function insertStripeConnectEvent(

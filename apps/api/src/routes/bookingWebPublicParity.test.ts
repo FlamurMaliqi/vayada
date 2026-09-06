@@ -20,7 +20,6 @@ import {
   type PublicHotelProfileRepository,
 } from "./aiHotels.js";
 import type {
-  BookingWebAffiliateRegistrationRequest,
   BookingWebAffiliateRepository,
   BookingWebAffiliateHotelResolverPool,
   BookingWebAffiliateStripeConnectRequest,
@@ -497,8 +496,7 @@ describe("Booking Web public bootstrap parity", () => {
 
   it("retires public enrolment without writes while retaining existing Connect scope checks", async () => {
     const affiliateRepository = new InMemoryAffiliateRepository();
-    const checkEmail = vi.spyOn(affiliateRepository, "checkEmail");
-    const register = vi.spyOn(affiliateRepository, "register");
+    const connect = vi.spyOn(affiliateRepository, "createStripeConnectLink");
     const app = buildApp({
       logger: false,
       publicHotelProfileRepository: createProfileRepository(legacyHotel, {}),
@@ -522,15 +520,12 @@ describe("Booking Web public bootstrap parity", () => {
       expect(response.json()).toMatchObject({ code: "affiliate_enrollment_retired" });
       expect(response.headers["cache-control"]).toBe("no-store");
     }
-    expect(checkEmail).not.toHaveBeenCalled();
-    expect(register).not.toHaveBeenCalled();
+    expect(connect).not.toHaveBeenCalled();
     expect(affiliateRepository.identityCount).toBe(0);
 
     // Seed a pre-existing identity directly; public enrolment is no longer a fixture factory.
-    const affiliate = await affiliateRepository.register("hotel-alpenrose", {
-      fullName: "Creator Example",
-      email: "creator@example.com",
-    });
+    const affiliate = { id: "aff_existing", email: "creator@example.com", slug: "hotel-alpenrose" };
+    affiliateRepository.seedExisting(affiliate);
     const firstConnect = await app.inject({
       method: "POST",
       url: `/api/booking-web/hotels/hotel-alpenrose/affiliates/${affiliate.id}/stripe/connect`,
@@ -3664,29 +3659,11 @@ class InMemoryAffiliateRepository implements BookingWebAffiliateRepository {
       .length;
   }
 
-  async checkEmail(slug: string, email: string): Promise<{ exists: boolean }> {
-    return { exists: this.affiliates.has(this.key(slug, email)) };
-  }
-
-  async register(
-    slug: string,
-    request: BookingWebAffiliateRegistrationRequest,
-  ): Promise<{ id: string; referralCode: string }> {
-    const key = this.key(slug, request.email ?? "");
-    const existing = this.affiliates.get(key);
-    if (existing) {
-      return { id: existing.id, referralCode: existing.referralCode };
-    }
-
-    const id = `aff_${Buffer.from(key).toString("hex").slice(0, 20)}`;
-    const referralCode = `VA${Buffer.from(key).toString("hex").slice(0, 8).toUpperCase()}`;
-    this.affiliates.set(key, {
-      id,
-      referralCode,
-      email: request.email?.toLowerCase() ?? "",
-      slug: slug.toLowerCase(),
+  seedExisting(affiliate: { id: string; email: string; slug: string }): void {
+    this.affiliates.set(this.key(affiliate.slug, affiliate.email), {
+      ...affiliate,
+      referralCode: "EXISTING-REFERRAL",
     });
-    return { id, referralCode };
   }
 
   async createStripeConnectLink(
