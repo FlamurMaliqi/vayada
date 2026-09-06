@@ -1,4 +1,5 @@
 import { requireAuthContext } from "@vayada/backend-auth";
+import type { PropertyAccessRepository } from "@vayada/backend-authorization";
 import {
   toFinancePlanStatusResponse,
   type FinanceCommandAudit,
@@ -22,7 +23,10 @@ type CommandBody = {
 
 export async function registerFinanceSubscriptionRoutes(
   app: FastifyInstance,
-  options: { service: FinanceSubscriptionService },
+  options: {
+    service: FinanceSubscriptionService;
+    propertyAccessRepository?: PropertyAccessRepository;
+  },
 ): Promise<void> {
   app.addHook("onClose", async () => options.service.close?.());
 
@@ -30,7 +34,15 @@ export async function registerFinanceSubscriptionRoutes(
     "/finance/properties/:propertyId/plan-status",
     async (request, reply) => {
       const { propertyId } = request.params;
-      if (!enforceFinancePropertyReadPolicy(request, reply, propertyId)) return reply;
+      if (
+        !(await enforceFinancePropertyReadPolicy(
+          request,
+          reply,
+          propertyId,
+          options.propertyAccessRepository,
+        ))
+      )
+        return reply;
       return toFinancePlanStatusResponse(await options.service.getPlanStatus(propertyId));
     },
   );
@@ -39,7 +51,15 @@ export async function registerFinanceSubscriptionRoutes(
     "/finance/properties/:propertyId/billing",
     async (request, reply) => {
       const { propertyId } = request.params;
-      if (!enforceFinancePropertyReadPolicy(request, reply, propertyId)) return reply;
+      if (
+        !(await enforceFinancePropertyReadPolicy(
+          request,
+          reply,
+          propertyId,
+          options.propertyAccessRepository,
+        ))
+      )
+        return reply;
       return {
         contractVersion: "finance-billing.v1",
         ...(await options.service.getBillingOverview(propertyId)),
