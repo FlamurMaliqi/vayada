@@ -39,7 +39,7 @@ type State = {
 export function searchRoomCombinations(
   candidates: readonly RoomCombinationCandidate[],
   party: { adults: number; children: number },
-  limits: { maxWork?: number; maxOptions?: number } = {},
+  limits: { maxWork?: number; maxOptions?: number; minRooms?: number; maxRooms?: number } = {},
 ): { complete: boolean; options: RoomCombinationOption[] } {
   if (
     !Number.isSafeInteger(party.adults) ||
@@ -53,7 +53,14 @@ export function searchRoomCombinations(
   }
   const maxWork = limits.maxWork ?? 1_000_000;
   const maxOptions = limits.maxOptions ?? 5;
+  const minRooms = limits.minRooms ?? 1;
+  const maxRooms = limits.maxRooms ?? 99;
   if (
+    !Number.isSafeInteger(minRooms) ||
+    minRooms < 1 ||
+    !Number.isSafeInteger(maxRooms) ||
+    maxRooms < minRooms ||
+    maxRooms > 99 ||
     !Number.isSafeInteger(maxWork) ||
     maxWork < 1 ||
     !Number.isSafeInteger(maxOptions) ||
@@ -90,8 +97,8 @@ export function searchRoomCombinations(
   for (const offers of types.values())
     for (const offer of offers) {
       for (
-        let quantity = 1;
-        quantity <= Math.min(offer.availableRooms, party.adults, 99);
+        let quantity = minRooms;
+        quantity <= Math.min(offer.availableRooms, party.adults, maxRooms);
         quantity++
       ) {
         if (++work > maxWork) return { complete: false, options: [] };
@@ -139,7 +146,7 @@ export function searchRoomCombinations(
         const remainingChildren = party.children - state.children;
         for (
           let quantity = 1;
-          quantity <= Math.min(offer.availableRooms, remainingAdults, 99 - state.rooms);
+          quantity <= Math.min(offer.availableRooms, remainingAdults, maxRooms - state.rooms);
           quantity++
         ) {
           for (
@@ -187,7 +194,8 @@ export function searchRoomCombinations(
     states = next;
   }
   const feasible = [...states.values()].filter(
-    (state) => state.adults === party.adults && state.children === party.children,
+    (state) =>
+      state.adults === party.adults && state.children === party.children && state.rooms >= minRooms,
   );
   return result(feasible, maxOptions);
 }

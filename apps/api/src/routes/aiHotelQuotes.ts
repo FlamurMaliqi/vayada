@@ -1,3 +1,7 @@
+import { createHash } from "node:crypto";
+import { findTargetRoomCombinationOffers } from "./bookingRoomCombinationOffers.js";
+import { publicRoomCombinationOffer } from "./bookingPublicCombinationProjection.js";
+import { loadTargetCheckoutConfig, targetCheckoutReadyPaymentMethods } from "./bookingWebPublic.js";
 import {
   assertPublicBookabilityPublicSafe,
   buildPublicBookabilityQuoteProjection,
@@ -146,6 +150,7 @@ export async function registerAiHotelQuoteRoutes(
 export function createTargetPublicHotelQuoteRepository(config: {
   connectionString: string;
   profileRepository: PublicHotelProfileRepository;
+  mixedRoomSelectionsEnabled?: boolean;
   max?: number;
   pool?: PublicHotelQuoteReadPool;
   now?: () => Date;
@@ -193,6 +198,7 @@ export function createTargetPublicHotelQuoteRepository(config: {
             { code: "same_day_cutoff_passed" },
           ]);
         }
+        if (config.mixedRoomSelectionsEnabled) return await quotePublicRoomCombinations(pool, profile.hotel, parsed.request, requestedAt);
         const result = await pool.query<TargetPublicHotelQuoteRow>(
           `SELECT
            read_model.quote_session_id::text AS "quoteSessionId",
@@ -268,6 +274,53 @@ export function createTargetPublicHotelQuoteRepository(config: {
     async close() {
       await pool.end();
     },
+  };
+}
+
+async function quotePublicRoomCombinations(
+  pool: PublicHotelQuoteReadPool, hotel: PublicBookabilityHotelProfile,
+  request: PublicBookabilityQuoteRequest, requestedAt: Date,
+): Promise<PublicBookabilityQuoteProjection> {
+  const settings = await loadTargetCheckoutConfig(pool, hotel.propertyId);
+  const paymentMethods = settings?.paymentsEnabled ? targetCheckoutReadyPaymentMethods(settings) : [];
+  const result = settings?.defaultCurrency?.toUpperCase() !== request.currency
+    ? { complete: false, options: [], unavailableReasons: [{ code: "unavailable_data" as const }] }
+    : paymentMethods.length ? await findTargetRoomCombinationOffers(pool, {
+    propertyId: hotel.propertyId, ...request, requestedAt,
+    today: propertyDateOnly(hotel.timezone, requestedAt),
+    promotionSettings: settings?.promotionSettings, paymentMethods,
+    minRooms: request.rooms, maxRooms: hotel.supportedQuoteParameters.maxRooms,
+  }) : { complete: true, options: [], unavailableReasons: [{ code: "payment_disabled" as const }] };
+  const generatedAt = requestedAt.toISOString();
+  const quoteId = buildPublicQuoteId(request);
+  const offers = result.options.map((option) => {
+    const url = new URL(`/${request.locale}/book`, hotel.bookingBaseUrl);
+    // Booking web consumes camelCase dates; preserve public API aliases too.
+    for (const [key, value] of Object.entries({ checkIn: request.checkIn, checkOut: request.checkOut,
+      check_in: request.checkIn, check_out: request.checkOut, adults: request.adults,
+      children: request.children, currency: request.currency, locale: request.locale, quote_id: quoteId,
+      ...(request.referralCode ? { referral_code: request.referralCode } : {}),
+    })) url.searchParams.set(key, String(value));
+    return publicRoomCombinationOffer(option, url.toString());
+  });
+  const unavailableReasons = result.unavailableReasons;
+  const freshnessStatus = offers.length ? "fresh" : unavailableReasons.some(({ code }) => code === "unavailable_data") ? "unavailable"
+    : unavailableReasons.some(({ code }) => code === "stale_data") ? "stale" : !result.complete ? "unavailable" : "fresh";
+  const expiresAt = offers.map((offer) => offer.expiresAt!).sort()[0];
+  const dataSources = ["hotel_catalog", "booking", "pms", "finance", "distribution"] as const;
+  return {
+    contractVersion: PUBLIC_BOOKABILITY_CONTRACT_VERSION, generatedAt,
+    publicVisibility: PUBLIC_BOOKABILITY_VISIBILITY, request,
+    status: offers.length ? "bookable" : freshnessStatus === "stale" ? "stale" : "unavailable",
+    unavailableReasons, dataSources: [...dataSources],
+    freshness: { status: freshnessStatus, generatedAt,
+      sources: dataSources.map((owner) => ({ owner, status: freshnessStatus, lastUpdatedAt: generatedAt })) },
+    ...(offers.length ? {
+      quote: { quoteId, quoteHash: `sha256:${createHash("sha256").update(JSON.stringify({ request, offers })).digest("hex")}`,
+        expiresAt: expiresAt!, priceGuarantee: "expires_at" as const, offers },
+      deepLink: { url: offers[0]!.bookingUrl, expiresAt: expiresAt!,
+        preserves: ["dates", "guests", "rooms", "currency", "locale", "quote_id", ...(request.referralCode ? ["referral_code" as const] : [])] as PublicBookabilityDeepLink["preserves"] },
+    } : {}),
   };
 }
 

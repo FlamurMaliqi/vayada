@@ -33,6 +33,7 @@ type CandidateRow = {
   maxChildren: number;
   maxOccupancy: number;
   expiresAt: Date | string | null;
+  profileExpiresAt: Date | string | null;
 };
 
 /** Internal until the complete selection can travel through every public consumer. */
@@ -44,6 +45,8 @@ export async function findTargetRoomCombinationOffers(
     paymentMethods: readonly string[];
     maxCandidates?: number;
     maxWork?: number;
+    minRooms?: number;
+    maxRooms?: number;
   },
 ): Promise<{
   complete: boolean;
@@ -67,7 +70,8 @@ export async function findTargetRoomCombinationOffers(
        MAX(CASE WHEN rate_summary->>'maxStayNights' ~ '^[0-9]{1,6}$' THEN (rate_summary->>'maxStayNights')::int END) FILTER (WHERE stay_date=$2::date) AS "maxStay",
        bool_and((NULLIF(rate_summary->>'minStayNights','') IS NULL OR rate_summary->>'minStayNights' ~ '^[0-9]{1,6}$')
          AND (NULLIF(rate_summary->>'maxStayNights','') IS NULL OR rate_summary->>'maxStayNights' ~ '^[0-9]{1,6}$')) AS "restrictionsReady",
-       MIN(expires_at) AS "expiresAt"
+       MIN(expires_at) AS "expiresAt",
+       (SELECT expires_at FROM distribution.public_hotel_bookability_profiles WHERE property_id=$1::uuid) AS "profileExpiresAt"
      FROM distribution.public_room_offer_snapshots
      WHERE property_id=$1::uuid AND stay_date >= $2::date AND stay_date < $3::date AND currency=$4
      GROUP BY room_type_id, public_offer_key
@@ -151,6 +155,7 @@ export async function findTargetRoomCombinationOffers(
         Math.min(
           input.requestedAt.getTime() + 15 * 60_000,
           row.expiresAt ? new Date(row.expiresAt).getTime() : Infinity,
+          row.profileExpiresAt ? new Date(row.profileExpiresAt).getTime() : Infinity,
         ),
       ).toISOString();
       expiries.set(JSON.stringify([row.roomTypeId, row.publicOfferKey]), expiresAt);
@@ -159,7 +164,11 @@ export async function findTargetRoomCombinationOffers(
       reasons.add(quoteUnavailableReason(error));
     }
   }
-  const result = searchRoomCombinations(candidates, input, { maxWork: input.maxWork });
+  const result = searchRoomCombinations(candidates, input, {
+    maxWork: input.maxWork,
+    minRooms: input.minRooms,
+    maxRooms: input.maxRooms,
+  });
   if (!result.complete) return unavailable(candidates.length);
   const options: (CombinationQuote & { expiresAt: string })[] = [];
   for (const option of result.options) {
@@ -193,7 +202,7 @@ export async function findTargetRoomCombinationOffers(
     const capacity = searchRoomCombinations(
       candidates.map((candidate) => ({ ...candidate, paymentMethods: ["capacity-probe"] })),
       input,
-      { maxWork: input.maxWork },
+      { maxWork: input.maxWork, minRooms: input.minRooms, maxRooms: input.maxRooms },
     );
     if (!capacity.complete) return unavailable(candidates.length);
     reasons.add(capacity.options.length ? "payment_disabled" : "occupancy_unavailable");
