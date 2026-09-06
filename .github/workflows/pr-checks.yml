@@ -50,6 +50,25 @@ jobs:
 
       - name: Build
         run: npm run build
+        env:
+          NEXT_PUBLIC_CLOUDFLARE_ANALYTICS_TOKEN: "00000000000000000000000000000000"
+
+      - name: Landing consent browser regressions
+        run: |
+          npx playwright install --with-deps chromium
+          npm --workspace vayada-landing run start -- --port 3006 &
+          landing_pid=$!
+          trap 'kill "$landing_pid" 2>/dev/null || true' EXIT
+          for attempt in $(seq 1 30); do
+            if curl --silent --fail http://127.0.0.1:3006/ >/dev/null; then break; fi
+            sleep 1
+          done
+          npm run e2e:landing -- --workers=2
+        env:
+          CI: "false"
+          E2E_START_SERVERS: "0"
+          E2E_LANDING_BASE_URL: http://127.0.0.1:3006
+          E2E_LANDING_ANALYTICS: "1"
 
   first_party_auth:
     name: First-Party Auth Contracts
@@ -200,6 +219,7 @@ jobs:
           npm --workspace @vayada/backend-migration run test --
           --no-file-parallelism
           src/bookingAddonEconomics.test.ts
+          src/pendingBookingEdits.integration.test.ts
           src/manualBookingReadiness.integration.test.ts
           src/workosBackfill.test.ts
           src/financeFolioRecipientCiphertextMigration.integration.test.ts
@@ -234,6 +254,23 @@ jobs:
           src/publicBookabilityGalleryMedia.test.ts
         env:
           TEST_DATABASE_URL: postgresql://vayada_test:vayada_test@localhost:5432/vayada_api_test
+
+      - name: Run pending booking edits in an isolated database
+        env:
+          TEST_DATABASE_URL: postgresql://vayada_test:vayada_test@localhost:5432/vayada_booking_edit_test
+          TARGET_DATABASE_URL: postgresql://vayada_test:vayada_test@localhost:5432/vayada_booking_edit_test
+        run: |
+          node --input-type=module -e '
+            import pg from "pg";
+            const url = new URL(process.env.TEST_DATABASE_URL);
+            url.pathname = "/postgres";
+            const client = new pg.Client({ connectionString: url.href });
+            await client.connect();
+            await client.query("CREATE DATABASE vayada_booking_edit_test");
+            await client.end();
+          '
+          npm --workspace @vayada/backend-migration run target:migrate -- --env local
+          npm --workspace vayada-api run test -- --no-file-parallelism src/routes/pendingBookingEdits.integration.test.ts
 
   setup_draft_reset_postgres:
     name: Setup Draft Reset PostgreSQL ${{ matrix.postgres }} Integration

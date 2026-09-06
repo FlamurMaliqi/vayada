@@ -91,6 +91,12 @@ const PRICING_SOURCES_SELECT = `WITH pricing_currency AS (
   ${PLAN_SELECT}
   WHERE plan.property_id = $1::uuid
     AND plan.pricing_contract_version = $2
+    AND EXISTS (
+      SELECT 1 FROM pms.room_types room
+      WHERE room.property_id = plan.property_id
+        AND room.id = plan.room_type_id
+        AND room.active
+    )
 )
 SELECT
   (SELECT row_to_json(currency_row) FROM pricing_currency currency_row) AS "pricingCurrency",

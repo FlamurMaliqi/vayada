@@ -901,7 +901,7 @@ async function readActiveReservations(
             receipt.room_count AS "roomCount",
             status.lifecycle_state AS "lifecycleState",
             status.lifecycle_revision AS "lifecycleRevision"
-     FROM pms.inventory_reservation_receipts receipt
+     FROM pms.active_inventory_reservation_receipts receipt
      JOIN pms.inventory_reservation_statuses status
        ON status.receipt_id = receipt.receipt_id
       AND status.organization_id = receipt.organization_id

@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback, use, useMemo, useRef } from "react";
 import Link from "next/link";
+import { HostBookingActions } from "@/components/bookings/HostBookingActions";
 import {
   ArrowLeftIcon,
   CheckCircleIcon,
@@ -1235,8 +1236,6 @@ export default function BookingDetailPage({ params }: { params: Promise<{ id: st
   const [decideOpen, setDecideOpen] = useState<"approve" | "decline" | null>(null);
   const [declineReason, setDeclineReason] = useState("");
   const [decidingChange, setDecidingChange] = useState(false);
-  const [rejectOpen, setRejectOpen] = useState(false);
-  const [rejectReason, setRejectReason] = useState("");
   const [noteDraft, setNoteDraft] = useState("");
   const [noteDraftOpen, setNoteDraftOpen] = useState(false);
   const [noteSaving, setNoteSaving] = useState(false);
@@ -1376,19 +1375,6 @@ export default function BookingDetailPage({ params }: { params: Promise<{ id: st
         doAction(() => bookingsService.acceptBooking(id), t("bookings.detail.failedToAccept"));
       },
     });
-  };
-
-  const handleReject = () => {
-    setRejectReason("");
-    setRejectOpen(true);
-  };
-
-  const confirmReject = () => {
-    setRejectOpen(false);
-    doAction(
-      () => bookingsService.rejectBooking(id, rejectReason.trim() || undefined),
-      t("bookings.detail.failedToReject"),
-    );
   };
 
   const handleApproveChange = async () => {
@@ -2025,20 +2011,22 @@ export default function BookingDetailPage({ params }: { params: Promise<{ id: st
             <h2 className="text-sm font-semibold text-gray-900">
               {t("bookings.detail.stayDetails")}
             </h2>
-            {/* Booking-level Modify (dates / guest count for whole booking) */}
-            <button
-              disabled={!LEGACY_BOOKING_WRITES_AVAILABLE}
-              onClick={() => setModifyOpen(true)}
-              title={t("bookings.detail.modificationsUnavailable")}
-              aria-label={t("bookings.detail.modifyUnavailableLabel")}
-              className="inline-flex cursor-not-allowed items-center gap-1.5 rounded-lg border border-gray-200 bg-gray-50 px-3 py-1.5 text-xs font-medium text-gray-400"
-            >
-              <PencilSquareIcon className="w-4 h-4" />
-              {t("bookings.detail.modify")}
-              <span className="rounded bg-gray-100 px-1 py-0.5 text-[9px] font-medium text-gray-500">
-                {t("bookings.detail.soon")}
-              </span>
-            </button>
+            {/* Manual editing retains its separate owner workflow. */}
+            {booking.channel === "manual" && (
+              <button
+                disabled={!LEGACY_BOOKING_WRITES_AVAILABLE}
+                onClick={() => setModifyOpen(true)}
+                title={t("bookings.detail.modificationsUnavailable")}
+                aria-label={t("bookings.detail.modifyUnavailableLabel")}
+                className="inline-flex cursor-not-allowed items-center gap-1.5 rounded-lg border border-gray-200 bg-gray-50 px-3 py-1.5 text-xs font-medium text-gray-400"
+              >
+                <PencilSquareIcon className="w-4 h-4" />
+                {t("bookings.detail.modify")}
+                <span className="rounded bg-gray-100 px-1 py-0.5 text-[9px] font-medium text-gray-500">
+                  {t("bookings.detail.soon")}
+                </span>
+              </button>
+            )}
           </div>
 
           {hasHeterogeneousStays && (
@@ -2928,17 +2916,6 @@ export default function BookingDetailPage({ params }: { params: Promise<{ id: st
                   {t("bookings.detail.acceptBooking")}
                 </button>
               )}
-              <button
-                onClick={handleReject}
-                disabled={!LEGACY_BOOKING_WRITES_AVAILABLE || updating}
-                title={t("bookings.detail.rejectionUnavailable")}
-                className="inline-flex cursor-not-allowed items-center gap-1.5 rounded-lg border border-gray-200 bg-white px-5 py-2.5 text-sm font-medium text-gray-400"
-              >
-                <XCircleIcon className="w-4 h-4" />
-                {booking.paymentMethod === "paypal"
-                  ? t("bookings.detail.cancelNotReceived")
-                  : t("bookings.detail.rejectBooking")}
-              </button>
             </div>
           </div>
         )}
@@ -2966,8 +2943,22 @@ export default function BookingDetailPage({ params }: { params: Promise<{ id: st
           </div>
         )}
 
+        <HostBookingActions
+          booking={booking}
+          onApplied={async (status) => {
+            setBooking((current) =>
+              current
+                ? {
+                    ...current,
+                    status: (status === "canceled" ? "cancelled" : status) as Booking["status"],
+                  }
+                : current,
+            );
+            setBooking(await bookingsService.get(id));
+          }}
+        />
         {/* 6. Cancel booking (confirmed bookings only) */}
-        {canCancelBooking && (
+        {canCancelManualBooking && (
           <div className="bg-white border border-gray-200 rounded-xl p-5 sm:p-6">
             <h2 className="text-sm font-semibold text-gray-900 mb-1">
               {t("bookings.detail.cancelBooking")}
@@ -3122,44 +3113,6 @@ export default function BookingDetailPage({ params }: { params: Promise<{ id: st
               className="px-4 py-2 text-sm font-medium text-white bg-red-600 hover:bg-red-700 rounded-lg disabled:opacity-50"
             >
               {decidingChange ? t("bookings.detail.declining") : t("bookings.detail.decline")}
-            </button>
-          </div>
-        </Modal>
-      )}
-
-      {LEGACY_BOOKING_WRITES_AVAILABLE && rejectOpen && (
-        <Modal onClose={() => setRejectOpen(false)}>
-          <h3 className="text-lg font-semibold text-gray-900 mb-2">
-            {booking?.paymentMethod === "paypal"
-              ? t("bookings.detail.cancelPaymentNotReceived")
-              : t("bookings.detail.rejectBooking")}
-          </h3>
-          <p className="text-sm text-gray-600 mb-4">
-            {booking?.paymentMethod === "paypal"
-              ? t("bookings.detail.confirmCancelPaypal")
-              : t("bookings.detail.confirmRejectBooking")}
-          </p>
-          <textarea
-            value={rejectReason}
-            onChange={(e) => setRejectReason(e.target.value)}
-            placeholder={t("bookings.detail.rejectReasonPlaceholder")}
-            rows={3}
-            className="w-full border border-gray-300 rounded-lg px-3 py-2 text-base text-gray-900 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-red-500 focus:border-transparent mb-4 resize-none"
-          />
-          <div className="flex justify-end gap-3">
-            <button
-              onClick={() => setRejectOpen(false)}
-              className="px-4 py-2 text-sm font-medium text-gray-700 bg-gray-100 hover:bg-gray-200 rounded-lg"
-            >
-              {t("bookings.modal.cancelButton")}
-            </button>
-            <button
-              onClick={confirmReject}
-              className="px-4 py-2 text-sm font-medium text-white bg-red-600 hover:bg-red-700 rounded-lg"
-            >
-              {booking?.paymentMethod === "paypal"
-                ? t("bookings.detail.cancelBooking")
-                : t("bookings.detail.reject")}
             </button>
           </div>
         </Modal>

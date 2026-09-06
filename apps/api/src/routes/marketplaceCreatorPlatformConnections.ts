@@ -217,6 +217,7 @@ export type MarketplaceCreatorPlatformConnectionRoutesOptions = {
   credentialSecretPrefix: string;
   now?: () => Date;
   credentialCleanupIntervalMs?: number;
+  credentialCleanupEnabled?: boolean;
 };
 
 export async function registerMarketplaceCreatorPlatformConnectionRoutes(
@@ -283,15 +284,15 @@ export async function registerMarketplaceCreatorPlatformConnectionRoutes(
     });
     return cleanupPromise;
   };
-  void cleanCredentials();
-  const cleanupTimer = setInterval(
+  if (options.credentialCleanupEnabled !== false) void cleanCredentials();
+  const cleanupTimer = options.credentialCleanupEnabled !== false ? setInterval(
     () => void cleanCredentials(),
     options.credentialCleanupIntervalMs ?? 60_000,
-  );
-  cleanupTimer.unref();
+  ) : undefined;
+  cleanupTimer?.unref();
 
   app.addHook("onClose", async () => {
-    clearInterval(cleanupTimer);
+    if (cleanupTimer) clearInterval(cleanupTimer);
     await cleanupPromise;
     await options.repository.close?.();
   });
