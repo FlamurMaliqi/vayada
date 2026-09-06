@@ -68,6 +68,7 @@ jobs:
           cache-to: type=gha,mode=max
 
       - name: Dispatch deploy to platform
+        if: github.ref == 'refs/heads/main'
         uses: peter-evans/repository-dispatch@v4
         with:
           token: ${{ secrets.PLATFORM_DEPLOY_TOKEN }}
