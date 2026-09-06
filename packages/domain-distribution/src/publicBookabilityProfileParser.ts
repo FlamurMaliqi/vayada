@@ -53,14 +53,21 @@ const contactSchema = z
     if (contact.type === "email" && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(contact.value))
       issue(context, ["value"]);
   });
-const policiesSchema = z.strictObject({
-  checkInFrom: localTime.nullable().optional(),
-  checkInUntil: localTime.nullable().optional(),
-  checkOutFrom: localTime.nullable().optional(),
-  checkOutUntil: localTime.nullable().optional(),
-  cancellationSummary: optionalText,
-  termsUrl: httpsUrl.nullable().optional(),
-});
+const policiesSchema = z
+  .strictObject({
+    checkInFrom: localTime.nullable().optional(),
+    checkInUntil: localTime.nullable().optional(),
+    checkOutFrom: localTime.nullable().optional(),
+    checkOutUntil: localTime.nullable().optional(),
+    cancellationSummary: optionalText,
+    termsUrl: httpsUrl.nullable().optional(),
+  })
+  .superRefine((policy, context) => {
+    if (policy.checkInFrom && policy.checkInUntil && policy.checkInUntil <= policy.checkInFrom)
+      issue(context, ["checkInUntil"]);
+    if (policy.checkOutFrom && policy.checkOutUntil && policy.checkOutFrom >= policy.checkOutUntil)
+      issue(context, ["checkOutFrom"]);
+  });
 const capabilitiesSchema = z.strictObject({
   instantBook: z.boolean(),
   onlinePayment: z.boolean(),

@@ -6,11 +6,11 @@ ALTER TABLE hotel_catalog.property_policy_summaries
   ADD CONSTRAINT chk_property_check_in_window CHECK (
     check_in_until IS NULL OR (check_in_time IS NOT NULL AND check_in_until > check_in_time
       AND EXTRACT(SECOND FROM check_in_until) = 0 AND check_in_until < TIME '24:00')
-  ),
+  ) NOT VALID,
   ADD CONSTRAINT chk_property_check_out_window CHECK (
     check_out_from IS NULL OR (check_out_time IS NOT NULL AND check_out_from < check_out_time
       AND EXTRACT(SECOND FROM check_out_from) = 0 AND check_out_from < TIME '24:00')
-  );
+  ) NOT VALID;
 
 CREATE OR REPLACE FUNCTION hotel_catalog.advance_property_policy_revision()
 RETURNS TRIGGER LANGUAGE plpgsql AS $$
