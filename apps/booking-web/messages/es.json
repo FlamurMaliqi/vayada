@@ -50,6 +50,12 @@
     "payment": "Pago"
   },
   "home": {
+    "guestCountUnsupported": "La búsqueda en línea no admite su grupo de {count} huéspedes. Pruebe con menos huéspedes o contáctenos.",
+    "guestCountUnavailable": "Ninguno de nuestros alojamientos disponibles puede acoger a su grupo de {count} huéspedes. Pruebe con menos huéspedes u otras fechas.",
+    "noAvailability": "No hay alojamiento disponible para esta búsqueda. Pruebe otras fechas u opciones.",
+    "availabilityError": "No pudimos comprobar la disponibilidad. Inténtelo de nuevo.",
+    "noMatchingRooms": "Ningún alojamiento coincide con sus filtros. Pruebe a quitar un filtro.",
+
     "yourStay": "Tu Estancia",
     "addPromo": "Añadir promo",
     "promoTitle": "¿Tienes un código promocional?",
