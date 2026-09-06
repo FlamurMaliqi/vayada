@@ -37,6 +37,7 @@ export * from "./manualBookingPaymentIntent.js";
 export * from "./bookingAttribution.js";
 export * from "./bookingAddonEconomics.js";
 export * from "./sameDayBookingPolicy.js";
+export * from "./roomSelection.js";
 
 export type BookingUtcDateTime = string;
 export type BookingDate = string;

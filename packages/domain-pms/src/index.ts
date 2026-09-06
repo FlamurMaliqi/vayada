@@ -14,6 +14,7 @@ export * from "./operatingCalendarImpact.js";
 export * from "./inventoryMaterialization.js";
 export * from "./inventoryMaterializationPlanner.js";
 export * from "./inventoryReservationLifecycle.js";
+export * from "./inventoryReservationBundle.js";
 export * from "./manualBooking.js";
 export * from "./calendarAutoOpen.js";
 
