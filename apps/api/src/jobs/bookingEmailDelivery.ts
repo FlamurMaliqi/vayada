@@ -4,7 +4,13 @@ import pg, { type QueryResultRow } from "pg";
 import { BOOKING_EMAIL_QUEUE, BOOKING_LIFECYCLE_EMAIL_JOB_TYPES } from "./bookingEmails.js";
 
 export type BookingEmailDelivery = {
-  send(input: { to: string; subject: string; text: string; idempotencyKey: string }): Promise<void>;
+  send(input: {
+    to: string;
+    subject: string;
+    text: string;
+    idempotencyKey: string;
+    emailProduct?: "booking";
+  }): Promise<void>;
 };
 
 type BookingEmailJob = {
@@ -43,6 +49,9 @@ export function createResendBookingEmailDelivery(config: {
           to: [input.to],
           subject: input.subject,
           text: input.text,
+          ...(input.emailProduct === "booking"
+            ? { tags: [{ name: "vayada_product", value: "booking" }] }
+            : {}),
         }),
       });
       if (!response.ok) {
@@ -158,11 +167,18 @@ async function claimBookingEmailJob(
   return job;
 }
 
-function emailInput(job: BookingEmailJob) {
+function emailInput(job: BookingEmailJob): Parameters<BookingEmailDelivery["send"]>[0] {
   const to = requiredText(job.payload["to"], "recipient");
   const subject = requiredText(job.payload["subject"], "subject");
   const text = requiredText(job.payload["text"], "body");
-  return { to, subject, text, idempotencyKey: job.jobKey };
+  // Persisted at enqueue time: retries of older jobs must keep their original provider body.
+  return {
+    to,
+    subject,
+    text,
+    idempotencyKey: job.jobKey,
+    ...(job.payload["emailProduct"] === "booking" ? { emailProduct: "booking" as const } : {}),
+  };
 }
 
 async function finishBookingEmailJob(
