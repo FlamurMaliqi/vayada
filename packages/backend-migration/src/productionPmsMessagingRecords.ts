@@ -19,7 +19,7 @@ import {
 } from "./productionBookingValues.js";
 import { pmsRecord } from "./productionPmsValues.js";
 import { validatePmsMessagingSource } from "./productionPmsMessagingParity.js";
-import { normalizePmsSystemInquiries } from "./productionPmsSystemInquiries.js";
+import { normalizePmsInquiries } from "./productionPmsInquiries.js";
 
 export function buildPmsMessagingRecords(context: PmsBuildContext): PmsTargetRecord[] {
   const records: PmsTargetRecord[] = [];
@@ -30,7 +30,7 @@ export function buildPmsMessagingRecords(context: PmsBuildContext): PmsTargetRec
   for (const source of context.rowsByTable.get("message_attachments") ?? [])
     append(context, source, records, () => attachment(context, source));
   validatePmsMessagingSource(context, records);
-  if (!context.blockers.length) normalizePmsSystemInquiries(context, records);
+  if (!context.blockers.length) normalizePmsInquiries(context, records);
   return records;
 }
 
@@ -73,6 +73,10 @@ function thread(context: PmsBuildContext, source: IdentitySourceRow): PmsTargetR
             ? "legacy_closed"
             : null,
       conversationContextState: bookingId ? "linked" : "unlinked",
+      inquiryArrivalDate: null,
+      inquiryDepartureDate: null,
+      inquiryAdults: null,
+      inquiryChildren: null,
       lastMessageAt: optionalIso(data["last_message_at"], "last_message_at"),
       lastMessagePreview:
         typeof data["last_message_preview"] === "string"

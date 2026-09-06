@@ -12,7 +12,8 @@ COPY . .
 
 # Workspace install — resolves apps/*, packages/*, and docs.
 RUN npm ci
-RUN npm --workspace @vayada/domain-hotels run build
+# Build promotion contracts and their dependency declarations before Next typechecks.
+RUN npm --workspace @vayada/domain-booking run build
 
 ARG NEXT_PUBLIC_API_URL
 ARG NEXT_PUBLIC_AUTH_API_URL

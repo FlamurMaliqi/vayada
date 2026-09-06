@@ -505,7 +505,7 @@ export function createTargetPmsOperationsReadRepository(config: {
                      receipt.quote_session_id
                  )
              ), 0)) AS units
-             FROM pms.inventory_reservation_receipts receipt
+             FROM pms.active_inventory_reservation_receipts receipt
              JOIN pms.inventory_reservation_statuses reservation_status
                ON reservation_status.receipt_id = receipt.receipt_id
               AND reservation_status.organization_id = receipt.organization_id

@@ -2694,6 +2694,7 @@ function buildAuthenticatedApp(
     pmsInboxProviderActionPort?: PmsInboxProviderActionPort;
     pmsInboxQuickReplyPort?: PmsInboxQuickReplyPort;
     pmsInboxReplyPort?: PmsInboxReplyPort;
+    pmsInboxSendingEnabled?: boolean;
     pmsInboxStartDirectEmailPort?: PmsInboxStartDirectEmailPort;
     pmsInboxTriagePort?: PmsInboxTriagePort;
     pmsInboxStaffCommandPort?: PmsInboxStaffCommandPort;
@@ -2747,6 +2748,7 @@ function buildAuthenticatedApp(
     pmsInboxProviderActionPort: options.pmsInboxProviderActionPort,
     pmsInboxQuickReplyPort: options.pmsInboxQuickReplyPort,
     pmsInboxReplyPort: options.pmsInboxReplyPort,
+    pmsInboxSendingEnabled: options.pmsInboxSendingEnabled,
     pmsInboxStartDirectEmailPort: options.pmsInboxStartDirectEmailPort,
     pmsInboxTriagePort: options.pmsInboxTriagePort,
     pmsInboxStaffCommandPort: options.pmsInboxStaffCommandPort,
@@ -9288,16 +9290,28 @@ describe("vayada-api", () => {
   });
 
   it.each([
-    ["canonical property id", "d3000000-0000-0000-0000-000000000682"],
+    ["canonical property id", "d3000000-0000-4000-8000-000000000682"],
     ["legacy booking-hotel id", "booking_hotel_alpenrose"],
   ])("serves and updates target booking add-on items by %s", async (_label, hotelId) => {
     const queries: { text: string; values?: unknown[] }[] = [];
-    const canonicalPropertyId = "d3000000-0000-0000-0000-000000000682";
+    const canonicalPropertyId = "d3000000-0000-4000-8000-000000000682";
     async function query<T extends QueryResultRow = QueryResultRow>(
       text: string,
       values?: unknown[],
     ): Promise<Pick<QueryResult<T>, "rows">> {
       queries.push({ text, values });
+      if (text.includes("FROM pms.property_pricing_settings"))
+        return {
+          rows: [
+            {
+              propertyId: canonicalPropertyId,
+              currency: "EUR",
+              pricingCurrencyRevision: 1,
+              createdAt: "2026-08-11T10:00:00.000Z",
+              updatedAt: "2026-08-11T10:00:00.000Z",
+            },
+          ] as unknown as T[],
+        };
       if (text.includes("WITH direct_property AS")) {
         return {
           rows: [{ propertyId: canonicalPropertyId }] as unknown as T[],
@@ -9310,7 +9324,7 @@ describe("vayada-api", () => {
         rows: [
           {
             addonItemId: "0f840001-0000-4000-8000-000000000001",
-            propertyId: "d3000000-0000-0000-0000-000000000682",
+            propertyId: "d3000000-0000-4000-8000-000000000682",
             name: "Migrated add-on",
             description: null,
             category: "food",
@@ -9343,17 +9357,23 @@ describe("vayada-api", () => {
     const items = await repository.listAddonItemsByHotelId(hotelId);
 
     expect(items).toEqual({
+      propertyCurrency: "EUR",
       addonItems: [
         {
           addonItemId: "0f840001-0000-4000-8000-000000000001",
           hotelId,
-          propertyId: "d3000000-0000-0000-0000-000000000682",
+          propertyId: "d3000000-0000-4000-8000-000000000682",
           name: "Migrated add-on",
           description: "",
           price: "45.00",
           currency: "EUR",
           category: "dining",
           imageUrl: null,
+          photos: [],
+          location: null,
+          leadTime: null,
+          maxGuests: null,
+          maxQuantity: 1,
           imageMediaObjectId: null,
           duration: null,
           pricingModel: "per_stay",
@@ -9422,11 +9442,11 @@ describe("vayada-api", () => {
   });
 
   it.each([
-    ["canonical property id", "d3000000-0000-0000-0000-000000000682"],
+    ["canonical property id", "d3000000-0000-4000-8000-000000000682"],
     ["legacy booking-hotel id", "booking_hotel_alpenrose"],
   ])("serves target booking promo codes by %s", async (_label, hotelId) => {
     const queries: { text: string; values?: unknown[] }[] = [];
-    const canonicalPropertyId = "d3000000-0000-0000-0000-000000000682";
+    const canonicalPropertyId = "d3000000-0000-4000-8000-000000000682";
     const pool: BookingPromoCodesPool = {
       async query<T extends QueryResultRow = QueryResultRow>(
         text: string,
@@ -9445,7 +9465,7 @@ describe("vayada-api", () => {
           rows: [
             {
               promoCodeId: "0f850001-0000-4000-8000-000000000001",
-              propertyId: "d3000000-0000-0000-0000-000000000682",
+              propertyId: "d3000000-0000-4000-8000-000000000682",
               code: "SUMMER20",
               discountType: "percentage",
               discountValue: "20.00",
@@ -9499,7 +9519,7 @@ describe("vayada-api", () => {
       {
         promoCodeId: "0f850001-0000-4000-8000-000000000001",
         hotelId,
-        propertyId: "d3000000-0000-0000-0000-000000000682",
+        propertyId: "d3000000-0000-4000-8000-000000000682",
         code: "SUMMER20",
         discountType: "percentage",
         discountValue: "20.00",
@@ -14273,6 +14293,7 @@ describe("vayada-api", () => {
       entitlements: [{ product: "pms", key: "property-management", status: "active" }],
       pmsInboxStartDirectEmailPort: port,
       pmsOperationsAllowedOrigins: ["https://pms.localhost"],
+      pmsInboxSendingEnabled: false,
     });
     const url = `/api/pms/properties/${pmsPropertyId}/messaging/threads`;
     const post = (key?: string, body: unknown = { bookingId }) =>
@@ -14820,6 +14841,48 @@ describe("vayada-api", () => {
     expect(dispatches).toHaveLength(0);
   });
 
+  it("pauses Inbox sends and provider actions before command persistence, but keeps reads", async () => {
+    const dispatch = vi.fn(async () => {
+      throw new Error("must not dispatch");
+    });
+    app = buildAuthenticatedApp({
+      permissions: ["pms.inbox.read", "pms.inbox.reply"],
+      entitlements: [{ product: "pms", key: "property-management", status: "active" }],
+      pmsInboxSendingEnabled: false,
+      pmsInboxReplyPort: { reply: dispatch },
+      pmsInboxProviderActionPort: { noReplyNeeded: dispatch },
+      pmsInboxReadPort: {
+        listThreads: dispatch,
+        getThread: dispatch,
+        unreadCount: async (propertyId) => ({ propertyId, threadCount: 0, messageCount: 0 }),
+      },
+    });
+    const base = `/api/pms/properties/${pmsPropertyId}/messaging`;
+    for (const [path, payload] of [
+      ["messages", { expectedThreadVersion: 4, text: "Test", attachmentMediaIds: [] }],
+      ["provider-actions/no-reply-needed", {}],
+    ] as const) {
+      for (const authorization of [undefined, "Bearer invalid-token", "Bearer valid-token"]) {
+        const response = await injectJson(app, {
+          method: "POST",
+          url: `${base}/threads/thread_1/${path}`,
+          headers: { ...(authorization ? { authorization } : {}), "idempotency-key": "same-key" },
+          payload,
+        });
+        expect(response.statusCode).toBe(authorization === "Bearer valid-token" ? 503 : 401);
+        if (response.statusCode === 503)
+          expect(response.body).toMatchObject({ code: "inbox_sending_paused" });
+      }
+    }
+    const read = await injectJson(app, {
+      method: "GET",
+      url: `${base}/unread-count`,
+      headers: { authorization: "Bearer valid-token" },
+    });
+    expect(read.statusCode).toBe(200);
+    expect(dispatch).not.toHaveBeenCalled();
+  });
+
   it("accepts protected Inbox manual replies and maps command outcomes", async () => {
     const mediaId = "77777777-7777-4777-8777-777777777777";
     const calls: Parameters<PmsInboxReplyPort["reply"]>[0][] = [];
@@ -15018,6 +15081,7 @@ describe("vayada-api", () => {
         permissions: candidate.permissions,
         entitlements: candidate.entitlements ?? [entitlement],
         pmsInboxReplyPort: port,
+        pmsInboxSendingEnabled: false,
       });
       const response = await app.inject({
         method: "POST",

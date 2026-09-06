@@ -8,6 +8,8 @@ import type { FinanceFolioDetailResponse, FinanceFolioListResponse } from "@vaya
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { buildApp } from "./app.js";
+import { agencyPropertyAccessRepository } from "./testAuthorization.js";
+import { requestContextFixtureCases } from "./platform/requestContext.fixtures.js";
 import {
   FinanceFolioCursorError,
   FinanceFolioEvidenceError,
@@ -85,7 +87,11 @@ async function app(repository: Ports, auth: RequestContext | null = context(), w
   const instance = buildApp({
     logger: false,
     browserAllowedOrigins: ["https://pms.example"],
-    financeFolios: { repository, ...(write ? { commands: write } : {}) },
+    financeFolios: {
+      repository,
+      propertyAccessRepository: agencyPropertyAccessRepository,
+      ...(write ? { commands: write } : {}),
+    },
   });
   instance.decorateRequest("authContext", null);
   instance.addHook("onRequest", async (request) => {
@@ -96,6 +102,25 @@ async function app(repository: Ports, auth: RequestContext | null = context(), w
 }
 
 describe("Financials folio read routes", () => {
+  it("denies unassigned folio reads and commands before ports", async () => {
+    const auth = context({ permissions: ["pms.finance.read", "pms.finance.manage"] });
+    auth.membership.propertyAccess!.assignedPropertyIds = [];
+    const repository = ports(),
+      write = commands();
+    const instance = await app(repository, auth, write);
+    for (const method of ["GET", "POST"] as const) {
+      const response = await instance.inject({
+        method,
+        url: root,
+        ...(method === "POST" ? { payload: writeBody() } : {}),
+      });
+      expect(response.statusCode).toBe(403);
+      expect(response.json()).toEqual({ code: "forbidden" });
+    }
+    expect(repository.list).not.toHaveBeenCalled();
+    expect(write.create).not.toHaveBeenCalled();
+  });
+
   it("registers list and detail with canonical query, IDs, and response shapes", async () => {
     const repository = ports();
     const instance = await app(repository);
@@ -158,7 +183,12 @@ describe("Financials folio read routes", () => {
     const financeManager = ports();
     const instance = await app(
       financeManager,
-      context({ links: [{ ...allowed.linkedResources[0]!, relationship: "finance_manager" }] }),
+      context({
+        links: allowed.linkedResources.map((link) => ({
+          ...link,
+          relationship: "finance_manager",
+        })),
+      }),
     );
     expect(await instance.inject({ method: "GET", url: root })).toHaveProperty("statusCode", 200);
   });
@@ -409,4 +439,42 @@ const resource = { product: "pms" as const, resourceType: "pms_property" as cons
 // prettier-ignore
 const entitlement = (key: string, status: ProductEntitlement["status"] = "active"): ProductEntitlement => ({ product: "pms", key, status, resource });
 // prettier-ignore
-const context = (overrides: Overrides = {}): RequestContext => ({ actor: { internalUserId: "11320000-0000-4000-8000-000000000010" }, selectedOrganization: { organizationId: "11320000-0000-4000-8000-000000000011", kind: overrides.kind ?? "hotel_group" }, membership: { permissions: overrides.permissions ?? ["pms.finance.read"] }, entitlements: overrides.entitlements ?? [entitlement("property-management"), entitlement("module:financials")], linkedResources: overrides.links ?? [{ ...resource, relationship: "owner", status: "active" }], locale: "en", currency: "EUR", audit: { requestId: "request-1", receivedAt: now, source: "api" } } as RequestContext);
+const hotelContext = requestContextFixtureCases.find(({ scope }) => scope === "hotel")!.context;
+function context(overrides: Overrides = {}): RequestContext {
+  return {
+    ...hotelContext,
+    actor: { ...hotelContext.actor, internalUserId: "11320000-0000-4000-8000-000000000010" },
+    selectedOrganization: {
+      ...hotelContext.selectedOrganization,
+      organizationId: "11320000-0000-4000-8000-000000000011",
+      kind: overrides.kind ?? "hotel_group",
+    },
+    membership: {
+      ...hotelContext.membership,
+      propertyAccess: {
+        mode: "assigned",
+        roleKey: "hotel_owner",
+        accessOrigin: "agency",
+        assignedPropertyIds: [propertyId],
+      },
+      permissions: overrides.permissions ?? ["pms.finance.read"],
+    },
+    entitlements: overrides.entitlements ?? [
+      entitlement("property-management"),
+      entitlement("module:financials"),
+    ],
+    linkedResources: overrides.links ?? [
+      { ...resource, relationship: "owner", status: "active" },
+      {
+        product: "hotel_catalog",
+        resourceType: "property",
+        resourceId: propertyId,
+        relationship: "owner",
+        status: "active",
+      },
+    ],
+    locale: "en",
+    currency: "EUR",
+    audit: { requestId: "request-1", receivedAt: now, source: "api" },
+  };
+}

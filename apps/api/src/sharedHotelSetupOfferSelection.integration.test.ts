@@ -1,6 +1,8 @@
 import pg from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
+import { syncOfferReadModel } from "./routes/marketplaceAdmin.js";
+
 import { createPgSharedHotelSetupStatusRepository } from "./platform/sharedHotelSetupStatusReadModel.js";
 
 const TEST_DATABASE_URL = process.env["TEST_DATABASE_URL"];
@@ -210,6 +212,21 @@ describe.skipIf(!TEST_DATABASE_URL)("adaptive marketplace offer selection", () =
 
     await expect(readCreatorOfferReadiness()).resolves.toBe("actionable");
   }, 20_000);
+
+  it("projects locality without copying catalog coordinates into marketplace offers", async () => {
+    await client.query(
+      `UPDATE hotel_catalog.property_public_profile_read_model
+       SET location = $2::jsonb WHERE property_id = $1::uuid`,
+      [propertyId, JSON.stringify({ countryCode: "DE", city: "Berlin",
+        geo: { latitude: 52.52, longitude: 13.41 }, mapDisplayMode: "approximate" })],
+    );
+    await syncOfferReadModel(client, completeOfferId, "initialize", { catalogAlreadyProjected: true });
+    const result = await client.query(
+      `SELECT location FROM marketplace.marketplace_offer_read_model WHERE offer_id = $1::uuid`,
+      [completeOfferId],
+    );
+    expect(result.rows[0]?.location).toEqual({ countryCode: "DE", city: "Berlin" });
+  });
 
   async function readCreatorOfferReadiness(): Promise<string | undefined> {
     const result = await repository.getHotelSetupStatus({

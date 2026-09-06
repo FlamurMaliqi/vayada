@@ -33,6 +33,7 @@ import {
   type SyntheticUser,
 } from "./support";
 import { runQuoteLifecycle, waitForOffer, type BookingResource } from "./booking-lifecycle";
+import { runPromotionAcceptance } from "./promotions";
 import { cleanupSmokeResources, recoverSmokeProperty, type HotelResource } from "./cleanup";
 import { configureGuestPolicyForManualBooking } from "./guest-policy";
 import { replayAmbiguousManualBooking, runManualBookingAcceptance } from "./manual-booking";
@@ -883,6 +884,18 @@ async function runHotelFlow(
     propertyId: setup.propertyId,
     request,
     roomTypeId: setup.roomTypeId,
+  });
+  // Direct checkout needs the materialized inventory initialized by policy setup.
+  await runPromotionAcceptance({
+    api,
+    bookings,
+    environment,
+    page,
+    propertyId: setup.propertyId,
+    request,
+    roomTypeId: setup.roomTypeId,
+    slug: publication.slug,
+    stay,
   });
   await runRoomShuffleAcceptance({
     api,

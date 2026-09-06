@@ -6,58 +6,63 @@ import {
 } from "./bookingEmailDelivery.js";
 
 describe("booking email delivery", () => {
-  it("delivers a claimed booking email and records a succeeded attempt", async () => {
-    const queries: string[] = [];
-    const pool = {
-      query: vi.fn(async (text: string) => {
-        queries.push(text);
-        if (text.includes("RETURNING job.id::text AS id")) {
-          return {
-            rows: [
-              {
-                id: "11111111-1111-4111-8111-111111111111",
-                jobKey: "email.booking:booking-1:v1",
-                attemptsCount: 1,
-                workerId: "worker-1",
-                payload: {
-                  to: "guest@example.test",
-                  subject: "Booking accepted",
-                  text: "Your bank transfer instructions are attached.",
+  it.each([undefined, "booking", "unknown"])(
+    "delivers a job with persisted product %s",
+    async (emailProduct) => {
+      const queries: string[] = [];
+      const pool = {
+        query: vi.fn(async (text: string) => {
+          queries.push(text);
+          if (text.includes("RETURNING job.id::text AS id")) {
+            return {
+              rows: [
+                {
+                  id: "11111111-1111-4111-8111-111111111111",
+                  jobKey: "email.booking:booking-1:v1",
+                  attemptsCount: 1,
+                  workerId: "worker-1",
+                  payload: {
+                    ...(emailProduct ? { emailProduct } : {}),
+                    to: "guest@example.test",
+                    subject: "Booking accepted",
+                    text: "Your bank transfer instructions are attached.",
+                  },
                 },
-              },
-            ],
-          };
-        }
-        if (text.includes("RETURNING id::text AS id")) return { rows: [{ id: "audit-1" }] };
-        return { rows: [] };
-      }),
-    };
-    const send = vi.fn(async () => undefined);
+              ],
+            };
+          }
+          if (text.includes("RETURNING id::text AS id")) return { rows: [{ id: "audit-1" }] };
+          return { rows: [] };
+        }),
+      };
+      const send = vi.fn(async () => undefined);
 
-    await expect(
-      runBookingEmailDeliveryJobs(
-        "postgres://unused",
-        { send },
-        {
-          pool: pool as never,
-          limit: 1,
-          workerId: "worker-1",
-        },
-      ),
-    ).resolves.toEqual({ processed: 1, failed: 0 });
+      await expect(
+        runBookingEmailDeliveryJobs(
+          "postgres://unused",
+          { send },
+          {
+            pool: pool as never,
+            limit: 1,
+            workerId: "worker-1",
+          },
+        ),
+      ).resolves.toEqual({ processed: 1, failed: 0 });
 
-    expect(send).toHaveBeenCalledWith({
-      to: "guest@example.test",
-      subject: "Booking accepted",
-      text: "Your bank transfer instructions are attached.",
-      idempotencyKey: "email.booking:booking-1:v1",
-    });
-    expect(queries.some((sql) => sql.includes("INSERT INTO platform.job_attempts"))).toBe(true);
-    expect(queries.some((sql) => sql.includes("status = 'succeeded'"))).toBe(true);
-    expect(queries.some((sql) => sql.includes("INSERT INTO platform.product_audit_events"))).toBe(
-      true,
-    );
-  });
+      expect(send).toHaveBeenCalledWith({
+        ...(emailProduct === "booking" ? { emailProduct } : {}),
+        to: "guest@example.test",
+        subject: "Booking accepted",
+        text: "Your bank transfer instructions are attached.",
+        idempotencyKey: "email.booking:booking-1:v1",
+      });
+      expect(queries.some((sql) => sql.includes("INSERT INTO platform.job_attempts"))).toBe(true);
+      expect(queries.some((sql) => sql.includes("status = 'succeeded'"))).toBe(true);
+      expect(queries.some((sql) => sql.includes("INSERT INTO platform.product_audit_events"))).toBe(
+        true,
+      );
+    },
+  );
 
   it("retries or dead-letters provider failures", async () => {
     const queries: string[] = [];
@@ -103,7 +108,7 @@ describe("booking email delivery", () => {
     expect(queries.some((sql) => sql.includes("INSERT INTO platform.product_audit_events"))).toBe(
       true,
     );
-    expect(queryValues.flat()).toContain("provider unavailable for [redacted-email]");
+    expect(queryValues.flat()).toContain("Booking email delivery failed.");
     expect(queryValues.flat()).not.toContain("provider unavailable for guest@example.test");
     const failureUpdate = queries.find((sql) => sql.includes("delivery_failed"));
     expect(failureUpdate).toContain("worker_id = $6");
@@ -190,30 +195,41 @@ describe("booking email delivery", () => {
     expect(finish?.values?.[4]).toBe("worker-old");
   });
 
-  it("sends through Resend with provider idempotency", async () => {
-    const request = vi.fn(async () => new Response("{}", { status: 200 }));
-    const delivery = createResendBookingEmailDelivery({
-      apiKey: "re_test",
-      from: "Vayada <booking@example.test>",
-      fetch: request,
-    });
+  it.each([undefined, "booking"] as const)(
+    "preserves the provider body for product %s",
+    async (emailProduct) => {
+      const request = vi.fn(async () => new Response("{}", { status: 200 }));
+      const delivery = createResendBookingEmailDelivery({
+        apiKey: "re_test",
+        from: "Vayada <booking@example.test>",
+        fetch: request,
+      });
 
-    await delivery.send({
-      to: "guest@example.test",
-      subject: "Booking confirmed",
-      text: "Your booking is confirmed.",
-      idempotencyKey: "booking-email-1",
-    });
+      await delivery.send({
+        ...(emailProduct ? { emailProduct } : {}),
+        to: "guest@example.test",
+        subject: "Booking confirmed",
+        text: "Your booking is confirmed.",
+        idempotencyKey: "booking-email-1",
+      });
 
-    expect(request).toHaveBeenCalledWith(
-      "https://api.resend.com/emails",
-      expect.objectContaining({
-        method: "POST",
-        headers: expect.objectContaining({
-          Authorization: "Bearer re_test",
-          "Idempotency-Key": "booking-email-1",
+      expect(request).toHaveBeenCalledWith(
+        "https://api.resend.com/emails",
+        expect.objectContaining({
+          method: "POST",
+          body: JSON.stringify({
+            from: "Vayada <booking@example.test>",
+            to: ["guest@example.test"],
+            subject: "Booking confirmed",
+            text: "Your booking is confirmed.",
+            ...(emailProduct ? { tags: [{ name: "vayada_product", value: "booking" }] } : {}),
+          }),
+          headers: expect.objectContaining({
+            Authorization: "Bearer re_test",
+            "Idempotency-Key": "booking-email-1",
+          }),
         }),
-      }),
-    );
-  });
+      );
+    },
+  );
 });

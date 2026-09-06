@@ -2,9 +2,10 @@
 
 import { useState } from "react";
 import Image from "next/image";
-import { EyeIcon, EyeSlashIcon } from "@heroicons/react/24/outline";
+import { ChevronDownIcon, EyeIcon, EyeSlashIcon } from "@heroicons/react/24/outline";
 
 export type SharedSignupPageProps = {
+  translate?: (key: string, params?: Record<string, string | number>) => string;
   isSubmitting: boolean;
   submitError: string;
   onErrorClear: () => void;
@@ -17,9 +18,9 @@ export type SharedSignupPageProps = {
 
 const MARKETING_BASE_URL = process.env.NEXT_PUBLIC_MARKETING_URL || "https://vayada.com";
 const PASSWORD_MIN_LENGTH = 10;
-const PASSWORD_HELP_TEXT = `At least ${PASSWORD_MIN_LENGTH} characters. Avoid weak or breached passwords.`;
 
 export default function SharedSignupPage({
+  translate,
   isSubmitting,
   submitError,
   onErrorClear,
@@ -29,6 +30,14 @@ export default function SharedSignupPage({
   privacyUrl = `${MARKETING_BASE_URL}/privacy`,
   onGoogleSignup,
 }: SharedSignupPageProps) {
+  const t =
+    translate ??
+    ((key: string, params?: Record<string, string | number>) => {
+      let message = SharedSignupPageMessages[key as keyof typeof SharedSignupPageMessages];
+      for (const [name, value] of Object.entries(params ?? {}))
+        message = message.split(`{${name}}`).join(String(value));
+      return message;
+    });
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
@@ -42,15 +51,17 @@ export default function SharedSignupPage({
     onErrorClear();
 
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
-      setEmailError("Please enter a valid email address");
+      setEmailError(t("signup.pleaseEnterAValidEmailAddress"));
       return;
     }
     if (!password) {
-      setPasswordError("Password is required");
+      setPasswordError(t("signup.passwordIsRequired"));
       return;
     }
     if (password.length < PASSWORD_MIN_LENGTH) {
-      setPasswordError(`Password must be at least ${PASSWORD_MIN_LENGTH} characters`);
+      setPasswordError(
+        t("admin.passwordMustBeAtLeastCountCharacters", { count: PASSWORD_MIN_LENGTH }),
+      );
       return;
     }
 
@@ -70,9 +81,11 @@ export default function SharedSignupPage({
                 height={40}
                 className="mx-auto mb-4 h-10 w-auto"
               />
-              <h1 className="text-xl font-bold text-gray-900">Create your vayada account</h1>
+              <h1 className="text-xl font-bold text-gray-900">
+                {t("signup.createYourVayadaAccount")}
+              </h1>
               <p className="mt-1 text-[13px] text-gray-500">
-                Use your email and password to continue.
+                {t("signup.useYourEmailAndPasswordToContinue")}
               </p>
             </div>
 
@@ -85,11 +98,11 @@ export default function SharedSignupPage({
                   className="mb-5 flex w-full items-center justify-center gap-2 rounded-lg border border-gray-300 px-4 py-2.5 text-sm font-medium text-gray-900 transition-colors hover:bg-gray-50 disabled:opacity-60"
                 >
                   <GoogleIcon />
-                  Continue with Google
+                  {t("signup.continueWithGoogle")}
                 </button>
                 <div className="mb-5 flex items-center gap-3 text-xs text-gray-400">
                   <span className="h-px flex-1 bg-gray-200" />
-                  <span>or</span>
+                  <span>{t("signup.or")}</span>
                   <span className="h-px flex-1 bg-gray-200" />
                 </div>
               </>
@@ -98,7 +111,7 @@ export default function SharedSignupPage({
             <form onSubmit={handleSubmit} className="space-y-5" noValidate>
               <div>
                 <label htmlFor="email" className="mb-1.5 block text-sm font-medium text-gray-700">
-                  Email address
+                  {t("signup.emailAddress")}
                 </label>
                 <input
                   id="email"
@@ -125,7 +138,7 @@ export default function SharedSignupPage({
                   htmlFor="password"
                   className="mb-1.5 block text-sm font-medium text-gray-700"
                 >
-                  Password
+                  {t("signup.password")}
                 </label>
                 <div className="relative">
                   <input
@@ -140,7 +153,9 @@ export default function SharedSignupPage({
                     }}
                     required
                     minLength={PASSWORD_MIN_LENGTH}
-                    placeholder="Enter your password"
+                    aria-describedby={`password-requirements${passwordError ? " password-error" : ""}`}
+                    aria-invalid={Boolean(passwordError)}
+                    placeholder={t("signup.enterYourPassword")}
                     autoComplete="new-password"
                     className={`w-full rounded-lg border px-4 py-2.5 pr-12 text-sm text-gray-900 focus:border-transparent focus:outline-none focus:ring-2 focus:ring-primary-500 ${
                       passwordError ? "border-red-300 ring-1 ring-red-300" : "border-gray-300"
@@ -150,7 +165,7 @@ export default function SharedSignupPage({
                     type="button"
                     onClick={() => setShowPassword(!showPassword)}
                     className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-500 hover:text-gray-700"
-                    aria-label={showPassword ? "Hide password" : "Show password"}
+                    aria-label={showPassword ? t("signup.hidePassword") : t("signup.showPassword")}
                   >
                     {showPassword ? (
                       <EyeSlashIcon className="h-5 w-5" />
@@ -159,14 +174,33 @@ export default function SharedSignupPage({
                     )}
                   </button>
                 </div>
-                {passwordError && <p className="mt-1 text-sm text-red-600">{passwordError}</p>}
-                {!passwordError && (
-                  <p className="mt-2 h-6 text-xs leading-5 text-gray-500">{PASSWORD_HELP_TEXT}</p>
+                {passwordError && (
+                  <p id="password-error" role="alert" className="mt-1 text-sm text-red-600">
+                    {passwordError}
+                  </p>
                 )}
+                <details className="group mt-2 text-xs leading-5 text-gray-500">
+                  <summary className="flex cursor-pointer list-none items-center justify-between gap-3 rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500 [&::-webkit-details-marker]:hidden">
+                    <span id="password-requirements">
+                      {t("admin.atLeastCountCharacters", { count: PASSWORD_MIN_LENGTH })}
+                    </span>
+                    <span className="inline-flex shrink-0 items-center gap-1 font-medium text-gray-600 group-hover:text-gray-900">
+                      {t("signup.passwordTips")}
+                      <ChevronDownIcon
+                        className="h-3 w-3 transition-transform group-open:rotate-180 motion-reduce:transition-none"
+                        aria-hidden="true"
+                      />
+                    </span>
+                  </summary>
+                  <div className="mt-2 space-y-1">
+                    <p>{t("signup.useSeveralUnrelatedWordsOrAPasswordManagerAvoidNames")}</p>
+                    <p>{t("signup.previouslyBreachedPasswordsArenTAccepted")}</p>
+                  </div>
+                </details>
               </div>
 
               {submitError && (
-                <div className="rounded-lg border-2 border-red-300 bg-red-50 p-4">
+                <div role="alert" className="rounded-lg border-2 border-red-300 bg-red-50 p-4">
                   <p className="text-sm font-semibold text-red-800">{submitError}</p>
                 </div>
               )}
@@ -176,17 +210,17 @@ export default function SharedSignupPage({
                 disabled={isSubmitting}
                 className="w-full rounded-lg bg-primary-600 px-4 py-2.5 text-sm font-medium text-white transition-colors hover:bg-primary-700 disabled:cursor-not-allowed disabled:opacity-50"
               >
-                {isSubmitting ? "Creating account..." : "Create account"}
+                {isSubmitting ? t("signup.creatingAccount") : t("signup.createAccount")}
               </button>
 
               <div className="text-center">
                 <p className="text-sm text-gray-600">
-                  Already have an account?{" "}
+                  {t("signup.alreadyHaveAnAccount")}{" "}
                   <a
                     href={loginHref}
                     className="font-medium text-primary-600 hover:text-primary-700"
                   >
-                    Sign in
+                    {t("signup.signIn")}
                   </a>
                 </p>
               </div>
@@ -194,13 +228,13 @@ export default function SharedSignupPage({
           </div>
         </div>
         <p className="pb-8 text-center text-xs leading-5 text-gray-500">
-          By continuing, you agree to our{" "}
+          {t("signup.byContinuingYouAgreeToOur")}{" "}
           <a href={termsUrl} className="font-medium text-primary-600 hover:text-primary-700">
-            Terms
+            {t("signup.terms")}
           </a>{" "}
-          and acknowledge our{" "}
+          {t("signup.andAcknowledgeOur")}{" "}
           <a href={privacyUrl} className="font-medium text-primary-600 hover:text-primary-700">
-            Privacy Policy
+            {t("signup.privacyPolicy")}
           </a>
           .
         </p>
@@ -238,3 +272,34 @@ function GoogleIcon() {
     </svg>
   );
 }
+
+export const SharedSignupPageMessages = {
+  "admin.passwordMustBeAtLeastCountCharacters": "Password must be at least {count} characters",
+  "admin.atLeastCountCharacters": "At least {count} characters",
+  "signup.pleaseEnterAValidEmailAddress": "Please enter a valid email address",
+  "signup.passwordIsRequired": "Password is required",
+  "signup.createYourVayadaAccount": "Create your vayada account",
+  "signup.useYourEmailAndPasswordToContinue": "Use your email and password to continue.",
+  "signup.continueWithGoogle": "Continue with Google",
+  "signup.or": "or",
+  "signup.emailAddress": "Email address",
+  "signup.password": "Password",
+  "signup.enterYourPassword": "Enter your password",
+  "signup.hidePassword": "Hide password",
+  "signup.showPassword": "Show password",
+  "signup.atLeast": "At least",
+  "signup.characters": "characters",
+  "signup.passwordTips": "Password tips",
+  "signup.useSeveralUnrelatedWordsOrAPasswordManagerAvoidNames":
+    "Use several unrelated words or a password manager. Avoid names and predictable sequences.",
+  "signup.previouslyBreachedPasswordsArenTAccepted":
+    "Previously breached passwords aren’t accepted.",
+  "signup.creatingAccount": "Creating account...",
+  "signup.createAccount": "Create account",
+  "signup.alreadyHaveAnAccount": "Already have an account?",
+  "signup.signIn": "Sign in",
+  "signup.byContinuingYouAgreeToOur": "By continuing, you agree to our",
+  "signup.terms": "Terms",
+  "signup.andAcknowledgeOur": "and acknowledge our",
+  "signup.privacyPolicy": "Privacy Policy",
+};
