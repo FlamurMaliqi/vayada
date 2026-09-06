@@ -98,14 +98,23 @@ review period. An accepted bank transfer awaiting payment is ineligible.
 
 ## PMS projection
 
-Enqueue a revision-keyed PMS update in the save transaction. Process an initial
-create before its updates, using the canonical latest revision if creation is
-still pending. PMS applies each revision once and ignores older revisions;
-a delayed update cannot overwrite a newer accepted edit. Update operational
-stay, guest counts, room selection, add-ons, and requests as well as the inventory
-receipt. Validate provider capabilities before save and reject an unsupported
-replacement without altering the current request. The TypeScript Vayada PMS
-adapter must support the full edit before enabling its UI.
+The current TypeScript Vayada PMS pending-request screen reads canonical Booking
+state, including the active add-on revision. The save transaction updates that
+projection directly; it must not create operational assignments or adopt the
+inventory receipt before acceptance, because doing so would prevent subsequent
+pending edits. Only requests with a property-bound reserved opaque receipt, no
+operational assignments, and no started operational handoff are supported.
+Unsupported requests fail closed and do not show the edit action.
+
+Lock every existing handoff job before saving. Refresh pending initial-create
+payloads to the latest canonical revision, including room selection, stay,
+requests, payment, and add-ons. Record the revision-keyed update as applied to
+`canonical_pending`; this is not an operational handoff success. Any job with
+uncertain prior execution (running, failed, completed, or dead-lettered) blocks
+editing. A future operational-create consumer must claim the job before reading
+its payload and load canonical state under the booking lock; cached old payloads
+must never override a later revision. Implementing the currently absent general
+handoff worker or editing handed-off reservations is outside this capability.
 
 ## Notifications and retries
 
