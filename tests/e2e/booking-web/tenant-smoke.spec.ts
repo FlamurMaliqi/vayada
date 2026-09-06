@@ -4,6 +4,22 @@ import { mockBookingApis, SEEDED_BOOKING_SLUG } from "../support/bookingMocks";
 import { watchPageHealth } from "../support/pageHealth";
 
 test.describe("booking-web tenant smoke", () => {
+  for (const width of [1280, 390]) {
+    test(`hides retired public enrolment while preserving referral cookies at ${width}px`, async ({
+      page,
+      context,
+    }) => {
+      await page.setViewportSize({ width, height: 900 });
+      await mockBookingApis(page, { headerSettings: { showReferAGuestButton: true } });
+      await page.goto("/?ref=RETAINED-REFERRAL");
+      await expect(page.getByRole("heading", { name: "Hotel Alpenrose", level: 1 })).toBeVisible();
+      await expect(page.locator("nav").getByRole("button", { name: /refer/i })).toHaveCount(0);
+      expect((await context.cookies()).find((cookie) => cookie.name === "ref")?.value).toBe(
+        "RETAINED-REFERRAL",
+      );
+    });
+  }
+
   test("renders the seeded tenant from the request host", async ({ page, baseURL }, testInfo) => {
     const assertHealthy = watchPageHealth(page, testInfo);
     await mockBookingApis(page);

@@ -352,7 +352,7 @@ describe("Booking Web public bootstrap parity", () => {
     await app.close();
   });
 
-  it("fails closed for public affiliate registration without a target repository", async () => {
+  it("returns retired for public affiliate registration without a target repository", async () => {
     const app = buildApp({
       logger: false,
       publicHotelProfileRepository: createProfileRepository(legacyHotel, {}),
@@ -365,9 +365,9 @@ describe("Booking Web public bootstrap parity", () => {
       payload: { email: "guest@example.com", fullName: "Guest Example" },
     });
 
-    expect(response.statusCode).toBe(404);
+    expect(response.statusCode).toBe(410);
     expect(response.json()).toMatchObject({
-      message: "Booking Web affiliate adapter is not configured.",
+      code: "affiliate_enrollment_retired",
     });
     await app.close();
   });
@@ -495,8 +495,10 @@ describe("Booking Web public bootstrap parity", () => {
     await app.close();
   });
 
-  it("serves target-owned affiliate routes without PMS public API config", async () => {
+  it("retires public enrolment without writes while retaining existing Connect scope checks", async () => {
     const affiliateRepository = new InMemoryAffiliateRepository();
+    const checkEmail = vi.spyOn(affiliateRepository, "checkEmail");
+    const register = vi.spyOn(affiliateRepository, "register");
     const app = buildApp({
       logger: false,
       publicHotelProfileRepository: createProfileRepository(legacyHotel, {}),
@@ -504,38 +506,31 @@ describe("Booking Web public bootstrap parity", () => {
       bookingWebAffiliateRepository: affiliateRepository,
     });
 
-    const before = await app.inject({
-      method: "GET",
-      url: "/api/booking-web/hotels/hotel-alpenrose/affiliates/check-email?email=creator%40example.com",
-    });
-    const firstRegister = await app.inject({
-      method: "POST",
-      url: "/api/booking-web/hotels/hotel-alpenrose/affiliates",
-      payload: {
-        fullName: "Creator Example",
-        email: "Creator@Example.com",
-        socialMedia: "@creator",
-        userType: "creator",
-        paymentMethod: "stripe",
+    for (const request of [
+      {
+        method: "GET" as const,
+        url: "/api/booking-web/hotels/hotel-alpenrose/affiliates/check-email?email=creator@example.com",
       },
-    });
-    const secondRegister = await app.inject({
-      method: "POST",
-      url: "/api/booking-web/hotels/hotel-alpenrose/affiliates",
-      payload: {
-        fullName: "Creator Example",
-        email: "creator@example.com",
-        socialMedia: "@creator",
-        userType: "creator",
-        paymentMethod: "stripe",
+      {
+        method: "POST" as const,
+        url: "/api/booking-web/hotels/hotel-alpenrose/affiliates",
+        payload: { fullName: "Creator Example", email: "creator@example.com" },
       },
-    });
-    const after = await app.inject({
-      method: "GET",
-      url: "/api/booking-web/hotels/hotel-alpenrose/affiliates/check-email?email=creator%40example.com",
-    });
+    ]) {
+      const response = await app.inject(request);
+      expect(response.statusCode).toBe(410);
+      expect(response.json()).toMatchObject({ code: "affiliate_enrollment_retired" });
+      expect(response.headers["cache-control"]).toBe("no-store");
+    }
+    expect(checkEmail).not.toHaveBeenCalled();
+    expect(register).not.toHaveBeenCalled();
+    expect(affiliateRepository.identityCount).toBe(0);
 
-    const affiliate = firstRegister.json() as { id: string; referralCode: string };
+    // Seed a pre-existing identity directly; public enrolment is no longer a fixture factory.
+    const affiliate = await affiliateRepository.register("hotel-alpenrose", {
+      fullName: "Creator Example",
+      email: "creator@example.com",
+    });
     const firstConnect = await app.inject({
       method: "POST",
       url: `/api/booking-web/hotels/hotel-alpenrose/affiliates/${affiliate.id}/stripe/connect`,
@@ -557,17 +552,6 @@ describe("Booking Web public bootstrap parity", () => {
       payload: { email: "creator@example.com" },
     });
 
-    expect(before.statusCode).toBe(200);
-    expect(before.json()).toEqual({ exists: false });
-    expect([firstRegister.statusCode, secondRegister.statusCode, after.statusCode]).toEqual([
-      200, 200, 200,
-    ]);
-    expect(secondRegister.json()).toEqual(firstRegister.json());
-    expect(after.json()).toEqual({ exists: true });
-    expect(affiliate).toEqual({
-      id: expect.stringMatching(/^aff_/),
-      referralCode: expect.stringMatching(/^VA[A-F0-9]{8}$/),
-    });
     expect(wrongEmailConnect.statusCode).toBe(404);
     expect(wrongSlugConnect.statusCode).toBe(404);
     expect(firstConnect.statusCode).toBe(503);
@@ -595,8 +579,8 @@ describe("Booking Web public bootstrap parity", () => {
       url: "/api/booking-web/hotels/hotel-alpenrose/affiliates/check-email?email=creator%40example.com",
     });
 
-    expect(response.statusCode).toBe(200);
-    expect(response.json()).toEqual({ exists: false });
+    expect(response.statusCode).toBe(410);
+    expect(response.json()).toMatchObject({ code: "affiliate_enrollment_retired" });
     await app.close();
   });
 
@@ -618,7 +602,7 @@ describe("Booking Web public bootstrap parity", () => {
       payload: { fullName: "Creator Example", email: "creator@example.com" },
     });
 
-    expect(response.statusCode).toBe(404);
+    expect(response.statusCode).toBe(410);
     expect(affiliateRepository.identityCount).toBe(0);
     await app.close();
   });

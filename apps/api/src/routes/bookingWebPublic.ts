@@ -63,6 +63,7 @@ import {
 } from "./aiHotels.js";
 import {
   registerBookingWebAffiliateRoutes,
+  registerRetiredAffiliateEnrollmentRoutes,
   type BookingWebAffiliateHotelResolver,
   type BookingWebAffiliateRepository,
 } from "./bookingWebAffiliate.js";
@@ -152,9 +153,6 @@ type BookingWebTelemetryEventRequest = {
   sessionId?: string;
   session_id?: string;
   metadata?: Record<string, unknown>;
-};
-type BookingWebAffiliateCheckEmailQuery = {
-  email?: string;
 };
 type BookingWebAffiliateRequest = Record<string, unknown>;
 type BookingWebAffiliateParams = BookingWebHotelParams & {
@@ -983,31 +981,7 @@ export async function registerBookingWebPublicRoutes(
       repository: options.affiliateRepository,
     });
   } else {
-    app.get<{ Params: BookingWebHotelParams; Querystring: BookingWebAffiliateCheckEmailQuery }>(
-      "/hotels/:slug/affiliates/check-email",
-      async (request, reply) => {
-        const email = firstString(request.query.email);
-        if (!email) {
-          throw createHttpError(400, "Email is required.");
-        }
-        const response = await affiliateAdapter.checkEmail(request.params.slug, email);
-        reply.header("Cache-Control", "no-store");
-        reply.header("X-Vayada-RateLimit-Policy", "public-booking-web-affiliate-check-email");
-        reply.header("X-Robots-Tag", "noindex");
-        return response;
-      },
-    );
-
-    app.post<{ Params: BookingWebHotelParams; Body: BookingWebAffiliateRequest }>(
-      "/hotels/:slug/affiliates",
-      async (request, reply) => {
-        const response = await affiliateAdapter.register(request.params.slug, request.body ?? {});
-        reply.header("Cache-Control", "no-store");
-        reply.header("X-Vayada-RateLimit-Policy", "public-booking-web-affiliate-register");
-        reply.header("X-Robots-Tag", "noindex");
-        return response;
-      },
-    );
+    registerRetiredAffiliateEnrollmentRoutes(app);
 
     app.post<{ Params: BookingWebAffiliateParams; Body: BookingWebAffiliateRequest }>(
       "/hotels/:slug/affiliates/:affiliateId/stripe/connect",
