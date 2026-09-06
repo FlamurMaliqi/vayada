@@ -167,20 +167,18 @@ describe("PMS room-facts read model", () => {
     });
   });
 
-  it("lists active and inactive facts in creation order within one property", async () => {
-    const target = targetPool([
-      [roomFactsRow(), roomFactsRow({ roomTypeId: otherRoomTypeId, active: false })],
-    ]);
+  it("lists active facts in creation order within one property", async () => {
+    const target = targetPool([[roomFactsRow()]]);
     const repository = readModel(target);
 
     const snapshots = await repository.listRoomTypeFacts(propertyId);
 
     expect(snapshots.map(({ roomTypeId: id, lifecycle }) => [id, lifecycle])).toEqual([
       [roomTypeId, "active"],
-      [otherRoomTypeId, "inactive"],
     ]);
     expect(Object.isFrozen(snapshots)).toBe(true);
     expect(target.calls[0]?.values).toEqual([propertyId]);
+    expect(target.calls[0]?.text).toContain("AND room_type.active");
     expect(target.calls[0]?.text).toMatch(/ORDER BY room_type\.created_at ASC, room_type\.id ASC/);
   });
 

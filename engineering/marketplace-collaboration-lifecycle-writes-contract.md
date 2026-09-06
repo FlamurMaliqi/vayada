@@ -65,8 +65,9 @@ notification records. No legacy route or database is changed.
 
 Creator applications require concrete ISO start/end dates, with end after start.
 Create and terms edits reject past dates with “Collaboration dates cannot be in
-the past.” Today is allowed, using the property's IANA timezone from the catalog
-public-profile read model. Missing/invalid timezone blocks the write with an
+the past.” Today is allowed, using the property's canonical IANA timezone from
+`hotel_catalog.property_locations.timezone`. Collaboration reads expose this same
+value as `propertyTimezone`; public-profile location projections are not a timezone source. Missing/invalid timezone blocks the write with an
 availability error; browser or server timezone is never a fallback. Edits validate
 the merged stored/requested dates, so omitting expired dates cannot bypass validation.
 Replacing both travel dates clears superseded preferred dates; otherwise edits also

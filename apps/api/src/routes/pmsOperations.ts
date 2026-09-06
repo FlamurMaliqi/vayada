@@ -360,6 +360,7 @@ export type PmsManualCancellationCommand = {
   idempotencyKey: string;
   expectedVersion?: string;
   reason?: string;
+  guestMessage?: string;
   accountingDate: string | null;
   retainedCharges: Array<{
     linePosition: number;
@@ -775,7 +776,11 @@ export type PmsOperationalCommandResult =
   | {
       ok: false;
       statusCode: 409;
-      code: "version_conflict" | "idempotency_conflict" | "room_unavailable";
+      code:
+        | "version_conflict"
+        | "idempotency_conflict"
+        | "room_unavailable"
+        | "bank_transfer_unavailable";
       message: string;
     };
 
@@ -1034,6 +1039,7 @@ export type PmsOperationsRoutesOptions = {
   inboxProviderActionPort?: PmsInboxProviderActionPort;
   inboxQuickReplyPort?: PmsInboxQuickReplyPort;
   inboxReplyPort?: PmsInboxReplyPort;
+  inboxSendingEnabled?: boolean;
   inboxStartDirectEmailPort?: PmsInboxStartDirectEmailPort;
   inboxTriagePort?: PmsInboxTriagePort;
   inboxStaffCommandPort?: PmsInboxStaffCommandPort;
@@ -1154,6 +1160,7 @@ export type PmsOperationsErrorCode =
   | "invalid_body"
   | "invalid_date_range"
   | "invalid_status_transition"
+  | "bank_transfer_unavailable"
   | "invalid_guest_pii"
   | "finance_bridge_required"
   | PmsAssignmentCommandConflictCode
@@ -1179,6 +1186,7 @@ export type PmsOperationsErrorCode =
   | "quick_reply_name_conflict"
   | "assistance_unavailable"
   | "provider_action_unavailable"
+  | "inbox_sending_paused"
   | "direct_email_not_allowed"
   | "attachment_not_found"
   | "attachment_too_large"
@@ -2595,6 +2603,7 @@ export async function registerPmsOperationsRoutes(
     async (request, reply) => {
       const input = parseInboxProviderAction(request);
       if ("error" in input) return sendPmsOperationsError(reply, input.error);
+      if (options.inboxSendingEnabled === false) return sendInboxSendingPaused(reply);
       if (!options.inboxProviderActionPort)
         return sendPmsOperationsError(
           reply,
@@ -2880,6 +2889,7 @@ export async function registerPmsOperationsRoutes(
     async (request, reply) => {
       const input = parseInboxReply(request);
       if ("error" in input) return sendPmsOperationsError(reply, input.error);
+      if (options.inboxSendingEnabled === false) return sendInboxSendingPaused(reply);
       if (!options.inboxReplyPort)
         return sendPmsOperationsError(
           reply,
@@ -4425,6 +4435,15 @@ function enforcePmsFinanceManagePolicy(
     sendPmsOperationsError(reply, contractError);
     return false;
   }
+}
+
+function sendInboxSendingPaused(reply: FastifyReply) {
+  return sendPmsOperationsError(reply, {
+    statusCode: 503,
+    code: "inbox_sending_paused",
+    category: "side_effect",
+    message: "Inbox sending is temporarily paused. This request did not submit new work.",
+  });
 }
 
 export function sendPmsOperationsError(
@@ -7149,6 +7168,7 @@ function toManualCancellationCommand(
           "idempotencyKey",
           "expectedVersion",
           "reason",
+          "guestMessage",
           "accountingDate",
           "retainedCharges",
         ].includes(key),
@@ -7157,8 +7177,18 @@ function toManualCancellationCommand(
     raw.retainedCharges.length > 20 * 366
   )
     return { error: invalidBody("Cancellation command contains unknown or invalid fields.") };
+  if (
+    raw.guestMessage !== undefined &&
+    (typeof raw.guestMessage !== "string" || raw.guestMessage.length > 5000)
+  )
+    return { error: invalidBody("Message to guest must be text of at most 5000 characters.") };
+  const guestMessage =
+    typeof raw.guestMessage === "string"
+      ? raw.guestMessage.replace(/\r\n?/g, "\n").trim() || undefined
+      : undefined;
   const accountingDate = raw.accountingDate === null ? null : stringField(raw.accountingDate);
-  const reason = optionalStringField(raw.reason);
+  const reason = stringField(raw.reason);
+  if (!reason) return { error: invalidBody("An internal cancellation reason is required.") };
   const retainedCharges = raw.retainedCharges.map((value) => {
     const charge = objectBody(value);
     const amount = objectBody(charge?.amount);
@@ -7205,6 +7235,7 @@ function toManualCancellationCommand(
       guestBookingId,
       ...metadata.value,
       reason,
+      guestMessage,
       accountingDate: accountingDate ?? null,
       retainedCharges: retainedCharges as PmsManualCancellationCommand["retainedCharges"],
       audit: pmsOperationsCommandAudit(request, metadata.value.commandId, "Cancel manual booking"),

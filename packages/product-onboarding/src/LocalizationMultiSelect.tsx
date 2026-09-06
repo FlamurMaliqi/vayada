@@ -29,6 +29,7 @@ export function LocalizationMultiSelect<T extends { code: string; flag: string }
   popularCodes,
   emptyMessage,
   comfortable = false,
+  copy,
 }: {
   id?: string;
   selected: string[];
@@ -41,6 +42,12 @@ export function LocalizationMultiSelect<T extends { code: string; flag: string }
   popularCodes: readonly string[];
   emptyMessage: string;
   comfortable?: boolean;
+  copy?: {
+    noResults: string;
+    popular: string;
+    added: (count: number) => string;
+    remove: (name: string) => string;
+  };
 }) {
   const generatedId = useId();
   const inputId = id ?? generatedId;
@@ -124,7 +131,7 @@ export function LocalizationMultiSelect<T extends { code: string; flag: string }
                     : "px-3 py-2 text-[13px] text-gray-400"
                 }
               >
-                No results found
+                {copy?.noResults ?? "No results found"}
               </p>
             ) : (
               filtered.map((option) => {
@@ -160,7 +167,7 @@ export function LocalizationMultiSelect<T extends { code: string; flag: string }
               : "mb-1.5 text-[11px] font-medium text-gray-400"
           }
         >
-          Popular choices &mdash;
+          {copy?.popular ?? "Popular choices —"}
         </p>
         <div className="flex flex-wrap gap-1.5">
           {popular.map((option) => {
@@ -193,7 +200,7 @@ export function LocalizationMultiSelect<T extends { code: string; flag: string }
                 : "mb-1.5 text-[11px] font-medium text-gray-400"
             }
           >
-            Added ({selectedItems.length}):
+            {copy?.added(selectedItems.length) ?? `Added (${selectedItems.length}):`}
           </p>
           <div className="flex flex-wrap gap-1.5">
             {selectedItems.map((item) => (
@@ -206,7 +213,7 @@ export function LocalizationMultiSelect<T extends { code: string; flag: string }
                   type="button"
                   onClick={() => onToggle(item.code)}
                   className="ml-0.5 text-primary-400 hover:text-primary-600"
-                  aria-label={`Remove ${item.label}`}
+                  aria-label={copy?.remove(item.label) ?? `Remove ${item.label}`}
                 >
                   &times;
                 </button>

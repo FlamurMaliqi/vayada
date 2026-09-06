@@ -51,8 +51,8 @@ function LoginContent() {
           return;
         }
         await redirectAfterLogin();
-      } catch (error) {
-        setSubmitError(error instanceof Error ? error.message : t("auth.login.errorUnexpected"));
+      } catch {
+        setSubmitError(t("auth.login.errorUnexpected"));
       } finally {
         setIsSubmitting(false);
       }
@@ -72,8 +72,8 @@ function LoginContent() {
           return;
         }
         await redirectAfterLogin();
-      } catch (error) {
-        setSubmitError(error instanceof Error ? error.message : t("auth.login.errorUnexpected"));
+      } catch {
+        setSubmitError(t("auth.login.errorUnexpected"));
       } finally {
         setIsSubmitting(false);
       }
@@ -95,9 +95,9 @@ function LoginContent() {
         }
         await redirectAfterLogin();
       })
-      .catch((error) => {
+      .catch(() => {
         if (cancelled) return;
-        setSubmitError(error instanceof Error ? error.message : t("auth.login.errorUnexpected"));
+        setSubmitError(t("auth.login.errorUnexpected"));
       })
       .finally(() => {
         if (!cancelled) {
@@ -112,15 +112,22 @@ function LoginContent() {
   return (
     <SharedHotelLoginForm
       copy={{
-        title: "Sign in to vayada",
-        subtitle: "Use your email and password to continue.",
+        showPasswordLabel: t("admin.showPassword"),
+        hidePasswordLabel: t("admin.hidePassword"),
+        legalPrefix: t("admin.byContinuingYouAgreeToOur"),
+        termsLabel: t("admin.termsOfService"),
+        legalConnector: t("admin.and"),
+        privacyLabel: t("admin.privacyPolicy"),
+
+        title: t("admin.signInToVayada"),
+        subtitle: t("admin.useYourEmailAndPasswordToContinue"),
         chooseOrganizationTitle: t("auth.login.chooseHotelGroup"),
         chooseOrganizationSubtitle: t("auth.login.chooseHotelGroupSubtitle"),
         emailLabel: t("auth.login.emailLabel"),
         passwordLabel: t("auth.login.passwordLabel"),
         forgotPassword: t("auth.login.forgotPassword"),
-        googleLogin: "Continue with Google",
-        or: "or",
+        googleLogin: t("admin.continueWithGoogle"),
+        or: t("setup.welcome.or"),
         submitLabel: t("auth.login.submit"),
         submittingLabel: t("auth.login.submitting"),
         noAccount: t("auth.login.noAccount"),

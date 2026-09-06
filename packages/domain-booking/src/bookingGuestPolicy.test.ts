@@ -9,6 +9,7 @@ import {
   parseBookingGuestPolicyCurrentSourceRevision,
   parseBookingGuestPolicyChoices,
   parseBookingGuestPolicyHash,
+  bookingArrivalTimeErrors,
 } from "./bookingGuestPolicy.js";
 
 const propertyId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
@@ -24,6 +25,33 @@ const choices = {
 } as const;
 
 describe("Booking guest-policy contract", () => {
+  it("preserves optional arrival windows and rejects malformed or reversed bounds", () => {
+    const window = { ...choices, checkInUntil: "23:00", checkOutFrom: "07:00" };
+    expect(parseBookingGuestPolicyChoices(window)).toEqual(window);
+    expect(parseBookingGuestPolicyChoices(choices)).toEqual(choices);
+    for (const change of [
+      { checkInUntil: "14:00" },
+      { checkInUntil: "15:00" },
+      { checkOutFrom: "11:00" },
+      { checkOutFrom: "12:00" },
+      { checkInUntil: "" },
+      { checkOutFrom: null },
+      { checkInTime: "" },
+      { checkInUntil: "24:00" },
+      { checkOutFrom: "07:00:00" },
+    ]) {
+      expect(parseBookingGuestPolicyChoices({ ...window, ...change })).toBeNull();
+      expect(bookingArrivalTimeErrors({ ...window, ...change }).length).toBeGreaterThan(0);
+    }
+    const getter = Object.defineProperty({ ...choices }, "checkInUntil", {
+      enumerable: true,
+      get() {
+        throw new Error("must not execute accessors");
+      },
+    });
+    expect(parseBookingGuestPolicyChoices(getter)).toBeNull();
+  });
+
   it("owns one immutable guest-interface capability list and optional-field defaults", () => {
     expect(BOOKING_GUEST_POLICY_SUPPORTED_LANGUAGES).toEqual(["en", "de", "fr", "es", "id", "nl"]);
     expect(BOOKING_GUEST_POLICY_NEW_DRAFT_DEFAULTS).toEqual({

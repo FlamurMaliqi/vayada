@@ -143,6 +143,41 @@ describe("production catalog reconciliation", () => {
       }),
     ]);
   });
+  it("recovers arrival ranges only for unchanged migration-owned policy rows", () => {
+    const content = emptyContent();
+    content.policies.push({
+      propertyId: PROPERTY,
+      checkInTime: "12:00",
+      checkOutTime: "11:00",
+      checkInUntil: "23:00",
+      checkOutFrom: null,
+      cancellationSummary: null,
+      paymentPolicySummary: null,
+      updatedAt: OLD,
+    });
+    const target = emptyTarget();
+    target.policies.push({ ...content.policies[0], checkInTime: "15:00", checkInUntil: null });
+    target.sourceLinks.push({
+      propertyId: PROPERTY,
+      sourceSystem: "booking",
+      sourceTable: "booking_hotels",
+      sourceId: PROPERTY,
+      relationship: "canonical_input",
+      migrationRunId: RUN,
+    });
+    const reconcile = () =>
+      reconcileProductionCatalog(emptyCore(), content, emptyPresentation(), target);
+    expect(reconcile().writes.policies).toEqual(content.policies);
+    target.ownerRevisions.push({
+      propertyId: PROPERTY,
+      ownerKey: "hotel_catalog.policy",
+      revision: "2",
+    });
+    expect(reconcile().writes.policies).toEqual([]);
+    target.ownerRevisions = [];
+    target.sourceLinks = [];
+    expect(reconcile().blockers.map((item) => item.code)).toContain("CATALOG_EQUAL_TIME_CONFLICT");
+  });
 });
 
 function property(updatedAt: string, displayName: string) {

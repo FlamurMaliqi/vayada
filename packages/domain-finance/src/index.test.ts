@@ -416,6 +416,7 @@ describe("finance route projections", () => {
     paymentsEnabled: true,
     paymentProvider: "stripe",
     acceptedMethods: ["card", "pay_at_property", "bank_transfer"],
+    bankTransferReady: true,
     defaultCurrency: "EUR",
     supportedCurrencies: ["EUR"],
     depositPolicy: {
@@ -513,6 +514,7 @@ describe("finance route projections", () => {
       {
         ...settings,
         acceptedMethods: ["pay_at_property", "bank_transfer", "paypal"],
+        bankTransferReady: false,
         depositPolicy: {
           bankTransferInstructions: " ",
           paypalEmail: "",
