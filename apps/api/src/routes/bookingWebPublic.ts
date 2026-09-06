@@ -1,3 +1,4 @@
+import { reserveTargetMixedBooking } from "./bookingWebMixedReservation.js";
 import { pendingBookingEdit } from "./pendingBookingEdits.js";
 import type { quoteTargetRoomSelection } from "./bookingWebMixedQuote.js";
 import {
@@ -3607,18 +3608,27 @@ export async function createTargetGuestBooking(
   if (!roomTypeId || !publicOfferKey) {
     throw createHttpError(409, "Checkout quote inventory is no longer available. Please refresh.");
   }
-  const inventoryReservation = await inventoryReservationPort.reserve({
-    transaction: pool,
-    propertyId: property.propertyId,
-    quoteSessionId: quote.quoteSessionId,
-    roomTypeId,
-    publicOfferKey,
-    checkIn: quote.checkIn,
-    checkOut: quote.checkOut,
-    roomCount: quote.roomCount,
-    currency: quote.currency,
-    occurredAt: context.occurredAt,
-  });
+  const inventoryReservation =
+    quote.selectedOfferSnapshot["roomSelection"] !== undefined
+      ? await reserveTargetMixedBooking(
+          pool,
+          inventoryReservationPort,
+          property,
+          quote,
+          context.occurredAt,
+        )
+      : await inventoryReservationPort.reserve({
+          transaction: pool,
+          propertyId: property.propertyId,
+          quoteSessionId: quote.quoteSessionId,
+          roomTypeId,
+          publicOfferKey,
+          checkIn: quote.checkIn,
+          checkOut: quote.checkOut,
+          roomCount: quote.roomCount,
+          currency: quote.currency,
+          occurredAt: context.occurredAt,
+        });
   if (!inventoryReservation) {
     throw createHttpError(409, "Checkout quote inventory is no longer available. Please refresh.");
   }
@@ -5415,6 +5425,23 @@ export async function redeemTargetPromo(
     bookingTotal: Number(quote.totalAmount) + promoDiscount,
   });
   if (validationMessage) throw createHttpError(409, validationMessage);
+  const selection = parseBookingRoomSelection(quote.selectedOfferSnapshot["roomSelection"]);
+  if (
+    selection &&
+    (snapshot["discountType"] !== promo.discountType ||
+      moneyToCents(snapshot["discountValue"] as string) !== moneyToCents(promo.discountValue))
+  ) {
+    throw createHttpError(409, "Promo discount changed. Please refresh the checkout quote.");
+  }
+  for (const line of selection?.lines ?? []) {
+    const message = targetPromoValidationMessage(promo, {
+      propertyDate: targetPropertyDateOnly(property.timezone, occurredAt),
+      checkIn: quote.checkIn,
+      roomTypeId: line.roomTypeId,
+      bookingTotal: Number(quote.totalAmount) + promoDiscount,
+    });
+    if (message) throw createHttpError(409, message);
+  }
   if (promo.propertyCurrency !== quote.currency) {
     throw createHttpError(409, "Property currency changed. Please refresh the checkout quote.");
   }
