@@ -145,6 +145,7 @@ export type ApiConfig = {
   host: string;
   port: number;
   apiRuntime: ApiRuntime;
+  backgroundWorkersEnabled: boolean;
   auth?: ApiAuthConfig;
   authSession?: ApiAuthSessionConfig;
   targetDatabaseUrl?: string;
@@ -850,6 +851,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
   return {
     ...server,
     apiRuntime,
+    backgroundWorkersEnabled: readBooleanEnv(env, "API_BACKGROUND_WORKERS_ENABLED", true),
     auth,
     authSession,
     targetDatabaseUrl,
