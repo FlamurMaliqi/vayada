@@ -322,8 +322,8 @@ export function toLegacyHotel(data: BookingWebPublicHotelResponse): Hotel {
       adultAgeThreshold: hotel.supportedQuoteParameters.adultAgeThreshold ?? 18,
       childrenEnabled: hotel.supportedQuoteParameters.childrenSupported,
     },
-    referAGuestEnabled:
-      hotel.capabilities.referralCodes && (hotel.branding?.showReferAGuestButton ?? false),
+    // New public enrolment is retired; existing referral-code attribution remains supported.
+    referAGuestEnabled: false,
     instantBook: hotel.capabilities.instantBook,
     mapViewEnabled: false,
     showRoomDetailMap: false,

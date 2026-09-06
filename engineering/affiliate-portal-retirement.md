@@ -86,3 +86,19 @@ Source removal alone does not complete VAY-1498's existing-user continuity
 acceptance criterion. Keep the issue open until the accepted destination and
 required verification are delivered. Do not report a build freeze, HTTP 200 or
 mocked tests as a complete affiliate migration.
+
+## Public enrolment retirement (VAY-1499)
+
+The first API slice retires GET `/api/booking-web/hotels/:slug/affiliates/check-email`
+and POST `/api/booking-web/hotels/:slug/affiliates` with HTTP 410,
+`affiliate_enrollment_retired`, and `Cache-Control: no-store` wherever those routes
+are mounted. Neither route calls the old enrolment repository or fallback adapter.
+Booking Web no longer offers the guest enrolment button, even when old branding
+settings enable it. Missing route configuration continues to fail closed.
+
+Existing `?ref=` cookies/click capture, quote attribution and affiliate account /
+Finance routes remain unchanged. The scoped existing-affiliate Connect endpoint
+remains for continuity; this slice adds no provider capability. Old enrolment
+repository methods, modal source and administration are subsequent removal slices,
+not a claim that VAY-1499 is complete. Do not delete lifecycle history or migration
+fixtures while removing their old UI/API callers.

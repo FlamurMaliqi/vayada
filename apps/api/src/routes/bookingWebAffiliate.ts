@@ -1,6 +1,6 @@
 import crypto from "node:crypto";
 
-import type { FastifyInstance } from "fastify";
+import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import pg from "pg";
 
 export type BookingWebAffiliateHotelResolver = {
@@ -22,10 +22,6 @@ type BookingWebAffiliateHotelParams = {
 
 type BookingWebAffiliateParams = BookingWebAffiliateHotelParams & {
   affiliateId: string;
-};
-
-type BookingWebAffiliateEmailQuery = {
-  email?: string;
 };
 
 export type BookingWebAffiliateRegistrationRequest = {
@@ -79,6 +75,18 @@ export type BookingWebAffiliateRoutesOptions = {
   repository: BookingWebAffiliateRepository;
 };
 
+// Keep old public URLs explicit while existing affiliate account/Finance routes remain available.
+export function registerRetiredAffiliateEnrollmentRoutes(app: FastifyInstance): void {
+  const retired = async (_request: FastifyRequest, reply: FastifyReply) =>
+    reply.header("Cache-Control", "no-store").header("X-Robots-Tag", "noindex").code(410).send({
+      statusCode: 410,
+      code: "affiliate_enrollment_retired",
+      message: "Public affiliate registration is no longer available.",
+    });
+  app.get("/hotels/:slug/affiliates/check-email", retired);
+  app.post("/hotels/:slug/affiliates", retired);
+}
+
 export async function registerBookingWebAffiliateRoutes(
   app: FastifyInstance,
   options: BookingWebAffiliateRoutesOptions,
@@ -87,48 +95,7 @@ export async function registerBookingWebAffiliateRoutes(
     await options.hotelResolver.close?.();
   });
 
-  app.get<{
-    Params: BookingWebAffiliateHotelParams;
-    Querystring: BookingWebAffiliateEmailQuery;
-  }>("/hotels/:slug/affiliates/check-email", async (request, reply) => {
-    await assertAffiliateEnabled(options.hotelResolver, request.params.slug);
-    const email = normalizeEmail(request.query.email);
-    if (!email) {
-      throw createHttpError(400, "Email is required.");
-    }
-
-    const response = await options.repository.checkEmail(request.params.slug, email);
-    reply.header("Cache-Control", "no-store");
-    reply.header("X-Vayada-RateLimit-Policy", "public-booking-web-affiliate-check-email");
-    reply.header("X-Robots-Tag", "noindex");
-    return response;
-  });
-
-  app.post<{
-    Params: BookingWebAffiliateHotelParams;
-    Body: BookingWebAffiliateRegistrationRequest;
-  }>("/hotels/:slug/affiliates", async (request, reply) => {
-    await assertAffiliateEnabled(options.hotelResolver, request.params.slug);
-    const body = request.body ?? {};
-    const email = normalizeEmail(body.email);
-    const fullName = typeof body.fullName === "string" ? body.fullName.trim() : "";
-    if (!email) {
-      throw createHttpError(400, "Email is required.");
-    }
-    if (!fullName) {
-      throw createHttpError(400, "Full name is required.");
-    }
-
-    const response = await options.repository.register(request.params.slug, {
-      ...body,
-      email,
-      fullName,
-    });
-    reply.header("Cache-Control", "no-store");
-    reply.header("X-Vayada-RateLimit-Policy", "public-booking-web-affiliate-register");
-    reply.header("X-Robots-Tag", "noindex");
-    return response;
-  });
+  registerRetiredAffiliateEnrollmentRoutes(app);
 
   app.post<{
     Params: BookingWebAffiliateParams;

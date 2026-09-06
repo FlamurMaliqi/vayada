@@ -105,7 +105,7 @@ describe("Booking Web public hotel adapter", () => {
     });
 
     response.hotel.capabilities.referralCodes = true;
-    expect(toLegacyHotel(response).referAGuestEnabled).toBe(true);
+    expect(toLegacyHotel(response).referAGuestEnabled).toBe(false);
   });
 
   it("preserves target amenity labels and an explicit reviewed-empty list", () => {
