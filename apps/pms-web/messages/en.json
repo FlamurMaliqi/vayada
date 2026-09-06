@@ -782,6 +782,7 @@
   "rooms.deleteRoomConfirm": "Delete this room?",
   "rooms.cannotDeleteRoom": "Cannot delete room (may have bookings)",
   "rooms.failedToAddRoom": "Failed to add room",
+  "rooms.duplicateRoomNumber": "A room with this number already exists.",
   "rooms.statusAvailable": "Available",
   "rooms.statusMaintenance": "Maintenance",
   "rooms.statusOutOfOrder": "Out of Order",
