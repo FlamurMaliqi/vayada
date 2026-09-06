@@ -88,7 +88,15 @@ export function CalendarAutoOpenEditor() {
           setSaveError(t("settings.autoOpen.revisionError"));
         }
       } else if (error instanceof ApiErrorResponse) {
-        const setupMessage = setupErrorMessage(error.data.code, t);
+        const code = error.data.code;
+        const setupMessage = setupErrorMessage(code, t);
+        if (
+          code === "operating_calendar_not_configured" ||
+          code === "operating_calendar_room_bindings_stale" ||
+          code === "physical_room_labels_unverified"
+        ) {
+          setRead((current) => current && { ...current, setupError: { code } });
+        }
         setSaveError(setupMessage ?? t("settings.autoOpen.saveError"));
       } else {
         setSaveError(t("settings.autoOpen.saveError"));
