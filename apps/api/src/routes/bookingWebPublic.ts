@@ -1,3 +1,5 @@
+import { pendingBookingEdit } from "./pendingBookingEdits.js";
+import { releaseAbandonedBookingEdits } from "../jobs/pendingBookingEditCleanup.js";
 import type { BankTransferBookingOperations } from "../domains/financeBankTransferBooking.js";
 import { FUNNEL_STAGES, FUNNEL_PAYMENT_METHODS } from "@vayada/domain-booking";
 import {
@@ -603,6 +605,30 @@ export async function registerBookingWebPublicRoutes(
       return response;
     },
   );
+
+  app.post<{
+    Params: { slug: string; bookingId: string; action: string };
+    Body: BookingWebCheckoutRequest;
+  }>("/hotels/:slug/bookings/:bookingId/edit/:action", async (request, reply) => {
+    const { slug, bookingId, action } = request.params;
+    if (!checkoutAdapter.editRequest || !["details", "quote", "prepare", "save"].includes(action))
+      throw createHttpError(404, "Booking action not found.");
+    reply.header("Cache-Control", "no-store");
+    reply.header("X-Robots-Tag", "noindex");
+    return checkoutAdapter.editRequest(
+      slug,
+      bookingId,
+      action,
+      request.body ?? {},
+      checkoutCommandContext(
+        request,
+        `booking-edit-${action}`,
+        `${slug}:${bookingId}`,
+        request.body,
+        now,
+      ),
+    );
+  });
 
   app.post<{ Params: BookingWebBookingHandleParams }>(
     "/hotels/:slug/bookings/:handle/confirm-authorization",
@@ -1499,6 +1525,13 @@ export function createTargetBookingWebCheckoutAdapter(
       max: config.max,
     });
 
+  const editCleanupTimer = setInterval(() => {
+    void releaseAbandonedBookingEdits(pool, config).catch(() =>
+      console.warn("Pending booking edit cleanup failed; it will retry."),
+    );
+  }, 60_000);
+  editCleanupTimer?.unref();
+
   const withCommand = async <T>(
     slug: string,
     context: BookingWebCheckoutCommandContext | undefined,
@@ -1776,6 +1809,9 @@ export function createTargetBookingWebCheckoutAdapter(
           body: serializeTargetCheckoutConfig(property, row),
         };
       });
+    },
+    async editRequest(slug, bookingId, action, request, context) {
+      return pendingBookingEdit(pool, config, slug, bookingId, action, request, context);
     },
     async createBooking(slug, request, context) {
       if (!context) {
@@ -2371,6 +2407,7 @@ export function createTargetBookingWebCheckoutAdapter(
       });
     },
     async close() {
+      if (editCleanupTimer) clearInterval(editCleanupTimer);
       if (ownsPool) {
         await pool.end();
       }
