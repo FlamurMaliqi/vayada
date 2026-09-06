@@ -98,6 +98,7 @@ function PaymentPageContent() {
     rateType,
     roomsParam,
     adults: adultsParam,
+    children: childrenParam,
     selectedAddonIds,
     addonQuantities,
     addonPackageQuantities,
