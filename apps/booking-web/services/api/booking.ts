@@ -28,6 +28,7 @@ export interface BookingLookupResponse extends Booking {
 
 export type BookingCreateRequest = {
   roomSelection?: RoomSelection;
+  currency?: string;
   roomTypeId: string;
   guestFirstName: string;
   guestLastName: string;
@@ -156,6 +157,7 @@ export const bookingService = {
     slug: string,
     data: {
       roomSelection?: RoomSelection;
+      currency?: string;
       roomTypeId: string;
       guestFirstName: string;
       guestLastName: string;

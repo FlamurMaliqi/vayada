@@ -5,6 +5,16 @@ import { bookingWebPublicApi } from "./bookingWebPublic";
 afterEach(() => vi.restoreAllMocks());
 
 describe("search feedback", () => {
+  it("preserves a deep link's room minimum when refreshing availability", async () => {
+    const offers = vi
+      .spyOn(bookingWebPublicApi, "getOffers")
+      .mockResolvedValue({ request: { nights: 2, rooms: 4 }, status: "bookable" });
+    await hotelService.searchRooms("test", "2026-09-12", "2026-09-14", 6, 0, "de", 4);
+    expect(offers).toHaveBeenCalledWith(
+      "test",
+      expect.objectContaining({ adults: 6, children: 0, rooms: 4 }),
+    );
+  });
   it.each([
     { status: "unavailable", codes: ["occupancy_unavailable"], message: "guestCountUnavailable" },
     { status: "unavailable", codes: ["unsupported_occupancy"], message: "guestCountUnsupported" },

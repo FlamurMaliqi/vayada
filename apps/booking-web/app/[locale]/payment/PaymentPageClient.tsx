@@ -1,4 +1,7 @@
 "use client";
+import RoomSelectionSummary from "@/components/booking/RoomSelectionSummary";
+import SelectionUnavailable from "@/components/booking/SelectionUnavailable";
+import { selectionCheckoutFields } from "@/lib/roomSelection";
 
 import { formatCheckInTime, formatCheckOutTime } from "@/lib/arrivalTimes";
 import { trackEvent } from "@/services/api/tracking";
@@ -48,7 +51,7 @@ function PaymentPageContent() {
   const ts = useTranslations("steps");
   const tb = useTranslations("book");
   const { hotel } = useHotel();
-  const { refetchRooms } = useRooms();
+  const { refetchRooms, loading: roomsInitialLoading, roomsLoading } = useRooms();
   const { addons } = useAddons();
   const { formatPrice, convertAndRound, selectedCurrency } = useCurrency();
   const { slug } = useSlug();
@@ -61,10 +64,11 @@ function PaymentPageContent() {
   const adultsParam = parseInt(searchParams.get("adults") || "2");
   const childrenParam = parseInt(searchParams.get("children") || "0");
 
-  useEffect(() => {
-    if (checkIn && checkOut) refetchRooms(checkIn, checkOut, adultsParam, childrenParam);
-  }, [adultsParam, checkIn, checkOut, childrenParam, refetchRooms]);
   const roomsParam = parseInt(searchParams.get("rooms") || "1");
+  useEffect(() => {
+    if (checkIn && checkOut)
+      refetchRooms(checkIn, checkOut, adultsParam, childrenParam, roomsParam);
+  }, [adultsParam, checkIn, checkOut, childrenParam, roomsParam, refetchRooms]);
   const { steps: STEPS, currentStep } = useBookingSteps("payment");
 
   const rateType = searchParams.get("rateType") || "flexible";
@@ -174,9 +178,11 @@ function PaymentPageContent() {
   // Per-rate allow-list from the room. When null, every hotel-enabled method is
   // offered (pre-Bug-2 behavior). When set, only methods in the list for the
   // selected rate are offered — replacing the old hardcoded !isNonRefundable gates.
+  const paymentRateKey = room?.combination ? "flexible" : rateType;
   const rateAllowList: string[] | null =
-    room?.ratePaymentMethods?.[rateType] && Array.isArray(room.ratePaymentMethods[rateType])
-      ? room.ratePaymentMethods[rateType]
+    room?.ratePaymentMethods?.[paymentRateKey] &&
+    Array.isArray(room.ratePaymentMethods[paymentRateKey])
+      ? room.ratePaymentMethods[paymentRateKey]
       : null;
   const depositSetting = room?.rateDepositSettings?.[rateType];
   const depositRequired = !!depositSetting?.enabled && !!depositSetting.percentage;
@@ -269,6 +275,7 @@ function PaymentPageContent() {
         slug,
         {
           ...guestDetails,
+          ...selectionCheckoutFields(room),
           checkIn,
           checkOut,
           adults: adultsParam,
@@ -323,7 +330,12 @@ function PaymentPageContent() {
   ]);
 
   const quotedCurrency = checkoutQuote?.currency || selectedCurrency;
-  const quotedRoomTotal = checkoutQuote?.roomTotal ?? roomTotal;
+  const quotedRoomTotal = checkoutQuote?.roomSelection
+    ? checkoutQuote.totalAmount -
+      checkoutQuote.addonTotal +
+      checkoutQuote.promoDiscount +
+      (checkoutQuote.promotionDiscount ?? 0)
+    : (checkoutQuote?.roomTotal ?? roomTotal);
   const quotedNightlyRate = checkoutQuote?.nightlyRate ?? nightlyRate;
   const quotedPromoDiscount = checkoutQuote?.promoDiscount ?? discountAmount;
   const quotedGrandTotal = checkoutQuote?.totalAmount ?? grandTotal;
@@ -356,6 +368,7 @@ function PaymentPageContent() {
       getCheckoutIdempotencyKey("create", quote.quoteId ?? "missing-quote");
     const requestBody: BookingCreateRequest = recovery?.requestBody ?? {
       ...guestDetails,
+      ...selectionCheckoutFields(room!),
       checkIn,
       checkOut,
       adults: adultsParam,
@@ -547,9 +560,17 @@ function PaymentPageContent() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pendingCreateRecovery, guestDetails]);
 
-  if (!guestDetails || (!room && !pendingCreateRecovery)) {
+  if (!guestDetails) {
     return <div className="min-h-screen bg-gray-50" />;
   }
+
+  if (!room && !pendingCreateRecovery)
+    return (
+      <SelectionUnavailable
+        loading={roomsInitialLoading || roomsLoading}
+        search={searchParams.toString()}
+      />
+    );
 
   if (pendingCreateRecovery && !room && !clientSecret) {
     if (submitting) return <div className="min-h-screen bg-gray-50" aria-busy="true" />;
@@ -586,7 +607,12 @@ function PaymentPageContent() {
     const paymentRooms = paymentRequest?.numberOfRooms ?? roomsParam;
     const paymentCurrency = paymentQuote?.currency ?? quotedCurrency;
     const paymentNightlyRate = paymentQuote?.nightlyRate ?? quotedNightlyRate;
-    const paymentRoomTotal = paymentQuote?.roomTotal ?? quotedRoomTotal;
+    const paymentRoomTotal = paymentQuote?.roomSelection
+      ? paymentQuote.totalAmount -
+        paymentQuote.addonTotal +
+        paymentQuote.promoDiscount +
+        (paymentQuote.promotionDiscount ?? 0)
+      : (paymentQuote?.roomTotal ?? quotedRoomTotal);
     const paymentGrandTotal = paymentQuote?.totalAmount ?? quotedGrandTotal;
     const paymentDepositRequired = paymentQuote?.depositRequired ?? quotedDepositRequired;
     const paymentDepositPercentage = paymentQuote?.depositPercentage ?? quotedDepositPercentage;
@@ -628,7 +654,13 @@ function PaymentPageContent() {
     );
   }
 
-  if (!room) return <div className="min-h-screen bg-gray-50" />;
+  if (!room)
+    return (
+      <SelectionUnavailable
+        loading={roomsInitialLoading || roomsLoading}
+        search={searchParams.toString()}
+      />
+    );
 
   return (
     <div className="min-h-screen bg-gray-50">
@@ -1108,19 +1140,29 @@ function PaymentPageContent() {
               <h3 className="text-base font-bold text-gray-900 mb-2">
                 {t("cancellationPolicyTitle")}
               </h3>
-              <p className="text-sm text-gray-600">
-                {t("cancellationPolicyDesc", {
-                  date: formatDate(
-                    new Date(
-                      new Date(checkIn).getTime() -
-                        getFreeCancellationDays(room?.cancellationPolicy) * 86400000,
-                    )
-                      .toISOString()
-                      .slice(0, 10),
-                    locale,
-                  ),
-                })}
-              </p>
+              {room.combination ? (
+                <RoomSelectionSummary
+                  lines={checkoutQuote?.roomLines ?? room.combination.roomLines}
+                  currency={checkoutQuote?.currency ?? room.currency}
+                  checkIn={checkIn}
+                  timezone={hotel.timezone}
+                  beforeDiscounts
+                />
+              ) : (
+                <p className="text-sm text-gray-600">
+                  {t("cancellationPolicyDesc", {
+                    date: formatDate(
+                      new Date(
+                        new Date(checkIn).getTime() -
+                          getFreeCancellationDays(room?.cancellationPolicy) * 86400000,
+                      )
+                        .toISOString()
+                        .slice(0, 10),
+                      locale,
+                    ),
+                  })}
+                </p>
+              )}
             </div>
 
             {/* Action buttons */}
@@ -1218,11 +1260,12 @@ function PaymentPageContent() {
                 </div>
                 <div>
                   <p className="text-sm font-bold text-gray-900">
-                    {roomsParam > 1 ? `${roomsParam}× ` : ""}
+                    {!room.combination && roomsParam > 1 ? `${roomsParam}× ` : ""}
                     {room.name}
                   </p>
                   <p className="text-xs text-gray-500">
-                    {isNonRefundable ? tb("nonRefundableRate") : tb("flexibleRate")}
+                    {!room.combination &&
+                      (isNonRefundable ? tb("nonRefundableRate") : tb("flexibleRate"))}
                   </p>
                 </div>
               </div>
@@ -1274,11 +1317,13 @@ function PaymentPageContent() {
                   </span>
                 </div>
                 <p className="text-xs text-gray-500 text-right">
-                  {checkoutQuote
-                    ? `${formatPrice(quotedNightlyRate * roomsParam, quotedCurrency)} × ${nights}`
-                    : variableNightlyRates
-                      ? roomRateBreakdown
-                      : `${formatPrice(nightlyRate * roomsParam, selectedCurrency)} × ${nights}`}
+                  {room.combination
+                    ? tc("nights", { count: nights })
+                    : checkoutQuote
+                      ? `${formatPrice(quotedNightlyRate * roomsParam, quotedCurrency)} × ${nights}`
+                      : variableNightlyRates
+                        ? roomRateBreakdown
+                        : `${formatPrice(nightlyRate * roomsParam, selectedCurrency)} × ${nights}`}
                 </p>
                 {addons
                   .filter((a) => selectedAddonIds.includes(a.id))
@@ -1292,7 +1337,13 @@ function PaymentPageContent() {
                         )
                       : 1;
                     const days = addon.perNight
-                      ? Math.max(1, Math.min(dates?.length ?? (addon.perPerson ? nights : count ?? nights), nights))
+                      ? Math.max(
+                          1,
+                          Math.min(
+                            dates?.length ?? (addon.perPerson ? nights : (count ?? nights)),
+                            nights,
+                          ),
+                        )
                       : 1;
                     const items = !addon.perPerson && !addon.perNight ? Math.max(1, count ?? 1) : 1;
                     const linePrice = convertAndRound(
@@ -1380,6 +1431,17 @@ function PaymentPageContent() {
         onClose={() => setPolicyModal(null)}
         termsText={termsText}
         cancellationPolicyText={cancellationPolicyText}
+        cancellationContent={
+          room.combination ? (
+            <RoomSelectionSummary
+              lines={checkoutQuote?.roomLines ?? room.combination.roomLines}
+              currency={checkoutQuote?.currency ?? room.currency}
+              checkIn={checkIn}
+              timezone={hotel.timezone}
+              beforeDiscounts
+            />
+          ) : undefined
+        }
         cancellationFallback={t("cancellationPolicyDesc", {
           date: formatDate(
             new Date(

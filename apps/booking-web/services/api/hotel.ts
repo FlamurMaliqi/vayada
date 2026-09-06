@@ -54,6 +54,7 @@ export const hotelService = {
     adults?: number,
     children?: number,
     locale?: string,
+    roomCount = 1,
   ) {
     const dates = checkIn && checkOut ? { checkIn, checkOut } : defaultOfferDates();
     const data = await bookingWebPublicApi.getOffers(slug, {
@@ -61,7 +62,7 @@ export const hotelService = {
       checkOut: dates.checkOut,
       adults,
       children,
-      rooms: 1,
+      rooms: roomCount,
       locale,
     });
     let searchMessage: string | null = null;

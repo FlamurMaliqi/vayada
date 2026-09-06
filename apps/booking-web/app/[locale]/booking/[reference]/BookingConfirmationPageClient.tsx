@@ -1,4 +1,5 @@
 "use client";
+import RoomSelectionSummary from "@/components/booking/RoomSelectionSummary";
 
 import { formatCheckInTime, formatCheckOutTime } from "@/lib/arrivalTimes";
 import { useState, useEffect, useRef } from "react";
@@ -601,10 +602,20 @@ export default function BookingConfirmationPageClient({
                 <span className="text-gray-600">{t("room")}</span>
                 <span className="font-medium text-gray-900">
                   {booking
-                    ? `${displayedRooms > 1 ? `${displayedRooms}× ` : ""}${booking.roomName || t("room")}`
+                    ? `${!booking.roomSelection && displayedRooms > 1 ? `${displayedRooms}× ` : ""}${booking.roomName || t("room")}`
                     : "—"}
                 </span>
               </div>
+              {booking?.roomLines && (
+                <div className="py-4">
+                  <RoomSelectionSummary
+                    lines={booking.roomLines}
+                    currency={booking.currency}
+                    checkIn={booking.checkIn}
+                    timezone={hotel.timezone}
+                  />
+                </div>
+              )}
               {booking?.unitNames && booking.unitNames.length > 0 && (
                 <div className="flex justify-between py-3">
                   <span className="text-gray-600">{t("unit")}</span>

@@ -59,6 +59,7 @@ interface HotelContextValue {
     checkOut?: string,
     adults?: number,
     children?: number,
+    roomCount?: number,
   ) => Promise<void>;
 }
 
@@ -181,7 +182,13 @@ export function HotelProvider({
   }, [locale, slug, slugResolved]);
 
   const refetchRooms = useCallback(
-    async (checkIn?: string, checkOut?: string, adults?: number, children?: number) => {
+    async (
+      checkIn?: string,
+      checkOut?: string,
+      adults?: number,
+      children?: number,
+      roomCount?: number,
+    ) => {
       const version = ++searchVersion.current;
       setRoomsLoading(true);
       setSearchMessage(null);
@@ -194,6 +201,7 @@ export function HotelProvider({
           adults,
           children,
           locale,
+          roomCount,
         );
         if (version !== searchVersion.current) return;
         setRooms(result.rooms);
