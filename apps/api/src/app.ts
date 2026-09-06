@@ -840,6 +840,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     app.register(registerFinanceRoutes, {
       prefix: "/api",
       repository: options.financeRepository,
+      propertyAccessRepository: options.auth?.propertyAccessRepository,
       publicBookabilityPublisher: options.publicBookabilityPublisher,
       xenditBankValidator: options.financeXenditBankValidator,
       publicHotelPropertyResolver: options.financePublicHotelPropertyResolver,
@@ -852,12 +853,14 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     app.register(registerPmsFinanceCompatibilityRoutes, {
       prefix: "/api",
       repository: options.pmsFinanceCompatibilityRepository,
+      propertyAccessRepository: options.auth?.propertyAccessRepository,
     });
   }
   if (options.financeSubscriptionService) {
     app.register(registerFinanceSubscriptionRoutes, {
       prefix: "/api",
       service: options.financeSubscriptionService,
+      propertyAccessRepository: options.auth?.propertyAccessRepository,
     });
   }
   if (options.financeOtaCommissionSettingsRepository) {
@@ -877,6 +880,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       prefix: "/api",
       publicBookabilityPublisher: options.publicBookabilityPublisher,
       ...options.financeBankTransfer,
+      propertyAccessRepository: options.auth?.propertyAccessRepository,
     });
   }
   if (options.platformContactIntake) {

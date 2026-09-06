@@ -32,6 +32,7 @@ export async function registerFinanceBankTransferRoutes(
   app: FastifyInstance,
   options: {
     repository: Repository;
+    propertyAccessRepository?: FinanceRoutesOptions["propertyAccessRepository"];
     publicBookabilityPublisher?: FinanceRoutesOptions["publicBookabilityPublisher"];
   },
 ) {
@@ -42,9 +43,16 @@ export async function registerFinanceBankTransferRoutes(
       bodyLimit: 8192,
       onRequest: async (request, reply) => {
         reply.header("Cache-Control", "no-store");
-        const enforce =
-          method === "GET" ? enforceFinancePropertyReadPolicy : enforceFinancePropertyWritePolicy;
-        if (!enforce(request, reply, request.params.propertyId)) return reply;
+        const allowed =
+          method === "GET"
+            ? await enforceFinancePropertyReadPolicy(
+                request,
+                reply,
+                request.params.propertyId,
+                options.propertyAccessRepository,
+              )
+            : enforceFinancePropertyWritePolicy(request, reply, request.params.propertyId);
+        if (!allowed) return reply;
       },
       async handler(request, reply) {
         const propertyId = request.params.propertyId;
