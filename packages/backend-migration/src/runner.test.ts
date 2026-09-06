@@ -1266,6 +1266,8 @@ describe.skipIf(!TEST_DATABASE_URL)("target schema migrations (integration)", ()
       expect(financeTableRows.map((row) => row.table_name)).toEqual([
         "affiliate_payout_payment_evidence",
         "affiliate_payout_payment_evidence_items",
+        "bank_transfer_bookings",
+        "bank_transfer_destinations",
         "billing_entitlements",
         "commission_rate_changes",
         "commission_rules",
@@ -1277,6 +1279,8 @@ describe.skipIf(!TEST_DATABASE_URL)("target schema migrations (integration)", ()
         "folio_payment_references",
         "folio_revisions",
         "folios",
+        "online_card_execution_evidence",
+        "online_card_readiness",
         "ota_commission_evidence",
         "ota_commission_reporting_evidence",
         "payment_provider_accounts",
@@ -1287,6 +1291,7 @@ describe.skipIf(!TEST_DATABASE_URL)("target schema migrations (integration)", ()
         "provider_fee_evidence",
         "provider_fee_reporting_evidence",
         "recurring_expense_rules",
+        "stripe_provider_account_compensation_claims",
       ]);
 
       const { rows: financeIntegrityConstraints } = await verifyClient.query<{
