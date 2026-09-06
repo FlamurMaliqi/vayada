@@ -958,6 +958,19 @@ export const bookingsService = {
     );
   },
 
+  previewHostAction: async (id: string, request: HostBookingActionRequest) =>
+    pmsOperationsClient.post<HostBookingActionPreview>(
+      await reservationEndpoint(id, "/host-actions/preview"),
+      request,
+      pmsOperationsRequestOptions,
+    ),
+  applyHostAction: async (id: string, previewId: string, idempotencyKey: string) =>
+    pmsOperationsClient.post<{ bookingId: string; lifecycleStatus: string }>(
+      await reservationEndpoint(id, "/host-actions/apply"),
+      { previewId, idempotencyKey },
+      pmsOperationsRequestOptions,
+    ),
+
   cancelWithReason: async (id: string, reason: string, guestMessage?: string) => {
     await pmsOperationsClient.post<PmsOperationsCommandResponse>(
       await reservationEndpoint(id, "/cancel"),
@@ -1256,3 +1269,30 @@ function toBookingStatus(status: string): Booking["status"] {
       return "confirmed";
   }
 }
+
+export type HostBookingActionRequest = {
+  action: "edit_dates" | "reject" | "cancel";
+  reason: string;
+  guestMessage?: string;
+  checkIn?: string;
+  checkOut?: string;
+};
+export type HostBookingActionPreview = {
+  previewId: string;
+  expiresAt: string;
+  impact: {
+    checkIn: string;
+    checkOut: string;
+    totalAmount: string;
+    newTotalAmount: string;
+    currency: string;
+    inventory: "release" | "replace";
+    payment: "no_payment_received" | "authorization_void";
+    cancellationPolicy: {
+      type: "non_refundable" | "flexible";
+      previousDeadline: string | null;
+      newDeadline: string | null;
+      timezone: string;
+    } | null;
+  };
+};
