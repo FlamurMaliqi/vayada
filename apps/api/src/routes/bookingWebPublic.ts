@@ -1,4 +1,10 @@
 import { pendingBookingEdit } from "./pendingBookingEdits.js";
+import type { quoteTargetRoomSelection } from "./bookingWebMixedQuote.js";
+import {
+  allocateMixedQuoteDiscount,
+  mixedSelectionOffer,
+  mixedSelectionPromotion,
+} from "./bookingWebMixedSnapshot.js";
 import { releaseAbandonedBookingEdits } from "../jobs/pendingBookingEditCleanup.js";
 import type { BankTransferBookingOperations } from "../domains/financeBankTransferBooking.js";
 import { FUNNEL_STAGES, FUNNEL_PAYMENT_METHODS } from "@vayada/domain-booking";
@@ -18,6 +24,7 @@ import {
 } from "@vayada/domain-distribution";
 import {
   bestBookingPromotion,
+  parseBookingRoomSelection,
   evaluateSameDayBooking,
   parseAddonEconomicTerms,
   parseBookingFlexibleCancellationTerms,
@@ -2713,7 +2720,10 @@ export async function createTargetCheckoutQuote(
     revision: number;
     availabilityCredit?: { checkIn: string; checkOut: string; roomCount: number };
   },
+  mixed?: Awaited<ReturnType<typeof quoteTargetRoomSelection>>,
 ): Promise<TargetCheckoutQuoteSnapshot> {
+  if (request["roomSelection"] !== undefined && !mixed)
+    throw createHttpError(400, "Mixed room selections require selection-aware checkout.");
   const checkIn = dateField(request, "checkIn");
   const checkOut = dateField(request, "checkOut");
   if (!checkIn || !checkOut || checkIn >= checkOut) {
@@ -2734,6 +2744,8 @@ export async function createTargetCheckoutQuote(
     stringField(request, "currency") ?? settings?.defaultCurrency ?? "EUR",
   );
   const adults = Math.max(integerField(request, "adults", 1), 1);
+  if (mixed && mixed.currency !== currency)
+    throw createHttpError(409, "Room selection currency changed. Please refresh.");
   const children = integerField(request, "children", 0);
   const roomCount = Math.max(
     integerField(request, "numberOfRooms", integerField(request, "roomCount", 1)),
@@ -2741,20 +2753,22 @@ export async function createTargetCheckoutQuote(
   );
   const nights = dateRange(checkIn, checkOut).length;
   const rateType = canonicalTargetCheckoutRateType(stringField(request, "rateType"));
-  const offer = await loadTargetCheckoutOffer(pool, {
-    propertyId: property.propertyId,
-    checkIn,
-    checkOut,
-    currency,
-    adults,
-    children,
-    roomCount,
-    nights,
-    roomTypeId,
-    rateType,
-    requestedAt,
-    availabilityCredit: edit?.availabilityCredit,
-  });
+  const offer = mixed
+    ? mixedSelectionOffer(mixed)
+    : await loadTargetCheckoutOffer(pool, {
+        propertyId: property.propertyId,
+        checkIn,
+        checkOut,
+        currency,
+        adults,
+        children,
+        roomCount,
+        nights,
+        roomTypeId,
+        rateType,
+        requestedAt,
+        availabilityCredit: edit?.availabilityCredit,
+      });
   const addonRequest = parseTargetCheckoutAddonRequest(request);
   const addonPurchases = await resolveTargetCheckoutAddonPurchases(pool, {
     propertyId: property.propertyId,
@@ -2798,24 +2812,58 @@ export async function createTargetCheckoutQuote(
     currency,
     occurredAt: requestedAt,
     editingBookingId: edit?.bookingId,
+    roomTypeIds: mixed?.selection.lines.map((line) => line.roomTypeId),
   });
-  const automatic = bestBookingPromotion({
-    settings: settings?.promotionSettings,
-    roomTypeId: offer.roomTypeId,
-    today: targetPropertyDateOnly(property.timezone, requestedAt),
-    nights: targetNightlyRoomAmounts(
-      offer.promotionNightlyRoomAmounts ?? offer.nightlyRoomAmounts,
-      checkIn,
-      checkOut,
-    ),
-    roomTotal: Math.max(0, roomTotal - discounts),
-    roomCount,
-  });
+  const automatic = mixed
+    ? mixedSelectionPromotion(mixed)
+    : bestBookingPromotion({
+        settings: settings?.promotionSettings,
+        roomTypeId: offer.roomTypeId,
+        today: targetPropertyDateOnly(property.timezone, requestedAt),
+        nights: targetNightlyRoomAmounts(
+          offer.promotionNightlyRoomAmounts ?? offer.nightlyRoomAmounts,
+          checkIn,
+          checkOut,
+        ),
+        roomTotal: Math.max(0, roomTotal - discounts),
+        roomCount,
+      });
   const promotion =
     automatic && automatic.discountAmount > (promo?.discountAmount ?? 0) ? automatic : null;
   if (promotion) promo = null;
   const promotionDiscount = promotion?.discountAmount ?? 0;
   const promoDiscount = promo?.discountAmount ?? 0;
+  let roomLines = mixed?.lines.map((line) => ({
+    ...line,
+    promotion: promotion ? line.promotion : null,
+    totals: {
+      ...line.totals,
+      promotionDiscount: promotion ? line.totals.promotionDiscount : "0.00",
+      totalAmount: promotion
+        ? line.totals.totalAmount
+        : moneyFromCents(
+            moneyToCents(line.totals.totalAmount) + moneyToCents(line.totals.promotionDiscount),
+          ),
+    },
+  }));
+  let promoAddonDiscount = "0.00";
+  if (roomLines) {
+    const allocation = allocateMixedQuoteDiscount(roomLines, promoDiscount, addonTotal);
+    roomLines = allocation.lines;
+    promoAddonDiscount = allocation.addonDiscount;
+  }
+  if (roomLines)
+    offer.publicPolicy = {
+      type: "mixed_room",
+      lines: roomLines.map((line) => ({
+        roomTypeId: line.roomTypeId,
+        publicOfferKey: line.publicOfferKey,
+        roomCount: line.guests.length,
+        policy: line.offer.publicPolicy,
+        rateSummary: line.offer.rateSummary,
+        totals: line.totals,
+      })),
+    };
   const totalAmount = Number(
     moneyFromCents(
       moneyToCents(roomTotal) +
@@ -2834,6 +2882,7 @@ export async function createTargetCheckoutQuote(
   const balanceAmount = totalAmount;
   const expiresAt = new Date(requestedAt.getTime() + 15 * 60 * 1000).toISOString();
   const selectedOfferSnapshot = {
+    ...(mixed ? { roomSelection: mixed.selection, roomLines } : {}),
     ...(edit ? { editBookingId: edit.bookingId, editRevision: edit.revision } : {}),
     publicOfferKey: offer.publicOfferKey,
     roomTypeId: offer.roomTypeId,
@@ -2866,6 +2915,7 @@ export async function createTargetCheckoutQuote(
     discounts,
     addonTotal,
     promoDiscount,
+    ...(mixed ? { promoAddonDiscount } : {}),
     ...(promotion ? { promotionDiscount } : {}),
     totalAmount,
     depositRequired,
@@ -2885,6 +2935,7 @@ export async function createTargetCheckoutQuote(
       roomCount,
       currency,
       roomTypeId,
+      ...(mixed ? { roomSelection: mixed.selection } : {}),
       rateType,
       paymentMethod,
       acceptanceMode,
@@ -3325,6 +3376,15 @@ export async function loadTargetCheckoutQuoteSnapshot(
   const children = Number(row.children);
   const roomCount = Number(row.roomCount);
   const selectedOfferSnapshot = objectValue(row.selectedOfferSnapshot);
+  if (
+    selectedOfferSnapshot["roomSelection"] !== undefined ||
+    request["roomSelection"] !== undefined
+  ) {
+    const selected = parseBookingRoomSelection(selectedOfferSnapshot["roomSelection"]);
+    const requested = parseBookingRoomSelection(request["roomSelection"]);
+    if (!selected || !requested || stableJson(selected) !== stableJson(requested))
+      throw createHttpError(409, "Room selection changed. Please refresh the checkout quote.");
+  }
   const totals = objectValue(row.totals);
   let addonRequest: TargetCheckoutAddonRequest = {
     addonIds: [],
@@ -5270,6 +5330,7 @@ async function resolveTargetCheckoutPromo(
     code: string | null;
     checkIn: string;
     roomTypeId: string;
+    roomTypeIds?: string[];
     bookingTotal: number;
     currency: string;
     occurredAt: Date;
@@ -5279,6 +5340,11 @@ async function resolveTargetCheckoutPromo(
   if (!input.code) return null;
   const promo = await loadTargetPromoDefinition(pool, property.propertyId, input.code);
   if (!promo) throw createHttpError(409, "Invalid promo code.");
+  if (
+    promo.applicableRoomIds?.length &&
+    input.roomTypeIds?.some((id) => !promo.applicableRoomIds!.includes(id))
+  )
+    throw createHttpError(409, "This promo code does not apply to every selected room.");
   if (input.editingBookingId) {
     const applied = await pool.query(
       `SELECT 1 FROM booking.promo_applications WHERE guest_booking_id=$1::uuid

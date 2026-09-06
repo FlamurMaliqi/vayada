@@ -1,3 +1,5 @@
+import { createTargetMixedCheckoutQuote } from "../routes/bookingWebMixedSnapshot.js";
+import { loadTargetCheckoutQuoteSnapshot } from "../routes/bookingWebPublic.js";
 import { quoteTargetRoomSelection } from "../routes/bookingWebMixedQuote.js";
 import { randomUUID } from "node:crypto";
 import pg from "pg";
@@ -9,6 +11,7 @@ const url = process.env["TEST_DATABASE_URL"];
 describe.skipIf(!url)("mixed room inventory transactions", () => {
   const pool = new pg.Pool({ connectionString: url });
   const propertyId = randomUUID();
+  const addonId = randomUUID();
   const rooms = [randomUUID(), randomUUID()].sort();
   const port = createTargetPmsInventoryReservationPort();
   const input = {
@@ -78,6 +81,25 @@ describe.skipIf(!url)("mixed room inventory transactions", () => {
         SELECT id,$1,id::text,'{"adults":2,"total":2}',100,'EUR' FROM unnest($2::uuid[]) id`,
         [propertyId, rooms],
       );
+      await client.query(
+        `INSERT INTO booking.booking_settings(property_id,acceptance_mode,default_currency,phone_required)
+        VALUES ($1,'request','EUR',false)`,
+        [propertyId],
+      );
+      await client.query(
+        `INSERT INTO finance.payment_settings(property_id,payments_enabled,accepted_methods,default_currency)
+        VALUES ($1,true,ARRAY['pay_at_property','cash'],'EUR')`,
+        [propertyId],
+      );
+      await client.query(
+        `UPDATE distribution.public_hotel_bookability_profiles SET capabilities='{"paymentMethods":["pay_at_property"]}' WHERE property_id=$1`,
+        [propertyId],
+      );
+      await client.query(
+        `INSERT INTO booking.addon_definitions(id,property_id,source_addon_id,name,pricing_model,price_amount,currency,ownership_kind,partner_commission_rate)
+        VALUES($1::uuid,$2::uuid,$1::text,'One booking add-on','per_stay',10.25,'EUR','partner',18.75)`,
+        [addonId, propertyId],
+      );
       await client.query("SET LOCAL session_replication_role=replica");
       await client.query(
         `INSERT INTO pms.operating_calendar_revisions
@@ -119,6 +141,12 @@ describe.skipIf(!url)("mixed room inventory transactions", () => {
     await transaction(async (client) => {
       await client.query("SET LOCAL session_replication_role=replica");
       for (const table of [
+        "booking.promo_applications",
+        "booking.promo_definitions",
+        "booking.quote_sessions",
+        "booking.addon_definitions",
+        "booking.booking_settings",
+        "finance.payment_settings",
         "pms.inventory_reservation_statuses",
         "pms.inventory_reservation_day_watermarks",
         "pms.inventory_reservation_receipts",
@@ -219,6 +247,104 @@ describe.skipIf(!url)("mixed room inventory transactions", () => {
       }
     },
   );
+  it("persists the full selection, prices add-ons once, and rejects quote selection tampering", async () => {
+    const property = {
+      propertyId,
+      displayName: "Mixed room test",
+      defaultLocale: "en",
+      timezone: "Europe/Athens",
+    };
+    const request = {
+      checkIn: input.checkIn,
+      checkOut: input.checkOut,
+      roomSelection: selection,
+      adults: 5,
+      children: 1,
+      numberOfRooms: 3,
+      addonIds: [addonId],
+      paymentMethod: "pay_at_property",
+    };
+    const saved = await transaction((client) =>
+      createTargetMixedCheckoutQuote(client, property, request, input.occurredAt),
+    );
+    await expect(
+      transaction((client) =>
+        createTargetMixedCheckoutQuote(
+          client,
+          property,
+          { ...request, currency: "USD" },
+          input.occurredAt,
+        ),
+      ),
+    ).rejects.toThrow("Property currency changed");
+    await pool.query(
+      `INSERT INTO booking.promo_definitions(property_id,code,discount_type,discount_value)
+      VALUES($1,'MIXED50','fixed',50)`,
+      [propertyId],
+    );
+    await pool.query(
+      `UPDATE booking.booking_settings SET last_minute_discount=
+      '{"enabled":true,"tiers":[{"daysBeforeMin":0,"daysBeforeMax":null,"discountPercent":5}]}' WHERE property_id=$1`,
+      [propertyId],
+    );
+    const discounted = await transaction((client) =>
+      createTargetMixedCheckoutQuote(
+        client,
+        property,
+        { ...request, promoCode: "MIXED50" },
+        new Date(input.occurredAt.getTime() + 1000),
+      ),
+    );
+    expect(discounted.totalAmount).toBe("560.25");
+    expect(discounted.totals["promoDiscount"]).toBe(50);
+    expect(discounted.totals["promoAddonDiscount"]).toBe("0.83");
+    expect(
+      (discounted.selectedOfferSnapshot["roomLines"] as Array<{ totals: unknown }>).map(
+        (line) => line.totals,
+      ),
+    ).toEqual([
+      expect.objectContaining({ promoDiscount: "32.78", totalAmount: "367.22" }),
+      expect.objectContaining({ promoDiscount: "16.39", totalAmount: "183.61" }),
+    ]);
+    expect(
+      (discounted.selectedOfferSnapshot["roomLines"] as Array<{ promotion: unknown }>).every(
+        (line) => line.promotion === null,
+      ),
+    ).toBe(true);
+    expect(discounted.totals["promotionDiscount"]).toBeUndefined();
+
+    await pool.query(
+      "UPDATE booking.promo_definitions SET applicable_room_ids=$2::uuid[] WHERE property_id=$1",
+      [propertyId, [rooms[0]]],
+    );
+    await expect(
+      transaction((client) =>
+        createTargetMixedCheckoutQuote(
+          client,
+          property,
+          { ...request, promoCode: "MIXED50" },
+          new Date(input.occurredAt.getTime() + 2000),
+        ),
+      ),
+    ).rejects.toThrow("does not apply to every selected room");
+    expect(saved.totalAmount).toBe("610.25");
+    expect(saved.totals["addonTotal"]).toBe(10.25);
+    expect(saved.selectedOfferSnapshot["roomSelection"]).toEqual(selection);
+    expect(saved.policySnapshot["type"]).toBe("mixed_room");
+    const bound = { ...request, roomTypeId: rooms[0], quoteId: saved.publicQuoteReference };
+    expect(
+      (await loadTargetCheckoutQuoteSnapshot(pool, propertyId, bound, input.occurredAt))
+        .totalAmount,
+    ).toBe("610.25");
+    await expect(
+      loadTargetCheckoutQuoteSnapshot(
+        pool,
+        propertyId,
+        { ...bound, roomSelection: { ...selection, lines: selection.lines.slice(0, 1) } },
+        input.occurredAt,
+      ),
+    ).rejects.toThrow("Room selection changed");
+  });
   it("rolls back earlier room holds when a later room fails", async () => {
     await expect(
       transaction((client) =>
