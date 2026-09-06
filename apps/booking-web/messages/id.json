@@ -68,7 +68,6 @@
     "noAvailability": "Tidak ada akomodasi tersedia untuk pencarian ini. Coba tanggal atau opsi pencarian lain.",
     "availabilityError": "Kami tidak dapat memeriksa ketersediaan. Silakan coba lagi.",
     "noMatchingRooms": "Tidak ada akomodasi yang sesuai dengan filter Anda. Coba hapus filter.",
-
     "yourStay": "Masa Menginap Anda",
     "addPromo": "Tambah promo",
     "promoTitle": "Punya kode promo?",
@@ -412,5 +411,16 @@
     "unableToLoad": "Tidak Dapat Memuat Hotel",
     "tryAgainLater": "Kami tidak dapat mengambil data hotel. Silakan coba lagi nanti.",
     "retry": "Coba Lagi"
+  },
+  "roomSelection": {
+    "accommodation": "Akomodasi untuk {count} tamu",
+    "perRoomTerms": "Ketentuan pembatalan berlaku untuk setiap kamar.",
+    "roomNumber": "Kamar {number}",
+    "totalStay": "Total untuk {nights} malam",
+    "freeUntil": "Pembatalan gratis hingga {date} ({timezone}).",
+    "afterDeadline": "Tidak ada pengembalian dana setelah batas waktu atau jika tidak datang.",
+    "termsUnavailable": "Ketentuan pembatalan tidak tersedia.",
+    "unavailable": "Pilihan akomodasi ini tidak lagi tersedia. Silakan cari kembali.",
+    "choose": "Pilih akomodasi ini"
   }
 }

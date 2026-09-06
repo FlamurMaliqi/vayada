@@ -11,6 +11,7 @@ import {
   hasVariableNightlyRates,
 } from "@/lib/constants/booking";
 import { bookingImageSizes } from "@/components/booking/imageSizes";
+import RoomCombinationCard from "./RoomCombinationCard";
 import RateOption from "./RateOption";
 
 interface RoomCardProps {
@@ -142,6 +143,9 @@ export default function RoomCard({
     effectiveSelectedRate === "nonrefundable" ? room.nonRefundablePromotion : room.promotion;
   const selectedPromotionAmount =
     effectiveSelectedRate === "nonrefundable" ? nonRefundablePromotion : flexiblePromotion;
+
+  if (room.combination) return <RoomCombinationCard room={room} nights={nights} timezone={hotelTimezone}
+    disabled={selectRateDisabled} pending={selectRatePending} onSelect={(quantity) => onSelectRate("flexible", quantity)} />;
 
   return (
     <div

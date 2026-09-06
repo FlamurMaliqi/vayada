@@ -276,6 +276,7 @@ function HomePageContent() {
             }),
           );
     const stayTotal = (room: (typeof rooms)[number]) => {
+      if (room.combination) return room.combination.totalAmount;
       const rates = getFlexibleNightlyRates(room, nights);
       return rates.reduce((sum, rate) => sum + rate, 0);
     };
@@ -338,7 +339,7 @@ function HomePageContent() {
     const totalGuests = committedAdults + effectiveCommittedChildren;
     const targets = new Set<string>();
     for (const room of rooms.slice(0, 8)) {
-      const requiredRooms = Math.ceil(totalGuests / room.maxOccupancy);
+      const requiredRooms = room.combination ? room.combination.roomSelection.lines.reduce((sum, line) => sum + line.guests.length, 0) : Math.ceil(totalGuests / room.maxOccupancy);
       if (room.remainingRooms < requiredRooms) continue;
       const rateType = getSelectedAvailableRate(room);
       if (!rateType) continue;
@@ -796,7 +797,7 @@ function HomePageContent() {
         filteredRooms[detailModalIndex] &&
         (() => {
           const modalRoom = filteredRooms[detailModalIndex];
-          const modalRequiredRooms = Math.ceil(
+          const modalRequiredRooms = modalRoom.combination ? modalRoom.combination.roomSelection.lines.reduce((sum, line) => sum + line.guests.length, 0) : Math.ceil(
             (committedAdults + effectiveCommittedChildren) / modalRoom.maxOccupancy,
           );
           const modalSoldOut = modalRoom.remainingRooms < modalRequiredRooms;
