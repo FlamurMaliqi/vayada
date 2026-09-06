@@ -31,20 +31,7 @@ export type MarketplaceAffiliateAdminRecord = {
   updatedAt: string;
 };
 
-export type MarketplaceAffiliateAdminListInput = {
-  propertyId: string;
-  status?: MarketplaceAffiliateLifecycleStatus;
-  affiliateType?: "guest" | "creator";
-  search?: string;
-  limit: number;
-  offset: number;
-};
-
 export interface MarketplaceAffiliateAdminRepository {
-  listAffiliates(input: MarketplaceAffiliateAdminListInput): Promise<{
-    affiliates: MarketplaceAffiliateAdminRecord[];
-    total: number;
-  }>;
   getAffiliate(
     propertyId: string,
     affiliateId: string,

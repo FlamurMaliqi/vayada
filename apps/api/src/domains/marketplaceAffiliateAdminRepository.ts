@@ -45,36 +45,6 @@ export function createPgMarketplaceAffiliateAdminRepository(config: {
     config.pool ?? new pg.Pool({ connectionString: config.connectionString, max: config.max });
 
   return {
-    async listAffiliates(input) {
-      const values: unknown[] = [input.propertyId];
-      const filters = [`affiliate.property_id = $1::uuid`];
-      if (input.status) {
-        values.push(input.status);
-        filters.push(`affiliate.lifecycle_status = $${values.length}`);
-      }
-      if (input.affiliateType) {
-        values.push(input.affiliateType);
-        filters.push(`affiliate.affiliate_type = $${values.length}`);
-      }
-      if (input.search) {
-        values.push(`%${input.search.toLocaleLowerCase()}%`);
-        filters.push(`lower(concat_ws(' ', affiliate.display_name, affiliate.contact_email,
-          affiliate.referral_code, affiliate.affiliate_id)) LIKE $${values.length}`);
-      }
-      const where = `WHERE ${filters.join(" AND ")}`;
-      const rows = await pool.query<AffiliateRow>(
-        `${AFFILIATE_SELECT} ${where}
-         ORDER BY affiliate.applied_at DESC, affiliate.affiliate_id ASC
-         LIMIT $${values.length + 1} OFFSET $${values.length + 2}`,
-        [...values, input.limit, input.offset],
-      );
-      const count = await pool.query<{ total: string }>(
-        `SELECT count(*)::text AS total FROM marketplace.property_affiliates affiliate ${where}`,
-        values,
-      );
-      return { affiliates: rows.rows.map(mapAffiliate), total: Number(count.rows[0]?.total ?? 0) };
-    },
-
     async getAffiliate(propertyId, affiliateId) {
       const result = await pool.query<AffiliateRow>(
         `${AFFILIATE_SELECT}

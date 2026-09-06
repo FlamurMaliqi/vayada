@@ -5,10 +5,7 @@ import type {
   RequestContext,
 } from "@vayada/backend-auth";
 import { injectJson } from "@vayada/backend-test";
-import type {
-  MarketplaceAffiliateAdminRecord,
-  MarketplaceAffiliateAdminRepository,
-} from "@vayada/domain-marketplace";
+import type { MarketplaceAffiliateAdminRepository } from "@vayada/domain-marketplace";
 import Fastify from "fastify";
 import { afterEach, describe, expect, it } from "vitest";
 
@@ -18,7 +15,6 @@ const propertyId = "12780000-0000-4000-8000-000000000001";
 const otherPropertyId = "12780000-0000-4000-8000-000000000002";
 const actorUserId = "12780000-0000-4000-8000-000000000003";
 const affiliateId = "aff_vay_1278";
-const now = "2026-08-13T20:00:00.000Z";
 
 type AuthOptions = {
   permissions?: PermissionKey[];
@@ -30,54 +26,23 @@ describe("Marketplace affiliate admin routes", () => {
   const apps: Array<Awaited<ReturnType<typeof testApp>>> = [];
   afterEach(async () => Promise.all(apps.splice(0).map((app) => app.close())));
 
-  it("lists and reads property-scoped affiliates through the typed repository", async () => {
-    const repository = fakeRepository();
-    const app = await testApp(repository);
-    apps.push(app);
-    const list = await injectJson<{
-      contractVersion: string;
-      total: number;
-      limit: number;
-      offset: number;
-    }>(app, {
-      method: "GET",
-      url: `/api/marketplace/properties/${propertyId}/affiliates`,
-      headers: authHeader,
-      query: {
-        status: "pending",
-        affiliateType: "creator",
-        search: "Ada",
-        limit: "999",
-        offset: "-2",
-      },
-    });
-    const detail = await injectJson<MarketplaceAffiliateAdminRecord>(app, {
-      method: "GET",
-      url: `/api/marketplace/properties/${propertyId}/affiliates/${affiliateId}`,
-      headers: authHeader,
-    });
-
-    expect(list.statusCode).toBe(200);
-    expect(list.body).toMatchObject({
-      contractVersion: "marketplace-affiliate-admin.v1",
-      total: 1,
-      limit: 200,
-      offset: 0,
-    });
-    expect(detail.statusCode).toBe(200);
-    expect(detail.body.affiliateId).toBe(affiliateId);
-    expect(repository.calls.list).toEqual([
-      {
-        propertyId,
-        status: "pending",
-        affiliateType: "creator",
-        search: "Ada",
-        limit: 200,
-        offset: 0,
-      },
-    ]);
-    expect(repository.calls.get).toEqual([[propertyId, affiliateId]]);
-  });
+  it.each(["", `/${affiliateId}`, "/affiliate-from-other-property"])(
+    "retires administration read %s without accessing affiliate data",
+    async (suffix) => {
+      const repository = fakeRepository();
+      const app = await testApp(repository);
+      apps.push(app);
+      const response = await app.inject({
+        method: "GET",
+        url: `/api/marketplace/properties/${propertyId}/affiliates${suffix}`,
+        headers: authHeader,
+      });
+      expect(response.statusCode).toBe(410);
+      expect(response.json()).toMatchObject({ code: "affiliate_administration_retired" });
+      expect(response.headers["cache-control"]).toBe("no-store");
+      expect(repository.calls).toEqual({ get: [] });
+    },
+  );
 
   it.each(["approve", "reject", "suspend", "restore"])(
     "retires %s without changing lifecycle state",
@@ -94,7 +59,7 @@ describe("Marketplace affiliate admin routes", () => {
       expect(response.statusCode).toBe(410);
       expect(response.json()).toMatchObject({ code: "affiliate_administration_retired" });
       expect(response.headers["cache-control"]).toBe("no-store");
-      expect(repository.calls).toEqual({ list: [], get: [] });
+      expect(repository.calls).toEqual({ get: [] });
     },
   );
 
@@ -139,13 +104,15 @@ describe("Marketplace affiliate admin routes", () => {
     const repository = fakeRepository();
     const app = await testApp(repository, auth);
     apps.push(app);
-    const response = await injectJson<{ code: string }>(app, {
-      method: "GET",
-      url: `/api/marketplace/properties/${propertyId}/affiliates`,
-      headers,
-    });
-    expect(response.statusCode).toBe(status);
-    expect(response.body.code).toBe(code);
+    for (const suffix of ["", `/${affiliateId}`]) {
+      const response = await injectJson<{ code: string }>(app, {
+        method: "GET",
+        url: `/api/marketplace/properties/${propertyId}/affiliates${suffix}`,
+        headers,
+      });
+      expect(response.statusCode).toBe(status);
+      expect(response.body.code).toBe(code);
+    }
     const write = await injectJson(app, {
       method: "POST",
       url: `/api/marketplace/properties/${propertyId}/affiliates/${affiliateId}/lifecycle`,
@@ -153,19 +120,7 @@ describe("Marketplace affiliate admin routes", () => {
       payload: { action: "approve" },
     });
     expect(write.statusCode).toBe(status);
-    expect(repository.calls).toEqual({ list: [], get: [] });
-  });
-
-  it("keeps valid property scope from discovering another property's affiliate", async () => {
-    const app = await testApp(fakeRepository({ affiliate: null }));
-    apps.push(app);
-    const response = await injectJson<{ code: string }>(app, {
-      method: "GET",
-      url: `/api/marketplace/properties/${propertyId}/affiliates/affiliate-from-other-property`,
-      headers: authHeader,
-    });
-    expect(response.statusCode).toBe(404);
-    expect(response.body.code).toBe("affiliate_not_found");
+    expect(repository.calls).toEqual({ get: [] });
   });
 });
 
@@ -193,45 +148,18 @@ async function testApp(repository: FakeRepository, auth: AuthOptions = {}) {
 
 type FakeRepository = MarketplaceAffiliateAdminRepository & {
   calls: {
-    list: unknown[];
     get: unknown[];
   };
 };
 
-function fakeRepository(
-  options: {
-    affiliate?: MarketplaceAffiliateAdminRecord | null;
-  } = {},
-): FakeRepository {
-  const calls: FakeRepository["calls"] = { list: [], get: [] };
-  const affiliate = options.affiliate === undefined ? affiliateRecord() : options.affiliate;
+function fakeRepository(): FakeRepository {
+  const calls: FakeRepository["calls"] = { get: [] };
   return {
     calls,
-    async listAffiliates(input) {
-      calls.list.push(input);
-      return { affiliates: affiliate ? [affiliate] : [], total: affiliate ? 1 : 0 };
-    },
     async getAffiliate(...input) {
       calls.get.push(input);
-      return affiliate;
+      return null;
     },
-  };
-}
-
-function affiliateRecord(): MarketplaceAffiliateAdminRecord {
-  return {
-    contractVersion: "marketplace-affiliate-admin.v1",
-    affiliateId,
-    propertyId,
-    referralCode: "VAY1278",
-    displayName: "Ada Affiliate",
-    contactEmail: "ada@example.test",
-    socialMedia: "@ada",
-    affiliateType: "creator",
-    lifecycleStatus: "pending",
-    applicationSource: "public_registration",
-    appliedAt: now,
-    updatedAt: now,
   };
 }
 

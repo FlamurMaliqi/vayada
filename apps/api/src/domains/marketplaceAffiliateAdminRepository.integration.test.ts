@@ -41,19 +41,12 @@ describe.skipIf(!TEST_DATABASE_URL)("Marketplace affiliate admin PostgreSQL repo
     await admin.end();
   });
 
-  it("lists and reads only the requested property scope", async () => {
-    await expect(
-      repository.listAffiliates({ propertyId, search: "ADA", limit: 20, offset: 0 }),
-    ).resolves.toMatchObject({
-      total: 1,
-      affiliates: [
-        {
-          contractVersion: "marketplace-affiliate-admin.v1",
-          affiliateId,
-          propertyId,
-          lifecycleStatus: "pending",
-        },
-      ],
+  it("reads only the requested property scope for Finance continuity", async () => {
+    await expect(repository.getAffiliate(propertyId, affiliateId)).resolves.toMatchObject({
+      contractVersion: "marketplace-affiliate-admin.v1",
+      affiliateId,
+      propertyId,
+      lifecycleStatus: "pending",
     });
     await expect(repository.getAffiliate(otherPropertyId, affiliateId)).resolves.toBeNull();
   });
