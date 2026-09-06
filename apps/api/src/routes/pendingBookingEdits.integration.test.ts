@@ -343,6 +343,50 @@ describe.skipIf(!process.env["TEST_DATABASE_URL"])(
       }
     });
 
+    it("drains releases even when another account's recovery fails", async () => {
+      const source = [...intents.values()][0];
+      const recovery = await stripe.createPaymentIntent({
+        propertyId,
+        bookingReference: fixture.created.booking.bookingReference,
+        providerAccountRef: "acct_vay959",
+        amountMinor: 100,
+        currency: "EUR",
+        applicationFeeAmountMinor: 5,
+        captureMethod: "manual",
+        idempotencyKey: "durable-release",
+      });
+      recovery.status = "requires_capture";
+      await pool.query(
+        `INSERT INTO booking.edit_authorization_releases(provider_payment_intent_id,provider_account_ref,property_id) VALUES($1,'acct_vay959',$2)`,
+        [recovery.paymentIntentId, propertyId],
+      );
+      await pool.query(`INSERT INTO booking.pending_booking_edit_attempts
+      (property_id,guest_booking_id,expected_revision,idempotency_key,request_fingerprint,quote_session_id,provider_account_id,payment_method,provider_request,created_at,expires_at,updated_at)
+      SELECT property_id,guest_booking_id,expected_revision,'poison-recovery',request_fingerprint,quote_session_id,provider_account_id,'card',
+      provider_request || '{"idempotencyKey":"poison"}'::jsonb,now()-interval '2 hours',now()-interval '1 hour',now()-interval '2 hours'
+      FROM booking.pending_booking_edit_attempts WHERE payment_method='card' LIMIT 1`);
+      await releaseAbandonedBookingEdits(pool, {
+        connectionString: url!,
+        inventoryReservationPort: createTargetPmsInventoryReservationPort(),
+        stripePaymentProvider: {
+          ...stripe,
+          async createPaymentIntent(input) {
+            if (input.idempotencyKey === "poison") throw new Error("Disconnected account");
+            return stripe.createPaymentIntent(input);
+          },
+        },
+      });
+      expect(recovery.status).toBe("canceled");
+      expect(source.status).toBe("canceled");
+      expect(
+        (
+          await pool.query(
+            "SELECT status FROM booking.pending_booking_edit_attempts WHERE idempotency_key='poison-recovery'",
+          )
+        ).rows[0].status,
+      ).toBe("prepared");
+    });
+
     it("rejects a prepared save when acceptance wins the booking lock", async () => {
       const details = await edit("details", {});
       const input = {
