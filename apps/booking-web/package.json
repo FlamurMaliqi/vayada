@@ -14,6 +14,8 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@vayada/domain-hotels": "*",
+    "@vayada/product-onboarding": "*",
     "@heroicons/react": "^2.2.0",
     "@stripe/react-stripe-js": "^2.4.0",
     "@stripe/stripe-js": "^2.4.0",

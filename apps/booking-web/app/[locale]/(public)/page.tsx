@@ -12,6 +12,7 @@ import GuestSelector from "@/components/booking/GuestSelector";
 import RoomDetailModal from "@/components/booking/RoomDetailModal";
 import RoomCard from "@/components/booking/RoomCard";
 import RoomFiltersBar from "@/components/booking/RoomFiltersBar";
+import Surroundings from "@/components/booking/Surroundings";
 import PublicStructuredData from "@/components/booking/PublicStructuredData";
 import PropertyGallery from "@/components/booking/PropertyGallery";
 import { useHotel, useRooms, useAddons, useSlug } from "@/contexts/HotelContext";
@@ -789,6 +790,7 @@ function HomePageContent() {
         </div>
       </div>
 
+      <Surroundings key={slug} slug={slug} locality={hotel.contact.address} />
       {/* Room Detail Modal */}
       {detailModalIndex !== null &&
         filteredRooms[detailModalIndex] &&
