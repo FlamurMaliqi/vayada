@@ -131,11 +131,15 @@ describe.skipIf(!TEST_DATABASE_URL)("runMigrations (integration)", () => {
   beforeEach(async () => {
     tmpDir = join(tmpdir(), `backend-migration-int-${Date.now()}`);
     await mkdir(tmpDir, { recursive: true });
+    await resetRunnerSchemas();
   });
 
   afterEach(async () => {
     await rm(tmpDir, { recursive: true, force: true });
+    await resetRunnerSchemas();
+  });
 
+  async function resetRunnerSchemas() {
     assertSafeTestDatabase(TEST_DATABASE_URL!);
 
     const client = new pg.Client({ connectionString: TEST_DATABASE_URL });
@@ -146,7 +150,7 @@ describe.skipIf(!TEST_DATABASE_URL)("runMigrations (integration)", () => {
     } finally {
       await client.end();
     }
-  });
+  }
 
   it("applies a trivial migration and records a ledger row with status applied", async () => {
     await writeFile(
@@ -465,6 +469,15 @@ describe.skipIf(!TEST_DATABASE_URL)("target schema migrations (integration)", ()
              (organization_id, selected_tracks, revision)
            VALUES ($1, ARRAY['hotel_operations'], 0)`,
           [organizationId(8)],
+        ),
+      ).rejects.toMatchObject({ code: "23514" });
+
+      await expect(
+        client.query(
+          `INSERT INTO hotel_catalog.organization_setup_track_intents
+             (organization_id, selected_tracks)
+           VALUES ($1, ARRAY['hotel_operations'])`,
+          [organizationId(9)],
         ),
       ).rejects.toMatchObject({ code: "23503" });
 
@@ -787,6 +800,7 @@ describe.skipIf(!TEST_DATABASE_URL)("target schema migrations (integration)", ()
 
       expect(tableRows.map((row) => row.table_name)).toEqual([
         "addon_definitions",
+        "booking_addon_selection_items",
         "booking_addon_selections",
         "booking_change_requests",
         "booking_design_revisions",
@@ -811,6 +825,7 @@ describe.skipIf(!TEST_DATABASE_URL)("target schema migrations (integration)", ()
         "promo_applications",
         "promo_definitions",
         "quote_sessions",
+        "same_day_booking_policies",
       ]);
 
       const { rows: bookingColumns } = await verifyClient.query<{
