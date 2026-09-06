@@ -143,29 +143,6 @@ export type BookingWebPublicHostResponse = {
   };
 };
 
-export type BookingWebAffiliateRegistrationRequest = {
-  fullName: string;
-  email: string;
-  socialMedia?: string;
-  userType?: "guest" | "creator";
-  paymentMethod?: "stripe" | "paypal" | "bank";
-  paypalEmail?: string;
-  bankIban?: string;
-  bankAccountHolder?: string;
-  bankSwiftBic?: string;
-  bankName?: string;
-  bankCountry?: string;
-};
-
-export type BookingWebAffiliateRegistrationResponse = {
-  id: string;
-  referralCode: string;
-};
-
-export type BookingWebAffiliateStripeConnectResponse = {
-  onboardingUrl: string;
-};
-
 export const bookingWebPublicApi = {
   async resolveHost(host: string, init?: ApiRequestInit): Promise<BookingWebPublicHostResponse> {
     return bookingWebPublic.get<BookingWebPublicHostResponse>(
@@ -220,38 +197,6 @@ export const bookingWebPublicApi = {
     const params = new URLSearchParams({ start, end });
     return bookingWebPublic.get<BookingWebPublicCalendarResponse>(
       `/api/booking-web/hotels/${encodeURIComponent(slug)}/calendar?${params.toString()}`,
-    );
-  },
-};
-
-export const bookingWebAffiliateApi = {
-  async checkEmail(slug: string, email: string): Promise<{ exists: boolean }> {
-    const params = new URLSearchParams({ email });
-    return bookingWebPublic.get<{ exists: boolean }>(
-      `/api/booking-web/hotels/${encodeURIComponent(slug)}/affiliates/check-email?${params.toString()}`,
-    );
-  },
-
-  async register(
-    slug: string,
-    request: BookingWebAffiliateRegistrationRequest,
-  ): Promise<BookingWebAffiliateRegistrationResponse> {
-    return bookingWebPublic.post<BookingWebAffiliateRegistrationResponse>(
-      `/api/booking-web/hotels/${encodeURIComponent(slug)}/affiliates`,
-      request,
-    );
-  },
-
-  async createStripeConnectLink(
-    slug: string,
-    affiliateId: string,
-    request: { email: string },
-  ): Promise<BookingWebAffiliateStripeConnectResponse> {
-    return bookingWebPublic.post<BookingWebAffiliateStripeConnectResponse>(
-      `/api/booking-web/hotels/${encodeURIComponent(slug)}/affiliates/${encodeURIComponent(
-        affiliateId,
-      )}/stripe/connect`,
-      request,
     );
   },
 };
