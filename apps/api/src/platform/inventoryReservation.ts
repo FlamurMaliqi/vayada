@@ -51,6 +51,11 @@ export type DirectBookingInventoryReservationPort = {
     occurredAt: Date;
     requireReserved?: boolean;
   }): Promise<void>;
+  selectionAvailabilityCredits?(input: {
+    transaction: InventoryReservationTransaction;
+    propertyId: string;
+    guestBookingId: string;
+  }): Promise<Map<string, { checkIn: string; checkOut: string; roomCount: number }>>;
   availabilityCredit?(input: {
     transaction: InventoryReservationTransaction;
     propertyId: string;
