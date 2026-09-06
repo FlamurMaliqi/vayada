@@ -66,12 +66,10 @@ export default function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
   const { activeModuleIds, hotelId: activationPropertyId } =
     useFeatureModuleActivations(moduleActivationClient);
   const activeFeatureNavItems: NavItem[] = activationPropertyId
-    ? activeNavModules("booking_engine", activeModuleIds)
-        .filter((module) => module.id !== "affiliates")
-        .map((module) => ({
-          ...module.navItem!,
-          labelKey: `featureHub.module.${module.id}.name`,
-        }))
+    ? activeNavModules("booking_engine", activeModuleIds).map((module) => ({
+        ...module.navItem!,
+        labelKey: `featureHub.module.${module.id}.name`,
+      }))
     : [];
   const navItems = [...coreNavItems, ...activeFeatureNavItems, promoCodesNavItem, settingsNavItem];
 

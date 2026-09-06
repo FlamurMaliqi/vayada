@@ -1,32 +1,8 @@
-import { BanknotesIcon, LinkIcon, MegaphoneIcon, UserGroupIcon } from "@heroicons/react/24/outline";
-
 import type { CoreNavItem, FeatureCategory, FeatureModule, FeatureProduct } from "./types";
 
 export const FEATURE_CATEGORIES: Array<"All" | FeatureCategory> = ["All", "Distribution"];
 
-export const FEATURE_MODULES: FeatureModule[] = [
-  {
-    id: "affiliates",
-    name: "Affiliates",
-    description: "Let partners earn commission on the bookings they refer to you.",
-    category: "Distribution",
-    type: "internal",
-    product: "booking_engine",
-    icon: "users",
-    isNew: true,
-    navItem: { label: "Affiliates", href: "/affiliates", icon: UserGroupIcon },
-    detail: {
-      headline: "Open a partner channel without adding manual commission tracking.",
-      visualType: "affiliates",
-      features: [
-        { icon: UserGroupIcon, text: "Invite partners and track their referral activity." },
-        { icon: MegaphoneIcon, text: "See clicks, bookings, revenue, and commission earned." },
-        { icon: LinkIcon, text: "Issue partner links tied to your booking engine." },
-        { icon: BanknotesIcon, text: "Prepare payout-ready commission records." },
-      ],
-    },
-  },
-];
+export const FEATURE_MODULES: FeatureModule[] = [];
 
 export const CORE_NAV_ITEMS: Record<FeatureProduct, CoreNavItem[]> = {
   pms: [
