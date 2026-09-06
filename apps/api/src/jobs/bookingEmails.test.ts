@@ -97,6 +97,8 @@ describe("booking lifecycle email jobs", () => {
     expect(jobInsert.values?.[2]).toBe(BOOKING_RESERVED_PENDING_PAYMENT_EMAIL_JOB_TYPE);
 
     const payload = JSON.parse(String(jobInsert.values?.[8]));
+    expect(payload.emailProduct).toBe("booking");
+    expect(jobInsert.text).toContain("ON CONFLICT (queue_name, job_key) DO NOTHING");
     expect(payload.subject).toContain("reserved pending payment");
     expect(payload.text).toContain("We've reserved your room");
     expect(payload.text).toContain("Payment deadline: 2026-09-02T10:00:00.000Z");
