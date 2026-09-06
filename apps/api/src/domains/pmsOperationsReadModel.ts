@@ -929,16 +929,16 @@ function pmsOperationalReservationSelectSql(canReadGuestContact: boolean): strin
   primary_guest.special_requests AS "primaryGuestSpecialRequests",
   ${BOOKING_HAS_EVER_BEEN_ACCEPTED_SQL} AS "guestContactAccepted",
   COALESCE(
-    NULLIF(quote.selected_offer_snapshot ->> 'roomTypeId', ''),
     NULLIF(booking.booking_metadata #>> '{selectedOffer,roomTypeId}', ''),
+    NULLIF(quote.selected_offer_snapshot ->> 'roomTypeId', ''),
     ''
   ) AS "bookedRoomTypeId",
   COALESCE(
-    NULLIF(quote.selected_offer_snapshot ->> 'roomName', ''),
     NULLIF(booking.booking_metadata #>> '{selectedOffer,roomName}', ''),
+    NULLIF(quote.selected_offer_snapshot ->> 'roomName', ''),
     ''
   ) AS "bookedRoomName",
-  COALESCE(quote.selected_offer_snapshot,booking.booking_metadata->'selectedOffer') AS "selectedRoomOffer",
+  COALESCE(booking.booking_metadata->'selectedOffer',quote.selected_offer_snapshot) AS "selectedRoomOffer",
   booking.room_count AS "roomCount",
   booking.total_amount AS "totalAmount",
   booking.balance_amount AS "balanceAmount",
