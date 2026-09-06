@@ -421,6 +421,8 @@
     "afterDeadline": "Sin reembolso después del plazo o en caso de no presentarse.",
     "termsUnavailable": "Las condiciones de cancelación no están disponibles.",
     "unavailable": "Esta selección ya no está disponible. Busca de nuevo.",
-    "choose": "Elegir este alojamiento"
+    "choose": "Elegir este alojamiento",
+    "selectedAccommodation": "Alojamiento seleccionado",
+    "partyChanged": "El número de huéspedes ha cambiado. Elija un alojamiento con una plaza para cada huésped antes de revisar el precio."
   }
 }

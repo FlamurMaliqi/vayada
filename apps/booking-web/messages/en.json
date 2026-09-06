@@ -425,6 +425,8 @@
     "afterDeadline": "No refund after the deadline or for a no-show.",
     "termsUnavailable": "Cancellation terms are unavailable.",
     "unavailable": "This accommodation selection is no longer available. Please search again.",
-    "choose": "Choose this accommodation"
+    "choose": "Choose this accommodation",
+    "selectedAccommodation": "Selected accommodation",
+    "partyChanged": "Your guest count has changed. Choose accommodation with an allocation for every guest before reviewing the price."
   }
 }

@@ -421,6 +421,8 @@
     "afterDeadline": "Tidak ada pengembalian dana setelah batas waktu atau jika tidak datang.",
     "termsUnavailable": "Ketentuan pembatalan tidak tersedia.",
     "unavailable": "Pilihan akomodasi ini tidak lagi tersedia. Silakan cari kembali.",
-    "choose": "Pilih akomodasi ini"
+    "choose": "Pilih akomodasi ini",
+    "selectedAccommodation": "Akomodasi yang dipilih",
+    "partyChanged": "Jumlah tamu telah berubah. Pilih akomodasi dengan alokasi untuk setiap tamu sebelum meninjau harga."
   }
 }

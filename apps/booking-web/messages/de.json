@@ -425,6 +425,8 @@
     "afterDeadline": "Keine Erstattung nach Ablauf der Frist oder bei Nichtanreise.",
     "termsUnavailable": "Die Stornierungsbedingungen sind nicht verfügbar.",
     "unavailable": "Diese Unterkunftsauswahl ist nicht mehr verfügbar. Bitte suche erneut.",
-    "choose": "Diese Unterkunft wählen"
+    "choose": "Diese Unterkunft wählen",
+    "selectedAccommodation": "Ausgewählte Unterkunft",
+    "partyChanged": "Die Gästezahl hat sich geändert. Wählen Sie vor der Preisprüfung eine Unterkunft mit einer Zuteilung für alle Gäste."
   }
 }

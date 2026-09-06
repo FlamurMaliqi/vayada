@@ -421,6 +421,8 @@
     "afterDeadline": "Aucun remboursement après la date limite ou en cas de non-présentation.",
     "termsUnavailable": "Les conditions d’annulation ne sont pas disponibles.",
     "unavailable": "Cette sélection n’est plus disponible. Veuillez relancer la recherche.",
-    "choose": "Choisir cet hébergement"
+    "choose": "Choisir cet hébergement",
+    "selectedAccommodation": "Hébergement sélectionné",
+    "partyChanged": "Le nombre de voyageurs a changé. Choisissez un hébergement avec une place pour chaque voyageur avant de vérifier le prix."
   }
 }

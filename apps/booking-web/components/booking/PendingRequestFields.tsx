@@ -1,4 +1,10 @@
 "use client";
+import { useTranslations } from "next-intl";
+import {
+  sameRoomSelection,
+  selectionCheckoutFields,
+  roomSelectionPartyMatches,
+} from "@/lib/roomSelection";
 import type { Addon, RoomType } from "@/lib/types";
 import type { BookingCreateRequest, PaymentSettings } from "@/services/api/booking";
 import type { PendingEditDetails } from "@/services/api/pendingBookingEdits";
@@ -21,6 +27,18 @@ export default function PendingRequestFields({
   disabled: boolean;
   change: (patch: Partial<BookingCreateRequest>) => void;
 }) {
+  const t = useTranslations("roomSelection");
+  const selected = rooms.find((room) =>
+    input.roomSelection
+      ? sameRoomSelection(room.combination?.roomSelection, input.roomSelection)
+      : !room.combination && room.id === input.roomTypeId,
+  );
+  const original = input.roomSelection
+    ? sameRoomSelection(input.roomSelection, details.input.roomSelection)
+    : !details.input.roomSelection && input.roomTypeId === details.input.roomTypeId;
+  const partyMatches =
+    !input.roomSelection ||
+    roomSelectionPartyMatches(input.roomSelection, input.adults, input.children);
   const methods = settings
     ? [
         ...(settings.payAtPropertyEnabled ? [["pay_at_property", "Pay at property"]] : []),
@@ -82,11 +100,33 @@ export default function PendingRequestFields({
           Room
           <select
             className={field}
-            value={input.roomTypeId}
-            onChange={(e) => change({ roomTypeId: e.target.value })}
+            value={selected?.id ?? (original ? "original-selection" : "current-selection")}
+            onChange={(e) => {
+              if (e.target.value === "original-selection") {
+                change({
+                  roomTypeId: details.input.roomTypeId,
+                  roomSelection: details.input.roomSelection,
+                  numberOfRooms: details.input.numberOfRooms,
+                  currency: details.input.currency,
+                });
+                return;
+              }
+              const room = rooms.find((candidate) => candidate.id === e.target.value);
+              if (!room) return;
+              change({
+                ...selectionCheckoutFields(room),
+                numberOfRooms: room.combination
+                  ? room.combination.roomSelection.lines.reduce(
+                      (sum, line) => sum + line.guests.length,
+                      0,
+                    )
+                  : 1,
+              });
+            }}
           >
-            {!rooms.some((room) => room.id === details.input.roomTypeId) && (
-              <option value={details.input.roomTypeId}>{details.booking.roomName}</option>
+            <option value="original-selection">{details.booking.roomName}</option>
+            {!selected && !original && (
+              <option value="current-selection">{t("selectedAccommodation")}</option>
             )}
             {rooms.map((room) => (
               <option key={room.id} value={room.id}>
@@ -103,11 +143,21 @@ export default function PendingRequestFields({
             min={1}
             max={100}
             required
-            value={input.numberOfRooms || 1}
+            readOnly={Boolean(input.roomSelection)}
+            value={
+              input.roomSelection
+                ? input.roomSelection.lines.reduce((sum, line) => sum + line.guests.length, 0)
+                : input.numberOfRooms || 1
+            }
             onChange={(e) => change({ numberOfRooms: Number(e.target.value) })}
           />
         </label>
       </div>
+      {!partyMatches && (
+        <p role="alert" className="text-sm text-red-700">
+          {t("partyChanged")}
+        </p>
+      )}
       <fieldset className="space-y-3">
         <legend className="mb-2 font-semibold">Add-ons</legend>
         {addons.map((addon) => {
@@ -216,7 +266,7 @@ export default function PendingRequestFields({
           />
         </label>
       )}
-      <button type="submit" className={button}>
+      <button type="submit" className={button} disabled={!partyMatches}>
         Review updated price
       </button>
     </fieldset>

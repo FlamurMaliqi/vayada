@@ -1,4 +1,6 @@
 "use client";
+import RoomSelectionSummary from "@/components/booking/RoomSelectionSummary";
+import { sameRoomSelection } from "@/lib/roomSelection";
 import PendingRequestFields from "@/components/booking/PendingRequestFields";
 
 import { use, useCallback, useEffect, useRef, useState } from "react";
@@ -209,6 +211,16 @@ export default function EditRequestPage({
     }
   }
 
+  const selectedRoom = rooms.find((room) =>
+    sameRoomSelection(room.combination?.roomSelection, input?.roomSelection),
+  );
+  const selectedLines =
+    quote?.roomLines ??
+    selectedRoom?.combination?.roomLines ??
+    (sameRoomSelection(input?.roomSelection, details?.input.roomSelection)
+      ? details?.booking.roomLines
+      : undefined);
+
   return (
     <>
       <BookingNavigation />
@@ -239,6 +251,14 @@ export default function EditRequestPage({
               void review();
             }}
           >
+            {selectedLines && (
+              <RoomSelectionSummary
+                lines={selectedLines}
+                currency={quote?.currency ?? selectedRoom?.currency ?? details.booking.currency}
+                checkIn={input.checkIn}
+                timezone={hotel.timezone}
+              />
+            )}
             <PendingRequestFields
               input={input}
               details={details}
