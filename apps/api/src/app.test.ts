@@ -2694,6 +2694,7 @@ function buildAuthenticatedApp(
     pmsInboxProviderActionPort?: PmsInboxProviderActionPort;
     pmsInboxQuickReplyPort?: PmsInboxQuickReplyPort;
     pmsInboxReplyPort?: PmsInboxReplyPort;
+    pmsInboxSendingEnabled?: boolean;
     pmsInboxStartDirectEmailPort?: PmsInboxStartDirectEmailPort;
     pmsInboxTriagePort?: PmsInboxTriagePort;
     pmsInboxStaffCommandPort?: PmsInboxStaffCommandPort;
@@ -2747,6 +2748,7 @@ function buildAuthenticatedApp(
     pmsInboxProviderActionPort: options.pmsInboxProviderActionPort,
     pmsInboxQuickReplyPort: options.pmsInboxQuickReplyPort,
     pmsInboxReplyPort: options.pmsInboxReplyPort,
+    pmsInboxSendingEnabled: options.pmsInboxSendingEnabled,
     pmsInboxStartDirectEmailPort: options.pmsInboxStartDirectEmailPort,
     pmsInboxTriagePort: options.pmsInboxTriagePort,
     pmsInboxStaffCommandPort: options.pmsInboxStaffCommandPort,
@@ -14291,6 +14293,7 @@ describe("vayada-api", () => {
       entitlements: [{ product: "pms", key: "property-management", status: "active" }],
       pmsInboxStartDirectEmailPort: port,
       pmsOperationsAllowedOrigins: ["https://pms.localhost"],
+      pmsInboxSendingEnabled: false,
     });
     const url = `/api/pms/properties/${pmsPropertyId}/messaging/threads`;
     const post = (key?: string, body: unknown = { bookingId }) =>
@@ -14838,6 +14841,48 @@ describe("vayada-api", () => {
     expect(dispatches).toHaveLength(0);
   });
 
+  it("pauses Inbox sends and provider actions before command persistence, but keeps reads", async () => {
+    const dispatch = vi.fn(async () => {
+      throw new Error("must not dispatch");
+    });
+    app = buildAuthenticatedApp({
+      permissions: ["pms.inbox.read", "pms.inbox.reply"],
+      entitlements: [{ product: "pms", key: "property-management", status: "active" }],
+      pmsInboxSendingEnabled: false,
+      pmsInboxReplyPort: { reply: dispatch },
+      pmsInboxProviderActionPort: { noReplyNeeded: dispatch },
+      pmsInboxReadPort: {
+        listThreads: dispatch,
+        getThread: dispatch,
+        unreadCount: async (propertyId) => ({ propertyId, threadCount: 0, messageCount: 0 }),
+      },
+    });
+    const base = `/api/pms/properties/${pmsPropertyId}/messaging`;
+    for (const [path, payload] of [
+      ["messages", { expectedThreadVersion: 4, text: "Test", attachmentMediaIds: [] }],
+      ["provider-actions/no-reply-needed", {}],
+    ] as const) {
+      for (const authorization of [undefined, "Bearer invalid-token", "Bearer valid-token"]) {
+        const response = await injectJson(app, {
+          method: "POST",
+          url: `${base}/threads/thread_1/${path}`,
+          headers: { ...(authorization ? { authorization } : {}), "idempotency-key": "same-key" },
+          payload,
+        });
+        expect(response.statusCode).toBe(authorization === "Bearer valid-token" ? 503 : 401);
+        if (response.statusCode === 503)
+          expect(response.body).toMatchObject({ code: "inbox_sending_paused" });
+      }
+    }
+    const read = await injectJson(app, {
+      method: "GET",
+      url: `${base}/unread-count`,
+      headers: { authorization: "Bearer valid-token" },
+    });
+    expect(read.statusCode).toBe(200);
+    expect(dispatch).not.toHaveBeenCalled();
+  });
+
   it("accepts protected Inbox manual replies and maps command outcomes", async () => {
     const mediaId = "77777777-7777-4777-8777-777777777777";
     const calls: Parameters<PmsInboxReplyPort["reply"]>[0][] = [];
@@ -15036,6 +15081,7 @@ describe("vayada-api", () => {
         permissions: candidate.permissions,
         entitlements: candidate.entitlements ?? [entitlement],
         pmsInboxReplyPort: port,
+        pmsInboxSendingEnabled: false,
       });
       const response = await app.inject({
         method: "POST",

@@ -216,8 +216,11 @@ function ResetPasswordFormInner({
 }
 
 export default function ResetPasswordForm(props: ResetPasswordFormProps) {
+  const { t } = useTranslation();
   return (
-    <Suspense fallback={<div className="text-center text-sm text-gray-500">Loading...</div>}>
+    <Suspense
+      fallback={<div className="text-center text-sm text-gray-500">{t("common.loading")}</div>}
+    >
       <ResetPasswordFormInner {...props} />
     </Suspense>
   );

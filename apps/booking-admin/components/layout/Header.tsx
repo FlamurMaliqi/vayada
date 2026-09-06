@@ -132,13 +132,13 @@ export default function Header({ onMenuToggle }: { onMenuToggle?: () => void }) 
       location: window.location,
     });
     if (!url) {
-      setPreviewFeedback("Finish Booking setup before previewing your booking page.");
+      setPreviewFeedback(t("admin.finishBookingSetupBeforePreviewingYourBookingPage"));
       return;
     }
 
     const previewWindow = window.open(url, "_blank");
     if (!previewWindow) {
-      setPreviewFeedback("Your browser blocked the preview. Allow pop-ups and try again.");
+      setPreviewFeedback(t("admin.yourBrowserBlockedThePreviewAllowPopUpsAndTry"));
       return;
     }
     previewWindow.opener = null;
@@ -153,7 +153,7 @@ export default function Header({ onMenuToggle }: { onMenuToggle?: () => void }) 
         <button
           onClick={onMenuToggle}
           className="lg:hidden p-1.5 text-gray-500 hover:text-gray-700 hover:bg-gray-50 rounded-md transition-colors"
-          aria-label="Toggle menu"
+          aria-label={t("admin.toggleMenu")}
         >
           <svg
             className="w-5 h-5"
@@ -243,7 +243,7 @@ export default function Header({ onMenuToggle }: { onMenuToggle?: () => void }) 
                   className="w-full flex items-center gap-2 px-2.5 py-2 rounded-md text-[13px] text-primary-600 hover:bg-primary-50 transition-colors"
                 >
                   <PlusIcon className="w-4 h-4" />
-                  Add hotel
+                  {t("admin.addHotel")}
                 </button>
               </div>
             </div>
@@ -261,6 +261,8 @@ export default function Header({ onMenuToggle }: { onMenuToggle?: () => void }) 
       <NavigationSearch hotelId={selectedHotel?.id} />
 
       <SupportButton
+        placement="header"
+        translate={t}
         product="booking"
         submit={(request) =>
           apiClient.post("/api/support", request, { signal: AbortSignal.timeout(20000) })
@@ -430,7 +432,10 @@ export default function Header({ onMenuToggle }: { onMenuToggle?: () => void }) 
                         >
                           <span>{cur.flag}</span>
                           <span>{cur.code}</span>
-                          <span className="text-gray-400 truncate">{cur.name}</span>
+                          <span className="text-gray-400 truncate">
+                            {new Intl.DisplayNames([locale], { type: "currency" }).of(cur.code) ??
+                              cur.code}
+                          </span>
                         </button>
                       ))}
                     </div>

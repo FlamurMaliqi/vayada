@@ -1,4 +1,5 @@
 "use client";
+import { useTranslation } from "@/lib/i18n";
 
 import { SettingsCard } from "@vayada/settings-ui";
 import { ToggleSwitch } from "@/components/ui";
@@ -26,6 +27,7 @@ export function SameDayBookingCard({
   onSave: (enabled: boolean, cutoffLocalTime: string | null) => void;
   onRetry: () => void;
 }) {
+  const { t } = useTranslation();
   return (
     <SettingsCard>
       {loadError ? (
@@ -36,13 +38,15 @@ export function SameDayBookingCard({
             onClick={onRetry}
             className="shrink-0 rounded-lg border border-gray-300 px-3 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500 focus-visible:ring-offset-2"
           >
-            Retry
+            {t("auth.chooseProperty.retry")}
           </button>
         </div>
       ) : loading || !settings ? (
         <div role="status" className="py-3">
-          <p className="text-[13px] font-semibold text-gray-900">Allow same-day bookings</p>
-          <p className="text-[13px] text-gray-500">Loading current setting…</p>
+          <p className="text-[13px] font-semibold text-gray-900">
+            {t("admin.allowSameDayBookings")}
+          </p>
+          <p className="text-[13px] text-gray-500">{t("admin.loadingCurrentSetting")}</p>
         </div>
       ) : (
         <div aria-busy={saving}>
@@ -50,19 +54,21 @@ export function SameDayBookingCard({
             enabled={settings.enabled}
             disabled={saving}
             onChange={() => onSave(!settings.enabled, settings.cutoffLocalTime)}
-            label="Allow same-day bookings"
-            description={`Control whether guests can arrive today. The cutoff uses the property timezone (${settings.propertyTimeZone}).`}
+            label={t("admin.allowSameDayBookings")}
+            description={t("admin.controlWhetherGuestsCanArriveTodayTheCutoffUsesThe", {
+              timezone: settings.propertyTimeZone,
+            })}
           />
           <label className="mt-2 block max-w-xs text-[13px] font-semibold text-gray-900">
-            Booking cutoff
+            {t("admin.bookingCutoff")}
             <select
-              aria-label="Same-day booking cutoff"
+              aria-label={t("admin.sameDayBookingCutoff")}
               value={settings.cutoffLocalTime ?? ""}
               disabled={!settings.enabled || saving}
               onChange={(event) => onSave(settings.enabled, event.target.value || null)}
               className="mt-2 block w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-[13px] text-gray-900 focus:outline-none focus:ring-2 focus:ring-primary-500 disabled:bg-gray-50 disabled:text-gray-400"
             >
-              <option value="">No cutoff</option>
+              <option value="">{t("admin.noCutoff")}</option>
               {HALF_HOUR_TIMES.map((time) => (
                 <option key={time} value={time}>
                   {time}
@@ -71,15 +77,14 @@ export function SameDayBookingCard({
             </select>
           </label>
           <p className="mt-2 text-[12px] text-gray-500">
-            At the selected time, today becomes unavailable across direct booking and connected
-            channels.
+            {t("admin.atTheSelectedTimeTodayBecomesUnavailableAcrossDirectBooking")}
           </p>
           <p className="mt-3 border-t border-gray-100 pt-3 text-[12px] text-gray-500">
-            This setting is shared between PMS and Booking Engine.
+            {t("admin.thisSettingIsSharedBetweenPMSAndBookingEngine")}
           </p>
           {saving && (
             <p role="status" className="mt-2 text-[12px] text-gray-500">
-              Saving…
+              {t("admin.saving")}
             </p>
           )}
         </div>

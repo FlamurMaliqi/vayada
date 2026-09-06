@@ -290,7 +290,11 @@ export class ApiClient {
     await state.signOutPromise;
   }
 
-  private async request<T>(endpoint: string, options: RequestInit = {}): Promise<T> {
+  async request<T>(
+    endpoint: string,
+    options: RequestInit = {},
+    responseType: "json" | "blob" = "json",
+  ): Promise<T> {
     const url = `${this.baseURL}${endpoint}`;
 
     // Get token for authenticated requests (skip for auth endpoints)
@@ -320,6 +324,8 @@ export class ApiClient {
       }
       const response = await this.fetchWithSessionRecovery(url, endpoint, config, token);
 
+      if (response.ok && responseType === "blob") return response.blob() as Promise<T>;
+
       // Handle 204 No Content responses (no body to parse)
       if (response.status === 204) {
         if (!response.ok) {
@@ -345,7 +351,14 @@ export class ApiClient {
       }
 
       if (!response.ok) {
-        const error = new ApiErrorResponse(response.status, data as ApiError);
+        const error = new ApiErrorResponse(
+          response.status,
+          data && typeof data === "object"
+            ? (data as ApiError)
+            : {
+                detail: typeof data === "string" && data ? data : `API Error: ${response.status}`,
+              },
+        );
 
         // Handle 401 errors (token expired/invalid)
         // Skip redirect for auth endpoints (login/register) - let them handle errors
