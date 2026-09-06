@@ -102,6 +102,7 @@ async function setup(page: Page, mode = "ready") {
       place = { location: { lat: () => -1.11, lng: () => 1.02 } };
       connectedCallback() {
         this.append(document.createTextNode("Cafe · Google attribution"));
+        if (mode === "delayed-place") return;
         queueMicrotask(() => this.dispatchEvent(new Event("gmp-load")));
       }
     }
@@ -124,6 +125,17 @@ async function setup(page: Page, mode = "ready") {
   await expect(page.getByRole("button", { name: "Explore our surroundings" })).toBeVisible();
   return () => requests;
 }
+test("offscreen Google cards survive the SDK deadline and load later", async ({ page }) => {
+  await setup(page, "delayed-place");
+  await page.clock.install();
+  await page.getByRole("button", { name: "Explore our surroundings" }).click();
+  const card = page.locator("gmp-place-details-compact");
+  await expect(card).toHaveCount(1);
+  await page.clock.fastForward(9000);
+  await expect(card).toHaveCount(1);
+  await card.dispatchEvent("gmp-load");
+  await expect(page.getByRole("link", { name: "Directions", exact: true })).toHaveCount(4);
+});
 for (const mobile of [false, true])
   test(`lazy surroundings and keyboard map/list selection (${mobile ? "mobile" : "desktop"})`, async ({
     page,
@@ -142,12 +154,12 @@ for (const mobile of [false, true])
     await expect(section.getByText("Recommended by us", { exact: true })).toHaveCount(1);
     for (const category of ["Beaches & nature", "Food & drink", "Things to do", "Transport"])
       await expect(section.getByRole("heading", { name: category, exact: true })).toBeVisible();
-    const select = section.getByRole("button", { name: /Select Our favorite beach on map/ });
+    const select = section.getByRole("button", { name: /Highlight on map: Our favorite beach/ });
     await select.focus();
     await page.keyboard.press("Enter");
     await expect(select).toHaveAttribute("aria-pressed", "true");
     await section.getByRole("button", { name: "Map marker Airport", exact: true }).click();
-    const airport = section.getByRole("button", { name: /Select Airport on map/ });
+    const airport = section.getByRole("button", { name: /Highlight on map: Airport/ });
     await expect(airport).toBeFocused();
     await expect(airport).toHaveAttribute("aria-pressed", "true");
     expect(

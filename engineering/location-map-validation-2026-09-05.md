@@ -168,3 +168,64 @@ the suitable isolated application runtime tracked in VAY-1361. No production
 service deployment, feature-flag activation, hotel privacy change or booking was
 performed. Google's legacy Marker deprecation warning remains non-blocking;
 no claim is made of comprehensive keyboard or all-provider-outage certification.
+
+## Storage-backed feature integration — 2026-09-06
+
+Ran the actual NearbyEditor and guest Surroundings components against the actual
+Fastify routes and PostgreSQL repositories in a temporary local shell. Applied
+the current migrations to a disposable PostgreSQL 16 database and seeded one
+synthetic hotel, local authorization records, and an active publication fixture.
+Used the existing reusable hotel owner's WorkOS login, verified its signature,
+issuer and audience, and kept the short-lived access token server-side. Missing
+and invalid tokens returned 401; the verified owner could read the local hotel.
+No remote property records or immutable VAY-1361 rehearsal data were changed.
+
+Manual live browser checks passed:
+
+- Live discovery returned 39 places. Favorited one, added a note, hid another,
+  added a custom place and saved through the real curation PUT (200).
+- Reloading the editor preserved the favorite, hidden choice, note and custom
+  place. The public guest endpoint returned 200 and rendered the recommendation,
+  note and custom place with the approximate-area map.
+- Saving Hidden through the real profile PUT returned 200; reloading the guest
+  view displayed only “Contact us for location details,” with no map or places.
+- Restoring Approximate returned 200. Discovery then enforced its property-wide
+  cooldown (429), and the editor required review of saved places. The test did
+  not bypass this limit or assert automatic rediscovery after the change.
+
+Initial location-save attempts failed because the synthetic seed lacked postal
+code and required contact channels. Completed those synthetic fields locally,
+reloaded the editor, and reran the successful privacy checks above.
+
+This validates the feature's auth, storage and browser path in a local shell.
+It does not validate deployed navigation, publication creation, remote property
+persistence, or the immutable rehearsal release. The active publication and
+authorization mapping were synthetic fixtures, not newly created WorkOS roles.
+
+### Deferred Google card regression
+
+The full list exposed a real bug: the component's eight-second watchdog removed
+offscreen Google widgets before they loaded. In a controlled 39-card probe, 29
+loaded immediately; the remaining ten loaded only after scrolling. Extending
+the deadline to 30 seconds still removed those ten if they remained offscreen.
+
+The fix limits the watchdog to SDK import and lets mounted widgets report their
+own errors. With the actual fixed component, all 39 remained mounted and all
+loaded; the last ten completed about 20.6 seconds after mounting, when scrolled
+into view. No provider text
+or coordinates were persisted by the probe. Import timeout/rejection, explicit
+provider errors, coordinate validation and cleanup remain intact. A mounted
+widget that never emits load or error remains pending.
+
+Added a regression that advances the clock past eight seconds before dispatching
+Google's load event and verifies the card survives and receives directions.
+Independent adversarial review found no actionable findings in the fix and test.
+
+Root typecheck, guest production build and guest lint passed (zero errors,
+16 existing warnings). All seven focused surroundings browser checks passed,
+including the new delayed-load regression. The first run had four failures and
+three passes because the temporary proxy lacked wildcard routing and the build
+lacked the test browser-key sentinel; corrected both and reran successfully.
+Automated checks mock Google and API responses; the 39-card probe used live Google.
+Stopped the authenticated shell, deleted its session file, removed the disposable
+database, and restored the design preview. No deployment or release acceptance.

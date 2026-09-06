@@ -72,7 +72,10 @@ export default function Surroundings({ slug, locality }: { slug: string; localit
     };
   }, [opened, slug, attempt]);
   return (
-    <section aria-label="Location" className="mx-auto max-w-7xl px-4 py-12 sm:px-6 lg:px-8">
+    <section
+      aria-label="Location"
+      className="mx-auto max-w-7xl bg-gray-50 px-4 py-12 sm:px-6 lg:px-8"
+    >
       <h2 className="text-2xl font-semibold text-gray-950">Location</h2>
       {locality && <p className="mt-2 text-gray-600">{locality}</p>}
       {!opened ? (
