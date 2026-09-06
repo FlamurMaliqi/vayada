@@ -66,6 +66,7 @@ jobs:
           docker push ${{ env.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ env.ECR_REPOSITORY }}:next-${{ github.sha }}
 
       - name: Dispatch deploy to platform
+        if: github.ref == 'refs/heads/main'
         uses: peter-evans/repository-dispatch@v4
         with:
           token: ${{ secrets.PLATFORM_DEPLOY_TOKEN }}
