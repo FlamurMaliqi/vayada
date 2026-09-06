@@ -40,6 +40,27 @@ export async function configureGuestPolicyForManualBooking(args: Args): Promise<
       specialRequestsEnabled: true,
     });
 
+    // Setup identities include the unlabeled units hidden by the operational room list.
+    const units = await api.json<Record<string, unknown>>(
+        "GET",
+        `/api/pms/setup/properties/${propertyId}/room-types/${roomTypeId}/units`,
+      ),
+      setupUnits = arrayField(units, "items").map(record);
+    expect(setupUnits).toHaveLength(2);
+    for (const unit of setupUnits) {
+      expect(unit).toMatchObject({
+        propertyId,
+        roomTypeId,
+        lifecycle: "active",
+        operationalLabelStatus: "unverified",
+      });
+    }
+    const roomUnitsRevision = await verifyOperationalLabels(
+      api,
+      propertyId,
+      roomTypeId,
+      setupUnits,
+    );
     const rooms = await api.json<Record<string, unknown>>(
         "GET",
         `/api/pms/properties/${propertyId}/rooms`,
@@ -48,12 +69,6 @@ export async function configureGuestPolicyForManualBooking(args: Args): Promise<
         .map(record)
         .filter((room) => stringField(room, "roomTypeId") === roomTypeId);
     expect(physicalRooms).toHaveLength(2);
-    const roomUnitsRevision = await verifyOperationalLabels(
-      api,
-      propertyId,
-      roomTypeId,
-      physicalRooms,
-    );
     const roomId = stringField(physicalRooms[0]!, "roomId"),
       previewCommand = manualPreviewCommand(roomId);
     expect(await previewStatus(request, accessToken, propertyId, previewCommand)).toEqual([
@@ -109,7 +124,7 @@ async function verifyOperationalLabels(
 ): Promise<number> {
   let expectedRevision = 1;
   for (const [index, room] of rooms.entries()) {
-    const roomId = stringField(room, "roomId"),
+    const roomId = stringField(room, "roomUnitId"),
       label = `QA-${index + 101}`,
       response = await api.json<Record<string, unknown>>(
         "PUT",

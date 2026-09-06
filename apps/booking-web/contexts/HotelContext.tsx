@@ -1,6 +1,14 @@
 "use client";
 
-import { createContext, useCallback, useContext, useEffect, useState, ReactNode } from "react";
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useState,
+  useRef,
+  ReactNode,
+} from "react";
 import { Hotel, RoomType, Addon } from "@/lib/types";
 import { hotelService } from "@/services/api/hotel";
 import { generateColorPalette } from "@/lib/utils/colors";
@@ -42,6 +50,7 @@ interface HotelContextValue {
   addons: Addon[];
   loading: boolean;
   roomsLoading: boolean;
+  searchMessage: string | null;
   error: string | null;
   locale: string;
   slug: string;
@@ -59,6 +68,7 @@ const HotelContext = createContext<HotelContextValue>({
   addons: [],
   loading: true,
   roomsLoading: false,
+  searchMessage: null,
   error: null,
   locale: "en",
   slug: "",
@@ -124,6 +134,8 @@ export function HotelProvider({
   const [addons, setAddons] = useState<Addon[]>([]);
   const [loading, setLoading] = useState(true);
   const [roomsLoading, setRoomsLoading] = useState(false);
+  const [searchMessage, setSearchMessage] = useState<string | null>(null);
+  const searchVersion = useRef(0);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -170,10 +182,12 @@ export function HotelProvider({
 
   const refetchRooms = useCallback(
     async (checkIn?: string, checkOut?: string, adults?: number, children?: number) => {
+      const version = ++searchVersion.current;
       setRoomsLoading(true);
+      setSearchMessage(null);
       try {
         if (!slug) return;
-        const roomsData = await hotelService.getRooms(
+        const result = await hotelService.searchRooms(
           slug,
           checkIn,
           checkOut,
@@ -181,11 +195,15 @@ export function HotelProvider({
           children,
           locale,
         );
-        setRooms(roomsData);
-      } catch (err) {
-        console.error("Failed to refetch rooms", err);
+        if (version !== searchVersion.current) return;
+        setRooms(result.rooms);
+        setSearchMessage(result.searchMessage);
+      } catch {
+        if (version !== searchVersion.current) return;
+        setRooms([]);
+        setSearchMessage("availabilityError");
       } finally {
-        setRoomsLoading(false);
+        if (version === searchVersion.current) setRoomsLoading(false);
       }
     },
     [locale, slug],
@@ -305,6 +323,7 @@ export function HotelProvider({
         addons,
         loading,
         roomsLoading,
+        searchMessage,
         error,
         locale,
         slug: slug ?? "",
@@ -322,8 +341,9 @@ export function useHotel() {
 }
 
 export function useRooms() {
-  const { rooms, loading, roomsLoading, error, refetchRooms } = useContext(HotelContext);
-  return { rooms, loading, roomsLoading, error, refetchRooms };
+  const { rooms, loading, roomsLoading, searchMessage, error, refetchRooms } =
+    useContext(HotelContext);
+  return { rooms, loading, roomsLoading, searchMessage, error, refetchRooms };
 }
 
 export function useAddons() {
