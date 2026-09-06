@@ -22,3 +22,10 @@ implicitly change the stored auto-open configuration; users return to settings.
 
 Architecture: [TypeScript backend structure](typescript-backend-structure.md).
 Predecessor: VAY-1462. Live acceptance unblocks VAY-930.
+
+Active setup inventory excludes retired room types at the canonical list query.
+Calendar and publication consumers already operate on active room types; filtering
+before fact decoding prevents malformed legacy retired rows from blocking those
+flows. Direct ID and durable draft-binding lookups retain retired records. Active
+room facts still undergo the complete contract validation, and no inventory or
+room lifecycle is changed by this read.
