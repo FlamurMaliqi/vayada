@@ -50,6 +50,12 @@
     "payment": "Payment"
   },
   "home": {
+    "guestCountUnsupported": "Online search does not support your group of {count} guests. Try fewer guests or contact us for help.",
+    "guestCountUnavailable": "None of our available accommodations can fit your group of {count} guests. Try fewer guests or different dates.",
+    "noAvailability": "No accommodation is available for this search. Try different dates or search options.",
+    "availabilityError": "We couldn’t check availability. Please try again.",
+    "noMatchingRooms": "No accommodations match your filters. Try removing a filter.",
+
     "yourStay": "Your Stay",
     "addPromo": "Add promo",
     "promoTitle": "Have a promo code?",

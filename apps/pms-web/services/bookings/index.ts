@@ -958,8 +958,19 @@ export const bookingsService = {
     );
   },
 
-  cancelWithReason: (_id: string, _reason: string) =>
-    unsupportedPmsNextStackFeature<Booking>("Booking cancellation"),
+  cancelWithReason: async (id: string, reason: string, guestMessage?: string) => {
+    await pmsOperationsClient.post<PmsOperationsCommandResponse>(
+      await reservationEndpoint(id, "/cancel"),
+      {
+        ...commandMetadata("pms.cancel"),
+        reason,
+        guestMessage,
+        accountingDate: null,
+        retainedCharges: [],
+      },
+      pmsOperationsRequestOptions,
+    );
+  },
 
   markNoShow: async (id: string) => {
     await pmsOperationsClient.post<PmsOperationsCommandResponse>(
