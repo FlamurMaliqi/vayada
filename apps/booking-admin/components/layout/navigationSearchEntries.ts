@@ -1,6 +1,5 @@
 import { settingsService } from "@/services/settings";
 import { dashboardService } from "@/services/dashboard";
-import { affiliatesService } from "@/services/affiliates";
 import { moduleActivationClient } from "@/services/api/moduleActivationClient";
 import { getBookingHotelPropertyLink } from "@/services/api/bookingPropertyLinkClient";
 import { getFinancePaymentSettings } from "@/services/api/financePaymentSettingsClient";
@@ -11,7 +10,6 @@ export const SEARCH_ENTRIES = [
   ["Design Studio", "/design-studio", "Pages", "design", "layout.sidebar.designStudio"],
   ["Booking Flow", "/booking-flow", "Pages", "settings", "layout.sidebar.bookingFlow"],
   ["Promo Codes", "/promo-codes", "Pages", "settings", "bookingFlow.promoCodes.title"],
-  ["Affiliates", "/affiliates", "Pages", "affiliates", "layout.sidebar.affiliates"],
   ["Settings", "/settings", "Pages", "settings", "layout.sidebar.settings"],
   ["Feature Hub", "/settings/feature-hub", "Pages", "modules", "layout.sidebar.featureHub"],
   [
@@ -103,12 +101,6 @@ export async function loadSearchAccess(hotelId: string): Promise<SearchAccess> {
     modules,
     payments: property.then(({ propertyId }) => getFinancePaymentSettings({ propertyId })),
     billing: property.then(({ propertyId }) => getFinancePlanStatus(propertyId)),
-    affiliates: modules.then(async (result) => {
-      if (!result.activations.some((item) => item.moduleId === "affiliates" && item.isActive)) {
-        throw new Error("Affiliates is inactive");
-      }
-      return affiliatesService.list({ limit: 1, offset: 0 });
-    }),
   };
   const results = await Promise.allSettled(Object.values(checks));
   return new Set(Object.keys(checks).filter((_, index) => results[index].status === "fulfilled"));

@@ -111,3 +111,9 @@ The target public registration writer, email-existence lookup and obsolete regis
 projection tests are removed. Retained Connect checks read existing registration events;
 their identity derivation and event/history formats remain unchanged. No historical rows
 or applied migrations are removed. Test identities are seeded explicitly as existing data.
+
+Booking Admin `/affiliates` now keeps only an unavailable notice and dashboard link
+inside the existing authenticated shell. Sidebar and search no longer offer affiliate
+management, including for previously active modules. Lifecycle/commission controls no
+longer load or call affiliate APIs. Backend administration and unused UI/service source
+remain subsequent cleanup; account state, commissions and history are not changed.
