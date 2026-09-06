@@ -43,7 +43,7 @@ const propertyContext = {
 describe.skipIf(!URL)("PostgreSQL Finance expense read model", () => {
   const admin = new pg.Client({ connectionString: URL ?? "postgresql://disabled" });
   const pricing = createPgPmsPricingReadModel({ connectionString: URL ?? "postgresql://disabled" });
-  const read = createPgFinanceExpenseReadModel({ connectionString: URL, pricing, propertyContext, now: () => new Date("2026-08-11T10:00:00.000Z") });
+  const read = createPgFinanceExpenseReadModel({ connectionString: URL ?? "postgresql://disabled", pricing, propertyContext, now: () => new Date("2026-08-11T10:00:00.000Z") });
   beforeAll(async () => {
     await admin.connect(); await cleanup();
     await admin.query(`INSERT INTO hotel_catalog.properties (id,public_id,display_name) VALUES
@@ -94,9 +94,9 @@ describe.skipIf(!URL)("PostgreSQL Finance expense read model", () => {
     await expect(read.expenses(OTHER, query({ limit: 10 }))).resolves.toMatchObject({ incompleteEvidence: [{ code: "occupancy_unavailable", count: 1 }] });
     const future = await read.expenses(PROPERTY, query({ from: "2027-01-01", to: "2027-01-31", limit: 10 })); expect(future?.incompleteEvidence.some(({ amount }) => amount?.currency === "GBP")).toBe(false);
     await expect(read.expenses(EMPTY, query({ limit: 10 }))).resolves.toMatchObject({ summary: { totalMtd: { value: { amount: "0.0000" }, percentChange: null } }, categories: [], page: { items: [], nextCursor: null }, incompleteEvidence: [], sourceFreshness: { pmsPricing: expect.any(String), hotelCatalog: expect.any(String) } });
-    const wrongTenant = createPgFinanceExpenseReadModel({ connectionString: URL, pricing, propertyContext: { async getPropertyContext() { const context = (await propertyContext.getPropertyContext(PROPERTY))!; return { ...context, source: { ...context.source, entityId: OTHER } }; } } });
+    const wrongTenant = createPgFinanceExpenseReadModel({ connectionString: URL ?? "postgresql://disabled", pricing, propertyContext: { async getPropertyContext() { const context = (await propertyContext.getPropertyContext(PROPERTY))!; return { ...context, source: { ...context.source, entityId: OTHER } }; } } });
     await expect(wrongTenant.categories(PROPERTY)).rejects.toBeInstanceOf(FinanceExpenseEvidenceError); await wrongTenant.close();
-    const localBoundary = createPgFinanceExpenseReadModel({ connectionString: URL, pricing, propertyContext, now: () => new Date("2026-08-01T01:00:00.000Z") });
+    const localBoundary = createPgFinanceExpenseReadModel({ connectionString: URL ?? "postgresql://disabled", pricing, propertyContext, now: () => new Date("2026-08-01T01:00:00.000Z") });
     await expect(localBoundary.expenses(PROPERTY, query({ limit: 10 }))).resolves.toMatchObject({ summary: { totalMtd: { value: { amount: "100.0000" } } } }); await localBoundary.close();
   });
 

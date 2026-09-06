@@ -46,7 +46,7 @@ describe.skipIf(!URL)("PostgreSQL Finance folio read repository", () => {
   const admin = new pg.Client({ connectionString: URL ?? "postgresql://disabled" });
   const pricing = createPgPmsPricingReadModel({ connectionString: URL ?? "postgresql://disabled" });
   const recipientInputs: FinanceFolioRecipientDecoderInput[] = [];
-  const read = createPgFinanceFolioReadRepository({ connectionString: URL, pricing, propertyContext, recipientDecoder: { async decode(input) { recipientInputs.push(input); return { name: "Ada Lovelace", email: "ada@example.com", taxId: "must-not-leak" }; } }, now: () => new Date("2026-08-20T10:00:00.000Z") });
+  const read = createPgFinanceFolioReadRepository({ connectionString: URL ?? "postgresql://disabled", pricing, propertyContext, recipientDecoder: { async decode(input) { recipientInputs.push(input); return { name: "Ada Lovelace", email: "ada@example.com", taxId: "must-not-leak" }; } }, now: () => new Date("2026-08-20T10:00:00.000Z") });
   beforeAll(async () => {
     await admin.connect(); await cleanup();
     await admin.query(`INSERT INTO hotel_catalog.properties (id,public_id,display_name) VALUES ('${PROPERTY}','folio-read','Folio read'),('${EMPTY}','folio-empty','Folio empty'),('${OTHER}','folio-other','Folio other');
