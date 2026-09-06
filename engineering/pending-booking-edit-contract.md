@@ -7,7 +7,10 @@ VAY-959 targets the TypeScript Booking Engine only. This extends
 ## Guest contract
 
 `Edit Request` appears beside `Withdraw Request` for an unexpired request that
-has not been accepted or declined. It reopens the existing room, add-on, guest,
+has not been accepted or declined and whose server-computed `canEditRequest`
+eligibility is true. This includes the reserved opaque receipt, no operational
+assignment, no started handoff, and no Finance folio described below. Hide the
+action whenever that complete predicate is false. It reopens the existing room, add-on, guest,
 and payment steps with the saved selection. Saving preserves the canonical
 guest booking ID, public reference, original creation time, attribution, and
 Pending status. Guests can change dates, occupancy, room selection/count,
@@ -21,8 +24,14 @@ Guest identity and marketing attribution are not editable through this command.
 
 ## Atomic revision
 
-The saved revision is an optimistic concurrency token. Saving an older revision
-returns 409, including when another tab edits the request. The transaction locks
+The saved revision is an optimistic concurrency token. Each save includes a
+client-supplied `Idempotency-Key`; persist its request fingerprint and original
+response in the command ledger. After credential verification, replaying the
+same command returns that response before checking the current revision or
+status. A different command using an older revision returns 409, including
+when another tab edits the request. Events and notifications are written only
+by the first committed command and keyed by booking ID and saved revision.
+The transaction locks
 the canonical booking row, then rechecks status, acceptance events, payment
 state, and the host response deadline using current server time. This is the
 same row locked by PMS acceptance/decline. An accepted bank-transfer reservation
@@ -106,7 +115,15 @@ pending edits. Only requests with a property-bound reserved opaque receipt, no
 operational assignments, and no started operational handoff are supported.
 Unsupported requests fail closed and do not show the edit action.
 
-Lock every existing handoff job before saving. Refresh pending initial-create
+Acquire the canonical booking row lock first, then lock every existing handoff
+job in ascending job ID order before saving. All future handoff-claim consumers
+must use the same order: discover candidate IDs without row locks, acquire the
+booking lock, then lock and recheck the job before claiming it. Never hold a job
+lock while waiting for the booking lock. Before introducing that consumer, add
+a bounded simultaneous save/claim test proving both transactions complete
+without deadlock; there is no operational claim consumer to exercise today.
+
+Refresh pending initial-create
 payloads to the latest canonical revision, including room selection, stay,
 requests, payment, and add-ons. Record the revision-keyed update as applied to
 `canonical_pending`; this is not an operational handoff success. Any job with
