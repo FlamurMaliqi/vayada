@@ -22,6 +22,7 @@ import {
 } from "@/services/api/collaborations";
 import { getCurrentUserInfo } from "@/lib/utils/accessControl";
 import { getMonthAbbr, sortMonths } from "@/lib/utils/months";
+import { formatFollowersCompact } from "@/lib/utils";
 import { ROUTES } from "@/lib/constants/routes";
 
 interface HotelCardProps {
@@ -255,6 +256,16 @@ export function HotelCard({ hotel, creatorPlatforms = [], isPublic = false }: Ho
                 : "Flexible"}
             </p>
           </div>
+
+          {hotel.collaborationOfferings?.map((offering) =>
+            offering.min_followers ? (
+              <p key={offering.id} className="mt-3 text-xs text-gray-600">
+                <span className="font-medium">{offering.collaboration_type}</span>
+                {": Minimum "}
+                {formatFollowersCompact(offering.min_followers)} followers
+              </p>
+            ) : null,
+          )}
 
           {/* Availability */}
           {hotel.availability && hotel.availability.length > 0 && (

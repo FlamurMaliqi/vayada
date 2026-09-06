@@ -20,7 +20,7 @@ fully isolated product microservices.
 
 ```mermaid
 flowchart LR
-  WEB["Seven Next.js applications"] --> API["apps/api<br/>TypeScript + Fastify"]
+  WEB["Six Next.js applications"] --> API["apps/api<br/>TypeScript + Fastify"]
   WEB --> LEGACY["Legacy FastAPI APIs"]
   API --> TARGET["Target PostgreSQL<br/>domain schemas"]
   LEGACY --> DBS["Legacy product and auth<br/>PostgreSQL databases"]
@@ -31,7 +31,7 @@ flowchart LR
 
 | Layer               | Current role                                                                                                                                                                                                                       |
 | ------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Web applications    | Seven Next.js apps serve the marketplace, platform admin, booking storefront/admin, PMS, affiliate dashboard, and public landing site.                                                                                             |
+| Web applications    | Six Next.js apps serve the marketplace, platform admin, booking storefront/admin, PMS, and public landing site.                                                                                             |
 | Target API          | `apps/api` is the modular TypeScript/Fastify backend for WorkOS/AuthKit, identity and authorization, migrated product routes, platform media, jobs, and target-domain APIs.                                                        |
 | Legacy APIs         | `apps/marketplace-api`, `apps/booking-api`, and `apps/pms-api` remain in service while routes and data move to the target backend.                                                                                                 |
 | Target data model   | `packages/backend-migration` owns reviewed SQL migrations and parity tooling for the schema-organized target PostgreSQL database. Runtime source flags select target, compatibility, or disabled implementations during migration. |
@@ -89,7 +89,6 @@ processes directly.
 | [`apps/booking-admin`](apps/booking-admin)             | Booking Engine administration | Next.js | `https://admin.booking.localhost`           |       3003 |
 | [`apps/pms-api`](apps/pms-api)                         | Legacy PMS API                | FastAPI | `https://api.pms.localhost`                 |       8002 |
 | [`apps/pms-web`](apps/pms-web)                         | PMS operations                | Next.js | `https://pms.localhost`                     |       3004 |
-| [`apps/affiliate-dashboard`](apps/affiliate-dashboard) | Affiliate dashboard           | Next.js | `https://affiliate.localhost`               |       3005 |
 | [`apps/landing`](apps/landing)                         | Public marketing site         | Next.js | `https://landing.localhost`                 |       3006 |
 
 FastAPI documentation is available at `/docs` on each legacy API origin.
@@ -173,7 +172,7 @@ npm run dev:workos-local
 
 - starts Postgres, MinIO, the media CDN, and all three legacy FastAPI APIs;
 - applies auth, legacy-service, and target-schema migrations;
-- starts `apps/api` and all seven Next.js apps;
+- starts `apps/api` and all six Next.js apps;
 - enables wildcard routing for Booking Web tenant subdomains; and
 - seeds legacy test data unless `SKIP_SEED=1` is set.
 
@@ -218,14 +217,13 @@ set +a
 export TARGET_DATABASE_URL="${TARGET_DATABASE_URL:-$AUTH_DATABASE_URL}"
 export AUTH_COOKIE_SECRET=local-dev-auth-cookie-secret-0123456789abcdef
 export AUTH_LOGOUT_URL=http://localhost:3004/login
-export AUTH_ALLOWED_ORIGINS=http://localhost:8003,http://localhost:3000,http://localhost:3001,http://localhost:3003,http://localhost:3004,http://localhost:3005
+export AUTH_ALLOWED_ORIGINS=http://localhost:8003,http://localhost:3000,http://localhost:3001,http://localhost:3003,http://localhost:3004
 export AUTH_COOKIE_SECURE=false
 export AUTH_COMPATIBILITY_CALLBACK_ORIGIN=http://localhost:8003
 export AUTH_PLATFORM_ADMIN_ORIGIN=http://localhost:3001
 export AUTH_MARKETPLACE_WEB_ORIGIN=http://localhost:3000
 export AUTH_BOOKING_ADMIN_ORIGIN=http://localhost:3003
 export AUTH_PMS_WEB_ORIGIN=http://localhost:3004
-export AUTH_AFFILIATE_DASHBOARD_ORIGIN=http://localhost:3005
 # Enable only after the PMS /auth gateway is present.
 export AUTH_FIRST_PARTY_SURFACES=pms-web
 export AUTH_LEGACY_PMS_JWT_SECRET=your-secret-key-change-in-production

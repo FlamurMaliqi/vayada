@@ -1889,8 +1889,8 @@ function adaptiveHotelSetupFactsSql(): string {
           )
           OR (
             'bank_transfer' = ANY(payment.accepted_methods)
-            AND NULLIF(BTRIM(payment.deposit_policy ->> 'bankTransferInstructions'), '')
-              IS NOT NULL
+            AND EXISTS (SELECT 1 FROM finance.bank_transfer_destinations destination
+              WHERE destination.property_id=payment.property_id AND destination.enabled)
           )
           OR (
             'paypal' = ANY(payment.accepted_methods)

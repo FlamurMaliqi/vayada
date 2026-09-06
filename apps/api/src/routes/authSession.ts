@@ -1,3 +1,4 @@
+import { workosErrorDiagnostics } from "../platform/workosErrorDiagnostics.js";
 import { createHash, createHmac, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import type {
   IdentityLifecycleCommandBus,
@@ -347,12 +348,16 @@ export const registerAuthSessionRoutes: FastifyPluginAsync<AuthSessionRouteOptio
 
     let session: AuthKitSession;
     try {
-      session = await options.authKitClient.authenticateWithCode({
+      session = await authenticateGoogleForSurface(options, surfacePolicy, {
         code: query.code,
         ipAddress: request.ip,
         userAgent: request.headers["user-agent"],
       });
-    } catch {
+    } catch (error) {
+      request.log.warn(
+        { workos: workosErrorDiagnostics(error), surface: state.value.surface },
+        "WorkOS Google code exchange failed",
+      );
       return redirectWithOAuthError(reply, state.value, "Google sign-in failed. Please try again.");
     }
 
@@ -614,6 +619,10 @@ export const registerAuthSessionRoutes: FastifyPluginAsync<AuthSessionRouteOptio
         },
       });
     } catch (error) {
+      request.log.warn(
+        { workos: workosErrorDiagnostics(error), surface: parsed.surface },
+        "WorkOS password signup failed",
+      );
       if (isConflictError(error)) {
         return reply.code(409).send({
           state: "auth_failed",
@@ -622,7 +631,10 @@ export const registerAuthSessionRoutes: FastifyPluginAsync<AuthSessionRouteOptio
       }
       return reply.code(400).send({
         state: "auth_failed",
-        message: "Signup failed. Please check your details and try again.",
+        message:
+          workosErrorDiagnostics(error).code === "password_strength_error"
+            ? "This password isn't strong enough. Try several unrelated words or generate a unique password with a password manager."
+            : "Signup failed. Please check your details and try again.",
       });
     }
 
@@ -3046,6 +3058,45 @@ async function findUserAfterLifecycle(
     };
   }
   throw new Error("Identity lifecycle command did not create a resolvable user");
+}
+
+async function authenticateGoogleForSurface(
+  options: AuthSessionRouteOptions,
+  surfacePolicy: AuthSurfacePolicy,
+  input: Parameters<AuthKitClient["authenticateWithCode"]>[0],
+): Promise<AuthKitSession> {
+  try {
+    return await options.authKitClient.authenticateWithCode(input);
+  } catch (error) {
+    const mapped = mapWorkOSAuthError(error);
+    if (mapped.state !== "organization_selection_required" || !mapped.pendingAuthenticationToken) {
+      throw error;
+    }
+    // Only use organizations offered for this pending authentication by WorkOS.
+    const offeredIds = [...new Set((mapped.organizations ?? []).map(({ id }) => id))];
+    const organizations = await Promise.all(
+      offeredIds.map((id) => options.identityRepository.findOrganizationByWorkosOrgId(id)),
+    );
+    const candidates = organizations.filter(
+      (organization) =>
+        organization?.status === "active" &&
+        organization.workosOrgId &&
+        offeredIds.includes(organization.workosOrgId) &&
+        matchesOrganizationKind(organization.kind, surfacePolicy.requiredOrganizationKind),
+    );
+    if (candidates.length !== 1) throw error;
+    const organizationId = candidates[0]!.workosOrgId!;
+    const session = await options.authKitClient.authenticateWithOrganizationSelection({
+      organizationId,
+      pendingAuthenticationToken: mapped.pendingAuthenticationToken,
+      ipAddress: input.ipAddress,
+      userAgent: input.userAgent,
+    });
+    if (session.organizationId !== organizationId) {
+      throw new Error("WorkOS returned a different organization after selection");
+    }
+    return session;
+  }
 }
 
 async function resolveOrganizationAccess(

@@ -459,3 +459,19 @@ a staging rehearsal gate.
 - `engineering/jobs-events-contract.md`
 - `packages/backend-migration/migrations/0006_pms_operations.sql`
 - `packages/backend-migration/fixtures/cases/pms-operations/`
+
+## VAY-960: manual cancellation guest message
+
+`POST /properties/:propertyId/reservations/:guestBookingId/cancel` accepts a
+separate optional `guestMessage` string (at most 5000 characters). The internal
+`reason` is required and remains in private audit evidence only. The guest
+message normalizes CRLF/CR to LF and trims outer whitespace; blank means no custom
+copy. A cancellation email is queued atomically with cancellation using the shared
+booking notification snapshot and durable delivery worker introduced by VAY-930.
+The plain-text email preserves paragraphs and treats markup as literal text.
+Replays do not queue a second email; changing the message with a used idempotency
+key conflicts. No schema change is required.
+
+This command continues to support confirmed manual PMS bookings only. Direct and
+channel bookings remain unavailable in this UI until their cancellation contracts
+are implemented. The UI requests no retained charge and does not issue refunds.

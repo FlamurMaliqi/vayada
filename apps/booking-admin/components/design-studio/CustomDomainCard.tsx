@@ -27,16 +27,22 @@ export default function CustomDomainCard({
   const { t } = useTranslation();
   const connected = domainStatus?.sslStatus === "active";
   const verifying = saving || domainStatus?.status === "pending";
-  const statusLabel = connected ? "Connected" : verifying ? "Verifying..." : "Not connected";
+  const statusLabel = connected
+    ? t("settings.billing.connected")
+    : verifying
+      ? t("settings.totp.confirming")
+      : t("admin.notConnected");
   const statusColor = connected ? "bg-green-500" : verifying ? "bg-yellow-500" : "bg-gray-400";
 
   return (
     <>
       <div className="rounded-lg border border-gray-200 bg-white p-4">
-        <h2 className="text-[13px] font-semibold text-gray-900">Current booking URL</h2>
-        <p className="mt-0.5 text-[12px] text-gray-500">Your slug comes from the property name.</p>
+        <h2 className="text-[13px] font-semibold text-gray-900">{t("admin.currentBookingURL")}</h2>
+        <p className="mt-0.5 text-[12px] text-gray-500">
+          {t("admin.yourSlugComesFromThePropertyName")}
+        </p>
         <div className="mt-3 truncate rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-[12px] text-gray-700">
-          {bookingUrl || "Booking URL unavailable"}
+          {bookingUrl || t("admin.bookingURLUnavailable")}
         </div>
       </div>
 
@@ -59,16 +65,16 @@ export default function CustomDomainCard({
             disabled={saving || !domainInput.trim()}
             className="rounded-lg bg-primary-600 px-4 py-2 text-[13px] font-medium text-white hover:bg-primary-700 disabled:opacity-60"
           >
-            Connect Domain
+            {t("settings.booking.connectDomain")}
           </button>
         </div>
 
         <div className="mt-3 rounded-lg border border-blue-100 bg-blue-50 p-3">
-          <p className="text-[12px] font-medium text-gray-900">DNS setup</p>
+          <p className="text-[12px] font-medium text-gray-900">{t("admin.dnsSetup")}</p>
           <p className="mt-1 text-[12px] leading-5 text-gray-600">
-            Add a CNAME record for your subdomain pointing to{" "}
-            <code className="text-gray-900">custom.booking.vayada.com</code>. Propagation usually
-            takes 15 minutes, up to 48 hours.
+            {t("admin.addACNAMERecordForYourSubdomainPointingTo")}{" "}
+            <code className="text-gray-900">custom.booking.vayada.com</code>
+            {t("admin.propagationUsuallyTakes15MinutesUpTo48Hours")}
           </p>
         </div>
 
@@ -89,7 +95,7 @@ export default function CustomDomainCard({
               disabled={saving}
               className="text-[11px] text-primary-600 hover:text-primary-700 disabled:opacity-50"
             >
-              Refresh
+              {t("settings.booking.refresh")}
             </button>
             {domainStatus?.configured && (
               <button
@@ -98,7 +104,7 @@ export default function CustomDomainCard({
                 disabled={saving}
                 className="text-[11px] text-red-600 hover:text-red-700 disabled:opacity-50"
               >
-                Remove domain
+                {t("admin.removeDomain")}
               </button>
             )}
           </div>
@@ -106,7 +112,7 @@ export default function CustomDomainCard({
 
         {domainStatus && domainStatus.verificationErrors.length > 0 && (
           <p className="mt-3 rounded-lg border border-red-200 bg-red-50 p-3 text-[12px] text-red-700">
-            {domainStatus.verificationErrors.join(", ")}
+            {t("admin.domainVerificationHasNotCompletedCheckTheCNAMERecordAnd")}
           </p>
         )}
       </div>

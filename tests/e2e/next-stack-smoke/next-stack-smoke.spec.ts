@@ -878,6 +878,14 @@ async function runHotelFlow(
     workosOrganizationId: session.workosOrganizationId,
   };
   registerHotel(resource);
+  await configureGuestPolicyForManualBooking({
+    api,
+    accessToken: session.accessToken,
+    propertyId: setup.propertyId,
+    request,
+    roomTypeId: setup.roomTypeId,
+  });
+  // Direct checkout needs the materialized inventory initialized by policy setup.
   await runPromotionAcceptance({
     api,
     bookings,
@@ -888,13 +896,6 @@ async function runHotelFlow(
     roomTypeId: setup.roomTypeId,
     slug: publication.slug,
     stay,
-  });
-  await configureGuestPolicyForManualBooking({
-    api,
-    accessToken: session.accessToken,
-    propertyId: setup.propertyId,
-    request,
-    roomTypeId: setup.roomTypeId,
   });
   await runRoomShuffleAcceptance({
     api,

@@ -180,11 +180,23 @@ export function createTargetPmsInventoryReservationPort(): DirectBookingInventor
         : isLegacyReservation(reservation, input.propertyId)
           ? reservation
           : null;
-      if (!scope) return;
+      if (!scope) {
+        if (input.requireReserved)
+          throw Object.assign(new Error("This request’s inventory can no longer be edited."), {
+            statusCode: 409,
+          });
+        return;
+      }
       const linkedReceiptState = receiptId
         ? "reserved"
         : await readLinkedReceiptState(input.transaction, scope);
-      if (linkedReceiptState === "released" || linkedReceiptState === "handed_off") return;
+      if (linkedReceiptState === "released" || linkedReceiptState === "handed_off") {
+        if (input.requireReserved)
+          throw Object.assign(new Error("This request’s inventory can no longer be edited."), {
+            statusCode: 409,
+          });
+        return;
+      }
       if (linkedReceiptState === "missing")
         throw new Error("Linked inventory reservation receipt is missing");
       const releaseKeyHash = receiptId

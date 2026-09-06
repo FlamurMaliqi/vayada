@@ -1,4 +1,5 @@
 "use client";
+import { useTranslation } from "@/lib/i18n";
 
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { createPortal } from "react-dom";
@@ -100,37 +101,6 @@ function isoDateInTimeZone(timeZone: string): string {
   return `${value("year")}-${value("month")}-${value("day")}`;
 }
 
-function dateLabel(value: string | null): string {
-  if (!value) return "No limit";
-  const [year, month, day] = value.split("-");
-  return year && month && day ? `${day}.${month}.${year}` : value;
-}
-
-function rangeLabel(from: string | null, until: string | null): string {
-  if (!from && !until) return "No limit";
-  if (from && until) return `${dateLabel(from)} – ${dateLabel(until)}`;
-  return from ? `From ${dateLabel(from)}` : `Until ${dateLabel(until)}`;
-}
-
-function validityLabel(from: string | null, until: string | null): string {
-  if (!from && !until) return "No expiry.";
-  if (!until) return `${dateLabel(from)} – No expiry.`;
-  return rangeLabel(from, until);
-}
-
-function stayDatesLabel(from: string | null, until: string | null): string {
-  return !from && !until ? "Any dates" : rangeLabel(from, until);
-}
-
-function moneyLabel(value: string, currency: string): string {
-  return new Intl.NumberFormat(undefined, {
-    style: "currency",
-    currency,
-    minimumFractionDigits: 0,
-    maximumFractionDigits: 2,
-  }).format(Number(value));
-}
-
 function statusClasses(status: PromoStatus): string {
   if (status === "Active") return "bg-emerald-50 text-emerald-700";
   if (status === "Expired") return "bg-red-50 text-red-700";
@@ -148,6 +118,41 @@ export default function PromoCodesTab({
   onDeletePromoCode,
   onTogglePromoCode,
 }: PromoCodesTabProps) {
+  const { t, locale } = useTranslation();
+  function dateLabel(value: string | null): string {
+    if (!value) return t("admin.noLimit");
+    return new Intl.DateTimeFormat(locale, { dateStyle: "medium" }).format(
+      new Date(`${value}T12:00:00`),
+    );
+  }
+
+  function rangeLabel(from: string | null, until: string | null): string {
+    if (!from && !until) return t("admin.noLimit");
+    if (from && until) return `${dateLabel(from)} – ${dateLabel(until)}`;
+    return from
+      ? t("admin.fromDate", { date: dateLabel(from) })
+      : t("admin.untilDate", { date: dateLabel(until) });
+  }
+
+  function validityLabel(from: string | null, until: string | null): string {
+    if (!from && !until) return t("admin.noExpiry");
+    if (!until) return t("admin.dateNoExpiry", { date: dateLabel(from) });
+    return rangeLabel(from, until);
+  }
+
+  function stayDatesLabel(from: string | null, until: string | null): string {
+    return !from && !until ? t("admin.anyDates") : rangeLabel(from, until);
+  }
+
+  function moneyLabel(value: string, currency: string): string {
+    return new Intl.NumberFormat(locale, {
+      style: "currency",
+      currency,
+      minimumFractionDigits: 0,
+      maximumFractionDigits: 2,
+    }).format(Number(value));
+  }
+
   const [search, setSearch] = useState("");
   const [draft, setDraft] = useState<PromoCodeFormValues>(emptyDraft);
   const [editingPromo, setEditingPromo] = useState<BookingPromoCode | null>(null);
@@ -162,11 +167,11 @@ export default function PromoCodesTab({
     const query = search.trim().toLowerCase();
     if (!query) return promoCodes;
     return promoCodes.filter((promo) =>
-      [promo.code, promoStatus(promo, propertyTimeZone)].some((value) =>
+      [promo.code, t(`promos.status.${promoStatus(promo, propertyTimeZone)}`)].some((value) =>
         value.toLowerCase().includes(query),
       ),
     );
-  }, [promoCodes, propertyTimeZone, search]);
+  }, [promoCodes, propertyTimeZone, search, t]);
 
   const openEditor = (promo: BookingPromoCode | null) => {
     lastFocusRef.current =
@@ -236,34 +241,34 @@ export default function PromoCodesTab({
     const maxUses = Number(draft.maxUses);
 
     if (!/^[A-Z0-9_-]{2,40}$/.test(code)) {
-      setPromoError("Use 2–40 letters, numbers, hyphens, or underscores for the code.");
+      setPromoError(t("admin.use240LettersNumbersHyphensOrUnderscoresForThe"));
       return;
     }
     if (!Number.isFinite(discountValue) || discountValue <= 0) {
-      setPromoError("Discount value must be greater than zero.");
+      setPromoError(t("admin.discountValueMustBeGreaterThanZero"));
       return;
     }
     if (draft.discountType === "percentage" && discountValue > 100) {
-      setPromoError("Percentage discounts cannot exceed 100%.");
+      setPromoError(t("admin.percentageDiscountsCannotExceed100"));
       return;
     }
     if (
       minBookingValue &&
       (!Number.isFinite(Number(minBookingValue)) || Number(minBookingValue) <= 0)
     ) {
-      setPromoError("Minimum booking value must be greater than zero.");
+      setPromoError(t("admin.minimumBookingValueMustBeGreaterThanZero"));
       return;
     }
     if (!Number.isInteger(maxUses) || maxUses <= 0) {
-      setPromoError("Usage limit must be a whole number greater than zero.");
+      setPromoError(t("admin.usageLimitMustBeAWholeNumberGreaterThanZero"));
       return;
     }
     if (draft.validFrom && draft.validUntil && draft.validUntil < draft.validFrom) {
-      setPromoError("Valid until must be on or after valid from.");
+      setPromoError(t("admin.validUntilMustBeOnOrAfterValidFrom"));
       return;
     }
     if (draft.stayDateFrom && draft.stayDateUntil && draft.stayDateUntil < draft.stayDateFrom) {
-      setPromoError("Stay until must be on or after stay from.");
+      setPromoError(t("admin.stayUntilMustBeOnOrAfterStayFrom"));
       return;
     }
 
@@ -282,30 +287,31 @@ export default function PromoCodesTab({
       setIsEditorOpen(false);
       setEditingPromo(null);
       lastFocusRef.current?.focus();
-    } catch (error) {
-      setPromoError(error instanceof Error ? error.message : "Failed to save promo code.");
+    } catch {
+      setPromoError(t("admin.failedToSavePromoCode"));
     } finally {
       setSavingPromo(false);
     }
   };
 
   const handleDelete = async (promo: BookingPromoCode) => {
-    if (!window.confirm(`Delete ${promo.code}?`)) return;
+    if (!window.confirm(t("admin.deleteName", { name: promo.code }))) return;
     setBusyPromoId(promo.promoCodeId);
     setPromoError(null);
     try {
       await onDeletePromoCode(promo.promoCodeId);
-    } catch (error) {
-      setPromoError(error instanceof Error ? error.message : "Failed to delete promo code.");
+    } catch {
+      setPromoError(t("admin.failedToDeletePromoCode"));
     } finally {
       setBusyPromoId(null);
     }
   };
 
   const roomNames = (roomIds: string[] | null) => {
-    if (!roomIds?.length) return "All rooms";
+    if (!roomIds?.length) return t("admin.allRooms");
     const names = roomIds.map(
-      (roomId) => roomTypes.find((room) => room.roomTypeId === roomId)?.name ?? "Unknown room",
+      (roomId) =>
+        roomTypes.find((room) => room.roomTypeId === roomId)?.name ?? t("admin.unknownRoom"),
     );
     return names.length > 2
       ? `${names.slice(0, 2).join(", ")} +${names.length - 2}`
@@ -316,9 +322,11 @@ export default function PromoCodesTab({
     <div className="space-y-6">
       <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
         <div>
-          <h1 className="text-2xl font-semibold tracking-tight text-gray-950">Promos</h1>
+          <h1 className="text-2xl font-semibold tracking-tight text-gray-950">
+            {t("bookingFlow.tabs.promos")}
+          </h1>
           <p className="mt-1 text-sm text-gray-500">
-            Targeted discounts guests unlock by entering a code at checkout.
+            {t("admin.targetedDiscountsGuestsUnlockByEnteringACodeAtCheckout")}
           </p>
         </div>
         <button
@@ -327,7 +335,7 @@ export default function PromoCodesTab({
           className="inline-flex h-10 items-center justify-center gap-2 rounded-lg bg-primary-600 px-4 text-sm font-medium text-white hover:bg-primary-700"
         >
           <PlusIcon className="h-4 w-4" />
-          New promo code
+          {t("admin.newPromoCode")}
         </button>
       </div>
 
@@ -343,13 +351,13 @@ export default function PromoCodesTab({
       <div className="overflow-hidden rounded-xl border border-gray-200 bg-white shadow-sm">
         <div className="border-b border-gray-200 p-4">
           <label className="relative block max-w-sm">
-            <span className="sr-only">Search promo codes</span>
+            <span className="sr-only">{t("admin.searchPromoCodes")}</span>
             <MagnifyingGlassIcon className="pointer-events-none absolute left-3 top-2.5 h-5 w-5 text-gray-400" />
             <input
               type="search"
               value={search}
               onChange={(event) => setSearch(event.target.value)}
-              placeholder="Search codes..."
+              placeholder={t("admin.searchCodes")}
               className="h-10 w-full rounded-lg border border-gray-300 pl-10 pr-3 text-sm text-gray-900 outline-none focus:border-gray-900 focus:ring-1 focus:ring-gray-900"
             />
           </label>
@@ -360,21 +368,25 @@ export default function PromoCodesTab({
             <span className="mx-auto flex h-12 w-12 items-center justify-center rounded-full bg-gray-100">
               <TicketIcon className="h-6 w-6 text-gray-500" />
             </span>
-            <h2 className="mt-4 text-sm font-semibold text-gray-900">No promo codes yet</h2>
-            <p className="mt-1 text-sm text-gray-500">Create your first code to reward guests.</p>
+            <h2 className="mt-4 text-sm font-semibold text-gray-900">
+              {t("bookingFlow.promoCodes.noPromoCodes")}
+            </h2>
+            <p className="mt-1 text-sm text-gray-500">
+              {t("admin.createYourFirstCodeToRewardGuests")}
+            </p>
           </div>
         ) : (
           <div className="overflow-x-auto">
             <table className="w-full min-w-[1050px] text-left">
               <thead className="bg-gray-50 text-[11px] font-semibold uppercase tracking-wider text-gray-500">
                 <tr>
-                  <th className="px-5 py-3">Code</th>
-                  <th className="px-4 py-3">Discount</th>
-                  <th className="px-4 py-3">Validity</th>
-                  <th className="px-4 py-3">Stay dates</th>
-                  <th className="px-4 py-3">Rooms</th>
-                  <th className="px-4 py-3">Usage</th>
-                  <th className="px-5 py-3 text-right">Actions</th>
+                  <th className="px-5 py-3">{t("affiliates.allAffiliates.code")}</th>
+                  <th className="px-4 py-3">{t("admin.discount")}</th>
+                  <th className="px-4 py-3">{t("admin.validity")}</th>
+                  <th className="px-4 py-3">{t("admin.stayDates")}</th>
+                  <th className="px-4 py-3">{t("admin.rooms")}</th>
+                  <th className="px-4 py-3">{t("admin.usage")}</th>
+                  <th className="px-5 py-3 text-right">{t("manageHotels.table.actions")}</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-100 text-sm">
@@ -388,19 +400,22 @@ export default function PromoCodesTab({
                         <span
                           className={`mt-1 inline-flex rounded-full px-2 py-0.5 text-[11px] font-medium ${statusClasses(status)}`}
                         >
-                          {status}
+                          {t(`promos.status.${status}`)}
                         </span>
                       </td>
                       <td className="px-4 py-4 font-medium text-gray-900">
                         {promo.discountType === "percentage"
                           ? `${Number(promo.discountValue)}%`
-                          : `${moneyLabel(promo.discountValue, propertyCurrency)} off`}
+                          : t("admin.amountOff", {
+                              amount: moneyLabel(promo.discountValue, propertyCurrency),
+                            })}
                       </td>
                       <td className="px-4 py-4 text-gray-600">
                         {validityLabel(promo.validFrom, promo.validUntil)}
                         {promo.minBookingValue && (
                           <div className="mt-1 text-xs font-normal text-gray-500">
-                            Min. {moneyLabel(promo.minBookingValue, propertyCurrency)}
+                            {t("admin.min")}
+                            {moneyLabel(promo.minBookingValue, propertyCurrency)}
                           </div>
                         )}
                       </td>
@@ -415,7 +430,7 @@ export default function PromoCodesTab({
                       </td>
                       <td className="px-4 py-4">
                         <div className="text-xs text-gray-600">
-                          {promo.currentUses}/{promo.maxUses} used
+                          {promo.currentUses}/{promo.maxUses} {t("admin.used")}
                         </div>
                         <div className="mt-2 h-1.5 w-24 overflow-hidden rounded-full bg-gray-100">
                           <div
@@ -430,18 +445,14 @@ export default function PromoCodesTab({
                             type="button"
                             role="switch"
                             aria-checked={promo.isActive}
-                            aria-label={`${promo.isActive ? "Deactivate" : "Activate"} ${promo.code}`}
+                            aria-label={`${promo.isActive ? t("featureHub.copy.deactivate") : t("admin.activate")} ${promo.code}`}
                             disabled={busyPromoId === promo.promoCodeId}
                             onClick={async () => {
                               setBusyPromoId(promo.promoCodeId);
                               try {
                                 await onTogglePromoCode(promo);
-                              } catch (error) {
-                                setPromoError(
-                                  error instanceof Error
-                                    ? error.message
-                                    : "Failed to update promo code.",
-                                );
+                              } catch {
+                                setPromoError(t("admin.failedToUpdatePromoCode"));
                               } finally {
                                 setBusyPromoId(null);
                               }
@@ -455,7 +466,7 @@ export default function PromoCodesTab({
                           <button
                             type="button"
                             onClick={() => openEditor(promo)}
-                            aria-label={`Edit ${promo.code}`}
+                            aria-label={t("admin.editName", { name: promo.code })}
                             className="order-1 rounded-md p-2 text-gray-500 hover:bg-gray-100 hover:text-gray-900"
                           >
                             <PencilSquareIcon className="h-4 w-4" />
@@ -464,7 +475,7 @@ export default function PromoCodesTab({
                             type="button"
                             onClick={() => void handleDelete(promo)}
                             disabled={busyPromoId === promo.promoCodeId}
-                            aria-label={`Delete ${promo.code}`}
+                            aria-label={t("admin.deleteName2", { name: promo.code })}
                             className="order-2 rounded-md p-2 text-gray-500 hover:bg-red-50 hover:text-red-600 disabled:opacity-50"
                           >
                             <TrashIcon className="h-4 w-4" />
@@ -478,7 +489,7 @@ export default function PromoCodesTab({
             </table>
             {filteredPromoCodes.length === 0 && (
               <p className="px-6 py-12 text-center text-sm text-gray-500">
-                No promo codes match your search.
+                {t("admin.noPromoCodesMatchYourSearch")}
               </p>
             )}
           </div>
@@ -509,11 +520,12 @@ export default function PromoCodesTab({
                 </span>
                 <div>
                   <h2 id="promo-editor-title" className="text-xl font-semibold text-gray-950">
-                    {editingPromo ? "Edit promo code" : "Create promo code"}
+                    {editingPromo ? t("admin.editPromoCode") : t("admin.createPromoCode")}
                   </h2>
                   <p id="promo-editor-description" className="mt-1 max-w-2xl text-sm text-gray-600">
-                    Guests enter this code in the booking engine. Discounts use the property
-                    currency ({propertyCurrency}).
+                    {t("admin.guestsEnterThisCodeInTheBookingEngineDiscountsUse2", {
+                      currency: propertyCurrency,
+                    })}
                   </p>
                 </div>
               </div>
@@ -521,7 +533,7 @@ export default function PromoCodesTab({
                 type="button"
                 onClick={closeEditor}
                 disabled={savingPromo}
-                aria-label="Close promo code editor"
+                aria-label={t("admin.closePromoCodeEditor")}
                 className="-mr-2 shrink-0 rounded-lg p-2 text-gray-500 transition-colors hover:bg-gray-100 hover:text-gray-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500 focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
               >
                 <XMarkIcon className="h-5 w-5" />
@@ -539,14 +551,14 @@ export default function PromoCodesTab({
                       <TicketIcon className="h-4 w-4" />
                     </span>
                     <h3 id="promo-details-heading" className="text-sm font-semibold text-gray-950">
-                      Promo details
+                      {t("admin.promoDetails")}
                     </h3>
                   </div>
                   <div className="space-y-5">
                     <Field
                       id="promo-code"
-                      label="Code"
-                      helper="Letters, numbers, - and _ only. Must be unique."
+                      label={t("affiliates.allAffiliates.code")}
+                      helper={t("promos.codeHint")}
                     >
                       <Input
                         id="promo-code"
@@ -561,18 +573,20 @@ export default function PromoCodesTab({
                             code: event.target.value.toUpperCase().replace(/[^A-Z0-9_-]/g, ""),
                           }))
                         }
-                        placeholder="e.g. SUMMER20"
+                        placeholder={t("admin.eGSUMMER20")}
                         className={inputClass}
                       />
                     </Field>
 
                     <fieldset>
-                      <legend className="text-sm font-medium text-gray-800">Discount type</legend>
+                      <legend className="text-sm font-medium text-gray-800">
+                        {t("admin.discountType")}
+                      </legend>
                       <p
                         id="promo-discount-type-helper"
                         className="mb-2 mt-1 text-xs text-gray-600"
                       >
-                        Choose how the discount is calculated.
+                        {t("admin.chooseHowTheDiscountIsCalculated")}
                       </p>
                       <div className="grid grid-cols-2 gap-3">
                         {(["percentage", "fixed"] as const).map((type) => (
@@ -592,12 +606,12 @@ export default function PromoCodesTab({
                               }
                             />
                             <span className="block text-sm font-medium capitalize text-gray-900">
-                              {type === "fixed" ? "Fixed amount" : "Percentage"}
+                              {type === "fixed" ? t("admin.fixedAmount") : t("admin.percentage")}
                             </span>
                             <span className="mt-0.5 block text-xs text-gray-600">
                               {type === "fixed"
-                                ? `${propertyCurrency} off the total`
-                                : "% off the booking total"}
+                                ? t("admin.currencyOffTheTotal", { currency: propertyCurrency })
+                                : t("bookingFlow.promoCodes.percentageOff")}
                             </span>
                           </label>
                         ))}
@@ -606,11 +620,13 @@ export default function PromoCodesTab({
 
                     <Field
                       id="promo-discount-value"
-                      label="Discount value"
+                      label={t("admin.discountValue")}
                       helper={
                         draft.discountType === "fixed"
-                          ? `Uses your property currency (${propertyCurrency}).`
-                          : "Enter a percentage from 0.01 to 100."
+                          ? t("admin.usesYourPropertyCurrencyCurrency", {
+                              currency: propertyCurrency,
+                            })
+                          : t("admin.percentageRange")
                       }
                     >
                       <div className="relative">
@@ -638,7 +654,11 @@ export default function PromoCodesTab({
                     </Field>
 
                     <div className="grid gap-4 sm:grid-cols-2">
-                      <Field id="promo-valid-from" label="Valid from" helper="Blank = immediately.">
+                      <Field
+                        id="promo-valid-from"
+                        label={t("admin.validFrom")}
+                        helper={t("promos.immediateHint")}
+                      >
                         <Input
                           id="promo-valid-from"
                           aria-describedby="promo-valid-from-helper"
@@ -650,7 +670,11 @@ export default function PromoCodesTab({
                           className={inputClass}
                         />
                       </Field>
-                      <Field id="promo-valid-until" label="Valid until" helper="Blank = no expiry.">
+                      <Field
+                        id="promo-valid-until"
+                        label={t("admin.validUntil")}
+                        helper={t("promos.expiryHint")}
+                      >
                         <Input
                           id="promo-valid-until"
                           aria-describedby="promo-valid-until-helper"
@@ -670,8 +694,8 @@ export default function PromoCodesTab({
                       onChange={() =>
                         setDraft((current) => ({ ...current, isActive: !current.isActive }))
                       }
-                      label="Active"
-                      description="Turn off to pause the code without deleting it."
+                      label={t("promos.status.Active")}
+                      description={t("admin.turnOffToPauseTheCodeWithoutDeletingIt")}
                     />
                   </div>
                 </section>
@@ -685,14 +709,14 @@ export default function PromoCodesTab({
                       <AdjustmentsHorizontalIcon className="h-4 w-4" />
                     </span>
                     <h3 id="promo-rules-heading" className="text-sm font-semibold text-gray-950">
-                      Rules &amp; restrictions
+                      {t("admin.rulesRestrictions")}
                     </h3>
                   </div>
                   <div className="space-y-5">
                     <Field
                       id="promo-min-booking-value"
-                      label="Minimum booking value"
-                      helper="Code only applies to bookings of this amount or more. Leave blank for no minimum."
+                      label={t("admin.minimumBookingValue")}
+                      helper={t("promos.minimumHint")}
                     >
                       <div className="relative">
                         <Input
@@ -708,7 +732,7 @@ export default function PromoCodesTab({
                               minBookingValue: event.target.value,
                             }))
                           }
-                          placeholder="e.g. 500"
+                          placeholder={t("admin.eG500")}
                           className={`${inputClass} pr-14`}
                         />
                         <span className="pointer-events-none absolute right-3 top-3 text-sm text-gray-600">
@@ -719,8 +743,8 @@ export default function PromoCodesTab({
 
                     <Field
                       id="promo-max-uses"
-                      label="Max uses"
-                      helper="Total number of times this code can be redeemed. Use a high number (e.g. 999) for unlimited."
+                      label={t("admin.maxUses")}
+                      helper={t("promos.usageHint")}
                     >
                       <Input
                         id="promo-max-uses"
@@ -739,11 +763,10 @@ export default function PromoCodesTab({
 
                     <div>
                       <p id="promo-rooms-label" className="text-sm font-medium text-gray-800">
-                        Applicable rooms
+                        {t("admin.applicableRooms")}
                       </p>
                       <p id="promo-rooms-helper" className="mb-2 mt-1 text-xs text-gray-600">
-                        Leave as &apos;All rooms&apos; to apply to any booking, or select specific
-                        room types.
+                        {t("admin.leaveAsAllRoomsToApplyToAnyBookingOr")}
                       </p>
                       <details className="group rounded-lg border border-gray-300 bg-white">
                         <summary
@@ -753,15 +776,17 @@ export default function PromoCodesTab({
                         >
                           <span id="promo-rooms-value">
                             {draft.applicableRoomIds.length === 0
-                              ? "All rooms"
-                              : `${draft.applicableRoomIds.length} room${draft.applicableRoomIds.length === 1 ? "" : "s"} selected`}
+                              ? t("admin.allRooms")
+                              : t("admin.selectedRoomsCount", {
+                                  count: draft.applicableRoomIds.length,
+                                })}
                           </span>
                           <ChevronDownIcon className="h-4 w-4 shrink-0 text-gray-500 transition-transform group-open:rotate-180" />
                         </summary>
                         <div className="max-h-40 space-y-1 overflow-y-auto border-t border-gray-200 p-2">
                           {roomTypes.length === 0 ? (
                             <p className="px-2 py-1 text-xs text-gray-500">
-                              No room types available.
+                              {t("admin.noRoomTypesAvailable")}
                             </p>
                           ) : (
                             roomTypes.map((room) => (
@@ -793,8 +818,8 @@ export default function PromoCodesTab({
                     </div>
 
                     <DateRangeFields
-                      legend="Stay dates"
-                      helper="Restrict which check-in dates this promo covers, independent of the code's validity period. Leave blank to allow any stay dates."
+                      legend={t("promos.stayDates")}
+                      helper={t("promos.stayDatesHint")}
                       from={draft.stayDateFrom}
                       until={draft.stayDateUntil}
                       onFrom={(value) =>
@@ -823,7 +848,7 @@ export default function PromoCodesTab({
                 disabled={savingPromo}
                 className="h-11 w-full sm:w-auto"
               >
-                Cancel
+                {t("settings.totp.cancel")}
               </Button>
               <Button
                 type="submit"
@@ -831,7 +856,11 @@ export default function PromoCodesTab({
                 disabled={savingPromo}
                 className="h-11 w-full sm:w-auto"
               >
-                {savingPromo ? "Saving..." : editingPromo ? "Save changes" : "Create promo code"}
+                {savingPromo
+                  ? t("addons.editor.saving")
+                  : editingPromo
+                    ? t("admin.saveChanges")
+                    : t("admin.createPromoCode")}
               </Button>
             </div>
           </form>
@@ -886,6 +915,7 @@ function DateRangeFields({
   onFrom: (value: string) => void;
   onUntil: (value: string) => void;
 }) {
+  const { t } = useTranslation();
   return (
     <fieldset>
       <legend className="text-sm font-medium text-gray-800">{legend}</legend>
@@ -895,7 +925,7 @@ function DateRangeFields({
       <div className="grid gap-4 sm:grid-cols-2">
         <div>
           <label htmlFor="promo-stay-from" className="text-xs font-medium text-gray-600">
-            Stays from
+            {t("admin.staysFrom")}
           </label>
           <Input
             id="promo-stay-from"
@@ -908,7 +938,7 @@ function DateRangeFields({
         </div>
         <div>
           <label htmlFor="promo-stay-until" className="text-xs font-medium text-gray-600">
-            Stays until
+            {t("admin.staysUntil")}
           </label>
           <Input
             id="promo-stay-until"

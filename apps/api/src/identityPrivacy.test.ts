@@ -60,6 +60,56 @@ describe("identity privacy routes", () => {
     await app?.close();
   });
 
+  it("rejects malformed public identifiers and coerced cookie choices", async () => {
+    app = buildApp({
+      logger: false,
+      identityPrivacyRepository: createMemoryIdentityPrivacyRepository(),
+    });
+    const valid = {
+      visitor_id: "visitor_001",
+      functional: false,
+      analytics: false,
+      marketing: false,
+    };
+    for (const fields of [
+      { visitor_id: 1 },
+      { visitor_id: " " },
+      { visitor_id: "a".repeat(129) },
+      { visitor_id: "../tenant" },
+      { analytics: "false" },
+      { functional: 0 },
+      { marketing: null },
+      { necessary: false },
+    ]) {
+      expect(
+        (
+          await app.inject({
+            method: "POST",
+            url: "/api/identity/consent/cookies",
+            payload: { ...valid, ...fields },
+          })
+        ).statusCode,
+      ).toBe(422);
+    }
+    for (const visitorId of ["a".repeat(129), "../tenant", " "]) {
+      expect(
+        (
+          await app.inject({
+            method: "GET",
+            url: `/api/identity/consent/cookies?visitor_id=${encodeURIComponent(visitorId)}`,
+          })
+        ).statusCode,
+      ).toBe(422);
+    }
+    const saved = await app.inject({
+      method: "POST",
+      url: "/api/identity/consent/cookies",
+      payload: { ...valid, user_id: "other-account" },
+    });
+    expect(saved.statusCode).toBe(200);
+    expect(saved.json().user_id).toBeNull();
+  });
+
   it("stores and reads public cookie consent through identity-owned routes", async () => {
     const repository = createMemoryIdentityPrivacyRepository();
     app = buildApp({
@@ -195,7 +245,7 @@ function createMemoryIdentityPrivacyRepository(): IdentityPrivacyRepository {
       const response: CookieConsentResponse = {
         id: existing?.id ?? `cookie_${cookies.size + 1}`,
         visitor_id: input.visitorId,
-        user_id: input.userId ?? null,
+        user_id: null,
         necessary: true,
         functional: input.functional,
         analytics: input.analytics,
