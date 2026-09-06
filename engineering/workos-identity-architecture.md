@@ -340,6 +340,15 @@ not part of the first custom UI rollout; until they are scoped, those states
 should produce explicit unsupported responses instead of redirecting to hosted
 AuthKit UI.
 
+When Google code exchange returns `organization_selection_required`, the API may
+complete the pending WorkOS authentication automatically only when exactly one
+provider-offered organization maps to an active Vayada organization of the
+surface's required kind. PMS/Booking Admin therefore select hotel groups, while
+Platform Admin selects the platform organization. Zero or multiple matching
+organizations must not be guessed. Keep the pending token server-side, verify
+the returned session organization, then apply the existing user, membership,
+role, and property-access checks. This does not add a multi-workspace picker.
+
 Product-specific profile setup still belongs to the destination app's setup
 guard. Custom auth endpoints must not recreate legacy password registration
 behavior or store/verify Vayada-owned password hashes.

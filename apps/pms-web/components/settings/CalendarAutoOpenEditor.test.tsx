@@ -163,15 +163,77 @@ describe("calendar auto-open editor", () => {
       view = create(createElement(CalendarAutoOpenEditor));
     });
 
-    expect(view.root.findByProps({ role: "alert" }).children.join(" ")).toContain(
-      "Reopen Calendar setup",
-    );
+    expect(
+      view.root.findByProps({ role: "alert" }).findAllByType("p")[0]!.children.join(" "),
+    ).toContain("Reopen Calendar setup");
     expect(view.root.findByProps({ id: "auto-open-state" }).children.join("")).toContain("paused");
     act(() => view.root.findByProps({ "aria-label": "Auto-open future calendar" }).props.onClick());
     await act(async () => view.root.findByProps({ children: "Save auto-open" }).props.onClick());
     expect(
       view.root.findAllByProps({ role: "alert" }).at(-1)?.findByType("span").children.join(""),
     ).toContain("Verify every physical room label");
+  });
+
+  it.each([
+    ["operating_calendar_not_configured", "calendar"],
+    ["operating_calendar_room_bindings_stale", "calendar"],
+    ["physical_room_labels_unverified", "rooms"],
+  ])("links %s to the selected property's protected %s setup", async (code, step) => {
+    mocks.load.mockResolvedValue({ ...response(3, true), setupError: { code } });
+    let view!: ReturnType<typeof create>;
+    await act(async () => {
+      view = create(createElement(CalendarAutoOpenEditor));
+    });
+    const link = view.root.findByType("a");
+    const login = new URL(link.props.href);
+    expect(login.pathname).toBe("/login");
+    const url = new URL(login.searchParams.get("returnTo")!, login.origin);
+    expect(url.pathname).toBe("/setup");
+    expect(Object.fromEntries(url.searchParams)).toEqual({
+      entryProduct: "pms",
+      returnProduct: "pms",
+      propertyId: "property-1",
+      returnTo: "/settings#calendar",
+      recovery: "pms-calendar",
+      step,
+    });
+    expect(JSON.stringify(view.toJSON())).toContain("ask your property administrator");
+    expect(mocks.save).not.toHaveBeenCalled();
+  });
+
+  it("does not offer setup recovery when the calendar is ready", async () => {
+    let view!: ReturnType<typeof create>;
+    await act(async () => {
+      view = create(createElement(CalendarAutoOpenEditor));
+    });
+    expect(view.root.findAllByType("a")).toHaveLength(0);
+  });
+
+  it.each([
+    ["operating_calendar_not_configured", "calendar"],
+    ["operating_calendar_room_bindings_stale", "calendar"],
+    ["physical_room_labels_unverified", "rooms"],
+  ])("offers recovery when enabling a disabled calendar fails with %s", async (code, step) => {
+    mocks.save.mockRejectedValueOnce(new ApiErrorResponse(409, { code }));
+    let view!: ReturnType<typeof create>;
+    await act(async () => {
+      view = create(createElement(CalendarAutoOpenEditor));
+    });
+    act(() => view.root.findByProps({ "aria-label": "Auto-open future calendar" }).props.onClick());
+    await act(async () => view.root.findByProps({ children: "Save auto-open" }).props.onClick());
+
+    const login = new URL(view.root.findByType("a").props.href);
+    const setup = new URL(login.searchParams.get("returnTo")!, login.origin);
+    expect(setup.searchParams.get("step")).toBe(step);
+    expect(setup.searchParams.get("propertyId")).toBe("property-1");
+    expect(view.root.findAllByProps({ role: "status" })).toHaveLength(0);
+    expect(mocks.save).toHaveBeenCalledTimes(1);
+
+    await act(async () => view.root.findByProps({ children: "Reload" }).props.onClick());
+    expect(view.root.findAllByType("a")).toHaveLength(0);
+    expect(
+      view.root.findByProps({ "aria-label": "Auto-open future calendar" }).props["aria-checked"],
+    ).toBe(false);
   });
 
   it("does not report success when a replay returns paused setup readiness", async () => {

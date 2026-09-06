@@ -164,3 +164,9 @@ export {
   type RoomType,
 } from "./RoomsStep";
 export { useSetupWizardState, type RoomTab, type SetupWizardOptions } from "./useSetupWizardState";
+export {
+  readBankTransferDestination,
+  saveBankTransferDestination,
+  type SavedBankTransferDestination,
+  type DirectTransferDetails,
+} from "./bankTransferDestination";

@@ -20,9 +20,18 @@ import {
   type BookingGuestPolicyReadPort,
   type BookingGuestPolicyRevision,
   type BookingGuestPolicySetupAggregate,
+  type BookingGuestPolicySetupDraft,
 } from "@vayada/domain-booking";
 
 export type BookingGuestPolicyApplicationDependencies = Readonly<{
+  readInitialArrivalTimes?: (
+    scope: Readonly<{ organizationId: string; propertyId: string }>,
+  ) => Promise<
+    Pick<
+      BookingGuestPolicySetupDraft,
+      "checkInTime" | "checkOutTime" | "checkInUntil" | "checkOutFrom"
+    >
+  >;
   authorizedReplay: BookingGuestPolicyAuthorizedReplayPort;
   persistence: BookingGuestPolicyPersistencePort;
   read: Pick<BookingGuestPolicyReadPort, "getCurrentGuestPolicy">;
@@ -85,7 +94,11 @@ export function createBookingGuestPolicyApplication(
     async getGuestPolicySetup(input) {
       const scope = requireScope(input);
       const current = await readCurrent(dependencies.read, scope);
-      if (!current) return newSetupAggregate(scope);
+      if (!current) {
+        const initial = await dependencies.readInitialArrivalTimes?.(scope);
+        const setup = newSetupAggregate(scope);
+        return initial ? deepFreeze({ ...setup, draft: { ...setup.draft!, ...initial } }) : setup;
+      }
       const composition = await composeFromOwners(
         dependencies.ownerEvidence,
         scope,

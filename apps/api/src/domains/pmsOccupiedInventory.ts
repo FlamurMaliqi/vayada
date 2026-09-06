@@ -64,7 +64,7 @@ export async function reconcilePmsOccupiedInventory(
                  receipt.receipt_id::text OR booking.quote_session_id::text=receipt.quote_session_id
                  OR booking.booking_metadata#>>'{inventoryReservation,quoteSessionId}'=receipt.quote_session_id)
            ),0)))::int
-           FROM pms.inventory_reservation_receipts receipt
+           FROM pms.active_inventory_reservation_receipts receipt
            JOIN pms.inventory_reservation_statuses reservation_status
              ON reservation_status.receipt_id=receipt.receipt_id AND reservation_status.organization_id=receipt.organization_id
             AND reservation_status.property_id=receipt.property_id

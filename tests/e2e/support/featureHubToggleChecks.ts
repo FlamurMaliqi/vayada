@@ -4,6 +4,7 @@ export function featureHubToggleChecks(
   propertyId: string,
   setup: (page: Page) => Promise<void>,
   hasSidebar: boolean,
+  saveError = "Module save failed.",
 ) {
   for (const unavailableStorage of [false, true]) {
     test(`Feature Hub saves toggles without dialogs and rolls back failed saves (storage unavailable: ${unavailableStorage})`, async ({
@@ -113,9 +114,7 @@ export function featureHubToggleChecks(
       release();
       await expect(toggle).toBeEnabled();
       await expect(toggle).not.toBeChecked();
-      await expect(
-        page.getByRole("alert").filter({ hasText: "Module save failed." }),
-      ).toContainText("Module save failed.");
+      await expect(page.getByRole("alert").filter({ hasText: saveError })).toContainText(saveError);
       await expect(previewAffiliate).toHaveCount(0);
       if (hasSidebar) await expect(sidebarAffiliate).toHaveCount(0);
 
@@ -123,9 +122,7 @@ export function featureHubToggleChecks(
       await toggle.click();
       await expect(toggle).toBeEnabled();
       await expect(toggle).toBeChecked();
-      await expect(page.getByRole("alert").filter({ hasText: "Module save failed." })).toHaveCount(
-        0,
-      );
+      await expect(page.getByRole("alert").filter({ hasText: saveError })).toHaveCount(0);
       await page.reload();
       await expect(toggle).toBeEnabled();
       await expect(toggle).toBeChecked();
@@ -134,7 +131,7 @@ export function featureHubToggleChecks(
       const modal = page.getByRole("dialog", { name: "Affiliates" });
       fail = true;
       await modal.getByRole("button", { name: "Deactivate", exact: true }).click();
-      await expect(modal.getByRole("alert")).toContainText("Module save failed.");
+      await expect(modal.getByRole("alert")).toContainText(saveError);
       await expect(toggle).toBeChecked();
       fail = false;
       await modal.getByRole("button", { name: "Deactivate", exact: true }).click();

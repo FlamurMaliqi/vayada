@@ -46,6 +46,7 @@ export type BookingCreateRequest = {
   rateType?: string;
   addonIds?: string[];
   addonQuantities?: Record<string, number>;
+  addonPackageQuantities?: Record<string, number>;
   addonDates?: Record<string, string[]>;
   promoCode?: string;
   quoteId?: string;
@@ -111,6 +112,7 @@ export interface PaymentSettings {
 }
 
 export interface BookingStatus {
+  canEditRequest?: boolean;
   status: string;
   paymentStatus: string | null;
   hostResponseDeadline: string | null;
@@ -171,6 +173,7 @@ export const bookingService = {
       rateType?: string;
       addonIds?: string[];
       addonQuantities?: Record<string, number>;
+      addonPackageQuantities?: Record<string, number>;
       addonDates?: Record<string, string[]>;
       promoCode?: string;
     },

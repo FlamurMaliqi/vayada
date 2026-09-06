@@ -215,6 +215,7 @@ export async function readProductionPmsTargetState(
   const stale = normalizedCohort.filter((row) => !requestedKeys.has(provenanceIdentity(row)));
   const collisions = [
     ...(await readCollisions(client, candidates)),
+    ...(await readInboxSummaryBlockers(client, candidates)),
     ...(await readStaleTargetBlockers(client, stale)),
   ];
   return {
@@ -311,6 +312,58 @@ function provenanceIdentity(value: {
     value.targetTable,
     value.targetId,
   ].join(":");
+}
+
+async function readInboxSummaryBlockers(
+  client: QueryClient,
+  candidates: PmsTargetRecord[],
+): Promise<IdentityMigrationBlocker[]> {
+  const threadIds = [
+    ...new Set(
+      candidates
+        .filter((row) => row.targetProduct === "pms" && row.targetTable === "message_threads")
+        .map((row) => row.targetId),
+    ),
+  ].sort();
+  const blockers: IdentityMigrationBlocker[] = [];
+  for (let offset = 0; offset < threadIds.length; offset += 500) {
+    const result = await client.query<IdentityMigrationBlocker>(
+      `SELECT 'INBOX_TARGET_THREAD_SUMMARY_MISMATCH' AS code,
+              'pms.message_threads' AS source, thread.id::text AS "sourceId",
+              'Property ' || thread.property_id::text || ': target ' || mismatch.field
+                || ' disagrees with retained messages' AS message
+         FROM pms.message_threads thread
+         CROSS JOIN LATERAL (
+           SELECT count(*) FILTER (WHERE direction = 'inbound' AND read_at IS NULL) AS unread
+             FROM pms.messages
+            WHERE property_id = thread.property_id AND thread_id = thread.id
+         ) totals
+         LEFT JOIN LATERAL (
+           SELECT sent_at, body, direction, sender_type, accepted_idempotency_key_id
+             FROM pms.messages
+            WHERE property_id = thread.property_id AND thread_id = thread.id
+            ORDER BY sent_at DESC, id DESC LIMIT 1
+         ) latest ON TRUE
+         CROSS JOIN LATERAL (VALUES
+           ('unreadCount', thread.unread_count IS DISTINCT FROM totals.unread),
+           ('lastMessageAt', thread.last_message_at IS DISTINCT FROM latest.sent_at),
+           ('lastMessageDirection', thread.last_message_direction IS DISTINCT FROM latest.direction),
+           ('lastMessagePreview',
+             thread.last_message_preview IS DISTINCT FROM LEFT(latest.body, 280)
+             AND NOT (
+               latest.accepted_idempotency_key_id IS NOT NULL
+               AND latest.direction = 'outbound' AND latest.sender_type = 'property_user'
+               AND (thread.last_message_preview IS NOT DISTINCT FROM LEFT(latest.body, 500)
+                    OR (latest.body = '' AND thread.last_message_preview IS NULL))
+             ))
+         ) mismatch(field, invalid)
+        WHERE thread.id = ANY($1::uuid[]) AND mismatch.invalid
+        ORDER BY thread.id, mismatch.field`,
+      [threadIds.slice(offset, offset + 500)],
+    );
+    blockers.push(...result.rows);
+  }
+  return blockers;
 }
 
 async function readCollisions(

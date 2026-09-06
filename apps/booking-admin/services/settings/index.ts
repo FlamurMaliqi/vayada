@@ -1,3 +1,4 @@
+import type { AddonPhoto } from "@vayada/product-onboarding/AddonEditor";
 import { ApiErrorResponse, apiClient, isNextApiTarget, omitHotelContext } from "../api/client";
 import { getSelectedBookingHotelId, listScopedBookingHotelIds } from "../api/bookingHotelScope";
 import {
@@ -52,7 +53,6 @@ export interface PropertySettings {
   arrival_time_enabled?: boolean;
   guest_count_enabled?: boolean;
   refer_a_guest_enabled?: boolean;
-  map_view_enabled?: boolean;
   free_cancellation_days: number;
   email_notifications: boolean;
   new_booking_alerts: boolean;
@@ -76,18 +76,6 @@ export interface PropertySettings {
   payout_swift?: string;
   terms_text?: string;
   cancellation_policy_text?: string;
-  show_room_detail_map?: boolean;
-  points_of_interest?: PointOfInterest[];
-}
-
-export interface PointOfInterest {
-  id: string;
-  label: string;
-  travelTime: string;
-  color: string;
-  latitude: number;
-  longitude: number;
-  position: number;
 }
 
 export type PropertySettingsUpdate = Partial<PropertySettings>;
@@ -341,6 +329,9 @@ export interface AddonItem {
   category: string;
   image: string;
   imageMediaObjectId?: string | null;
+  photos?: AddonPhoto[];
+  maxQuantity?: number;
+  leadTime?: string;
   duration?: string;
   perPerson?: boolean;
   perNight?: boolean;

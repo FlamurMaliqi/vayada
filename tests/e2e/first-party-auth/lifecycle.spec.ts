@@ -10,8 +10,7 @@ for (const surface of firstPartyAuthSurfaces) {
   test(`${surface.label} keeps login, session, refresh, and logout first-party`, async ({
     page,
   }) => {
-    const successPath =
-      surface.key === "affiliate" || surface.key === "admin" ? "/dashboard" : "/handoff";
+    const successPath = surface.key === "admin" ? "/dashboard" : "/handoff";
     await page.route(`${surface.baseURL}${successPath}**`, (route) =>
       route.fulfill({
         contentType: "text/html",

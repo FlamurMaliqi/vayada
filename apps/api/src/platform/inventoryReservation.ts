@@ -14,7 +14,8 @@ export type InventoryReservationTransaction = {
 };
 
 export type InventoryReservationReceipt =
-  PmsInventoryReservationReceipt | PmsInventoryReservationMarker;
+  | PmsInventoryReservationReceipt
+  | PmsInventoryReservationMarker;
 
 export type DirectBookingInventoryReservationPort = {
   reserve(input: {
@@ -34,6 +35,7 @@ export type DirectBookingInventoryReservationPort = {
     propertyId: string;
     reservation: InventoryReservationReceipt;
     occurredAt: Date;
+    requireReserved?: boolean;
   }): Promise<void>;
   availabilityCredit?(input: {
     transaction: InventoryReservationTransaction;
