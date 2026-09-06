@@ -14,8 +14,9 @@ export default function SignupPage() {
   const [isSubmitting, setIsSubmitting] = useState(false);
 
   useEffect(() => {
-    setSubmitError(new URLSearchParams(window.location.search).get("auth_error") ?? "");
-  }, []);
+    if (new URLSearchParams(window.location.search).has("auth_error"))
+      setSubmitError(t("auth.register.errorUnexpected"));
+  }, [t]);
 
   async function handleSignup(data: { email: string; password: string }) {
     setSubmitError("");
@@ -28,8 +29,8 @@ export default function SignupPage() {
         return;
       }
       router.push("/dashboard");
-    } catch (error) {
-      setSubmitError(error instanceof Error ? error.message : t("auth.register.errorUnexpected"));
+    } catch {
+      setSubmitError(t("auth.register.errorUnexpected"));
     } finally {
       setIsSubmitting(false);
     }
@@ -37,6 +38,7 @@ export default function SignupPage() {
 
   return (
     <SharedSignupPage
+      translate={t}
       onSubmit={handleSignup}
       isSubmitting={isSubmitting}
       submitError={submitError}

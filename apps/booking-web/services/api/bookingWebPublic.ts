@@ -47,6 +47,8 @@ export type BookingWebPublicHotelResponse = {
     policies: {
       checkInFrom: string | null;
       checkOutUntil: string | null;
+      checkInUntil?: string | null;
+      checkOutFrom?: string | null;
       cancellationSummary: string | null;
       termsUrl: string | null;
     };
@@ -109,6 +111,7 @@ export type BookingWebPublicOffersResponse = {
     rooms: number;
   };
   status: "bookable" | "unavailable" | "stale";
+  unavailableReasons?: Array<{ code: string }>;
   quote?: {
     offers: BookingWebPublicOffer[];
   };
@@ -284,6 +287,8 @@ export function toLegacyHotel(data: BookingWebPublicHotelResponse): Hotel {
     amenities: hotel.amenities,
     checkInTime: hotel.policies.checkInFrom || "",
     checkOutTime: hotel.policies.checkOutUntil || "",
+    checkInUntil: hotel.policies.checkInUntil || undefined,
+    checkOutFrom: hotel.policies.checkOutFrom || undefined,
     timezone: hotel.timezone,
     contact: {
       address,
@@ -324,9 +329,6 @@ export function toLegacyHotel(data: BookingWebPublicHotelResponse): Hotel {
     referAGuestEnabled:
       hotel.capabilities.referralCodes && (hotel.branding?.showReferAGuestButton ?? false),
     instantBook: hotel.capabilities.instantBook,
-    mapViewEnabled: false,
-    showRoomDetailMap: false,
-    pointsOfInterest: [],
   };
 }
 

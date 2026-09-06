@@ -34,8 +34,8 @@ ENV NEXT_PUBLIC_AUTHKIT_LOGIN_ENABLED=${NEXT_PUBLIC_AUTHKIT_LOGIN_ENABLED}
 ENV NEXT_PUBLIC_AUTHKIT_COMPATIBILITY_TOKEN_ENABLED=${NEXT_PUBLIC_AUTHKIT_COMPATIBILITY_TOKEN_ENABLED}
 
 # Build the application
-# @vayada/domain-pms builds @vayada/domain-hotels first via its prebuild hook.
-RUN npm --workspace @vayada/domain-pms run build
+# Booking builds its Hotels, PMS and Finance dependencies through prebuild.
+RUN npm --workspace @vayada/domain-booking run build
 
 WORKDIR /app/apps/pms-web
 RUN npm run build

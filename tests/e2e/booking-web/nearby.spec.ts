@@ -53,7 +53,11 @@ async function setup(page: Page, mode = "ready") {
             json:
               mode === "hidden"
                 ? { schemaVersion: 1, status: "hidden", location: null, places: [] }
-                : payload,
+                : mode === "invalid-null"
+                  ? { ...payload, places: [null] }
+                  : mode === "invalid-category"
+                    ? { ...payload, places: [{ ...payload.places[0], category: ["nature"] }] }
+                    : payload,
           },
     );
   });
@@ -132,7 +136,9 @@ for (const mobile of [false, true])
     ).toBe(0);
     await page.getByRole("button", { name: "Explore our surroundings" }).click();
     const section = page.getByRole("region", { name: "Our surroundings", exact: true });
-    await expect(section.getByRole("heading", { name: "Our favorite beach", exact: true })).toBeVisible();
+    await expect(
+      section.getByRole("heading", { name: "Our favorite beach", exact: true }),
+    ).toBeVisible();
     await expect(section.getByText("Recommended by us", { exact: true })).toHaveCount(1);
     for (const category of ["Beaches & nature", "Food & drink", "Things to do", "Transport"])
       await expect(section.getByRole("heading", { name: category, exact: true })).toBeVisible();
@@ -170,7 +176,9 @@ test("map failure keeps readable recommendations and room selection", async ({ p
   await expect(
     page.getByText("Map unavailable. Explore the places in the list below."),
   ).toBeVisible();
-  await expect(page.getByRole("heading", { name: "Our favorite beach", exact: true })).toBeVisible();
+  await expect(
+    page.getByRole("heading", { name: "Our favorite beach", exact: true }),
+  ).toBeVisible();
   await expect(page.getByRole("button", { name: /Select This Rate/i }).first()).toBeVisible();
 });
 test("hidden location never mounts Google or exposes directions", async ({ page }) => {
@@ -191,6 +199,15 @@ test("public API failure leaves booking usable", async ({ page }) => {
   ).toBeVisible();
   await expect(page.getByRole("button", { name: /Select This Rate/i }).first()).toBeVisible();
 });
+for (const mode of ["invalid-null", "invalid-category"])
+  test(`${mode} public API data leaves booking usable`, async ({ page }) => {
+    await setup(page, mode);
+    await page.getByRole("button", { name: "Explore our surroundings" }).click();
+    await expect(
+      page.getByText("Surroundings are unavailable right now. You can still choose a room."),
+    ).toBeVisible();
+    await expect(page.getByRole("button", { name: /Select This Rate/i }).first()).toBeVisible();
+  });
 test("a pending refresh can be checked without reloading the booking page", async ({ page }) => {
   await setup(page);
   let reads = 0;
@@ -199,7 +216,9 @@ test("a pending refresh can be checked without reloading the booking page", asyn
   );
   await page.getByRole("button", { name: "Explore our surroundings" }).click();
   await page.getByRole("button", { name: "Check for updated places" }).click();
-  await expect(page.getByRole("heading", { name: "Our favorite beach", exact: true })).toBeVisible();
+  await expect(
+    page.getByRole("heading", { name: "Our favorite beach", exact: true }),
+  ).toBeVisible();
   await expect(page.getByRole("button", { name: "Check for updated places" })).toHaveCount(0);
   expect(reads).toBe(2);
 });

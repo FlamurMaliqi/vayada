@@ -1,4 +1,5 @@
 "use client";
+import { useTranslation } from "@/lib/i18n";
 
 import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import {
@@ -14,17 +15,16 @@ import {
   type BookingReservation,
   type BookingReservationList,
 } from "@/services/api/bookingReservationsClient";
-import { paymentMethodLabel } from "@vayada/locale-constants";
 
 const PAGE_SIZE = 20;
 
 const STATUS_OPTIONS = [
-  { value: "", label: "All statuses" },
-  { value: "confirmed", label: "Confirmed" },
-  { value: "pending", label: "Pending" },
-  { value: "cancelled", label: "Cancelled" },
-  { value: "checked_in", label: "Checked in" },
-  { value: "checked_out", label: "Checked out" },
+  { value: "", label: "admin.allStatuses" },
+  { value: "confirmed", label: "admin.confirmed" },
+  { value: "pending", label: "admin.pending" },
+  { value: "cancelled", label: "admin.cancelled" },
+  { value: "checked_in", label: "admin.checkedIn" },
+  { value: "checked_out", label: "admin.checkedOut" },
 ];
 
 const STATUS_STYLES: Record<string, string> = {
@@ -37,6 +37,7 @@ const STATUS_STYLES: Record<string, string> = {
 };
 
 export default function ReservationsPage() {
+  const { t, locale } = useTranslation();
   const hasLoadedRef = useRef(false);
   const lastSuccessfulQueryRef = useRef("");
   const [hotelId, setHotelId] = useState<string | null>(null);
@@ -155,9 +156,11 @@ export default function ReservationsPage() {
     <div className="p-4 md:p-6 max-w-7xl mx-auto space-y-4">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
         <div>
-          <h1 className="text-xl md:text-2xl font-bold text-gray-900">Reservations</h1>
+          <h1 className="text-xl md:text-2xl font-bold text-gray-900">{t("admin.reservations")}</h1>
           <p className="text-[13px] text-gray-500 mt-1">
-            {bookings ? `${bookings.total.toLocaleString()} matching bookings` : "Booking list"}
+            {bookings
+              ? t("admin.matchingBookingsCount", { count: bookings.total.toLocaleString(locale) })
+              : t("admin.bookingList")}
           </p>
         </div>
         <button
@@ -167,24 +170,24 @@ export default function ReservationsPage() {
           className="inline-flex h-9 items-center justify-center gap-2 rounded-md border border-gray-200 bg-white px-3 text-[13px] font-medium text-gray-700 shadow-sm transition-colors hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
         >
           <ArrowPathIcon className={`h-4 w-4 ${refreshing ? "animate-spin" : ""}`} />
-          Refresh
+          {t("settings.booking.refresh")}
         </button>
       </div>
 
       <div className="bg-white border border-gray-200 rounded-lg p-3 md:p-4">
         <form onSubmit={handleSearch} className="grid gap-3 md:grid-cols-[1fr_180px_auto]">
           <label className="relative block">
-            <span className="sr-only">Search reservations</span>
+            <span className="sr-only">{t("admin.searchReservations")}</span>
             <MagnifyingGlassIcon className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-400" />
             <input
               value={searchDraft}
               onChange={(event) => setSearchDraft(event.target.value)}
-              placeholder="Search guest, email, or reference"
+              placeholder={t("admin.searchGuestEmailOrReference")}
               className="h-9 w-full rounded-md border border-gray-200 bg-white pl-9 pr-3 text-[13px] text-gray-900 placeholder:text-gray-400 focus:border-gray-300 focus:outline-none focus:ring-2 focus:ring-gray-100"
             />
           </label>
           <label>
-            <span className="sr-only">Status</span>
+            <span className="sr-only">{t("affiliates.allAffiliates.status")}</span>
             <select
               value={status}
               onChange={(event) => handleStatusChange(event.target.value)}
@@ -192,7 +195,7 @@ export default function ReservationsPage() {
             >
               {STATUS_OPTIONS.map((option) => (
                 <option key={option.value} value={option.value}>
-                  {option.label}
+                  {t(option.label)}
                 </option>
               ))}
             </select>
@@ -201,7 +204,7 @@ export default function ReservationsPage() {
             type="submit"
             className="h-9 rounded-md bg-gray-900 px-4 text-[13px] font-medium text-white transition-colors hover:bg-gray-800"
           >
-            Search
+            {t("admin.search")}
           </button>
         </form>
       </div>
@@ -209,20 +212,23 @@ export default function ReservationsPage() {
       {error && bookings && (
         <div className="flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-[13px] text-amber-800">
           <ExclamationTriangleIcon className="mt-0.5 h-4 w-4 shrink-0" />
-          <p>{error.detail} Showing the last successful reservation list until refresh succeeds.</p>
+          <p>
+            {t("admin.reservationsUnavailable")}{" "}
+            {t("admin.showingTheLastSuccessfulReservationListUntilRefreshSucceeds")}
+          </p>
         </div>
       )}
 
       {refreshing && bookings && (
         <div className="rounded-lg border border-blue-100 bg-blue-50 px-3 py-2 text-[13px] font-medium text-blue-700">
-          Updating reservations...
+          {t("admin.updatingReservations")}
         </div>
       )}
 
       <div className="overflow-hidden rounded-lg border border-gray-200 bg-white">
         {loading && !bookings && <ReservationSkeleton />}
         {!hotelId && !loading && <NoHotelState />}
-        {showInitialError && <ErrorState error={error!} onRetry={handleRefresh} />}
+        {showInitialError && <ErrorState onRetry={handleRefresh} />}
         {!loading && hotelId && bookings && !hasRows && <EmptyState />}
         {bookings && hasRows && (
           <>
@@ -230,12 +236,12 @@ export default function ReservationsPage() {
               <table className="min-w-full divide-y divide-gray-200">
                 <thead className="bg-gray-50">
                   <tr>
-                    <TableHead label="Reservation" />
-                    <TableHead label="Guest" />
-                    <TableHead label="Stay" />
-                    <TableHead label="Rooms" />
-                    <TableHead label="Payment" />
-                    <TableHead label="Status" />
+                    <TableHead label={t("admin.reservation")} />
+                    <TableHead label={t("affiliates.typeFilter.guest")} />
+                    <TableHead label={t("admin.stay")} />
+                    <TableHead label={t("admin.rooms")} />
+                    <TableHead label={t("admin.payment")} />
+                    <TableHead label={t("affiliates.allAffiliates.status")} />
                   </tr>
                 </thead>
                 <tbody className={`divide-y divide-gray-100 ${refreshing ? "opacity-70" : ""}`}>
@@ -247,7 +253,9 @@ export default function ReservationsPage() {
             </div>
             <div className="flex flex-col gap-3 border-t border-gray-200 px-3 py-3 text-[13px] text-gray-500 sm:flex-row sm:items-center sm:justify-between">
               <span>
-                Showing {pageRange} of {bookings.total.toLocaleString()}
+                {t("admin.showing")}
+                {pageRange} {t("admin.of")}
+                {bookings.total.toLocaleString()}
               </span>
               <div className="flex gap-2">
                 <button
@@ -256,7 +264,7 @@ export default function ReservationsPage() {
                   onClick={() => setOffset((current) => Math.max(current - PAGE_SIZE, 0))}
                   className="h-8 rounded-md border border-gray-200 bg-white px-3 font-medium text-gray-700 transition-colors hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
                 >
-                  Previous
+                  {t("admin.previous")}
                 </button>
                 <button
                   type="button"
@@ -264,7 +272,7 @@ export default function ReservationsPage() {
                   onClick={() => setOffset((current) => current + PAGE_SIZE)}
                   className="h-8 rounded-md border border-gray-200 bg-white px-3 font-medium text-gray-700 transition-colors hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
                 >
-                  Next
+                  {t("admin.next")}
                 </button>
               </div>
             </div>
@@ -276,6 +284,7 @@ export default function ReservationsPage() {
 }
 
 function ReservationRow({ booking }: { booking: BookingReservation }) {
+  const { t, locale } = useTranslation();
   const guestName = `${booking.guestFirstName} ${booking.guestLastName}`.trim();
   const roomSummary =
     booking.numberOfRooms === 1
@@ -286,43 +295,43 @@ function ReservationRow({ booking }: { booking: BookingReservation }) {
     <tr className="hover:bg-gray-50/80">
       <TableCell>
         <div className="font-semibold text-gray-900">{booking.bookingReference || booking.id}</div>
-        <div className="mt-1 text-[12px] text-gray-500">{formatTimestamp(booking.createdAt)}</div>
-      </TableCell>
-      <TableCell>
-        <div className="font-medium text-gray-900">{guestName || "Guest"}</div>
-        <div className="mt-1 max-w-[220px] truncate text-[12px] text-gray-500">
-          {booking.guestEmail || booking.guestPhone || "No contact details"}
+        <div className="mt-1 text-[12px] text-gray-500">
+          {formatTimestamp(booking.createdAt, locale)}
         </div>
       </TableCell>
       <TableCell>
         <div className="font-medium text-gray-900">
-          {formatDate(booking.checkIn)} - {formatDate(booking.checkOut)}
+          {guestName || t("affiliates.typeFilter.guest")}
+        </div>
+        <div className="mt-1 max-w-[220px] truncate text-[12px] text-gray-500">
+          {booking.guestEmail || booking.guestPhone || t("admin.noContactDetails")}
+        </div>
+      </TableCell>
+      <TableCell>
+        <div className="font-medium text-gray-900">
+          {formatDate(booking.checkIn, locale)} - {formatDate(booking.checkOut, locale)}
         </div>
         <div className="mt-1 text-[12px] text-gray-500">
-          {booking.nights} {booking.nights === 1 ? "night" : "nights"} · {booking.adults} adult
-          {booking.adults === 1 ? "" : "s"}
-          {booking.children > 0
-            ? ` · ${booking.children} child${booking.children === 1 ? "" : "ren"}`
-            : ""}
+          {t("admin.nightsNightsAdultsAdults", { nights: booking.nights, adults: booking.adults })}
+          {booking.children > 0 ? t("admin.childrenCount", { count: booking.children }) : ""}
         </div>
       </TableCell>
       <TableCell>
         <div className="font-medium text-gray-900">{roomSummary}</div>
         <div className="mt-1 text-[12px] text-gray-500">
           {booking.assignedRooms.length > 0
-            ? `${booking.assignedRooms.length} assigned`
+            ? t("admin.assignedCount", { count: booking.assignedRooms.length })
             : booking.roomNumber
-              ? `Room ${booking.roomNumber}`
-              : "Unassigned"}
+              ? t("admin.roomNumber", { number: booking.roomNumber })
+              : t("admin.unassigned")}
         </div>
       </TableCell>
       <TableCell>
         <div className="font-semibold text-gray-900">
-          {formatCurrency(booking.totalAmount, booking.currency)}
+          {formatCurrency(booking.totalAmount, booking.currency, locale)}
         </div>
         <div className="mt-1 text-[12px] text-gray-500">
-          {booking.paymentStatus ||
-            (booking.paymentMethod ? paymentMethodLabel(booking.paymentMethod) : "Payment pending")}
+          {t(`reservations.paymentStatus.${booking.paymentStatus ?? "pending"}`)}
         </div>
       </TableCell>
       <TableCell>
@@ -331,9 +340,11 @@ function ReservationRow({ booking }: { booking: BookingReservation }) {
             booking.status,
           )}`}
         >
-          {formatStatus(booking.status)}
+          {t(`reservations.status.${booking.status}`)}
         </span>
-        <div className="mt-1 text-[12px] text-gray-500">{booking.channel || "direct"}</div>
+        <div className="mt-1 text-[12px] text-gray-500">
+          {!booking.channel || booking.channel === "direct" ? t("admin.direct") : booking.channel}
+        </div>
       </TableCell>
     </tr>
   );
@@ -369,64 +380,65 @@ function ReservationSkeleton() {
 }
 
 function EmptyState() {
+  const { t } = useTranslation();
   return (
     <div className="px-4 py-14 text-center">
       <CalendarDaysIcon className="mx-auto h-9 w-9 text-gray-300" />
-      <h2 className="mt-3 text-sm font-semibold text-gray-900">No reservations found</h2>
+      <h2 className="mt-3 text-sm font-semibold text-gray-900">{t("admin.noReservationsFound")}</h2>
       <p className="mx-auto mt-1 max-w-sm text-[13px] text-gray-500">
-        Adjust the filters or search query to see matching bookings.
+        {t("admin.adjustTheFiltersOrSearchQueryToSeeMatchingBookings")}
       </p>
     </div>
   );
 }
 
 function NoHotelState() {
+  const { t } = useTranslation();
   return (
     <div className="px-4 py-14 text-center">
       <CalendarDaysIcon className="mx-auto h-9 w-9 text-gray-300" />
-      <h2 className="mt-3 text-sm font-semibold text-gray-900">Select a property</h2>
+      <h2 className="mt-3 text-sm font-semibold text-gray-900">{t("admin.selectAProperty")}</h2>
       <p className="mx-auto mt-1 max-w-sm text-[13px] text-gray-500">
-        Choose a property from the header before viewing reservations.
+        {t("admin.chooseAPropertyFromTheHeaderBeforeViewingReservations")}
       </p>
     </div>
   );
 }
 
-function ErrorState({
-  error,
-  onRetry,
-}: {
-  error: BookingReservationListClientError;
-  onRetry: () => void;
-}) {
+function ErrorState({ onRetry }: { onRetry: () => void }) {
+  const { t } = useTranslation();
   return (
     <div className="px-4 py-14 text-center">
       <ExclamationTriangleIcon className="mx-auto h-9 w-9 text-red-400" />
-      <h2 className="mt-3 text-sm font-semibold text-gray-900">Reservations unavailable</h2>
-      <p className="mx-auto mt-1 max-w-sm text-[13px] text-gray-500">{error.detail}</p>
+      <h2 className="mt-3 text-sm font-semibold text-gray-900">
+        {t("admin.reservationsUnavailable")}
+      </h2>
+      <p className="mx-auto mt-1 max-w-sm text-[13px] text-gray-500">
+        {t("admin.reservationsUnavailable")}
+      </p>
       <button
         type="button"
         onClick={onRetry}
         className="mt-4 h-9 rounded-md bg-gray-900 px-4 text-[13px] font-medium text-white transition-colors hover:bg-gray-800"
       >
-        Retry
+        {t("auth.chooseProperty.retry")}
       </button>
     </div>
   );
 }
 
-function formatDate(value: string): string {
+function formatDate(value: string, locale: string): string {
   if (!value) return "-";
   const date = new Date(`${value}T00:00:00`);
   if (Number.isNaN(date.getTime())) return value;
-  return new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric" }).format(date);
+  return new Intl.DateTimeFormat(locale, { month: "short", day: "numeric" }).format(date);
 }
 
-function formatTimestamp(value: string): string {
+function formatTimestamp(value: string, locale: string): string {
   if (!value) return "";
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return value;
-  return new Intl.DateTimeFormat("en-US", {
+  return new Intl.DateTimeFormat(locale, {
     month: "short",
     day: "numeric",
     hour: "2-digit",
@@ -434,20 +446,12 @@ function formatTimestamp(value: string): string {
   }).format(date);
 }
 
-function formatCurrency(amount: number, currency: string): string {
-  return new Intl.NumberFormat("en-US", {
+function formatCurrency(amount: number, currency: string, locale: string): string {
+  return new Intl.NumberFormat(locale, {
     style: "currency",
     currency: currency || "EUR",
     maximumFractionDigits: 2,
   }).format(amount);
-}
-
-function formatStatus(status: string): string {
-  return status
-    .split(/[_\s-]+/)
-    .filter(Boolean)
-    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
-    .join(" ");
 }
 
 function statusClassName(status: string): string {

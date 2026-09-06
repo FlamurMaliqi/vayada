@@ -38,7 +38,14 @@ export default function LocalizationTab({
   onSave,
   saving,
 }: LocalizationTabProps) {
-  const { t } = useTranslation();
+  const { t, locale } = useTranslation();
+
+  const multiselectCopy = {
+    noResults: t("common.noResultsFound"),
+    popular: t("admin.popularChoices"),
+    added: (count: number) => t("admin.addedCount", { count }),
+    remove: (name: string) => t("admin.removeName", { name }),
+  };
 
   const toggleCurrency = (code: string) => {
     setSupportedCurrencies((prev) =>
@@ -78,7 +85,12 @@ export default function LocalizationTab({
                   : without;
               });
             }}
-            options={CURRENCY_OPTIONS}
+            options={CURRENCY_OPTIONS.map((option) => ({
+              ...option,
+              name:
+                new Intl.DisplayNames([locale], { type: "currency" }).of(option.code) ??
+                option.code,
+            }))}
             getLabel={(o) => o.name}
           />
         </div>
@@ -98,7 +110,12 @@ export default function LocalizationTab({
                   : without;
               });
             }}
-            options={LANGUAGE_OPTIONS}
+            options={LANGUAGE_OPTIONS.map((option) => ({
+              ...option,
+              name:
+                new Intl.DisplayNames([locale], { type: "language" }).of(option.code) ??
+                option.nativeName,
+            }))}
             getLabel={(o) => o.name}
           />
         </div>
@@ -115,16 +132,23 @@ export default function LocalizationTab({
           </span>
         </label>
         <LocalizationMultiSelect<CurrencyOption>
+          copy={multiselectCopy}
           id="booking-localization-additional-currencies"
           selected={supportedCurrencies}
           onToggle={toggleCurrency}
-          options={CURRENCY_OPTIONS}
+          options={CURRENCY_OPTIONS.map((option) => ({
+            ...option,
+            name:
+              new Intl.DisplayNames([locale], { type: "currency" }).of(option.code) ?? option.code,
+          }))}
           excludeCode={defaultCurrency}
-          placeholder={`Search currencies, e.g. "Swiss" or "CHF"...`}
+          placeholder={t("bookingFlow.localization.searchCurrencies")}
           getLabel={(o) => o.code}
           getSearchLabel={(o) => `${o.name} · ${o.code}`}
           popularCodes={POPULAR_CURRENCY_CODES}
-          emptyMessage={`No additional currencies added — your booking page will show only ${defaultCurrency}`}
+          emptyMessage={t("admin.noAdditionalCurrenciesAddedYourBookingPageWillShowOnly", {
+            currency: defaultCurrency,
+          })}
         />
       </div>
 
@@ -139,16 +163,26 @@ export default function LocalizationTab({
           </span>
         </label>
         <LocalizationMultiSelect<LanguageOption>
+          copy={multiselectCopy}
           id="booking-localization-additional-languages"
           selected={supportedLanguages}
           onToggle={toggleLanguage}
-          options={LANGUAGE_OPTIONS}
+          options={LANGUAGE_OPTIONS.map((option) => ({
+            ...option,
+            name:
+              new Intl.DisplayNames([locale], { type: "language" }).of(option.code) ??
+              option.nativeName,
+          }))}
           excludeCode={defaultLanguage}
-          placeholder={`Search languages, e.g. "German" or "Deutsch"...`}
+          placeholder={t("bookingFlow.localization.searchLanguages")}
           getLabel={(o) => o.nativeName}
           getSearchLabel={(o) => `${o.name} · ${o.nativeName}`}
           popularCodes={POPULAR_LANGUAGE_CODES}
-          emptyMessage={`No additional languages added — your booking page will show only ${defaultLanguage.toUpperCase()}`}
+          emptyMessage={t("admin.noAdditionalLanguagesAddedYourBookingPageWillShowOnly", {
+            language:
+              new Intl.DisplayNames([locale], { type: "language" }).of(defaultLanguage) ??
+              defaultLanguage,
+          })}
         />
       </div>
 
@@ -170,6 +204,7 @@ function FlagSelect<T extends { code: string; flag: string }>({
   options: T[];
   getLabel: (opt: T) => string;
 }) {
+  const { t } = useTranslation();
   const [open, setOpen] = useState(false);
   const [search, setSearch] = useState("");
   const ref = useRef<HTMLDivElement>(null);
@@ -199,7 +234,7 @@ function FlagSelect<T extends { code: string; flag: string }>({
         }}
         className="w-full flex items-center justify-between px-2.5 py-1.5 border border-gray-300 rounded-lg text-[13px] focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent bg-white text-gray-900"
       >
-        <span>{selected ? `${selected.flag} ${getLabel(selected)}` : "Select..."}</span>
+        <span>{selected ? `${selected.flag} ${getLabel(selected)}` : t("common.select")}</span>
         <svg
           className={`w-3.5 h-3.5 text-gray-400 transition-transform ${open ? "rotate-180" : ""}`}
           fill="none"
@@ -216,14 +251,14 @@ function FlagSelect<T extends { code: string; flag: string }>({
               type="text"
               value={search}
               onChange={(e) => setSearch(e.target.value)}
-              placeholder="Search..."
+              placeholder={t("common.search")}
               autoFocus
               className="w-full px-2.5 py-1.5 text-[13px] border border-gray-200 rounded-md focus:outline-none focus:ring-2 focus:ring-primary-500"
             />
           </div>
           <div className="max-h-52 overflow-y-auto">
             {filtered.length === 0 ? (
-              <div className="px-3 py-2 text-[13px] text-gray-400">No results</div>
+              <div className="px-3 py-2 text-[13px] text-gray-400">{t("common.noResults")}</div>
             ) : (
               filtered.map((opt) => (
                 <button

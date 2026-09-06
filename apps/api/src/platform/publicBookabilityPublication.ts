@@ -208,6 +208,8 @@ export const PROJECT_CANONICAL_PUBLIC_PROPERTY_PROFILE = `
       amenities.amenities,
       contacts.public_contacts,
       policy.check_in_time,
+      policy.check_in_until,
+      policy.check_out_from,
       policy.check_out_time,
       policy.cancellation_summary,
       policy.cancellation_terms_url
@@ -302,6 +304,8 @@ export const PROJECT_CANONICAL_PUBLIC_PROPERTY_PROFILE = `
         WHEN input.check_out_time IS NULL THEN NULL
         ELSE to_char(input.check_out_time, 'HH24:MI')
       END,
+      'checkInUntil', to_char(input.check_in_until, 'HH24:MI'),
+      'checkOutFrom', to_char(input.check_out_from, 'HH24:MI'),
       'cancellationSummary', input.cancellation_summary,
       'termsUrl', input.cancellation_terms_url
     )),
@@ -515,8 +519,8 @@ export const PROJECT_PUBLIC_BOOKABILITY_PROFILE = `
         CASE
           WHEN COALESCE(input.payments_enabled, FALSE)
             AND 'bank_transfer' = ANY(COALESCE(input.accepted_methods, ARRAY[]::text[]))
-            AND NULLIF(BTRIM(input.finance_deposit_policy ->> 'bankTransferInstructions'), '')
-              IS NOT NULL
+            AND EXISTS (SELECT 1 FROM finance.bank_transfer_destinations destination
+              WHERE destination.property_id=input.property_id AND destination.enabled)
             THEN 'bank_transfer'
         END,
         CASE
@@ -683,6 +687,8 @@ export const PROJECT_PUBLIC_BOOKABILITY_PROFILE = `
       jsonb_strip_nulls(jsonb_build_object(
         'checkInFrom', input.public_policy ->> 'checkInTime',
         'checkOutUntil', input.public_policy ->> 'checkOutTime',
+        'checkInUntil', input.public_policy ->> 'checkInUntil',
+        'checkOutFrom', input.public_policy ->> 'checkOutFrom',
         'cancellationSummary', input.public_policy ->> 'cancellationSummary',
         'freeCancellationDays', input.finance_refund_policy -> 'freeCancellationDays',
         'freeUntilDays', input.finance_refund_policy -> 'freeUntilDays',

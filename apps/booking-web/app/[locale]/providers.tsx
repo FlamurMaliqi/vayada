@@ -1,6 +1,7 @@
 "use client";
 
 import { HotelProvider } from "@/contexts/HotelContext";
+import AnalyticsConsent from "@/components/AnalyticsConsent";
 import { CurrencyProvider } from "@/contexts/CurrencyContext";
 
 export default function Providers({
@@ -14,7 +15,10 @@ export default function Providers({
 }) {
   return (
     <HotelProvider locale={locale} slug={slug}>
-      <CurrencyProvider>{children}</CurrencyProvider>
+      <CurrencyProvider>
+        {children}
+        <AnalyticsConsent />
+      </CurrencyProvider>
     </HotelProvider>
   );
 }
