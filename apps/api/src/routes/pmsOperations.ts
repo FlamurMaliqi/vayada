@@ -360,6 +360,7 @@ export type PmsManualCancellationCommand = {
   idempotencyKey: string;
   expectedVersion?: string;
   reason?: string;
+  guestMessage?: string;
   accountingDate: string | null;
   retainedCharges: Array<{
     linePosition: number;
@@ -7167,6 +7168,7 @@ function toManualCancellationCommand(
           "idempotencyKey",
           "expectedVersion",
           "reason",
+          "guestMessage",
           "accountingDate",
           "retainedCharges",
         ].includes(key),
@@ -7175,8 +7177,18 @@ function toManualCancellationCommand(
     raw.retainedCharges.length > 20 * 366
   )
     return { error: invalidBody("Cancellation command contains unknown or invalid fields.") };
+  if (
+    raw.guestMessage !== undefined &&
+    (typeof raw.guestMessage !== "string" || raw.guestMessage.length > 5000)
+  )
+    return { error: invalidBody("Message to guest must be text of at most 5000 characters.") };
+  const guestMessage =
+    typeof raw.guestMessage === "string"
+      ? raw.guestMessage.replace(/\r\n?/g, "\n").trim() || undefined
+      : undefined;
   const accountingDate = raw.accountingDate === null ? null : stringField(raw.accountingDate);
-  const reason = optionalStringField(raw.reason);
+  const reason = stringField(raw.reason);
+  if (!reason) return { error: invalidBody("An internal cancellation reason is required.") };
   const retainedCharges = raw.retainedCharges.map((value) => {
     const charge = objectBody(value);
     const amount = objectBody(charge?.amount);
@@ -7223,6 +7235,7 @@ function toManualCancellationCommand(
       guestBookingId,
       ...metadata.value,
       reason,
+      guestMessage,
       accountingDate: accountingDate ?? null,
       retainedCharges: retainedCharges as PmsManualCancellationCommand["retainedCharges"],
       audit: pmsOperationsCommandAudit(request, metadata.value.commandId, "Cancel manual booking"),

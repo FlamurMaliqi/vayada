@@ -9,6 +9,7 @@ const BOOKING_LIFECYCLE_EMAIL_JOB_TYPE_BY_KIND = {
   request_received: "email.booking-request-received",
   booking_accepted: "email.booking-accepted",
   booking_rejected: "email.booking-rejected",
+  booking_canceled: "email.booking-canceled",
   booking_expired: "email.booking-expired",
   host_new_booking: "email.booking-host-new-booking",
   host_review_required: "email.booking-host-review-required",
@@ -34,6 +35,7 @@ export type BookingLifecycleTransition = {
 };
 
 export type BookingLifecycleEmailInput = {
+  guestMessage?: string;
   resendKey?: string;
   kind: BookingLifecycleEmailKind;
   occurredAt: string;
@@ -67,6 +69,7 @@ export type BookingLifecycleEmailInput = {
 };
 
 export type BookingTransitionNotificationInput = {
+  guestMessage?: string;
   propertyId: string;
   guestBookingId: string;
   occurredAt: string;
@@ -358,6 +361,7 @@ export async function enqueueBookingTransitionNotifications(
   for (const notification of notifications) {
     const queued = await enqueueBookingLifecycleEmailJob(queryable, {
       kind: notification.kind,
+      guestMessage: input.guestMessage,
       occurredAt: input.occurredAt,
       correlationId: input.correlationId,
       causationId: input.causationId,
@@ -448,6 +452,20 @@ function emailCopy(input: BookingLifecycleEmailInput) {
       text: [
         `Hi ${name},`,
         `We couldn't accept your booking request for ${property}.`,
+        `Booking reference: ${booking.bookingReference}`,
+      ].join("\n\n"),
+    };
+  }
+  if (input.kind === "booking_canceled") {
+    const message = input.guestMessage?.replace(/\r\n?/g, "\n").trim();
+    return {
+      template: "booking_canceled",
+      subject: `Booking canceled - ${booking.bookingReference}`,
+      text: [
+        `Hi ${name},`,
+        `We've canceled your booking at ${property}.`,
+        ...(message ? [`Message from us:\n${message}`] : []),
+        `Stay: ${dateOnly(booking.checkIn)} to ${dateOnly(booking.checkOut)}`,
         `Booking reference: ${booking.bookingReference}`,
       ].join("\n\n"),
     };
@@ -578,6 +596,12 @@ function notificationsForTransition(
       transition.reason === "accepted_payment_expired")
   ) {
     return [{ kind: "booking_expired", role: "guest" }];
+  }
+  if (
+    transition.eventType === "guest_booking.canceled" &&
+    transition.reason === "property_cancellation"
+  ) {
+    return [{ kind: "booking_canceled", role: "guest" }];
   }
   return [];
 }

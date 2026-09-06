@@ -12,6 +12,35 @@ import {
 } from "./bookingEmails.js";
 
 describe("booking lifecycle email jobs", () => {
+  it.each([undefined, "  ", "Sorry.\r\n\r\nCall us.\r\n<script>alert(1)</script>"])(
+    "renders optional cancellation text safely with paragraphs: %s",
+    async (guestMessage) => {
+      const target = createTargetEmailStore();
+      await enqueueBookingLifecycleEmailJob(
+        target,
+        bookingEmailInput({
+          kind: "booking_canceled",
+          guestMessage,
+          transition: {
+            eventType: "guest_booking.canceled",
+            fromStatus: "confirmed",
+            toStatus: "canceled",
+            reason: "property_cancellation",
+          },
+        }),
+      );
+      const payload = JSON.parse(
+        String(target.requiredCall("INSERT INTO platform.jobs").values?.[8]),
+      );
+      expect(payload.subject).toContain("Booking canceled");
+      expect(payload.text).toContain("We've canceled your booking");
+      expect(payload.html).toBeUndefined();
+      if (guestMessage?.trim())
+        expect(payload.text).toContain(`Message from us:\n${guestMessage.replace(/\r\n/g, "\n")}`);
+      else expect(payload.text).not.toContain("Message from us:");
+    },
+  );
+
   it("enqueues a bank-transfer email without storing credentials", async () => {
     const target = createTargetEmailStore();
 

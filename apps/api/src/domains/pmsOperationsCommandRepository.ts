@@ -1715,7 +1715,7 @@ export function createTargetPmsOperationsCommandRepository(
       return executeOperationalCommand(config, pool, now, {
         command,
         operation: "manual_cancellation_command",
-        sideEffects: ["calendar_refresh", "ari_changed", "audit_event"],
+        sideEffects: ["calendar_refresh", "ari_changed", "guest_notification", "audit_event"],
         mutate: applyManualCancellationCommandMutation,
       });
     },
