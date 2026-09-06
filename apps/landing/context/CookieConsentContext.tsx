@@ -2,13 +2,8 @@
 
 import { createContext, useContext, useState, useEffect, useCallback, ReactNode } from "react";
 
-// Cookie consent categories
-export interface CookieConsent {
-  necessary: boolean; // Always true, cannot be disabled
-  functional: boolean;
-  analytics: boolean;
-  marketing: boolean;
-}
+import { CookieConsent, readConsent } from "@vayada/marketplace-shared/consent/preferences";
+export type { CookieConsent } from "@vayada/marketplace-shared/consent/preferences";
 
 // Context value type
 interface CookieConsentContextType {
@@ -43,7 +38,11 @@ export function CookieConsentProvider({ children }: { children: ReactNode }) {
       try {
         const storedConsent = localStorage.getItem(CONSENT_KEY);
         if (storedConsent) {
-          const parsed = JSON.parse(storedConsent) as CookieConsent;
+          const parsed = readConsent(JSON.parse(storedConsent));
+          if (!parsed) {
+            setShowBanner(true);
+            return;
+          }
           setConsent(parsed);
           setHasConsented(true);
           setShowBanner(false);
@@ -52,6 +51,7 @@ export function CookieConsentProvider({ children }: { children: ReactNode }) {
         setShowBanner(true);
       } catch (error) {
         console.error("Error loading cookie consent:", error);
+        setShowBanner(true);
       } finally {
         setIsLoading(false);
       }
