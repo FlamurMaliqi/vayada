@@ -261,10 +261,27 @@ describe("Booking Web public bootstrap parity", () => {
       },
     });
 
+    for (const consent of [
+      {},
+      { analyticsConsent: false, consentVersion: 1 },
+      { analyticsConsent: "true", consentVersion: 1 },
+      { analyticsConsent: true, consentVersion: 2 },
+    ]) {
+      const denied = await app.inject({
+        method: "POST",
+        url: "/api/booking-web/events",
+        payload: { hotelSlug: "unknown-hotel", eventType: "page_visit", ...consent },
+      });
+      expect(denied.statusCode).toBe(204);
+      expect(events).toEqual([]);
+    }
+
     const response = await app.inject({
       method: "POST",
       url: "/api/booking-web/events",
       payload: {
+        analyticsConsent: true,
+        consentVersion: 1,
         hotelSlug: "hotel-alpenrose",
         eventType: "page_visit",
         eventId: "event_page_visit_001",
@@ -281,6 +298,8 @@ describe("Booking Web public bootstrap parity", () => {
         method: "POST",
         url: "/api/booking-web/events",
         payload: {
+          analyticsConsent: true,
+          consentVersion: 1,
           hotelSlug: "hotel-alpenrose",
           eventType: "complete_booking_clicked",
           sessionId: "sid",
@@ -320,7 +339,12 @@ describe("Booking Web public bootstrap parity", () => {
     const response = await app.inject({
       method: "POST",
       url: "/api/booking-web/events",
-      payload: { hotelSlug: "unknown-hotel", eventType: "page_visit" },
+      payload: {
+        analyticsConsent: true,
+        consentVersion: 1,
+        hotelSlug: "unknown-hotel",
+        eventType: "page_visit",
+      },
     });
 
     expect(response.statusCode).toBe(404);

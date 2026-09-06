@@ -12,6 +12,7 @@ const BOOKING_LIFECYCLE_EMAIL_JOB_TYPE_BY_KIND = {
   booking_canceled: "email.booking-canceled",
   booking_expired: "email.booking-expired",
   host_new_booking: "email.booking-host-new-booking",
+  host_request_updated: "email.booking-host-request-updated",
   host_review_required: "email.booking-host-review-required",
 } as const;
 
@@ -316,6 +317,7 @@ export async function loadBookingNotificationSnapshot(
        guest.special_requests AS "specialRequests",
        (SELECT string_agg(item.addon_name || ' × ' || item.quantity, ', ' ORDER BY item.created_at)
         FROM booking.booking_addon_selection_items item
+        JOIN booking.active_booking_addon_selections current_selection ON current_selection.id = item.selection_id
         WHERE item.guest_booking_id = booking.id AND item.property_id = booking.property_id) AS addons
      FROM booking.guest_bookings booking
      JOIN hotel_catalog.properties property ON property.id = booking.property_id
@@ -481,6 +483,18 @@ function emailCopy(input: BookingLifecycleEmailInput) {
       ].join("\n\n"),
     };
   }
+  if (input.kind === "host_request_updated") {
+    return {
+      template: "booking_host_request_updated",
+      subject: `Booking request updated - ${booking.bookingReference}`,
+      text: [
+        `${name} updated their pending booking request.`,
+        `Stay: ${dateOnly(booking.checkIn)} to ${dateOnly(booking.checkOut)}`,
+        ...confirmationDetails(booking),
+        `Booking reference: ${booking.bookingReference}`,
+      ].join("\n\n"),
+    };
+  }
   if (input.kind === "host_new_booking" || input.kind === "host_review_required") {
     const reviewRequired = input.kind === "host_review_required";
     return {
@@ -529,6 +543,8 @@ function notificationsForTransition(
   transition: BookingLifecycleTransition,
   booking: BookingNotificationSnapshot,
 ): Array<{ kind: BookingLifecycleEmailKind; role: BookingNotificationRecipientRole }> {
+  if (transition.eventType === "guest_booking.request_updated")
+    return [{ kind: "host_request_updated", role: "host" }];
   if (transition.eventType === "guest_booking.created") {
     if (transition.toStatus === "confirmed") {
       return [
