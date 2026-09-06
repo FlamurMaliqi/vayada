@@ -11,6 +11,8 @@ import { afterEach, describe, expect, it } from "vitest";
 import financeRouteContracts from "../../../engineering/fixtures/finance-route-contracts/cases.json" with { type: "json" };
 import type { SetFinanceOtaCommissionRuleCommand } from "./domains/financeOtaCommissionRuleRepository.js";
 import { registerFinanceOtaCommissionSettingsRoutes } from "./routes/financeOtaCommissionSettings.js";
+import { agencyPropertyAccessRepository } from "./testAuthorization.js";
+import { requestContextFixtureCases } from "./platform/requestContext.fixtures.js";
 
 const PROPERTY = "f3000000-0000-4000-8000-000000000686";
 const VALID = "Bearer valid-token";
@@ -78,6 +80,8 @@ describe("Finance OTA commission settings routes", () => {
     ["no-property-entitlement", "PUT", VALID, 403],
     ["no-module-entitlement", "PUT", VALID, 403],
     ["inactive-module", "PUT", VALID, 403],
+    ["unassigned", "GET", VALID, 403],
+    ["unassigned", "PUT", VALID, 403],
     ["no-link", "PUT", VALID, 403],
     ["inactive-link", "PUT", VALID, 403],
     ["operator", "PUT", VALID, 403],
@@ -154,22 +158,45 @@ async function testApp(repository: ReturnType<typeof fakeRepository>, variant = 
   await instance.register(registerFinanceOtaCommissionSettingsRoutes, {
     prefix: "/api",
     repository,
+    propertyAccessRepository: agencyPropertyAccessRepository,
   });
   return instance;
 }
 
 function context(variant: string): RequestContext {
-  const value = {
-    actor: { internalUserId: "user" },
-    selectedOrganization: { organizationId: "organization", kind: "hotel_group" },
-    membership: { permissions: ["pms.finance.read", "pms.finance.manage"] },
-    linkedResources: [{ ...RESOURCE, relationship: "owner", status: "active" }],
+  const base = requestContextFixtureCases.find(({ scope }) => scope === "hotel")!.context;
+  const value: RequestContext = {
+    ...base,
+    actor: { ...base.actor, internalUserId: "user" },
+    selectedOrganization: { ...base.selectedOrganization, organizationId: "organization" },
+    membership: {
+      ...base.membership,
+      roleKey: "hotel_owner",
+      status: "active",
+      propertyAccess: {
+        mode: "assigned",
+        roleKey: "hotel_owner",
+        accessOrigin: "agency",
+        assignedPropertyIds: [PROPERTY],
+      },
+      permissions: ["pms.finance.read", "pms.finance.manage"],
+    },
+    linkedResources: [
+      { ...RESOURCE, relationship: "owner", status: "active" },
+      {
+        product: "hotel_catalog",
+        resourceType: "property",
+        resourceId: PROPERTY,
+        relationship: "owner",
+        status: "active",
+      },
+    ],
     entitlements: [
       { product: "pms", key: "property-management", status: "active", resource: RESOURCE },
       { product: "pms", key: "module:financials", status: "active", resource: RESOURCE },
     ],
-    audit: { requestId: "request", correlationId: "correlation", receivedAt: "now" },
-  } as RequestContext;
+    audit: { requestId: "request", correlationId: "correlation", receivedAt: "now", source: "api" },
+  };
   if (variant === "no-read") value.membership.permissions = ["pms.finance.manage"];
   if (variant === "no-manage") value.membership.permissions = ["pms.finance.read"];
   if (variant === "finance-manager") value.linkedResources[0]!.relationship = "finance_manager";
@@ -179,6 +206,7 @@ function context(variant: string): RequestContext {
   if (variant === "no-property-entitlement") value.entitlements.splice(0, 1);
   if (variant === "no-module-entitlement") value.entitlements.splice(1, 1);
   if (variant === "inactive-module") value.entitlements[1]!.status = "suspended";
+  if (variant === "unassigned") value.membership.propertyAccess!.assignedPropertyIds = [];
   return value;
 }
 async function put(app: FastifyInstance, body = BODY, channel?: string) {

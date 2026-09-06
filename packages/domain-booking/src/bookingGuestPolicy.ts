@@ -40,7 +40,8 @@ export type BookingGuestPolicyAbsentSourceRevision = Readonly<
   }
 >;
 export type BookingGuestPolicyCurrentSourceRevision =
-  BookingGuestPolicySourceRevision | BookingGuestPolicyAbsentSourceRevision;
+  | BookingGuestPolicySourceRevision
+  | BookingGuestPolicyAbsentSourceRevision;
 
 export type BookingGuestPolicyChoices = Readonly<{
   defaultGuestLanguage: BookingGuestLanguage;
@@ -52,6 +53,10 @@ export type BookingGuestPolicyChoices = Readonly<{
   specialRequestsEnabled: boolean;
   checkInTime: string;
   checkOutTime: string;
+  /** Optional same-day check-in deadline; omission preserves historical from-only policies. */
+  checkInUntil?: string;
+  /** Optional same-day check-out start; omission preserves historical by-only policies. */
+  checkOutFrom?: string;
 }>;
 
 export type BookingGuestPolicyCatalogProfileEvidence = Readonly<{
@@ -163,6 +168,7 @@ export function parseBookingGuestPolicyChoices(value: unknown): BookingGuestPoli
       "specialRequestsEnabled",
       "checkInTime",
       "checkOutTime",
+      ...bookingArrivalBoundKeys(value),
     ]) ||
     !BOOKING_GUEST_POLICY_SUPPORTED_LANGUAGES.includes(
       value.defaultGuestLanguage as BookingGuestLanguage,
@@ -173,11 +179,46 @@ export function parseBookingGuestPolicyChoices(value: unknown): BookingGuestPoli
     typeof value.arrivalTimeEnabled !== "boolean" ||
     typeof value.specialRequestsEnabled !== "boolean" ||
     !localTime(value.checkInTime) ||
-    !localTime(value.checkOutTime)
+    !localTime(value.checkOutTime) ||
+    bookingArrivalTimeErrors(value).length > 0
   ) {
     return null;
   }
   return deepFreeze({ ...value }) as BookingGuestPolicyChoices;
+}
+
+/** Only explicitly present bounds participate in historical bundle hashes. */
+export function bookingArrivalBoundKeys(value: unknown): string[] {
+  if (value === null || typeof value !== "object") return [];
+  return ["checkInUntil", "checkOutFrom"].filter((key) => Object.hasOwn(value, key));
+}
+
+export function bookingArrivalBounds(
+  value: Pick<BookingGuestPolicyChoices, "checkInUntil" | "checkOutFrom">,
+) {
+  return {
+    ...(Object.hasOwn(value, "checkInUntil") ? { checkInUntil: value.checkInUntil } : {}),
+    ...(Object.hasOwn(value, "checkOutFrom") ? { checkOutFrom: value.checkOutFrom } : {}),
+  };
+}
+
+/** Check-in and check-out occur on different dates: compare only within each window. */
+export function bookingArrivalTimeErrors(value: Record<string, unknown>): string[] {
+  const errors: string[] = [];
+  for (const key of ["checkInTime", "checkOutTime", ...bookingArrivalBoundKeys(value)]) {
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    if (!descriptor || !("value" in descriptor) || !localTime(descriptor.value)) {
+      errors.push(`${key} must be a local time in HH:MM format (00:00–23:59).`);
+    }
+  }
+  if (errors.length) return errors;
+  if (typeof value.checkInUntil === "string" && value.checkInUntil <= String(value.checkInTime)) {
+    errors.push("Check-in until must be later than check-in from on the same day.");
+  }
+  if (typeof value.checkOutFrom === "string" && value.checkOutFrom >= String(value.checkOutTime)) {
+    errors.push("Check-out from must be earlier than check-out by on the same day.");
+  }
+  return errors;
 }
 
 export function parseBookingGuestPolicyHash(value: unknown): BookingGuestPolicyHash | null {

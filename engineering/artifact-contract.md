@@ -23,8 +23,13 @@ ECR repositories are created and owned by `vayada-platform` (via `ecr.tf`). The 
 | `apps/pms-web`             | `vayada-pms-frontend`                | ECS Fargate   |
 | `apps/marketplace-api`     | `vayada-creator-marketplace-backend` | ECS Fargate   |
 | `apps/vayada-admin`        | `vayada-admin-frontend`              | ECS Fargate   |
-| `apps/affiliate-dashboard` | `vayada-affiliate-dashboard`         | ECS Fargate   |
 | `apps/landing`             | `vayada-landing`                     | App Runner    |
+
+The affiliate portal source has been retired. Existing `vayada-affiliate-dashboard`
+and `vayada-next-affiliate-dashboard` images/services remain for temporary runtime
+continuity; they are not built from this checkout. Preserve the retained artifacts
+and API contracts until the separate cutover described in
+[Affiliate portal source retirement](affiliate-portal-retirement.md).
 
 ## Image tagging
 

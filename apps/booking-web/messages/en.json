@@ -1,4 +1,15 @@
 {
+  "analyticsConsent": {
+    "settings": "Privacy choices",
+    "title": "Optional analytics",
+    "description": "We use optional analytics to understand visits and booking steps. Booking works with analytics off. Your choice applies only to this hotel’s booking site.",
+    "enabled": "Analytics is on.",
+    "disabled": "Analytics is off.",
+    "saveError": "Could not save your choice. Analytics stays off.",
+    "reject": "Reject analytics",
+    "accept": "Allow analytics",
+    "close": "Keep current choice"
+  },
   "common": {
     "checkAvailability": "Check Availability",
     "bookNow": "Book Now",
@@ -50,6 +61,12 @@
     "payment": "Payment"
   },
   "home": {
+    "guestCountUnsupported": "Online search does not support your group of {count} guests. Try fewer guests or contact us for help.",
+    "guestCountUnavailable": "None of our available accommodations can fit your group of {count} guests. Try fewer guests or different dates.",
+    "noAvailability": "No accommodation is available for this search. Try different dates or search options.",
+    "availabilityError": "We couldn’t check availability. Please try again.",
+    "noMatchingRooms": "No accommodations match your filters. Try removing a filter.",
+
     "yourStay": "Your Stay",
     "addPromo": "Add promo",
     "promoTitle": "Have a promo code?",
@@ -104,19 +121,6 @@
       "checkingAvailability": "Checking availability",
       "availabilityUnavailable": "Availability is temporarily unavailable for these dates.",
       "availabilityUnavailableTooltip": "Availability unavailable"
-    },
-    "mobileView": {
-      "list": "List",
-      "map": "Map"
-    },
-    "roomMap": {
-      "noLocations": "No locations available",
-      "noLocationsDesc": "Room types without saved coordinates still appear in the list.",
-      "locations": "{count, plural, one {# location} other {# locations}}",
-      "perNight": "/ night",
-      "view": "View →",
-      "zoomIn": "Zoom in",
-      "zoomOut": "Zoom out"
     }
   },
   "rooms": {
@@ -146,7 +150,11 @@
     "pricePerDay": "Price per day",
     "priceLabel": "Price",
     "addedToTrip": "Added to Trip",
-    "addToTrip": "Add to Trip"
+    "addToTrip": "Add to Trip",
+    "pricePerPersonNight": "Price per person / night",
+    "leadTime": "Lead time",
+    "showPhoto": "Show photo {number}",
+    "closeDetails": "Close add-on details"
   },
   "book": {
     "guestInformation": "Guest Information",

@@ -31,6 +31,7 @@ export default function AddonsPageClient() {
   const [selections, setSelections] = useState<Record<string, number>>({});
   // selectedDates[id] = ISO dates the guest wants the perNight addon on
   const [selectedDates, setSelectedDates] = useState<Record<string, string[]>>({});
+  const [packages, setPackages] = useState<Record<string, number>>({});
   const [detailIndex, setDetailIndex] = useState<number | null>(null);
   const { steps: STEPS, currentStep } = useBookingSteps("addons");
 
@@ -67,10 +68,14 @@ export default function AddonsPageClient() {
   // What dimension is the count selector for? perPerson → people (max=adults),
   // per-booking-only → items (cap at 10). Per-day-only addons don't get a count
   // selector at all — the day toggles below are the dimension.
-  const getCountMax = (addon: { perPerson?: boolean; perNight?: boolean }) => {
+  const getCountMax = (addon: {
+    perPerson?: boolean;
+    perNight?: boolean;
+    maxQuantity?: number;
+  }) => {
     if (addon.perPerson) return Math.max(1, adultsParam);
     if (addon.perNight) return 1; // count is fixed; day toggles drive the dimension
-    return 10;
+    return addon.maxQuantity ?? 1;
   };
   const getCountDefault = (addon: { perPerson?: boolean; perNight?: boolean }) => {
     if (addon.perPerson) return Math.max(1, adultsParam); // default to "all guests opt in"
@@ -83,14 +88,14 @@ export default function AddonsPageClient() {
   // per-booking-only). Mirrors the backend pricing in
   // pms-backend/services/booking_service._compute_addon_total.
   const computeMultiplier = (
-    addon: { perPerson?: boolean; perNight?: boolean },
+    addon: { id: string; perPerson?: boolean; perNight?: boolean },
     count: number,
     dates: string[],
   ) => {
     const people = addon.perPerson ? count : 1;
     const days = addon.perNight ? Math.max(1, dates.length) : 1;
     const items = !addon.perPerson && !addon.perNight ? count : 1;
-    return people * days * items;
+    return people * days * items * (packages[addon.id] ?? 1);
   };
 
   const toggleAddon = (id: string) => {
@@ -98,6 +103,11 @@ export default function AddonsPageClient() {
       if (prev[id] !== undefined) {
         const next = { ...prev };
         delete next[id];
+        setPackages((previous) => {
+          const next = { ...previous };
+          delete next[id];
+          return next;
+        });
         setSelectedDates((pd) => {
           const nd = { ...pd };
           delete nd[id];
@@ -286,6 +296,37 @@ export default function AddonsPageClient() {
                       </button>
                     )}
                   </div>
+                  {isAdded &&
+                    (addon.perPerson || addon.perNight) &&
+                    (addon.maxQuantity ?? 1) > 1 && (
+                      <label
+                        className="mt-3 flex items-center justify-between text-sm"
+                        onClick={(e) => e.stopPropagation()}
+                      >
+                        {tc("qty")}
+                        <input
+                          type="number"
+                          min={1}
+                          max={addon.maxQuantity}
+                          step={1}
+                          aria-label={`${addon.name} quantity`}
+                          value={packages[addon.id] ?? 1}
+                          onChange={(e) =>
+                            setPackages((previous) => ({
+                              ...previous,
+                              [addon.id]: Math.max(
+                                1,
+                                Math.min(
+                                  addon.maxQuantity ?? 1,
+                                  Math.trunc(Number(e.target.value)) || 1,
+                                ),
+                              ),
+                            }))
+                          }
+                          className="w-20 rounded-lg border border-gray-300 px-3 py-1"
+                        />
+                      </label>
+                    )}
                   {/* Date toggles for perNight addons. Independent of the
                       people-count stepper above for combined per-day/per-person
                       addons (e.g. Scooter Rental). */}
@@ -360,6 +401,8 @@ export default function AddonsPageClient() {
                   const dates = selectedDates[addon.id] ?? [];
                   const computedPrice = addon.price * computeMultiplier(addon, count, dates);
                   const detailParts: string[] = [];
+                  if ((packages[addon.id] ?? 1) > 1)
+                    detailParts.push(`${tc("qty")}: ${packages[addon.id]}`);
                   if (addon.perPerson) {
                     detailParts.push(`${count} / ${adultsParam} ${tc("guests").toLowerCase()}`);
                   }
@@ -467,6 +510,12 @@ export default function AddonsPageClient() {
           <button
             onClick={() => {
               const params = new URLSearchParams(searchParams.toString());
+              const packageEntries = selectedIds
+                .filter((id) => (packages[id] ?? 1) > 1)
+                .map((id) => `${id}:${packages[id]}`)
+                .join(",");
+              if (packageEntries) params.set("addonPackages", packageEntries);
+              else params.delete("addonPackages");
               if (selectedIds.length > 0) {
                 // For perPerson/per-booking addons, encode the count after a colon.
                 // For perNight-only addons, the count is implicit (= dates.length)

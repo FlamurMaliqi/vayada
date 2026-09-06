@@ -36,16 +36,6 @@ export interface GuestTypeSettings {
   childrenEnabled: boolean;
 }
 
-export interface PointOfInterest {
-  id: string;
-  label: string;
-  travelTime: string;
-  color: string;
-  latitude: number;
-  longitude: number;
-  position: number;
-}
-
 export interface Hotel {
   id: string;
   name: string;
@@ -77,9 +67,6 @@ export interface Hotel {
   guestTypeSettings?: GuestTypeSettings;
   referAGuestEnabled?: boolean;
   instantBook?: boolean;
-  mapViewEnabled?: boolean;
-  showRoomDetailMap?: boolean;
-  pointsOfInterest?: PointOfInterest[];
 }
 
 export interface RoomType {
@@ -136,6 +123,7 @@ export interface SearchParams {
 }
 
 export interface Booking {
+  canEditRequest?: boolean;
   id: string;
   bookingReference: string;
   hotelName: string;
@@ -164,6 +152,7 @@ export interface Booking {
   addonIds?: string[];
   addonNames?: string[];
   addonQuantities?: Record<string, number>;
+  addonPackageQuantities?: Record<string, number>;
   addonDates?: Record<string, string[]>;
   currency: string;
   // 'draft' is the placeholder shape returned for the card-payment flow
@@ -198,6 +187,8 @@ export interface Addon {
   category: string;
   image: string;
   images?: string[];
+  maxQuantity?: number;
+  leadTime?: string;
   duration?: string;
   perPerson?: boolean;
   perNight?: boolean;

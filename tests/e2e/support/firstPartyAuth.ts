@@ -2,14 +2,9 @@ import type { Page, Request, Route } from "@playwright/test";
 
 export type FirstPartyAuthSurface = {
   baseURL: string;
-  key: "marketplace" | "bookingAdmin" | "pms" | "affiliate" | "admin";
+  key: "marketplace" | "bookingAdmin" | "pms" | "admin";
   label: string;
-  surface:
-    | "marketplace-web"
-    | "booking-admin"
-    | "pms-web"
-    | "affiliate-dashboard"
-    | "platform-admin";
+  surface: "marketplace-web" | "booking-admin" | "pms-web" | "platform-admin";
 };
 
 const startsPlainServers = process.env.CI === "true" || process.env.E2E_START_SERVERS === "1";
@@ -60,17 +55,6 @@ export const firstPartyAuthSurfaces: FirstPartyAuthSurface[] = [
     key: "pms",
     label: "PMS",
     surface: "pms-web",
-  },
-  {
-    baseURL: authBaseURL(
-      "E2E_AFFILIATE_BASE_URL",
-      "http://affiliate.localhost:3005",
-      "http://affiliate.localhost:3105",
-      "https://affiliate.localhost",
-    ),
-    key: "affiliate",
-    label: "Affiliate",
-    surface: "affiliate-dashboard",
   },
   {
     baseURL: authBaseURL(

@@ -1,9 +1,16 @@
+import type { BankTransferBookingOperations } from "../domains/financeBankTransferBooking.js";
 import pg, { type QueryResultRow } from "pg";
 
 import { BOOKING_EMAIL_QUEUE, BOOKING_LIFECYCLE_EMAIL_JOB_TYPES } from "./bookingEmails.js";
 
 export type BookingEmailDelivery = {
-  send(input: { to: string; subject: string; text: string; idempotencyKey: string }): Promise<void>;
+  send(input: {
+    to: string;
+    subject: string;
+    text: string;
+    idempotencyKey: string;
+    emailProduct?: "booking";
+  }): Promise<void>;
 };
 
 type BookingEmailJob = {
@@ -42,6 +49,9 @@ export function createResendBookingEmailDelivery(config: {
           to: [input.to],
           subject: input.subject,
           text: input.text,
+          ...(input.emailProduct === "booking"
+            ? { tags: [{ name: "vayada_product", value: "booking" }] }
+            : {}),
         }),
       });
       if (!response.ok) {
@@ -54,7 +64,12 @@ export function createResendBookingEmailDelivery(config: {
 export async function runBookingEmailDeliveryJobs(
   connectionString: string,
   delivery: BookingEmailDelivery,
-  options: { workerId?: string; limit?: number; pool?: BookingEmailPool } = {},
+  options: {
+    workerId?: string;
+    limit?: number;
+    pool?: BookingEmailPool;
+    bankTransfers?: BankTransferBookingOperations;
+  } = {},
 ): Promise<{ processed: number; failed: number }> {
   const ownsPool = !options.pool;
   const pool = options.pool ?? new pg.Pool({ connectionString, max: 2 });
@@ -69,10 +84,20 @@ export async function runBookingEmailDeliveryJobs(
       if (!job) break;
       const startedAt = Date.now();
       try {
-        await delivery.send(emailInput(job));
+        const input = emailInput(job);
+        if (job.payload["requiresBankTransferInstructions"] === true) {
+          const instructions = await options.bankTransfers?.email({
+            jobId: job.id,
+            workerId: job.workerId,
+            attempt: job.attemptsCount,
+          });
+          if (!instructions) throw new Error("Bank transfer instructions unavailable.");
+          input.text += `\n\nBank transfer instructions:\n${instructions}`;
+        }
+        await delivery.send(input);
         if (await finishBookingEmailJob(pool, job, startedAt)) processed += 1;
-      } catch (error) {
-        if (await failBookingEmailJob(pool, job, error, startedAt)) failed += 1;
+      } catch {
+        if (await failBookingEmailJob(pool, job, startedAt)) failed += 1;
       }
     }
     return { processed, failed };
@@ -142,11 +167,18 @@ async function claimBookingEmailJob(
   return job;
 }
 
-function emailInput(job: BookingEmailJob) {
+function emailInput(job: BookingEmailJob): Parameters<BookingEmailDelivery["send"]>[0] {
   const to = requiredText(job.payload["to"], "recipient");
   const subject = requiredText(job.payload["subject"], "subject");
   const text = requiredText(job.payload["text"], "body");
-  return { to, subject, text, idempotencyKey: job.jobKey };
+  // Persisted at enqueue time: retries of older jobs must keep their original provider body.
+  return {
+    to,
+    subject,
+    text,
+    idempotencyKey: job.jobKey,
+    ...(job.payload["emailProduct"] === "booking" ? { emailProduct: "booking" as const } : {}),
+  };
 }
 
 async function finishBookingEmailJob(
@@ -211,10 +243,9 @@ async function finishBookingEmailJob(
 async function failBookingEmailJob(
   pool: BookingEmailPool,
   job: BookingEmailJob,
-  error: unknown,
   startedAt: number,
 ): Promise<boolean> {
-  const message = sanitizedDeliveryError(error);
+  const message = "Booking email delivery failed.";
   const result = await pool.query<{ id: string }>(
     `WITH failed_attempt AS (
        UPDATE platform.job_attempts
@@ -292,13 +323,6 @@ async function failBookingEmailJob(
 
 function deliveryAuditKey(job: BookingEmailJob, outcome: "succeeded" | "failed") {
   return `booking.email.delivery:${job.id}:attempt:${job.attemptsCount}:${outcome}`;
-}
-
-function sanitizedDeliveryError(error: unknown): string {
-  const message = error instanceof Error ? error.message : "Booking email delivery failed.";
-  return message
-    .replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/giu, "[redacted-email]")
-    .slice(0, 500);
 }
 
 function requiredText(value: unknown, label: string): string {

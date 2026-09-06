@@ -39,7 +39,6 @@ const hotel = {
   supportedLanguages: ["en", "de", "nl"],
   referAGuestEnabled: true,
   instantBook: true,
-  mapViewEnabled: false,
 };
 
 const publicHotelProfile = {

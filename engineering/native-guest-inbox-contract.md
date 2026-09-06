@@ -641,6 +641,52 @@ outcome must first be resolved manually and cannot be retried by the Inbox.
 Failed work requires a corrected new command or an explicitly eligible, audited
 dead-letter replay; neither path silently reuses the original send.
 
+### Inbox sending pause and drain (VAY-1381)
+
+`PMS_INBOX_SENDING_ENABLED=false` pauses native Inbox send acceptance and the
+shared OTA/email delivery relay/claim loop. The shared environment parser accepts
+`true/false`, `yes/no` and `1/0` (case-insensitive); unset/blank defaults to `true`
+to preserve existing deployment behavior. Other values fail startup. This does
+not change Channex capability modes or callback ownership.
+
+Authenticated, authorized manual replies and provider-action POSTs return
+`503 inbox_sending_paused` before calling the command port. No message, job,
+attempt, or idempotency result is created by that rejected request. Same-key
+requests also return 503 while paused: previously accepted work is preserved,
+not canceled, and normal idempotency replay becomes available after resume.
+Existing GET projections remain authoritative for previously accepted work.
+The pause does not claim that an earlier request was never delivered.
+
+Reads, mark-read, local triage/follow-up/assignment/notes, empty direct-thread
+creation, attachment access, quick replies and human-reviewed assistance remain
+available under their normal policies. Inbound intake/receipts, unrelated
+Booking emails, other PMS jobs and Marketplace chat are not disabled.
+
+SIGTERM/SIGINT invoke graceful API close. Shutdown stops the Inbox worker in
+`preClose`, before pools close.
+It waits for the already-started relay/claim/provider/completion operation and
+does not claim the next job. Provider acceptance, transient failures and
+ambiguous outcomes still use the existing durable completion rules. The pause
+neither purges queues nor resends messages. A forced process termination cannot
+prove completion; retained running/ambiguous attempts require reconciliation.
+
+This is a **per-process deployment setting**, not an instantaneous distributed
+switch. Before handback, the named operator must:
+
+1. Roll out the exact reviewed paused revision to every target API/worker
+   replica, retaining deployment/task identities and verifying no old
+   sending-capable replica or independent Inbox sender remains.
+2. Check durable pending/running jobs, attempts, held/ambiguous outcomes and
+   provider acceptance. Resolve uncertain work without blind replay. Zero
+   running processes or a successful shutdown is not delivery reconciliation.
+3. Record the pending-work disposition and sole-provider-owner evidence before
+   switching callbacks or restoring legacy consumers. Resume only after
+   explicit approval; enabling the flag can deliver previously pending work.
+
+The setting and local tests alone do not authorize a deployment or satisfy
+live rollback rehearsal, migration parity, provider/browser smoke or owner
+acceptance. Those launch gates remain in VAY-1381.
+
 ## Error envelope
 
 ```json

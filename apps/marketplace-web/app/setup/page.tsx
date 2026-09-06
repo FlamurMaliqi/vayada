@@ -1,3 +1,4 @@
+import { isPmsCalendarRecovery } from "@/lib/utils/pmsCalendarRecovery";
 import { Suspense } from "react";
 import { ROUTES } from "@/lib/constants";
 import { SharedHotelSetupPage } from "@/components/setup/SharedHotelSetupPage";
@@ -13,7 +14,9 @@ export default async function MarketplaceSetupPage({ searchParams }: Marketplace
     process.env.HOTEL_SETUP_ADAPTIVE_SHELL_PREVIEW_ENABLED === "true" &&
     firstValue(params._adaptive) === "1";
   const adaptiveShellEnabled =
-    process.env.HOTEL_SETUP_ADAPTIVE_SHELL_ENABLED === "true" || previewRequested;
+    process.env.HOTEL_SETUP_ADAPTIVE_SHELL_ENABLED === "true" ||
+    previewRequested ||
+    isPmsCalendarRecovery(params);
 
   return (
     <Suspense fallback={<SetupLoading />}>

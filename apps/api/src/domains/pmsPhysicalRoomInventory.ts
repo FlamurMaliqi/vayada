@@ -31,7 +31,7 @@ export async function refreshPhysicalRoomInventory(
         JOIN booking.guest_bookings booking ON booking.id=assignment.guest_booking_id AND booking.property_id=assignment.property_id
         WHERE assignment.property_id=$1::uuid AND assignment.room_type_id=$2::uuid
         AND assignment.assignment_status NOT IN ('canceled','released') AND booking.lifecycle_status IN ('draft','pending_payment','confirmed'))
-      OR EXISTS(SELECT 1 FROM pms.inventory_reservation_receipts receipt JOIN pms.inventory_reservation_statuses status USING(receipt_id)
+      OR EXISTS(SELECT 1 FROM pms.active_inventory_reservation_receipts receipt JOIN pms.inventory_reservation_statuses status USING(receipt_id)
         WHERE receipt.property_id=$1::uuid AND receipt.room_type_id=$2::uuid AND status.lifecycle_state IN ('reserved','handed_off') AND receipt.check_out>$4::date) AS protected`,
       [...scope, activeCount, today],
     );
