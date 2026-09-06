@@ -219,6 +219,7 @@ import { createPgMarketplaceAffiliateAdminRepository } from "./domains/marketpla
 import { createPgFinanceAffiliateCommissionRepository } from "./domains/financeAffiliateCommissionRepository.js";
 import { createPgMarketplaceCreatorSelfServiceRepository } from "./routes/marketplaceCreatorSelfService.js";
 import { createPgSharedHotelSetupStatusRepository } from "./platform/sharedHotelSetupStatusReadModel.js";
+import { createPgPropertyNearbyRepository } from "./domains/propertyNearbyRepository.js";
 import { createPgIdentityAdminUsersReadRepository } from "./routes/identityAdminUsers.js";
 import { createPgIdentityPrivacyRepository } from "./routes/identityPrivacy.js";
 import { createPgMarketplaceCreatorPlatformConnectionRepository } from "./routes/marketplaceCreatorPlatformConnections.js";
@@ -1460,6 +1461,7 @@ const app = buildApp({
   },
   marketplaceCreatorProfileMediaRepository: platformMediaRuntime?.profileMediaRepository,
   sharedHotelSetupStatusRepository,
+  propertyNearbyRepository: config.auth ? createPgPropertyNearbyRepository(targetDatabaseUrl) : undefined,
   hotelSetupTrackCommandRepository,
   propertySetupDraftCommandRepository,
   propertySetupRouteStateReadPort,

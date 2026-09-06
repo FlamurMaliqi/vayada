@@ -196,6 +196,15 @@ Public route: `GET /api/booking/public/hotels/:slug/nearby`.
 Use existing API envelopes; each success contains `schemaVersion: 1`.
 Exact route mounting must be checked against existing adapters before coding.
 
+Implementation mount: shared setup already uses `/api/hotel-setup`, so curation
+GET/PUT lives at `/api/hotel-setup/properties/:propertyId/nearby/curation` and
+returns `NearbyCurationState` (profile/curation/saved-profile revisions, choices,
+custom places). The composed editor/discovery response remains a separate
+successor. This endpoint enforces effective member property assignments and the
+shared owner publication permission; no paid subscription is required to save
+catalog content. Provider registration/search and guest publication are still
+gated separately; unregistered new Google references are rejected meanwhile.
+
 ```typescript
 type Category = "nature" | "food" | "activities" | "transport";
 type Choice = {
