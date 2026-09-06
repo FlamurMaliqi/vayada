@@ -4,9 +4,7 @@ import { useState, useEffect, useRef } from "react";
 import Image from "next/image";
 import { useTranslations } from "next-intl";
 import { RoomType } from "@/lib/types";
-import type { PointOfInterest } from "@/lib/types";
 import { useCurrency } from "@/contexts/CurrencyContext";
-import LocationMap from "@/components/booking/LocationMap";
 import {
   getFlexibleNightlyRates,
   getFreeCancellationDays,
@@ -31,11 +29,10 @@ interface RoomDetailModalProps {
   soldOut?: boolean;
   checkInTime?: string;
   checkOutTime?: string;
+  checkInUntil?: string;
+  checkOutFrom?: string;
   checkIn: string;
   hotelTimezone?: string;
-  propertyName: string;
-  showLocationMap?: boolean;
-  pointsOfInterest?: PointOfInterest[];
   selectRateDisabled?: boolean;
   selectRatePending?: boolean;
 }
@@ -53,11 +50,10 @@ export default function RoomDetailModal({
   soldOut = false,
   checkInTime,
   checkOutTime,
+  checkInUntil,
+  checkOutFrom,
   checkIn,
   hotelTimezone,
-  propertyName,
-  showLocationMap = false,
-  pointsOfInterest = [],
   selectRateDisabled = false,
   selectRatePending = false,
 }: RoomDetailModalProps) {
@@ -85,7 +81,6 @@ export default function RoomDetailModal({
   const t = useTranslations("home");
 
   const hasMultipleImages = room.images.length > 1;
-  const hasRoomCoordinates = Number.isFinite(room.latitude) && Number.isFinite(room.longitude);
   const goPrevImage = () => setImgIndex((i) => (i - 1 + room.images.length) % room.images.length);
   const goNextImage = () => setImgIndex((i) => (i + 1) % room.images.length);
   const handleTouchStart = (e: React.TouchEvent) => setTouchStartX(e.touches[0].clientX);
@@ -564,13 +559,25 @@ export default function RoomDetailModal({
                     />
                   </svg>
                   <span className="flex flex-wrap gap-x-3 gap-y-0.5">
-                    {checkInTime && <span>{tc("checkInFrom", { time: checkInTime })}</span>}
+                    {checkInTime && (
+                      <span>
+                        {tc(checkInUntil ? "checkInWindow" : "checkInFrom", {
+                          time: checkInUntil ? `${checkInTime}–${checkInUntil}` : checkInTime,
+                        })}
+                      </span>
+                    )}
                     {checkInTime && checkOutTime && (
                       <span className="text-gray-300" aria-hidden>
                         ·
                       </span>
                     )}
-                    {checkOutTime && <span>{tc("checkOutBy", { time: checkOutTime })}</span>}
+                    {checkOutTime && (
+                      <span>
+                        {tc(checkOutFrom ? "checkOutWindow" : "checkOutBy", {
+                          time: checkOutFrom ? `${checkOutFrom}–${checkOutTime}` : checkOutTime,
+                        })}
+                      </span>
+                    )}
                   </span>
                 </div>
               )}
@@ -629,19 +636,6 @@ export default function RoomDetailModal({
                       </svg>
                     </button>
                   )}
-                </div>
-              )}
-
-              {showLocationMap && hasRoomCoordinates && (
-                <div className="mb-4 border-t border-gray-100 pt-4">
-                  <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-3">
-                    Location
-                  </p>
-                  <LocationMap
-                    propertyName={propertyName}
-                    property={{ latitude: room.latitude!, longitude: room.longitude! }}
-                    pois={pointsOfInterest}
-                  />
                 </div>
               )}
 

@@ -25,7 +25,8 @@
     "next": "16.2.6",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
-    "tailwind-merge": "^2.0.0"
+    "tailwind-merge": "^2.0.0",
+    "@vayada/domain-booking": "*"
   },
   "devDependencies": {
     "@types/node": "^20",

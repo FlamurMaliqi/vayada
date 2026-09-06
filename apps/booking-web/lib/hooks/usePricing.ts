@@ -30,6 +30,7 @@ export interface PricingInputs {
   adults: number;
   selectedAddonIds: string[];
   addonQuantities: Record<string, number>;
+  addonPackageQuantities?: Record<string, number>;
   /** ISO dates per addon for perNight charges. Empty/missing → all stay dates. */
   addonDates?: Record<string, string[]>;
   promoCode: string;
@@ -73,6 +74,7 @@ export function usePricing({
   adults,
   selectedAddonIds,
   addonQuantities,
+  addonPackageQuantities = {},
   addonDates,
   promoCode,
 }: PricingInputs) {
@@ -113,7 +115,7 @@ export function usePricing({
   // price = unit × people × days × items, mirroring the backend in
   // pms-backend/app/services/booking_service._compute_addon_total.
   const selectedKey = selectedAddonIds.join(",");
-  const quantitiesKey = JSON.stringify(addonQuantities);
+  const quantitiesKey = JSON.stringify([addonQuantities, addonPackageQuantities]);
   const datesKey = JSON.stringify(addonDates ?? {});
   const addonTotals = useMemo(() => {
     let displayTotal = 0;
@@ -126,10 +128,11 @@ export function usePricing({
         ? Math.max(1, Math.min(count ?? Math.max(1, adults), Math.max(1, adults)))
         : 1;
       const days = addon.perNight
-        ? Math.max(1, Math.min(dates?.length ?? count ?? nights, nights))
+        ? Math.max(1, Math.min(dates?.length ?? (addon.perPerson ? nights : count ?? nights), nights))
         : 1;
       const items = !addon.perPerson && !addon.perNight ? Math.max(1, count ?? 1) : 1;
-      const lineTotal = addon.price * people * days * items;
+      const lineTotal =
+        addon.price * people * days * items * (addonPackageQuantities[addon.id] ?? 1);
       propertyTotal += lineTotal;
       displayTotal += convertAndRound(lineTotal, roomCurrency);
     }

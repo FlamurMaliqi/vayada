@@ -18,6 +18,7 @@ export const PUBLIC_BOOKABILITY_REASON_CODES = [
   "max_stay_exceeded",
   "same_day_cutoff_passed",
   "unsupported_occupancy",
+  "occupancy_unavailable",
   "unpublished",
   "policy_missing",
   "stale_data",
@@ -182,6 +183,8 @@ export type PublicBookabilityPublicContact = {
 
 export type PublicBookabilityPolicies = {
   checkInFrom?: string | null;
+  checkInUntil?: string | null;
+  checkOutFrom?: string | null;
   checkOutUntil?: string | null;
   cancellationSummary?: string | null;
   termsUrl?: string | null;
@@ -687,6 +690,7 @@ function buildQuoteUnavailableReasons(
         "max_stay_exceeded",
         "same_day_cutoff_passed",
         "unsupported_occupancy",
+        "occupancy_unavailable",
         "unpublished",
         "policy_missing",
       ].includes(reason.code),
@@ -761,6 +765,8 @@ function sanitizePolicies(policies: PublicBookabilityPolicies): PublicBookabilit
   return {
     checkInFrom: policies.checkInFrom ?? null,
     checkOutUntil: policies.checkOutUntil ?? null,
+    ...(policies.checkInUntil ? { checkInUntil: policies.checkInUntil } : {}),
+    ...(policies.checkOutFrom ? { checkOutFrom: policies.checkOutFrom } : {}),
     cancellationSummary: policies.cancellationSummary ?? null,
     termsUrl: policies.termsUrl ?? null,
   };

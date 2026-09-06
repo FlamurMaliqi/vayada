@@ -281,3 +281,19 @@ Future implementation PRs that touch Booking Web public API calls should answer:
   instead of pre-checkout provider settings?
 - Is any temporary PMS compatibility route documented with a removal dependency
   and covered by parity tests?
+
+### VAY-912 search feedback
+
+The target offers response retains `unavailableReasons` through the Booking Web
+adapter. `occupancy_unavailable` produces a guest-count explanation, without a
+property-wide maximum or a promise about mixed room combinations. Online-search
+limits use separate feedback.
+
+When the target snapshot search returns no rows, a diagnostic query may retry the
+same selected dates, room count, currency, publication, inventory, expiry and
+freshness constraints with one adult and no children. Only an otherwise eligible
+stay produces `occupancy_unavailable`; the diagnostic offers are never returned
+as bookable results for the original party. Sold-out, missing-data, restriction,
+and failed searches must not be presented as a capacity maximum. Filters have
+separate feedback. New searches clear feedback and only the latest response can
+update it.

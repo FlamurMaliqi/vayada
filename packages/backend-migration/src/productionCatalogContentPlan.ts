@@ -52,6 +52,8 @@ export type PlannedCatalogPolicy = {
   propertyId: string;
   checkInTime: string | null;
   checkOutTime: string | null;
+  checkInUntil?: string | null;
+  checkOutFrom?: string | null;
   cancellationSummary: string | null;
   paymentPolicySummary: string | null;
   updatedAt: string;
@@ -132,18 +134,7 @@ export function planProductionCatalogContent(
       if (booking)
         policies.push({
           propertyId: group.propertyId,
-          checkInTime: time(
-            booking.data["check_in_time"],
-            "check_in_time",
-            blockers,
-            booking.sourceId,
-          ),
-          checkOutTime: time(
-            booking.data["check_out_time"],
-            "check_out_time",
-            blockers,
-            booking.sourceId,
-          ),
+          ...arrivalTimes(booking.data, blockers, booking.sourceId),
           cancellationSummary: optionalText(
             booking.data["cancellation_policy_text"],
             "cancellation_policy_text",
@@ -306,4 +297,42 @@ function time(
     `${field} must be HH:MM`,
   );
   return null;
+}
+
+function arrivalTimes(
+  data: Record<string, unknown>,
+  blockers: IdentityMigrationBlocker[],
+  sourceId: string,
+) {
+  const checkInTime = time(
+    effectiveBound(data["check_in_from"], data["check_in_time"]),
+    "check_in_from",
+    blockers,
+    sourceId,
+  );
+  const checkOutTime = time(
+    effectiveBound(data["check_out_until"], data["check_out_time"]),
+    "check_out_until",
+    blockers,
+    sourceId,
+  );
+  const checkInUntil = time(data["check_in_until"], "check_in_until", blockers, sourceId);
+  const checkOutFrom = time(data["check_out_from"], "check_out_from", blockers, sourceId);
+  if (
+    (checkInUntil && (!checkInTime || checkInUntil <= checkInTime)) ||
+    (checkOutFrom && (!checkOutTime || checkOutFrom >= checkOutTime))
+  ) {
+    addBlocker(
+      blockers,
+      "INVALID_CATALOG_POLICY_TIME",
+      "booking.booking_hotels",
+      sourceId,
+      "Arrival and departure windows require valid, ordered same-day bounds.",
+    );
+  }
+  return { checkInTime, checkOutTime, checkInUntil, checkOutFrom };
+}
+
+function effectiveBound(primary: unknown, fallback: unknown): unknown {
+  return primary == null || (typeof primary === "string" && !primary.trim()) ? fallback : primary;
 }

@@ -11,5 +11,4 @@ export const bookingImageSizes = {
   addonThumb: "48px",
   checkoutRoomThumb: "64px",
   orderRoomThumb: "56px",
-  mapPopupThumb: "64px",
 };

@@ -7,6 +7,8 @@ import {
 import pg from "pg";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
+import { loadPmsMandatoryChargePricingSourceSnapshot } from "./pmsMandatoryChargePricingSourceSnapshot.js";
+import { createPgPmsPricingReadModel } from "./pmsPricingReadModel.js";
 import { createPgPmsPricingCommandRepository } from "./pmsPricingCommandRepository.js";
 import { PMS_SUPPORTED_PRICING_CURRENCY_CODES_V1 } from "./pmsPricingCurrencyCapabilities.js";
 
@@ -61,6 +63,24 @@ describe.skipIf(!TEST_DATABASE_URL)("PostgreSQL PMS pricing command repository",
     await repository.close();
     await cleanup();
     await admin.end();
+  });
+
+  it("omits inactive room rates from current pricing evidence without deleting their plans", async () => {
+    await repository.upsertPropertyPricingCurrency(currencyCommand("currency-active-evidence", 0, "EUR"));
+    await seedRoomType(roomTypeId, "Retired test room");
+    const created = await repository.upsertFlexibleRatePlan(planCommand("plan-active-evidence", roomTypeId, 0, "100.00"));
+    expect(created.ok).toBe(true);
+    const read = createPgPmsPricingReadModel({ connectionString: TEST_DATABASE_URL! });
+    try {
+      expect((await read.getPricingSourceSnapshot(propertyId))?.flexibleRatePlans).toHaveLength(1);
+      await admin.query("UPDATE pms.room_types SET active = FALSE WHERE property_id = $1 AND id = $2", [propertyId, roomTypeId]);
+      expect((await read.getPricingSourceSnapshot(propertyId))?.flexibleRatePlans).toHaveLength(0);
+      expect(await read.getFlexibleRatePlan(propertyId, roomTypeId)).toMatchObject({ flexibleRatePlanId: planId });
+      const charges = await loadPmsMandatoryChargePricingSourceSnapshot(admin, propertyId, new Date(acceptedAt));
+      expect(charges?.sourceRevisions.flexibleRatePlans).toHaveLength(0);
+    } finally {
+      await read.close();
+    }
   });
 
   it("creates exact currency/plan sources, replays once, and updates the stable plan by CAS", async () => {

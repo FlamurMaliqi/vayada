@@ -1,9 +1,11 @@
-import { ApiErrorResponse, getVayadaApiBearerToken } from "./client";
+import { ApiErrorResponse, createVayadaApiClient } from "./client";
 
 const IDENTITY_PRIVACY_API_BASE_URL =
   process.env.NEXT_PUBLIC_IDENTITY_API_URL ??
   process.env.NEXT_PUBLIC_AUTH_API_URL ??
   "https://api.localhost";
+
+const identityPrivacyClient = createVayadaApiClient(IDENTITY_PRIVACY_API_BASE_URL);
 
 export const identityPrivacyEndpoints = {
   cookieConsent: (visitorId?: string) =>
@@ -113,13 +115,14 @@ export async function saveCookieConsent(
     method: "POST",
     body: JSON.stringify(data),
     includeAuth: false,
+    signal: AbortSignal.timeout(10_000),
   });
 }
 
 export async function getCookieConsent(visitorId: string): Promise<CookieConsentResponse | null> {
   return requestIdentityPrivacy<CookieConsentResponse | null>(
     identityPrivacyEndpoints.cookieConsent(visitorId),
-    { method: "GET", includeAuth: false },
+    { method: "GET", includeAuth: false, signal: AbortSignal.timeout(10_000) },
   );
 }
 
@@ -190,8 +193,6 @@ async function requestIdentityPrivacy<T>(
     includeAuth?: boolean;
     responseType?: "json" | "blob";
   } = {},
-  retryUnauthorized = true,
-  forceRefreshToken = false,
 ): Promise<T> {
   const { includeAuth = true, responseType = "json", ...fetchOptions } = options;
   const headers: Record<string, string> = {
@@ -199,26 +200,23 @@ async function requestIdentityPrivacy<T>(
     ...(fetchOptions.body ? { "Content-Type": "application/json" } : {}),
     ...(fetchOptions.headers as Record<string, string>),
   };
-  const token = includeAuth
-    ? await getVayadaApiBearerToken(fetchOptions.signal ?? undefined, forceRefreshToken)
-    : null;
-  if (token) headers.Authorization = `Bearer ${token}`;
+  if (includeAuth) {
+    return identityPrivacyClient.request<T>(
+      endpoint,
+      {
+        ...fetchOptions,
+        headers,
+        signal: fetchOptions.signal ?? AbortSignal.timeout(10_000),
+      },
+      responseType,
+    );
+  }
 
   const response = await fetch(`${IDENTITY_PRIVACY_API_BASE_URL}${endpoint}`, {
     ...fetchOptions,
     method: fetchOptions.method ?? "GET",
     headers,
   });
-
-  if (response.status === 401 && includeAuth && retryUnauthorized) {
-    if (fetchOptions.signal?.aborted) {
-      throw (
-        fetchOptions.signal.reason ?? new DOMException("The operation was aborted", "AbortError")
-      );
-    }
-    await response.body?.cancel().catch(() => undefined);
-    return requestIdentityPrivacy<T>(endpoint, options, false, true);
-  }
 
   if (responseType === "blob") {
     if (!response.ok) {

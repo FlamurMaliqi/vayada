@@ -3,11 +3,20 @@ import pg from "pg";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { ManagePhysicalRoomCommand } from "@vayada/domain-pms";
 import { createPgPmsPhysicalRoomManagementRepository } from "./pmsPhysicalRoomManagementRepository.js";
+import { createTargetPmsOperationsCommandRepository } from "./pmsOperationsCommandRepository.js";
+import { createTargetPmsOperationsReadRepository } from "./pmsOperationsReadModel.js";
 
 const url = process.env["TEST_DATABASE_URL"];
 describe.skipIf(!url)("physical-room management PostgreSQL", () => {
   const admin = new pg.Client({ connectionString: url });
   const repository = createPgPmsPhysicalRoomManagementRepository({ connectionString: url });
+  const readRepository = createTargetPmsOperationsReadRepository({
+    connectionString: url ?? "postgresql://integration-test-disabled",
+  });
+  const lifecycleRepository = createTargetPmsOperationsCommandRepository({
+    connectionString: url ?? "postgresql://integration-test-disabled",
+    readRepository,
+  });
   let actorUserId: string, organizationId: string, propertyId: string, roomTypeId: string;
   beforeAll(async () => {
     if (!url || !/(^|[_-])test([_-]|$)/i.test(new URL(url).pathname))
@@ -21,6 +30,8 @@ describe.skipIf(!url)("physical-room management PostgreSQL", () => {
     await seed();
   });
   afterAll(async () => {
+    await lifecycleRepository.close?.();
+    await readRepository.close?.();
     await repository.close();
     await admin.end();
   });
@@ -90,6 +101,72 @@ describe.skipIf(!url)("physical-room management PostgreSQL", () => {
         )
       ).rows[0].count,
     ).toBe(9);
+  });
+  it("retires a room type with canonical pricing without changing its historical pricing source", async () => {
+    await admin.query(
+      "INSERT INTO pms.property_pricing_settings(property_id,currency) VALUES($1,'EUR')",
+      [propertyId],
+    );
+    const planId = randomUUID();
+    await admin.query(
+      `INSERT INTO pms.rate_plans (
+        id,property_id,room_type_id,code,name,rate_type,base_rate_amount,currency,active,
+        pricing_contract_version,flexible_rate_plan_revision,source_room_facts_revision,
+        source_pricing_currency_revision,cancellation_policy_snapshot
+      ) VALUES($1,$2,$3,'flexible','Flexible','flexible',100,'EUR',TRUE,
+        'pms-pricing.v1',1,1,1,
+        '{"type":"free_until_days_before_arrival","freeCancellationDeadlineDays":1,"afterDeadlinePenalty":"full_booking_amount","noShowPenalty":"full_booking_amount"}')`,
+      [planId, propertyId, roomTypeId],
+    );
+    await admin.query(
+      `INSERT INTO pms.rate_plans(property_id,room_type_id,code,name,rate_type,base_rate_amount,currency,active)
+       VALUES($1,$2,'legacy','Legacy','flexible',100,'EUR',TRUE)`,
+      [propertyId, roomTypeId],
+    );
+    const originalPlan = (await admin.query("SELECT * FROM pms.rate_plans WHERE id=$1", [planId]))
+      .rows;
+    const retire = {
+      propertyId,
+      roomTypeId,
+      commandId: randomUUID(),
+      idempotencyKey: randomUUID(),
+      expectedVersion: "room-type-facts-v1",
+      audit: {
+        actor: { kind: "user" as const, userId: actorUserId, organizationId },
+        requestId: randomUUID(),
+        requestedAt: new Date().toISOString(),
+        reason: "Retire synthetic room type",
+      },
+    };
+    const retired = await lifecycleRepository.retireRoomType(retire);
+    expect(retired).toMatchObject({ ok: true, impact: { version: "room-type-facts-v2" } });
+    expect(await lifecycleRepository.retireRoomType(retire)).toEqual({
+      ...retired,
+      replayed: true,
+    });
+    expect((await admin.query("SELECT * FROM pms.rate_plans WHERE id=$1", [planId])).rows).toEqual(
+      originalPlan,
+    );
+    expect(
+      (
+        await admin.query(
+          "SELECT active FROM pms.rate_plans WHERE room_type_id=$1 AND code='legacy'",
+          [roomTypeId],
+        )
+      ).rows,
+    ).toEqual([{ active: false }]);
+    expect(
+      (await admin.query("SELECT active FROM pms.room_types WHERE id=$1", [roomTypeId])).rows,
+    ).toEqual([{ active: false }]);
+    expect(await readRepository.findRoomTypeById(propertyId, roomTypeId)).toBeNull();
+    expect(
+      (
+        await admin.query(
+          "SELECT count(*)::int AS count FROM platform.product_audit_events WHERE property_id=$1 AND action='pms.room_type.retired'",
+          [propertyId],
+        )
+      ).rows,
+    ).toEqual([{ count: 1 }]);
   });
   it("rejects stale writes, key reuse, duplicate labels and revoked access without extra rooms", async () => {
     const create = command(1);

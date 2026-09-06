@@ -215,6 +215,8 @@ async function load(
     policies: {
       checkInFrom: projection.policy.checkInTime,
       checkOutUntil: projection.policy.checkOutTime,
+      ...(projection.policy.checkInUntil ? { checkInUntil: projection.policy.checkInUntil } : {}),
+      ...(projection.policy.checkOutFrom ? { checkOutFrom: projection.policy.checkOutFrom } : {}),
       cancellationSummary: null,
       termsUrl: null,
     },
@@ -345,7 +347,6 @@ const sourceKey = ({ ownerDomain, entityType, entityId, revision }: SourceEntity
   JSON.stringify([ownerDomain, entityType, entityId, revision]);
 const validBindingSource = (source: SourceEntityRevision): source is BookingLaunchSourceRevision =>
   source.ownerDomain === "hotel_catalog" ||
-  source.ownerDomain === "booking" ||
   source.ownerDomain === "pms" ||
   source.ownerDomain === "finance";
 const sha256 = (value: string) => createHash("sha256").update(value).digest("hex");

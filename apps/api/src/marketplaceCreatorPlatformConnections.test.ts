@@ -779,6 +779,21 @@ describe("marketplace creator platform connection routes", () => {
     expect(await vault.get("vayada/test/connection-1")).toBeNull();
   });
 
+  it("does not claim credentials at startup or on the timer when cleanup is disabled", async () => {
+    vi.useFakeTimers();
+    try {
+      const repository = connectionRepository();
+      app = buildCreatorPlatformApp(repository, [], undefined, false, undefined, false);
+      await app.ready();
+      await vi.advanceTimersByTimeAsync(120_000);
+      expect(repository.listCredentialCleanupCandidates).not.toHaveBeenCalled();
+      await app.close();
+      app = undefined;
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("retries durable cleanup candidates without exposing credentials", async () => {
     const vault = createMemoryProviderCredentialVault();
     await vault.put("vayada/test/expired-auth", creatorGrant("instagram"));
@@ -1456,6 +1471,7 @@ function buildCreatorPlatformApp(
   credentialVault = createMemoryProviderCredentialVault(),
   logger: false | { level: string; stream: { write(line: string): void } } = false,
   callbackBaseUrl = "https://creator.api.example",
+  credentialCleanupEnabled = true,
 ): FastifyInstance {
   return buildApp({
     logger,
@@ -1468,6 +1484,7 @@ function buildCreatorPlatformApp(
       callbackBaseUrl,
       webReturnUrl: "https://marketplace.example/profile/complete",
       credentialSecretPrefix: "vayada/test",
+      credentialCleanupEnabled,
     },
     auth: {
       verifier: createFakeVerifier(new Map([["valid-token", session]])),

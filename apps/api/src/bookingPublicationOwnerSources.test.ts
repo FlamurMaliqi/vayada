@@ -1,11 +1,14 @@
 import {
   createBookingDesignReadinessProvider,
   createBookingPricingSourceFingerprint,
+  isBookingLaunchOwnerEvidenceValid,
 } from "@vayada/domain-booking";
 import { createHotelMediaResolutionPort } from "@vayada/domain-hotels";
 import { describe, expect, it, vi } from "vitest";
 
 import {
+  choices,
+  compositionFixture,
   now,
   organizationId,
   pricingEvidence,
@@ -128,7 +131,7 @@ describe("production Booking publication owner sources", () => {
       design,
       guestPolicy: {
         async getCurrentGuestPolicy() {
-          return revisionFixture();
+          return revisionFixture({ bundle: compositionFixture({ ...choices, checkInUntil: "23:00", checkOutFrom: "07:00" }).bundle });
         },
       },
     });
@@ -136,7 +139,11 @@ describe("production Booking publication owner sources", () => {
     if (designResult.outcome !== "ready") throw new Error(JSON.stringify(designResult));
     const evidence = await source.getBookingLaunchEvidence(scope);
     if (evidence.outcome !== "evidence") throw new Error("Expected Booking evidence");
+    expect(isBookingLaunchOwnerEvidenceValid(evidence, scope, "booking")).toBe(true);
     expect(evidence.entities).toHaveLength(2);
+    expect(evidence.entities[0]?.bindings?.map(({ expectedSource }) => expectedSource))
+      .toEqual(designResult.snapshot.sourceBindings.filter(({ ownerDomain }) => ownerDomain !== "booking"));
+    expect(evidence.sources).toContainEqual(designResult.designSource);
     expect(evidence.entities.flatMap(({ blockers }) => blockers)).toEqual([]);
 
     await expect(source.getSnapshot(manifestRequest(evidence.sources))).resolves.toMatchObject({
@@ -151,6 +158,7 @@ describe("production Booking publication owner sources", () => {
           heroImage: "https://cdn.test/cover.webp",
           heroSubtext: "Book direct.",
         },
+        policies: { checkInFrom: choices.checkInTime, checkOutUntil: choices.checkOutTime, checkInUntil: "23:00", checkOutFrom: "07:00" },
         capabilities: { instantBook: true, promoCodes: true, referralCodes: true },
         supportedQuoteParameters: { childrenSupported: true, adultAgeThreshold: 18 },
       },

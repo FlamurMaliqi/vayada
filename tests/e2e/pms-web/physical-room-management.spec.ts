@@ -81,6 +81,15 @@ test("creates, renames and safely retires physical rooms using target commands",
       expect(body.expectedRevision).toBe(revision);
       expect(route.request().headers()["idempotency-key"]).toBeTruthy();
       writes.push(method);
+      if (method === "POST" && body.changes?.operationalLabel === "104") {
+        return route.fulfill({
+          status: 409,
+          json: {
+            code: "operational_label_conflict",
+            message: "A room with this number already exists.",
+          },
+        });
+      }
       if (method === "DELETE" && protect) {
         protect = false;
         return route.fulfill({
@@ -110,6 +119,14 @@ test("creates, renames and safely retires physical rooms using target commands",
   await page.locator('input[value="101"]').fill("102");
   await page.getByTitle("Save", { exact: true }).click();
   await expect(page.getByText(/^#102/)).toBeVisible();
+  await page.getByRole("button", { name: "Add Room", exact: true }).click();
+  await page.getByPlaceholder(/room number/i).fill("102");
+  await page.getByRole("button", { name: "Add", exact: true }).click();
+  await expect(page.getByRole("alert")).toHaveText("A room with this number already exists.");
+  await expect(page.getByPlaceholder(/room number/i)).toHaveValue("102");
+  await page.getByPlaceholder(/room number/i).fill("103");
+  await expect(page.getByRole("alert")).toHaveCount(0);
+  await page.getByRole("button", { name: "Cancel", exact: true }).click();
   await page.getByRole("button", { name: /delete room/i }).click();
   const dialog = page.waitForEvent("dialog");
   await page
@@ -127,8 +144,13 @@ test("creates, renames and safely retires physical rooms using target commands",
     .click();
   await expect(page.getByText(/^#102/)).toHaveCount(0);
   await page.getByRole("button", { name: "Add Room", exact: true }).click();
+  await page.getByPlaceholder(/room number/i).fill("104");
+  await page.getByRole("button", { name: "Add", exact: true }).click();
+  await expect(page.getByRole("alert")).toHaveText("A room with this number already exists.");
+  await expect(page.getByPlaceholder(/room number/i)).toHaveValue("104");
   await page.getByPlaceholder(/room number/i).fill("103");
+  await expect(page.getByRole("alert")).toHaveCount(0);
   await page.getByRole("button", { name: "Add", exact: true }).click();
   await expect(page.getByText(/^#103/)).toBeVisible();
-  expect(writes).toEqual(["PUT", "DELETE", "DELETE", "POST"]);
+  expect(writes).toEqual(["PUT", "DELETE", "DELETE", "POST", "POST"]);
 });
