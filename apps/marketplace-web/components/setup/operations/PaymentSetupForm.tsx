@@ -1,5 +1,7 @@
 "use client";
 
+import type { BankTransferSaveAttempt } from "@vayada/product-onboarding/bankTransferDestination";
+
 import { useCallback, useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
 
 import {
@@ -65,6 +67,7 @@ export function PaymentSetupForm({
   const [completionRefreshPending, setCompletionRefreshPending] = useState(false);
   const [error, setError] = useState("");
   const stripeLinkAttemptId = useRef(newStripeLinkAttemptId());
+  const bankSaveAttempt = useRef<BankTransferSaveAttempt>({});
   const paymentSettingsAttemptId = useRef(newPaymentSettingsAttemptId());
   const stripeRefreshAbort = useRef<AbortController | null>(null);
   const onCompletedRef = useRef(onCompleted);
@@ -237,10 +240,14 @@ export function PaymentSetupForm({
             draft,
             settings.defaultCurrency,
             paymentSettingsAttemptId.current,
+            bankSaveAttempt.current,
+            (destination) =>
+              setDraft((previous) => ({ ...previous, bankDestination: destination })),
           );
       if (!settingsSaved) {
         assertPaymentSettingsMatchDraft(updated, draft);
         setSettings(updated);
+        setDraft(paymentDraftFromSettings(updated));
         setSettingsSaved(true);
         paymentSettingsSaved = true;
         paymentSettingsAttemptId.current = newPaymentSettingsAttemptId();
@@ -439,11 +446,17 @@ export function PaymentSetupForm({
           >
             {draft.methods.includes("bank_transfer") ? (
               <div className="grid gap-3 sm:grid-cols-2">
+                {settings?.bankDestination?.maskedAccount && (
+                  <p className="sm:col-span-2 text-sm text-gray-600">
+                    Saved account: {settings.bankDestination.maskedAccount}. Leave fields empty to
+                    keep it, or enter complete replacement details.
+                  </p>
+                )}
                 <CompactField label="Bank name">
                   <input
                     className={operationInputClassName}
                     onChange={(event) => change("bankName", event.target.value)}
-                    required
+                    required={!settings?.bankDestination?.enabled}
                     value={draft.bankName}
                   />
                 </CompactField>
@@ -451,7 +464,7 @@ export function PaymentSetupForm({
                   <input
                     className={operationInputClassName}
                     onChange={(event) => change("accountHolder", event.target.value)}
-                    required
+                    required={!settings?.bankDestination?.enabled}
                     value={draft.accountHolder}
                   />
                 </CompactField>
@@ -459,7 +472,7 @@ export function PaymentSetupForm({
                   <input
                     className={operationInputClassName}
                     onChange={(event) => change("accountNumber", event.target.value)}
-                    required
+                    required={!settings?.bankDestination?.enabled}
                     value={draft.accountNumber}
                   />
                 </CompactField>
@@ -726,6 +739,7 @@ function paymentDraftFromSettings(settings: FinancePaymentSettings): PaymentSetu
   const policy = settings.depositPolicy ?? {};
   return {
     ...EMPTY_DRAFT,
+    bankDestination: settings.bankDestination,
     methods: methods.length > 0 ? methods : EMPTY_DRAFT.methods,
     onlineProvider:
       settings.paymentProvider === "xendit" || settings.paymentProvider === "vayada"
@@ -733,10 +747,10 @@ function paymentDraftFromSettings(settings: FinancePaymentSettings): PaymentSetu
         : "stripe",
     payAtHotelMethods:
       payAtHotelMethods.length > 0 ? payAtHotelMethods : EMPTY_DRAFT.payAtHotelMethods,
-    bankName: policyText(policy.bankName),
-    accountHolder: policyText(policy.accountHolder),
-    accountNumber: policyText(policy.accountNumber),
-    bicSwift: policyText(policy.bicSwift),
+    bankName: "",
+    accountHolder: "",
+    accountNumber: "",
+    bicSwift: "",
     paypalEmail: policyText(policy.paypalEmail),
   };
 }

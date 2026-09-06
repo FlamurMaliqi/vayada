@@ -319,7 +319,9 @@ export type RoomFactsCommandPort = {
 };
 
 export type RoomFactsReadPort = {
+  /** Includes inactive records for durable draft bindings and historical lookups. */
   getRoomTypeFacts(propertyId: string, roomTypeId: string): Promise<RoomTypeFactsSnapshot | null>;
+  /** Current active inventory only; retired records cannot block setup or availability reads. */
   listRoomTypeFacts(propertyId: string): Promise<readonly RoomTypeFactsSnapshot[]>;
 };
 

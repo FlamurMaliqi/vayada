@@ -1,5 +1,6 @@
 "use client";
 
+import { formatCheckInTime, formatCheckOutTime } from "@/lib/arrivalTimes";
 import { trackEvent } from "@/services/api/tracking";
 
 import { useState, useEffect, useRef, Suspense, type ReactNode } from "react";
@@ -72,10 +73,11 @@ function PaymentPageContent() {
   const [guestDetails, setGuestDetails] = useState<GuestDetailsDraft | null>(null);
   const selectedAddonIds = guestDetails?.addonIds || [];
   const addonQuantities = guestDetails?.addonQuantities || {};
+  const addonPackageQuantities = guestDetails?.addonPackageQuantities || {};
   const addonDates = guestDetails?.addonDates || {};
   const promoCodeParam = searchParams.get("promoCode") || "";
   const selectedAddonIdsKey = selectedAddonIds.join(",");
-  const addonQuantitiesKey = JSON.stringify(addonQuantities);
+  const addonQuantitiesKey = JSON.stringify([addonQuantities, addonPackageQuantities]);
   const addonDatesKey = JSON.stringify(addonDates);
 
   const {
@@ -98,6 +100,7 @@ function PaymentPageContent() {
     adults: adultsParam,
     selectedAddonIds,
     addonQuantities,
+    addonPackageQuantities,
     addonDates,
     promoCode: promoCodeParam,
   });
@@ -274,6 +277,7 @@ function PaymentPageContent() {
           rateType,
           addonIds: selectedAddonIds,
           addonQuantities,
+          addonPackageQuantities,
           addonDates,
           promoCode: promoCodeParam || undefined,
         },
@@ -340,7 +344,8 @@ function PaymentPageContent() {
       return;
     }
 
-    if (!recovery) trackEvent(slug, "complete_booking_clicked", { paymentMethod: selectedPaymentMethod });
+    if (!recovery)
+      trackEvent(slug, "complete_booking_clicked", { paymentMethod: selectedPaymentMethod });
     setSubmitting(true);
     setError("");
     setSoldOut(false);
@@ -359,6 +364,7 @@ function PaymentPageContent() {
       rateType,
       addonIds: selectedAddonIds,
       addonQuantities,
+      addonPackageQuantities,
       addonDates,
       promoCode: promoCodeParam || undefined,
       quoteId: quote.quoteId,
@@ -414,6 +420,7 @@ function PaymentPageContent() {
           (addonId) => addons.find((addon) => addon.id === addonId)?.name || addonId,
         ),
         addonQuantities: requestBody.addonQuantities,
+        addonPackageQuantities: requestBody.addonPackageQuantities,
         addonDates: requestBody.addonDates,
         currency: quote.currency,
         paymentMethod: selectedPaymentMethod,
@@ -591,6 +598,7 @@ function PaymentPageContent() {
           addons={addons}
           selectedAddonIds={paymentRequest?.addonIds ?? selectedAddonIds}
           addonQuantities={paymentRequest?.addonQuantities ?? addonQuantities}
+          addonPackageQuantities={paymentRequest?.addonPackageQuantities ?? addonPackageQuantities}
           addonDates={paymentRequest?.addonDates ?? addonDates}
           grandTotal={paymentGrandTotal}
           booking={pendingBooking}
@@ -1217,9 +1225,11 @@ function PaymentPageContent() {
                   <span className="text-gray-500">{tb("checkIn")}</span>
                   <span className="font-semibold text-gray-900 text-right">
                     {formatDate(checkIn, locale)}
-                    {hotel.checkInTime && (
+                    {formatCheckInTime(hotel) && (
                       <span className="block text-xs font-normal text-gray-500">
-                        {tc("checkInFrom", { time: hotel.checkInTime })}
+                        {tc(hotel.checkInUntil ? "checkInWindow" : "checkInFrom", {
+                          time: formatCheckInTime(hotel),
+                        })}
                       </span>
                     )}
                   </span>
@@ -1228,9 +1238,11 @@ function PaymentPageContent() {
                   <span className="text-gray-500">{tb("checkOut")}</span>
                   <span className="font-semibold text-gray-900 text-right">
                     {formatDate(checkOut, locale)}
-                    {hotel.checkOutTime && (
+                    {formatCheckOutTime(hotel) && (
                       <span className="block text-xs font-normal text-gray-500">
-                        {tc("checkOutBy", { time: hotel.checkOutTime })}
+                        {tc(hotel.checkOutFrom ? "checkOutWindow" : "checkOutBy", {
+                          time: formatCheckOutTime(hotel),
+                        })}
                       </span>
                     )}
                   </span>
@@ -1272,14 +1284,16 @@ function PaymentPageContent() {
                         )
                       : 1;
                     const days = addon.perNight
-                      ? Math.max(1, Math.min(dates?.length ?? count ?? nights, nights))
+                      ? Math.max(1, Math.min(dates?.length ?? (addon.perPerson ? nights : count ?? nights), nights))
                       : 1;
                     const items = !addon.perPerson && !addon.perNight ? Math.max(1, count ?? 1) : 1;
                     const linePrice = convertAndRound(
-                      addon.price * people * days * items,
+                      addon.price * people * days * items * (addonPackageQuantities[addon.id] ?? 1),
                       addon.currency,
                     );
                     const parts: string[] = [];
+                    if ((addonPackageQuantities[addon.id] ?? 1) > 1)
+                      parts.push(`×${addonPackageQuantities[addon.id]}`);
                     if (addon.perPerson && people < adultsParam)
                       parts.push(`${people}/${adultsParam}`);
                     if (addon.perNight && days < nights) parts.push(`${days}/${nights}`);

@@ -32,6 +32,7 @@ import MiniDatePicker from "@/components/calendar/MiniDatePicker";
 import MobileCalendar, { calendarLaneTop } from "@/components/calendar/MobileCalendar";
 import MonthView from "@/components/calendar/MonthView";
 import { useTranslation } from "@/lib/i18n";
+import { orderRoomsByRoomType } from "@/lib/roomOrdering";
 import { channexService } from "@/services/channex";
 import { getChannelBarColor, normalizeChannelKey } from "@/lib/constants/statusStyles";
 
@@ -72,13 +73,17 @@ const normalizeBookingChannel = (channel?: string | null): string => {
 const mergeRoomOrderIntent = (
   intended: CalendarRoom[],
   current: CalendarRoom[],
+  roomTypeIds: string[],
 ): CalendarRoom[] => {
   const currentById = new Map(current.map((room) => [room.id, room]));
   const intendedIds = new Set(intended.map(({ id }) => id));
-  return [
-    ...intended.flatMap(({ id }) => (currentById.has(id) ? [currentById.get(id)!] : [])),
-    ...current.filter(({ id }) => !intendedIds.has(id)),
-  ];
+  return orderRoomsByRoomType(
+    [
+      ...intended.flatMap(({ id }) => (currentById.has(id) ? [currentById.get(id)!] : [])),
+      ...current.filter(({ id }) => !intendedIds.has(id)),
+    ],
+    roomTypeIds,
+  );
 };
 
 export default function CalendarPage() {
@@ -438,6 +443,7 @@ export default function CalendarPage() {
       if (!rooms) return rooms;
       const next = idx + dir;
       if (next < 0 || next >= rooms.length) return rooms;
+      if (rooms[idx].roomTypeId !== rooms[next].roomTypeId) return rooms;
       const copy = rooms.slice();
       [copy[idx], copy[next]] = [copy[next], copy[idx]];
       return copy;
@@ -476,7 +482,13 @@ export default function CalendarPage() {
       setRoomOrderNeedsRefresh(true);
       const refreshed = await fetchData();
       if (refreshed) {
-        setLocalRooms(mergeRoomOrderIntent(intendedRooms, refreshed.rooms));
+        setLocalRooms(
+          mergeRoomOrderIntent(
+            intendedRooms,
+            refreshed.rooms,
+            refreshed.roomTypes.map(({ id }) => id),
+          ),
+        );
         setReorderOrderVersion(refreshed.roomOrderVersion);
         setRoomOrderNeedsRefresh(false);
         setRoomOrderError("Rooms changed elsewhere. Review the refreshed order, then save again.");
@@ -494,7 +506,13 @@ export default function CalendarPage() {
     const refreshed = await fetchData();
     if (refreshed) {
       if (intendedRooms) {
-        setLocalRooms(mergeRoomOrderIntent(intendedRooms, refreshed.rooms));
+        setLocalRooms(
+          mergeRoomOrderIntent(
+            intendedRooms,
+            refreshed.rooms,
+            refreshed.roomTypes.map(({ id }) => id),
+          ),
+        );
         setReorderOrderVersion(refreshed.roomOrderVersion);
       }
       setRoomOrderNeedsRefresh(false);
@@ -960,8 +978,8 @@ export default function CalendarPage() {
                   (room, roomIdx, roomsArr) => {
                     const roomBookings = bookingsByRoom[room.id] || [];
                     const rt = roomTypeMap[room.roomTypeId];
-                    const isFirst = roomIdx === 0;
-                    const isLast = roomIdx === roomsArr.length - 1;
+                    const isFirst = roomsArr[roomIdx - 1]?.roomTypeId !== room.roomTypeId;
+                    const isLast = roomsArr[roomIdx + 1]?.roomTypeId !== room.roomTypeId;
                     return (
                       <tr
                         key={room.id}

@@ -26,6 +26,8 @@ env:
   ECR_REPOSITORY: vayada-landing
   CONTACT_API_URL: https://api.vayada.com
   MARKETPLACE_API_URL: https://next-api.vayada.com
+  # Public Web Analytics site identifier; automatic edge injection must stay off.
+  CLOUDFLARE_ANALYTICS_TOKEN: 15ff9d551bd749d5930214d99f0eae70
 
 jobs:
   build-and-push:
@@ -67,6 +69,7 @@ jobs:
           build-args: |
             NEXT_PUBLIC_API_URL=${{ env.CONTACT_API_URL }}
             NEXT_PUBLIC_VAYADA_API_URL=${{ env.MARKETPLACE_API_URL }}
+            NEXT_PUBLIC_CLOUDFLARE_ANALYTICS_TOKEN=${{ env.CLOUDFLARE_ANALYTICS_TOKEN }}
           tags: |
             ${{ env.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ env.ECR_REPOSITORY }}:latest
             ${{ env.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ env.ECR_REPOSITORY }}:${{ github.sha }}

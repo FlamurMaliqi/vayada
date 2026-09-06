@@ -57,6 +57,45 @@ describe("planProductionCatalogContent", () => {
     });
   });
 
+  it("preserves effective legacy windows instead of replacing them with single-time defaults", () => {
+    const changed = structuredClone(rows);
+    Object.assign(changed[0]!.data, {
+      check_in_from: "12:00",
+      check_in_until: "23:00",
+      check_out_from: "07:00",
+      check_out_until: "10:00",
+    });
+    const ownership = planCatalogOwnership(changed);
+    const plan = planProductionCatalogContent(
+      changed,
+      ownership,
+      planProductionCatalogCore(changed, ownership),
+    );
+    expect(plan.blockers).toEqual([]);
+    expect(plan.policies[0]).toMatchObject({
+      checkInTime: "12:00",
+      checkInUntil: "23:00",
+      checkOutFrom: "07:00",
+      checkOutTime: "10:00",
+    });
+  });
+
+  it.each([
+    { check_in_from: "18:00", check_in_until: "12:00" },
+    { check_in_time: "", check_in_until: "23:00" },
+    { check_out_from: "12:00", check_out_until: "10:00" },
+  ])("blocks invalid or incomplete legacy windows", (window) => {
+    const changed = structuredClone(rows);
+    Object.assign(changed[0]!.data, window);
+    const ownership = planCatalogOwnership(changed);
+    const plan = planProductionCatalogContent(
+      changed,
+      ownership,
+      planProductionCatalogCore(changed, ownership),
+    );
+    expect(plan.blockers.some(({ code }) => code === "INVALID_CATALOG_POLICY_TIME")).toBe(true);
+  });
+
   it("reports invalid policy times without leaking values", () => {
     const changed = structuredClone(rows);
     changed[0]!.data.check_in_time = "3pm";

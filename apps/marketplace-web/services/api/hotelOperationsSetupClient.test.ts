@@ -632,13 +632,8 @@ describe("hotel operations setup client", () => {
     expect(eurRequest).toMatchObject({
       paymentSettings: {
         paymentsEnabled: true,
-        paymentProvider: "bank_transfer",
         acceptedMethods: ["pay_at_property", "cash", "manual_card", "bank_transfer", "paypal"],
         depositPolicy: {
-          bankName: "Vayada Bank",
-          accountHolder: "Hotel One",
-          accountNumber: "DE123",
-          bicSwift: "VAYADEF1",
           paypalEmail: "payments@hotel.test",
         },
       },
@@ -992,6 +987,24 @@ describe("hotel operations setup client", () => {
       hotelOperationsSetupApi.getDirectBookingSetup("property-1"),
     ).resolves.toMatchObject({ heroImageUrl: "https://cdn/new-hero" });
   });
+
+  it.each(["pending", "succeeded", "failed", "unknown"] as const)(
+    "uses canonical %s publication status",
+    async (status) => {
+      const operation = {
+        operationId: "operation-1",
+        propertyId: "property-1",
+        status,
+        expectedActiveContentRevisionId: null,
+        resultContentRevisionId: status === "succeeded" ? "revision-1" : null,
+        failureCode: null,
+        requestedAt: "2026-09-06T00:00:00Z",
+        updatedAt: "2026-09-06T00:00:00Z",
+        completedAt: null,
+      };
+      expect(isPublicationReady(operation)).toBe(status === "succeeded");
+    },
+  );
 
   it("requires the authoritative publication to be public, fresh, and complete", () => {
     expect(
