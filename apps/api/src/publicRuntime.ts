@@ -37,6 +37,7 @@ export function createPublicRuntimeRepositories(config: ApiConfig, pools: Public
         });
 
   const publicHotelQuoteRepository = createTargetPublicHotelQuoteRepository({
+    mixedRoomSelectionsEnabled: true,
     connectionString: requireTargetDatabaseUrl(config),
     profileRepository: publicHotelProfileRepository,
     pool: pools.publicHotelQuotePool,
