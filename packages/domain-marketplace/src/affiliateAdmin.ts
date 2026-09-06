@@ -1,12 +1,6 @@
 export const MARKETPLACE_AFFILIATE_ADMIN_CONTRACT_VERSION =
   "marketplace-affiliate-admin.v1" as const;
 
-export const MARKETPLACE_AFFILIATE_ADMIN_ENDPOINTS = {
-  list: "/api/marketplace/properties/:propertyId/affiliates",
-  detail: "/api/marketplace/properties/:propertyId/affiliates/:affiliateId",
-  lifecycle: "/api/marketplace/properties/:propertyId/affiliates/:affiliateId/lifecycle",
-} as const;
-
 export const MARKETPLACE_AFFILIATE_LIFECYCLE_STATUSES = [
   "pending",
   "approved",
