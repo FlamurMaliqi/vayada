@@ -189,7 +189,6 @@ jobs:
           src/jobs/pmsChannexBookingRevisionTombstones.integration.test.ts
           src/jobs/channexBookings.integration.test.ts
           src/routes/bookingWebPublicAttribution.integration.test.ts
-          src/routes/pendingBookingEdits.integration.test.ts
           src/jobs/financeSubscriptions.integration.test.ts
           src/platform/postgresRuntime.integration.test.ts
           src/platform/workosWebhooks.integration.test.ts
@@ -236,6 +235,23 @@ jobs:
           src/publicBookabilityGalleryMedia.test.ts
         env:
           TEST_DATABASE_URL: postgresql://vayada_test:vayada_test@localhost:5432/vayada_api_test
+
+      - name: Run pending booking edits in an isolated database
+        env:
+          TEST_DATABASE_URL: postgresql://vayada_test:vayada_test@localhost:5432/vayada_booking_edit_test
+          TARGET_DATABASE_URL: postgresql://vayada_test:vayada_test@localhost:5432/vayada_booking_edit_test
+        run: |
+          node --input-type=module -e '
+            import pg from "pg";
+            const url = new URL(process.env.TEST_DATABASE_URL);
+            url.pathname = "/postgres";
+            const client = new pg.Client({ connectionString: url.href });
+            await client.connect();
+            await client.query("CREATE DATABASE vayada_booking_edit_test");
+            await client.end();
+          '
+          npm --workspace @vayada/backend-migration run target:migrate -- --env local
+          npm --workspace vayada-api run test -- --no-file-parallelism src/routes/pendingBookingEdits.integration.test.ts
 
   setup_draft_reset_postgres:
     name: Setup Draft Reset PostgreSQL ${{ matrix.postgres }} Integration
