@@ -87,3 +87,7 @@ concurrent commands, transactional rollback, provider uncertainty, durable job
 replay, private reasons, and the complete route authorization denial matrix.
 PMS browser checks must exercise preview, apply, conflict recovery, and an accepted
 write followed by a failed refresh without falsely reporting that the write failed.
+
+Historical handed-off receipts remain capacity-protecting unless an append-only,
+property-scoped successor record or a linked terminal booking proves release.
+Missing Booking metadata alone must never free inventory.
