@@ -3900,7 +3900,7 @@ async function inspectRoomTypeRetirement(
            AND assignment.room_type_id = room_type.id
            AND assignment.assignment_status IN ('pending','assigned','checked_in','in_house'))
         +
-        (SELECT count(*) FROM pms.inventory_reservation_receipts receipt
+        (SELECT count(*) FROM pms.active_inventory_reservation_receipts receipt
          JOIN pms.inventory_reservation_statuses status
            ON status.receipt_id = receipt.receipt_id
          WHERE receipt.property_id = room_type.property_id

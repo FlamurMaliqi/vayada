@@ -10,6 +10,7 @@ const BOOKING_LIFECYCLE_EMAIL_JOB_TYPE_BY_KIND = {
   booking_accepted: "email.booking-accepted",
   booking_rejected: "email.booking-rejected",
   booking_canceled: "email.booking-canceled",
+  booking_updated: "email.booking-updated",
   booking_expired: "email.booking-expired",
   host_new_booking: "email.booking-host-new-booking",
   host_request_updated: "email.booking-host-request-updated",
@@ -29,6 +30,7 @@ export const BOOKING_LIFECYCLE_EMAIL_JOB_TYPES = Object.values(
 export type BookingNotificationRecipientRole = "guest" | "host";
 
 export type BookingLifecycleTransition = {
+  revision?: string;
   eventType: string;
   fromStatus?: string | null;
   toStatus: string;
@@ -398,6 +400,7 @@ export function bookingLifecycleEmailJobKey(
     transition.fromStatus ?? "none",
     transition.toStatus,
     transition.reason ?? "none",
+    ...(transition.revision ? [transition.revision] : []),
   ]
     .join("-")
     .replace(/[^a-z0-9_.-]/gi, "-")
@@ -448,6 +451,20 @@ function emailCopy(input: BookingLifecycleEmailInput) {
       ].join("\n\n"),
     };
   }
+  if (input.kind === "booking_updated") {
+    return {
+      template: "booking_updated",
+      subject: `Booking updated - ${booking.bookingReference}`,
+      text: [
+        `Hi ${name},`,
+        `We've updated your booking at ${property}.`,
+        `Stay: ${dateOnly(booking.checkIn)} to ${dateOnly(booking.checkOut)}`,
+        ...confirmationDetails(booking),
+        ...(input.guestMessage ? [`Message from us:\n${input.guestMessage}`] : []),
+        `Booking reference: ${booking.bookingReference}`,
+      ].join("\n\n"),
+    };
+  }
   if (input.kind === "booking_rejected") {
     return {
       template: "booking_rejected",
@@ -455,6 +472,7 @@ function emailCopy(input: BookingLifecycleEmailInput) {
       text: [
         `Hi ${name},`,
         `We couldn't accept your booking request for ${property}.`,
+        ...(input.guestMessage ? [`Message from us:\n${input.guestMessage}`] : []),
         `Booking reference: ${booking.bookingReference}`,
       ].join("\n\n"),
     };
@@ -604,6 +622,8 @@ function notificationsForTransition(
       },
     ];
   }
+  if (transition.eventType === "guest_booking.host_dates_updated")
+    return [{ kind: "booking_updated", role: "guest" }];
   if (["guest_booking.rejected", "guest_booking.declined"].includes(transition.eventType)) {
     return [{ kind: "booking_rejected", role: "guest" }];
   }

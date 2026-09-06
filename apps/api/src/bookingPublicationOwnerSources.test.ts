@@ -1,6 +1,7 @@
 import {
   createBookingDesignReadinessProvider,
   createBookingPricingSourceFingerprint,
+  isBookingLaunchOwnerEvidenceValid,
 } from "@vayada/domain-booking";
 import { createHotelMediaResolutionPort } from "@vayada/domain-hotels";
 import { describe, expect, it, vi } from "vitest";
@@ -136,7 +137,11 @@ describe("production Booking publication owner sources", () => {
     if (designResult.outcome !== "ready") throw new Error(JSON.stringify(designResult));
     const evidence = await source.getBookingLaunchEvidence(scope);
     if (evidence.outcome !== "evidence") throw new Error("Expected Booking evidence");
+    expect(isBookingLaunchOwnerEvidenceValid(evidence, scope, "booking")).toBe(true);
     expect(evidence.entities).toHaveLength(2);
+    expect(evidence.entities[0]?.bindings?.map(({ expectedSource }) => expectedSource))
+      .toEqual(designResult.snapshot.sourceBindings.filter(({ ownerDomain }) => ownerDomain !== "booking"));
+    expect(evidence.sources).toContainEqual(designResult.designSource);
     expect(evidence.entities.flatMap(({ blockers }) => blockers)).toEqual([]);
 
     await expect(source.getSnapshot(manifestRequest(evidence.sources))).resolves.toMatchObject({
