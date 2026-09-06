@@ -2,6 +2,11 @@ name: Deploy Next TypeScript API
 
 on:
   workflow_dispatch:
+    inputs:
+      deploy:
+        description: "Deploy to shared next after building (disable for isolated staging)"
+        type: boolean
+        default: true
   push:
     branches:
       - main
@@ -66,6 +71,7 @@ jobs:
           cache-to: type=gha,mode=max
 
       - name: Dispatch deploy to platform
+        if: github.event_name != 'workflow_dispatch' || inputs.deploy
         uses: peter-evans/repository-dispatch@v4
         with:
           token: ${{ secrets.PLATFORM_DEPLOY_TOKEN }}
