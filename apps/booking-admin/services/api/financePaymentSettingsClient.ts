@@ -1,3 +1,7 @@
+import {
+  readBankTransferDestination,
+  type SavedBankTransferDestination,
+} from "@vayada/product-onboarding/bankTransferDestination";
 import { ApiErrorResponse, apiClient, omitHotelContext, type ApiClient } from "./client";
 
 export type FinanceRoutePaymentProvider =
@@ -82,6 +86,7 @@ export interface FinancePaymentSettingsPatchResponse {
 }
 
 export interface FinancePaymentSettingsResponse {
+  bankDestination?: SavedBankTransferDestination | null;
   contractVersion: string;
   propertyId: string;
   paymentSettings: {
@@ -186,10 +191,15 @@ export async function getFinancePaymentSettings(
   client: FinancePaymentSettingsReadApiClient = apiClient,
 ): Promise<FinancePaymentSettingsResponse> {
   try {
-    return await client.get<FinancePaymentSettingsResponse>(
+    const response = await client.get<FinancePaymentSettingsResponse>(
       buildFinancePaymentSettingsEndpoint(input),
       omitHotelContext,
     );
+    const bankDestination = await readBankTransferDestination(
+      { get: (path) => client.get(path, omitHotelContext) },
+      input.propertyId,
+    );
+    return { ...response, bankDestination };
   } catch (error) {
     throw toFinancePaymentSettingsClientError(error);
   }
@@ -295,15 +305,6 @@ export function buildFinancePaymentSettingsBody(
   if (draft.payAtPropertyEnabled && !draft.payAtHotelMethods?.length) {
     throw new Error("Choose cash, card, or both for Pay at Hotel.");
   }
-  if (draft.bankTransfer) {
-    const account =
-      draft.payoutAccountType === "account_number"
-        ? trimmed(draft.payoutAccountNumber)
-        : trimmed(draft.payoutIban);
-    if (!trimmed(draft.payoutBankName)) throw new Error("Bank name is required.");
-    if (!trimmed(draft.payoutAccountHolder)) throw new Error("Account holder is required.");
-    if (!account) throw new Error("Account number or IBAN is required.");
-  }
   if (draft.paypalEnabled && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(trimmed(draft.paypalEmail) ?? "")) {
     throw new Error("PayPal email must be a valid email address.");
   }
@@ -315,24 +316,13 @@ export function buildFinancePaymentSettingsBody(
   }
   const paymentSettings: FinancePaymentSettingsPatchPayload = {
     paymentsEnabled: acceptedMethods.length > 0,
-    paymentProvider: draft.paymentProvider,
+    ...(draft.onlineCardPayment ? { paymentProvider: draft.paymentProvider } : {}),
     acceptedMethods,
     defaultCurrency,
     supportedCurrencies: [defaultCurrency],
     requiresManualReview: draft.requiresManualReview ?? false,
   };
   paymentSettings.depositPolicy = {
-    bankName: draft.bankTransfer ? (trimmed(draft.payoutBankName) ?? "") : "",
-    accountHolder: draft.bankTransfer ? (trimmed(draft.payoutAccountHolder) ?? "") : "",
-    accountNumber: draft.bankTransfer
-      ? (trimmed(
-          draft.payoutAccountType === "account_number"
-            ? draft.payoutAccountNumber
-            : draft.payoutIban,
-        ) ?? "")
-      : "",
-    bicSwift: draft.bankTransfer ? (trimmed(draft.payoutSwift) ?? "") : "",
-    bankTransferInstructions: buildBankTransferInstructions(draft) ?? "",
     paypalEmail: draft.paypalEnabled ? (trimmed(draft.paypalEmail) ?? "") : "",
     paypalPaymentWindowHours: draft.paypalEnabled
       ? Math.max(1, Math.min(168, draft.paypalPaymentWindowHours ?? 24))
@@ -379,32 +369,6 @@ function buildAcceptedPaymentMethods(
   if (draft.bankTransfer) methods.add("bank_transfer");
   if (draft.paypalEnabled) methods.add("paypal");
   return Array.from(methods);
-}
-
-function buildBankTransferInstructions(draft: BookingAdminPaymentSettingsDraft): string | null {
-  if (!draft.bankTransfer) return null;
-
-  const accountHolder = trimmed(draft.payoutAccountHolder);
-  const accountType = draft.payoutAccountType ?? "iban";
-  const account =
-    accountType === "account_number"
-      ? trimmed(draft.payoutAccountNumber)
-      : trimmed(draft.payoutIban);
-  if (!accountHolder || !account) return null;
-
-  return [
-    `Account holder: ${accountHolder}`,
-    accountType === "account_number" ? `Account number: ${account}` : `IBAN: ${account}`,
-    labelValue("Bank", draft.payoutBankName),
-    labelValue("SWIFT/BIC", draft.payoutSwift),
-  ]
-    .filter((line): line is string => line !== null)
-    .join("\n");
-}
-
-function labelValue(label: string, value: string | undefined): string | null {
-  const text = trimmed(value);
-  return text ? `${label}: ${text}` : null;
 }
 
 function trimmed(value: string | undefined): string | null {

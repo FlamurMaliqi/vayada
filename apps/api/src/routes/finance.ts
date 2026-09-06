@@ -21,6 +21,8 @@ import {
   type FinanceAffiliatePayoutSchedule,
   toFinanceCancellationPolicyResponse,
   toFinancePaymentSettingsResponse,
+  safeDepositPolicy,
+  BANK_POLICY_FIELDS,
   toPublicPaymentCapabilityProjection,
   type CancellationPolicy,
   type CreateStripeProviderAccountCommand,
@@ -70,6 +72,11 @@ import {
   type FinanceXenditPayoutReconciliationResponse,
 } from "@vayada/domain-finance";
 import { requireAuthContext, type RequestContext } from "@vayada/backend-auth";
+import {
+  AuthorizationError,
+  requirePropertyAccess,
+  type PropertyAccessRepository,
+} from "@vayada/backend-authorization";
 import type { PublicBookabilityPublicationCommandPort } from "@vayada/domain-distribution";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { Buffer } from "node:buffer";
@@ -158,6 +165,7 @@ export type FinancePropertySettingsWriteClient = {
 
 export type FinanceRoutesOptions = {
   repository: FinancePropertyReadRepository;
+  propertyAccessRepository?: PropertyAccessRepository;
   publicBookabilityPublisher?: Pick<PublicBookabilityPublicationCommandPort, "publish">;
   xenditBankValidator?: FinanceXenditBankValidator;
   publicHotelPropertyResolver?: FinancePublicHotelPropertyResolver;
@@ -167,6 +175,7 @@ export type FinanceRoutesOptions = {
 
 export type PmsFinanceCompatibilityRoutesOptions = {
   repository: FinancePropertyReadRepository;
+  propertyAccessRepository?: PropertyAccessRepository;
 };
 
 export type FinanceXenditBankValidator = {
@@ -235,6 +244,7 @@ type FinancePaymentSettingsRow = {
   paymentsEnabled: boolean | null;
   acceptedMethods: unknown;
   defaultCurrency: string | null;
+  bankTransferReady?: boolean;
   depositPolicy: unknown;
   refundPolicy: unknown;
   taxPolicy: unknown;
@@ -482,7 +492,15 @@ export async function registerFinanceRoutes(
     "/finance/properties/:propertyId/payment-settings",
     async (request, reply) => {
       const propertyId = request.params.propertyId;
-      if (!enforceFinancePropertyReadPolicy(request, reply, propertyId)) return reply;
+      if (
+        !(await enforceFinancePropertyReadPolicy(
+          request,
+          reply,
+          propertyId,
+          options.propertyAccessRepository,
+        ))
+      )
+        return reply;
 
       const settings =
         (await options.repository.getPaymentSettings(propertyId)) ??
@@ -495,7 +513,15 @@ export async function registerFinanceRoutes(
     "/finance/properties/:propertyId/payment-settings",
     async (request, reply) => {
       const propertyId = request.params.propertyId;
-      if (!enforceFinancePropertyWritePolicy(request, reply, propertyId)) return reply;
+      if (
+        !(await enforceFinancePropertyWritePolicy(
+          request,
+          reply,
+          propertyId,
+          options.propertyAccessRepository,
+        ))
+      )
+        return reply;
 
       if (!options.repository.updatePaymentSettings) {
         reply.code(501);
@@ -533,7 +559,15 @@ export async function registerFinanceRoutes(
     "/finance/properties/:propertyId/cancellation-policy",
     async (request, reply) => {
       const propertyId = request.params.propertyId;
-      if (!enforceFinancePropertyReadPolicy(request, reply, propertyId)) return reply;
+      if (
+        !(await enforceFinancePropertyReadPolicy(
+          request,
+          reply,
+          propertyId,
+          options.propertyAccessRepository,
+        ))
+      )
+        return reply;
 
       const policy =
         (await options.repository.getCancellationPolicy(propertyId)) ??
@@ -546,7 +580,15 @@ export async function registerFinanceRoutes(
     "/finance/properties/:propertyId/provider-accounts/stripe",
     async (request, reply) => {
       const propertyId = request.params.propertyId;
-      if (!enforceFinancePropertyWritePolicy(request, reply, propertyId)) return reply;
+      if (
+        !(await enforceFinancePropertyWritePolicy(
+          request,
+          reply,
+          propertyId,
+          options.propertyAccessRepository,
+        ))
+      )
+        return reply;
 
       if (!options.repository.createStripeProviderAccount) {
         reply.code(501);
@@ -580,7 +622,15 @@ export async function registerFinanceRoutes(
     "/finance/properties/:propertyId/provider-accounts/:providerAccountId/onboarding-link",
     async (request, reply) => {
       const propertyId = request.params.propertyId;
-      if (!enforceFinancePropertyWritePolicy(request, reply, propertyId)) return reply;
+      if (
+        !(await enforceFinancePropertyWritePolicy(
+          request,
+          reply,
+          propertyId,
+          options.propertyAccessRepository,
+        ))
+      )
+        return reply;
 
       if (!options.repository.issueStripeOnboardingLink) {
         reply.code(501);
@@ -620,7 +670,15 @@ export async function registerFinanceRoutes(
     "/finance/properties/:propertyId/provider-accounts/stripe/reconcile",
     async (request, reply) => {
       const propertyId = request.params.propertyId;
-      if (!enforceFinancePropertyWritePolicy(request, reply, propertyId)) return reply;
+      if (
+        !(await enforceFinancePropertyWritePolicy(
+          request,
+          reply,
+          propertyId,
+          options.propertyAccessRepository,
+        ))
+      )
+        return reply;
 
       if (!options.repository.reconcileStripeProviderAccount) {
         reply.code(501);
@@ -654,7 +712,15 @@ export async function registerFinanceRoutes(
     "/finance/properties/:propertyId/provider-accounts/stripe/dashboard-link",
     async (request, reply) => {
       const propertyId = request.params.propertyId;
-      if (!enforceFinancePropertyWritePolicy(request, reply, propertyId)) return reply;
+      if (
+        !(await enforceFinancePropertyWritePolicy(
+          request,
+          reply,
+          propertyId,
+          options.propertyAccessRepository,
+        ))
+      )
+        return reply;
 
       const actorUserId = requireAuthContext(request).actor.internalUserId;
       const rateLimit = consumeStripeDashboardLinkRateLimit(
@@ -775,7 +841,15 @@ export async function registerFinanceRoutes(
     "/finance/properties/:propertyId/payouts",
     async (request, reply) => {
       const propertyId = request.params.propertyId;
-      if (!enforceFinancePropertyReadPolicy(request, reply, propertyId)) return reply;
+      if (
+        !(await enforceFinancePropertyReadPolicy(
+          request,
+          reply,
+          propertyId,
+          options.propertyAccessRepository,
+        ))
+      )
+        return reply;
       const query = parsePayoutListQuery(request.query);
       if ("statusCode" in query) {
         reply.code(query.statusCode);
@@ -878,7 +952,15 @@ export async function registerFinanceRoutes(
     "/finance/properties/:propertyId/payouts/:payoutId/dispatch",
     async (request, reply) => {
       const { propertyId } = request.params;
-      if (!enforceFinancePropertyWritePolicy(request, reply, propertyId)) return reply;
+      if (
+        !(await enforceFinancePropertyWritePolicy(
+          request,
+          reply,
+          propertyId,
+          options.propertyAccessRepository,
+        ))
+      )
+        return reply;
       if (!options.repository.enqueuePropertyPayoutDispatch) {
         reply.code(501);
         return {
@@ -919,7 +1001,15 @@ export async function registerFinanceRoutes(
     "/finance/properties/:propertyId/provider-accounts/xendit/bank-validation",
     async (request, reply) => {
       const propertyId = request.params.propertyId;
-      if (!enforceFinancePropertyWritePolicy(request, reply, propertyId)) return reply;
+      if (
+        !(await enforceFinancePropertyWritePolicy(
+          request,
+          reply,
+          propertyId,
+          options.propertyAccessRepository,
+        ))
+      )
+        return reply;
       if (!options.xenditBankValidator) {
         reply.code(501);
         return {
@@ -978,7 +1068,15 @@ export async function registerFinanceRoutes(
     "/finance/properties/:propertyId/reconciliation/xendit-payouts",
     async (request, reply) => {
       const propertyId = request.params.propertyId;
-      if (!enforceFinancePropertyWritePolicy(request, reply, propertyId)) return reply;
+      if (
+        !(await enforceFinancePropertyWritePolicy(
+          request,
+          reply,
+          propertyId,
+          options.propertyAccessRepository,
+        ))
+      )
+        return reply;
       if (!options.repository.enqueueXenditPayoutReconciliation) {
         reply.code(501);
         return {
@@ -1016,28 +1114,28 @@ export async function registerFinanceRoutes(
   app.get<{ Params: FinancePropertyParams }>(
     "/finance/properties/:propertyId/reconciliation/payments",
     async (request, reply) => {
-      return financeReconciliationView(request, reply, options.repository, "payments");
+      return financeReconciliationView(request, reply, options, "payments");
     },
   );
 
   app.get<{ Params: FinancePropertyParams }>(
     "/finance/properties/:propertyId/reconciliation/payouts",
     async (request, reply) => {
-      return financeReconciliationView(request, reply, options.repository, "payouts");
+      return financeReconciliationView(request, reply, options, "payouts");
     },
   );
 
   app.get<{ Params: FinancePropertyParams }>(
     "/finance/properties/:propertyId/reconciliation/provider-accounts",
     async (request, reply) => {
-      return financeReconciliationView(request, reply, options.repository, "provider-accounts");
+      return financeReconciliationView(request, reply, options, "provider-accounts");
     },
   );
 
   app.get<{ Params: FinancePropertyParams }>(
     "/pms/properties/:propertyId/payment-settings",
     async (request, reply) => {
-      return pmsPaymentSettingsFacade(request, reply, options.repository);
+      return pmsPaymentSettingsFacade(request, reply, options);
     },
   );
 
@@ -1082,7 +1180,7 @@ export async function registerPmsFinanceCompatibilityRoutes(
   app.get<{ Params: FinancePropertyParams }>(
     "/pms/properties/:propertyId/payment-settings",
     async (request, reply) => {
-      return pmsPaymentSettingsFacade(request, reply, options.repository);
+      return pmsPaymentSettingsFacade(request, reply, options);
     },
   );
 }
@@ -1090,10 +1188,19 @@ export async function registerPmsFinanceCompatibilityRoutes(
 async function pmsPaymentSettingsFacade(
   request: FastifyRequest<{ Params: FinancePropertyParams }>,
   reply: FastifyReply,
-  repository: FinancePropertyReadRepository,
+  options: PmsFinanceCompatibilityRoutesOptions,
 ) {
   const propertyId = request.params.propertyId;
-  if (!enforceFinancePropertyReadPolicy(request, reply, propertyId)) return reply;
+  if (
+    !(await enforceFinancePropertyReadPolicy(
+      request,
+      reply,
+      propertyId,
+      options.propertyAccessRepository,
+    ))
+  )
+    return reply;
+  const { repository } = options;
 
   const settings =
     (await repository.getPaymentSettings(propertyId)) ??
@@ -1107,11 +1214,20 @@ async function pmsPaymentSettingsFacade(
 async function financeReconciliationView(
   request: FastifyRequest<{ Params: FinancePropertyParams }>,
   reply: FastifyReply,
-  repository: FinancePropertyReadRepository,
+  options: FinanceRoutesOptions,
   view: FinanceReconciliationViewKind,
 ): Promise<FinanceReconciliationViewResponse | FinanceValidationError | FastifyReply> {
   const propertyId = request.params.propertyId;
-  if (!enforceFinancePropertyReadPolicy(request, reply, propertyId)) return reply;
+  if (
+    !(await enforceFinancePropertyReadPolicy(
+      request,
+      reply,
+      propertyId,
+      options.propertyAccessRepository,
+    ))
+  )
+    return reply;
+  const { repository } = options;
   const query = parseReconciliationViewQuery(request.query);
   if ("statusCode" in query) {
     reply.code(query.statusCode);
@@ -1542,6 +1658,17 @@ async function updatePaymentSettingsInClient(
   const current = existing
     ? toFinancePaymentSettingsReadModel(existing)
     : setupIncompletePaymentSettings(command.propertyId, new Date().toISOString());
+  if (
+    command.payload.depositPolicy &&
+    BANK_POLICY_FIELDS.some((field) => Object.hasOwn(command.payload.depositPolicy!, field))
+  ) {
+    return {
+      ok: false,
+      statusCode: 400,
+      code: "invalid_command",
+      message: "Bank details require the dedicated destination endpoint.",
+    };
+  }
   const next = mergePaymentSettings(current, {
     ...command.payload,
     defaultCurrency: canonicalCurrency,
@@ -1731,18 +1858,8 @@ function paymentSettingsCompletenessError(
   ) {
     return "Pay at Hotel requires cash, card, or both.";
   }
-  if (settings.acceptedMethods.includes("bank_transfer")) {
-    const requiredFields = [
-      ["bankName", "bank name"],
-      ["accountHolder", "account holder"],
-      ["accountNumber", "account number or IBAN"],
-      ["bankTransferInstructions", "bank transfer instructions"],
-    ] as const;
-    for (const [field, label] of requiredFields) {
-      if (!policyText(settings.depositPolicy[field])) {
-        return `Bank Transfer requires ${label}.`;
-      }
-    }
+  if (settings.acceptedMethods.includes("bank_transfer") && !settings.bankTransferReady) {
+    return "Bank Transfer requires an enabled destination.";
   }
   if (
     settings.acceptedMethods.includes("paypal") &&
@@ -2557,7 +2674,8 @@ async function createStripeProviderAccountInClient(
   }
 
   let loserCompensation:
-    { kind: "compensated" } | { kind: "durably_owned"; account: StripeProviderAccountOwnershipRow };
+    | { kind: "compensated" }
+    | { kind: "durably_owned"; account: StripeProviderAccountOwnershipRow };
   try {
     loserCompensation = await compensateStripeProviderAccountIfUnowned(
       client,
@@ -5090,6 +5208,8 @@ async function loadPaymentSettingsRow(
        COALESCE(settings.payments_enabled, FALSE) AS "paymentsEnabled",
        COALESCE(settings.accepted_methods, ARRAY[]::text[]) AS "acceptedMethods",
        COALESCE(booking_settings.default_currency, settings.default_currency, 'EUR') AS "defaultCurrency",
+       EXISTS (SELECT 1 FROM finance.bank_transfer_destinations destination
+         WHERE destination.property_id=property.id AND destination.enabled) AS "bankTransferReady",
        COALESCE(settings.deposit_policy, '{}'::jsonb) AS "depositPolicy",
        COALESCE(settings.refund_policy, '{}'::jsonb) AS "refundPolicy",
        COALESCE(settings.tax_policy, '{}'::jsonb) AS "taxPolicy",
@@ -5881,7 +6001,8 @@ function toFinancePaymentSettingsReadModel(
     acceptedMethods,
     defaultCurrency,
     supportedCurrencies: [defaultCurrency],
-    depositPolicy: jsonPolicy(row.depositPolicy),
+    bankTransferReady: row.bankTransferReady === true,
+    depositPolicy: safeDepositPolicy(jsonPolicy(row.depositPolicy)),
     refundPolicy: jsonPolicy(row.refundPolicy),
     taxPolicy: jsonPolicy(row.taxPolicy),
     statementDescriptor: row.statementDescriptor,
@@ -6523,6 +6644,14 @@ function toPaymentSettingsPatchCommand(
     if (paymentSettings[key] !== undefined) {
       const policy = jsonPolicyBody(paymentSettings[key], key);
       if (!policy.ok) return policy.error;
+      if (
+        key === "depositPolicy" &&
+        BANK_POLICY_FIELDS.some((field) => Object.hasOwn(policy.value, field))
+      )
+        return invalidQuery(
+          "invalid_body",
+          "Bank details require the dedicated destination endpoint.",
+        );
       payload[key] = policy.value;
     }
   }
@@ -6593,7 +6722,8 @@ function currencyArray(value: unknown): string[] | null {
 }
 
 type FinanceJsonPolicyBodyResult =
-  { ok: true; value: FinanceJsonPolicy } | { ok: false; error: FinanceValidationError };
+  | { ok: true; value: FinanceJsonPolicy }
+  | { ok: false; error: FinanceValidationError };
 
 function jsonPolicyBody(value: unknown, name: string): FinanceJsonPolicyBodyResult {
   const record = plainRecord(value);
@@ -6609,10 +6739,7 @@ function jsonPolicyBody(value: unknown, name: string): FinanceJsonPolicyBodyResu
     if (!valid) {
       return {
         ok: false,
-        error: invalidQuery(
-          "invalid_body",
-          `${name}.${key} must be a string, number, boolean, or null.`,
-        ),
+        error: invalidQuery("invalid_body", `${name} contains an invalid value.`),
       };
     }
   }
@@ -6780,14 +6907,21 @@ function toFinanceCommandError(
   } satisfies FinanceCommandError;
 }
 
-export function enforceFinancePropertyReadPolicy(
+export async function enforceFinancePropertyReadPolicy(
   request: FastifyRequest,
   reply: FastifyReply,
   propertyId: string,
-): boolean {
+  propertyAccessRepository: PropertyAccessRepository | undefined,
+): Promise<boolean> {
   const policies = financePropertyReadPolicies(propertyId);
   try {
     enforceAnyFinancePropertyReadPolicy(request, policies);
+    if (!propertyAccessRepository) throw new AuthorizationError();
+    await requirePropertyAccess(requireAuthContext(request), propertyAccessRepository, {
+      propertyId,
+      targetResource: { product: "pms", resourceType: "pms_property" },
+      allowedRelationships: ["owner", "operator", "finance_manager"],
+    });
     return true;
   } catch (error) {
     const accessError = toFinanceAccessError(error, request, propertyId);
@@ -6797,14 +6931,21 @@ export function enforceFinancePropertyReadPolicy(
   }
 }
 
-export function enforceFinancePropertyWritePolicy(
+export async function enforceFinancePropertyWritePolicy(
   request: FastifyRequest,
   reply: FastifyReply,
   propertyId: string,
-): boolean {
+  propertyAccessRepository: PropertyAccessRepository | undefined,
+): Promise<boolean> {
   const policies = financePropertyWritePolicies(propertyId);
   try {
     enforceAnyFinancePropertyReadPolicy(request, policies);
+    if (!propertyAccessRepository) throw new AuthorizationError();
+    await requirePropertyAccess(requireAuthContext(request), propertyAccessRepository, {
+      propertyId,
+      targetResource: { product: "pms", resourceType: "pms_property" },
+      allowedRelationships: ["owner", "finance_manager"],
+    });
     return true;
   } catch (error) {
     const accessError = toFinanceAccessError(error, request, propertyId);

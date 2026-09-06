@@ -257,6 +257,11 @@ export const registerProviderWebhookRoutes: FastifyPluginAsync<
     if (!providerReference || !Number.isFinite(acknowledgedAt.getTime()))
       return reply.code(400).send({ error: "invalid_resend_delivery_receipt" });
 
+    // Only a signed, explicitly Booking-owned event bypasses Inbox correlation.
+    // Untagged/unknown events retain retries for old sends and acceptance races.
+    if (optionalString(optionalRecord(data, "tags"), "vayada_product") === "booking")
+      return reply.code(200).send({ status: "ignored_booking_notification" });
+
     const result = await options.pmsInboxDeliveryReceipts.recordTrustedProviderReceipt({
       adapter: "resend",
       providerReference,

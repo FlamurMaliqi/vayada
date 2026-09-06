@@ -925,7 +925,7 @@ function coverageMatchesPlanState(
   if (!coverage) return outcome === "applied";
   const storedRevision = positiveInteger(coverage.calendarRevision);
   if (outcome === "applied") return false;
-  if (outcome === "rematerialized") return storedRevision < calendarRevision;
+  if (outcome === "rematerialized") return storedRevision <= calendarRevision;
   return storedRevision === calendarRevision;
 }
 

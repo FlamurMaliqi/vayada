@@ -8,10 +8,7 @@ import {
   type PmsRoomTypeRetirementImpact,
 } from "@vayada/domain-pms";
 
-import {
-  bankTransferDetailsFromPolicy,
-  enqueueBookingTransitionNotifications,
-} from "../jobs/bookingEmails.js";
+import { enqueueBookingTransitionNotifications } from "../jobs/bookingEmails.js";
 import type {
   StripeBookingPaymentIntent,
   StripeBookingPaymentProvider,
@@ -224,11 +221,17 @@ type BookingPaymentLifecycleRow = QueryResultRow & {
   chargeType: string | null;
 };
 type PmsOperationalTemplateOperation =
-  "checkin_checklist_template_update" | "checkout_inspection_template_update";
+  | "checkin_checklist_template_update"
+  | "checkout_inspection_template_update";
 type PmsCheckoutChargeOperation =
-  "checkout_charge_create" | "checkout_charge_mark_paid" | "checkout_charge_waive";
+  | "checkout_charge_create"
+  | "checkout_charge_mark_paid"
+  | "checkout_charge_waive";
 type PmsRoomTypeCommandOperation =
-  "room_type_create" | "room_type_location_update" | "room_type_duplicate" | "room_type_retire";
+  | "room_type_create"
+  | "room_type_location_update"
+  | "room_type_duplicate"
+  | "room_type_retire";
 type PmsRoomTypeCommand =
   | PmsRoomTypeCreateCommand
   | PmsRoomTypeUpdateCommand
@@ -252,7 +255,9 @@ type PmsLegacyRatePlanRow = {
   active: boolean;
 };
 type PmsRoomBlockCommand =
-  PmsRoomBlockCreateCommand | PmsRoomBlockUpdateCommand | PmsRoomBlockReleaseCommand;
+  | PmsRoomBlockCreateCommand
+  | PmsRoomBlockUpdateCommand
+  | PmsRoomBlockReleaseCommand;
 type PmsRoomBlockOperation = "room_block_create" | "room_block_update" | "room_block_release";
 
 type PmsRoomBlockRow = {
@@ -859,10 +864,13 @@ export function createTargetPmsOperationsCommandRepository(
           );
         }
 
+        // Canonical pricing remains historical source evidence; its schema requires
+        // active = TRUE. The owning room type's active flag gates its availability.
         await client.query(
           `UPDATE pms.rate_plans
            SET active = FALSE, updated_at = $3::timestamptz
-           WHERE property_id = $1::uuid AND room_type_id = $2::uuid AND active`,
+           WHERE property_id = $1::uuid AND room_type_id = $2::uuid AND active
+             AND pricing_contract_version IS NULL`,
           [command.propertyId, command.roomTypeId, acceptedAt],
         );
         const retired = await client.query<{ roomFactsRevision: number | string }>(
@@ -1707,7 +1715,7 @@ export function createTargetPmsOperationsCommandRepository(
       return executeOperationalCommand(config, pool, now, {
         command,
         operation: "manual_cancellation_command",
-        sideEffects: ["calendar_refresh", "ari_changed", "audit_event"],
+        sideEffects: ["calendar_refresh", "ari_changed", "guest_notification", "audit_event"],
         mutate: applyManualCancellationCommandMutation,
       });
     },
@@ -3892,7 +3900,7 @@ async function inspectRoomTypeRetirement(
            AND assignment.room_type_id = room_type.id
            AND assignment.assignment_status IN ('pending','assigned','checked_in','in_house'))
         +
-        (SELECT count(*) FROM pms.inventory_reservation_receipts receipt
+        (SELECT count(*) FROM pms.active_inventory_reservation_receipts receipt
          JOIN pms.inventory_reservation_statuses status
            ON status.receipt_id = receipt.receipt_id
          WHERE receipt.property_id = room_type.property_id
@@ -5937,7 +5945,9 @@ async function insertPrivateNoteAuditEvent(
     action: "pms.private_note.created" | "pms.private_note.edited" | "pms.private_note.deleted";
     auditKey: string;
     command:
-      PmsPrivateNoteCreateCommand | PmsPrivateNoteUpdateCommand | PmsPrivateNoteDeleteCommand;
+      | PmsPrivateNoteCreateCommand
+      | PmsPrivateNoteUpdateCommand
+      | PmsPrivateNoteDeleteCommand;
     keyHash: string;
     noteId: string;
     occurredAt: string;
@@ -6306,12 +6316,20 @@ async function applyBookingAcceptanceCommandMutation(
   ) {
     return invalidStatusTransition(booking.lifecycleStatus, "confirmed");
   }
-  const bankTransferDetails = bankTransferDetailsFromPolicy({
-    bankTransferInstructions: jsonObject(booking.paymentInstructions)["bankTransferDetails"],
-  });
-  if (!bankTransferDetails) {
-    return invalidStatusTransition("bank_transfer_unavailable", "confirmed");
-  }
+  const destination = await client.query(
+    `SELECT binding.destination_id
+    FROM finance.bank_transfer_bookings binding
+    JOIN finance.bank_transfer_destinations destination ON destination.id=binding.destination_id
+      AND destination.property_id=binding.property_id
+    WHERE binding.guest_booking_id=$1::uuid AND binding.property_id=$2::uuid AND destination.deleted_at IS NULL
+    FOR SHARE OF destination`,
+    [command.guestBookingId, command.propertyId],
+  );
+  if (!destination.rows.length)
+    return operationalConflict(
+      "bank_transfer_unavailable",
+      "Cannot accept this booking because its bank-transfer destination is unavailable.",
+    );
   const paymentDeadlineAt = new Date(Date.parse(acceptedAt) + 24 * 60 * 60 * 1000).toISOString();
 
   const updated = await client.query(
@@ -6382,7 +6400,6 @@ async function applyBookingAcceptanceCommandMutation(
         : { type: "system" },
     source: "apps/api-pms-booking-acceptance",
     paymentDeadlineAt,
-    bankTransferDetails,
     transition: {
       eventType: "guest_booking.accepted",
       fromStatus: "pending_payment",
@@ -6739,6 +6756,8 @@ async function loadBookingPaymentLifecycle(
        WHERE card.property_id = booking.property_id
          AND card.guest_booking_id = booking.id
          AND card.payment_method = 'card'
+         AND (booking.active_card_payment_id IS NULL OR booking.active_card_payment_id=card.id)
+         AND card.payment_metadata->>'supersededByEdit' IS DISTINCT FROM 'true'
          AND card.provider_payment_intent_id IS NOT NULL
        ORDER BY card.created_at DESC, card.id DESC
        LIMIT 1
@@ -8201,7 +8220,11 @@ function assignmentConflict(
 }
 
 function operationalConflict(
-  code: "version_conflict" | "idempotency_conflict" | "room_unavailable",
+  code:
+    | "version_conflict"
+    | "idempotency_conflict"
+    | "room_unavailable"
+    | "bank_transfer_unavailable",
   message: string,
 ): Exclude<PmsOperationalCommandResult, { ok: true }> {
   return {

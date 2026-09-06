@@ -20,6 +20,7 @@ export interface GuestDetailsDraft {
   referralCode?: string;
   addonIds?: string[];
   addonQuantities?: Record<string, number>;
+  addonPackageQuantities?: Record<string, number>;
   /** Per-day addon date selections — ISO strings keyed by addon id. */
   addonDates?: Record<string, string[]>;
 }
@@ -292,6 +293,7 @@ export function toConfirmationBooking(
     source.paymentStatus !== undefined;
 
   return {
+    canEditRequest: source.canEditRequest ?? context.canEditRequest,
     id:
       nonEmptyString(source.guestBookingId) ??
       nonEmptyString(source.id) ??
@@ -334,6 +336,7 @@ export function toConfirmationBooking(
     addonIds: context.addonIds ?? source.addonIds,
     addonNames: context.addonNames ?? source.addonNames,
     addonQuantities: context.addonQuantities ?? source.addonQuantities,
+    addonPackageQuantities: context.addonPackageQuantities ?? source.addonPackageQuantities,
     addonDates: context.addonDates ?? source.addonDates,
     currency:
       nonEmptyString(source.currency)?.toUpperCase() ??
@@ -364,14 +367,17 @@ export function toConfirmationBooking(
 }
 
 export function saveLastBooking(booking: Booking): void {
-  safeSet(LAST_BOOKING_KEY, JSON.stringify(booking));
+  safeSet(LAST_BOOKING_KEY, JSON.stringify({ ...booking, bankTransferDetails: null }));
 }
 
 export function readLastBooking(): Booking | null {
   const raw = safeGet(LAST_BOOKING_KEY);
   if (!raw) return null;
   try {
-    return JSON.parse(raw) as Booking;
+    const booking = JSON.parse(raw) as Booking;
+    booking.bankTransferDetails = null;
+    saveLastBooking(booking);
+    return booking;
   } catch {
     return null;
   }

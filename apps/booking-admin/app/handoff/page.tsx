@@ -1,4 +1,5 @@
 "use client";
+import { useTranslation } from "@/lib/i18n";
 
 import { useEffect, useState } from "react";
 import { authService } from "@/services/auth";
@@ -16,6 +17,7 @@ import {
 } from "@vayada/product-onboarding";
 
 export default function HandoffPage() {
+  const { t } = useTranslation();
   const [retryable, setRetryable] = useState(false);
   const beginRedemption = useSingleFlightGuard();
 
@@ -69,7 +71,8 @@ export default function HandoffPage() {
           organizationId = handoff.routingHints.organizationId ?? null;
           workosOrganizationId = handoff.routingHints.workosOrganizationId ?? null;
           safeRedirect = handoff.targetPath;
-          if (!(await authService.ensureSession())) throw new Error("Handoff session unavailable");
+          if (!(await authService.ensureSession()))
+            throw new Error(t("admin.handoffSessionUnavailable"));
         } catch (error) {
           if (error instanceof BrowserAuthHandoffError && error.retryable) {
             setRetryable(true);
@@ -246,7 +249,7 @@ export default function HandoffPage() {
     })().catch(() => {
       window.location.href = organizationSelectionPath;
     });
-  }, [beginRedemption]);
+  }, [beginRedemption, t]);
 
   if (retryable) {
     return (
@@ -255,14 +258,14 @@ export default function HandoffPage() {
         role="status"
       >
         <p className="text-sm font-medium text-gray-700">
-          Your session transfer is temporarily unavailable.
+          {t("admin.yourSessionTransferIsTemporarilyUnavailable")}
         </p>
         <button
           type="button"
           onClick={() => window.location.reload()}
           className="rounded-full bg-primary-600 px-5 py-2 text-sm font-semibold text-white"
         >
-          Try again
+          {t("dashboard.pageViewsModal.retry")}
         </button>
       </div>
     );
@@ -273,7 +276,7 @@ export default function HandoffPage() {
       <div
         className="w-6 h-6 border-2 border-primary-500 border-t-transparent rounded-full animate-spin"
         role="status"
-        aria-label="Transferring your session"
+        aria-label={t("admin.transferringYourSession")}
       />
     </div>
   );
