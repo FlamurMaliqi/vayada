@@ -14,6 +14,7 @@ export const nearbyCategoryLabels = {
   transport: "Transport",
 };
 type Position = { lat: number; lng: number };
+type Destination = Position & { id?: string; label?: string; title?: string };
 type PlaceElement = HTMLElement & { place?: { location?: { lat(): number; lng(): number } } };
 
 /** Google renders its own content/attribution; only ephemeral coordinates leave the widget. */
@@ -51,8 +52,18 @@ export function GoogleNearbyPlace({
       if (disposed || settled) return;
       clearTimeout(timer);
       const position = element?.place?.location;
-      if (position && !disposed)
-        callbacks.current.onPosition?.({ lat: position.lat(), lng: position.lng() });
+      if (position && !disposed) {
+        const lat = position.lat(),
+          lng = position.lng();
+        if (
+          Number.isFinite(lat) &&
+          Math.abs(lat) <= 90 &&
+          Number.isFinite(lng) &&
+          Math.abs(lng) <= 180
+        )
+          callbacks.current.onPosition?.({ lat, lng });
+        else fail();
+      }
     };
     setFailed(!apiKey);
     if (!apiKey) {
@@ -103,7 +114,10 @@ export function GoogleNearbyPlace({
 }
 
 type MapInstance = { setCenter(position: Position): void; setZoom(zoom: number): void };
-type MapItem = { setMap(map: MapInstance | null): void };
+type MapItem = {
+  setMap(map: MapInstance | null): void;
+  addListener?(event: string, callback: () => void): { remove(): void };
+};
 type MapsLibrary = {
   Map: new (element: HTMLElement, options: Record<string, unknown>) => MapInstance;
   Circle: new (options: Record<string, unknown>) => MapItem;
@@ -114,16 +128,22 @@ export function NearbyMap({
   apiKey,
   location,
   destinations,
+  selectedId,
+  onSelect,
 }: {
   apiKey: string;
   location: NonNullable<Preview["location"]>;
-  destinations: Position[];
+  destinations: Destination[];
+  selectedId?: string;
+  onSelect?: (id: string) => void;
 }) {
   const target = useRef<HTMLDivElement>(null);
   const map = useRef<MapInstance>();
   const markers = useRef<MapItem[]>([]);
   const [library, setLibrary] = useState<MarkerLibrary | null>(null);
   const [failed, setFailed] = useState(!apiKey);
+  const select = useRef(onSelect);
+  select.current = onSelect;
   useEffect(() => {
     let disposed = false;
     let hotel: MapItem | undefined;
@@ -182,20 +202,30 @@ export function NearbyMap({
   }, [apiKey, location.latitude, location.longitude, location.mode]);
   useEffect(() => {
     markers.current.forEach((marker) => marker.setMap(null));
+    const listeners: { remove(): void }[] = [];
     markers.current =
       library && map.current
-        ? destinations.map(
-            (position, index) =>
-              new library.Marker({
-                map: map.current,
-                position,
-                title: `Nearby place ${index + 1}`,
-                label: String(index + 1),
-              }),
-          )
+        ? destinations.map((position, index) => {
+            const marker = new library.Marker({
+              map: map.current,
+              position: { lat: position.lat, lng: position.lng },
+              title: position.title ?? `Nearby place ${index + 1}`,
+              label: position.label ?? String(index + 1),
+              zIndex: selectedId === position.id ? 1000 : index,
+              opacity: selectedId && selectedId !== position.id ? 0.5 : 1,
+            });
+            const listener = marker.addListener?.("click", () => {
+              if (position.id) select.current?.(position.id);
+            });
+            if (listener) listeners.push(listener);
+            return marker;
+          })
         : [];
-    return () => markers.current.forEach((marker) => marker.setMap(null));
-  }, [destinations, library]);
+    return () => {
+      listeners.forEach((listener) => listener.remove());
+      markers.current.forEach((marker) => marker.setMap(null));
+    };
+  }, [destinations, library, selectedId]);
   return (
     <div>
       <div
@@ -213,10 +243,20 @@ export function NearbyMap({
   );
 }
 
-export default function NearbyPreview({ preview, apiKey }: { preview: Preview; apiKey: string }) {
+export default function NearbyPreview({
+  preview,
+  apiKey,
+  guest = false,
+}: {
+  preview: Preview;
+  apiKey: string;
+  guest?: boolean;
+}) {
   const [positions, setPositions] = useState<Record<string, Position>>({});
   const [unavailable, setUnavailable] = useState<string[]>([]);
   const [expanded, setExpanded] = useState<string[]>([]);
+  const [selected, setSelected] = useState<string>();
+  const cards = useRef<Record<string, HTMLButtonElement | null>>({});
   if (!preview.location)
     return (
       <p className="rounded-xl bg-gray-50 p-5 text-gray-600">
@@ -235,15 +275,25 @@ export default function NearbyPreview({ preview, apiKey }: { preview: Preview; a
   const displayed = windowed.filter(
     (place) => place.source === "custom" || !unavailable.includes(place.placeId),
   );
-  const destinations = displayed.flatMap((place) =>
-    place.source === "custom"
-      ? [{ lat: place.latitude, lng: place.longitude }]
-      : positions[place.placeId]
-        ? [positions[place.placeId]]
-        : [],
-  );
+  const id = (place: NearbyPublicPlace) => (place.source === "custom" ? place.id : place.placeId);
+  const destinations = displayed.flatMap((place, index) => {
+    const position =
+      place.source === "custom"
+        ? { lat: place.latitude, lng: place.longitude }
+        : positions[place.placeId];
+    return position
+      ? [
+          {
+            ...position,
+            id: id(place),
+            label: String(index + 1),
+            title: place.source === "custom" ? place.name : `Nearby place ${index + 1}`,
+          },
+        ]
+      : [];
+  });
   return (
-    <section aria-label="Guest preview" className="space-y-6">
+    <section aria-label={guest ? "Our surroundings" : "Guest preview"} className="space-y-6">
       <div>
         <h2 className="text-xl font-semibold text-gray-950">Around us</h2>
         <p className="mt-1 text-sm text-gray-500">
@@ -252,68 +302,111 @@ export default function NearbyPreview({ preview, apiKey }: { preview: Preview; a
             : "Explore our neighborhood and the places we recommend."}
         </p>
       </div>
-      <NearbyMap apiKey={apiKey} location={preview.location} destinations={destinations} />
-      {!visible.length && (
-        <p className="text-sm text-gray-600">Nearby places are unavailable right now.</p>
-      )}
-      {NEARBY_CATEGORIES.map((category) => {
-        const places = displayed.filter((place) => place.category === category);
-        if (!places.length && candidates.filter((place) => place.category === category).length <= 5)
-          return null;
-        return (
-          <section key={category} aria-label={nearbyCategoryLabels[category]}>
-            <h3 className="mb-3 font-semibold text-gray-900">{nearbyCategoryLabels[category]}</h3>
-            <ul className="space-y-4">
-              {places.map((place: NearbyPublicPlace) => (
-                <li
-                  key={place.source === "google" ? place.placeId : place.id}
-                  className="rounded-xl border border-gray-200 bg-white p-4"
-                >
-                  <p className="mb-2 text-xs font-semibold text-blue-700">
-                    {place.favorite ? "Recommended by us" : "Nearby"}
-                  </p>
-                  {place.source === "google" ? (
-                    <GoogleNearbyPlace
-                      apiKey={apiKey}
-                      placeId={place.placeId}
-                      onPosition={(position) =>
-                        setPositions((current) => ({ ...current, [place.placeId]: position }))
-                      }
-                      onUnavailable={() => setUnavailable((current) => [...current, place.placeId])}
-                    />
-                  ) : (
-                    <div>
-                      <h4 className="font-medium text-gray-900">{place.name}</h4>
-                      {place.address && (
-                        <p className="mt-1 text-sm text-gray-500">{place.address}</p>
-                      )}
-                      <a
-                        className="mt-2 inline-block text-sm text-blue-700 underline"
-                        href={`https://www.google.com/maps/dir/?api=1&destination=${place.latitude},${place.longitude}`}
-                        target="_blank"
-                        rel="noreferrer"
+      <div className="grid items-start gap-6 lg:grid-cols-2">
+        <div className="lg:sticky lg:top-24">
+          <NearbyMap
+            apiKey={apiKey}
+            location={preview.location}
+            destinations={destinations}
+            selectedId={selected}
+            onSelect={(key) => {
+              setSelected(key);
+              cards.current[key]?.focus({ preventScroll: true });
+            }}
+          />
+          <p className="mt-2 text-xs text-gray-500">
+            Place details load when you open this section. Recommendations are provided by us.
+          </p>
+        </div>
+        <div className="min-w-0 space-y-6">
+          {!visible.length && (
+            <p className="text-sm text-gray-600">Nearby places are unavailable right now.</p>
+          )}
+          {NEARBY_CATEGORIES.map((category) => {
+            const places = displayed.filter((place) => place.category === category);
+            if (
+              !places.length &&
+              candidates.filter((place) => place.category === category).length <= 5
+            )
+              return null;
+            return (
+              <section key={category} aria-label={nearbyCategoryLabels[category]}>
+                <h3 className="mb-3 font-semibold text-gray-900">
+                  {nearbyCategoryLabels[category]}
+                </h3>
+                <ul className="space-y-4">
+                  {places.map((place: NearbyPublicPlace) => (
+                    <li
+                      key={place.source === "google" ? place.placeId : place.id}
+                      className={`rounded-xl border bg-white p-4 ${selected === id(place) ? "border-blue-600 ring-2 ring-blue-100" : "border-gray-200"}`}
+                    >
+                      <p className="mb-2 text-xs font-semibold text-blue-700">
+                        {place.favorite ? "Recommended by us" : "Nearby"}
+                      </p>
+                      <button
+                        type="button"
+                        ref={(node) => {
+                          cards.current[id(place)] = node;
+                        }}
+                        aria-pressed={selected === id(place)}
+                        onClick={() => setSelected(id(place))}
+                        className="mb-3 rounded text-left text-sm font-medium text-blue-700 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-4"
                       >
-                        Directions
-                      </a>
-                    </div>
+                        {displayed.indexOf(place) + 1}. Select{" "}
+                        {place.source === "custom" ? place.name : "nearby place"} on map
+                      </button>
+                      {place.source === "google" ? (
+                        <GoogleNearbyPlace
+                          apiKey={apiKey}
+                          placeId={place.placeId}
+                          onPosition={(position) =>
+                            setPositions((current) => ({ ...current, [place.placeId]: position }))
+                          }
+                          onUnavailable={() =>
+                            setUnavailable((current) => [...current, place.placeId])
+                          }
+                        />
+                      ) : (
+                        <div>
+                          <h4 className="font-medium text-gray-900">{place.name}</h4>
+                          {place.address && (
+                            <p className="mt-1 text-sm text-gray-500">{place.address}</p>
+                          )}
+                        </div>
+                      )}
+                      {(place.source === "custom" || positions[place.placeId]) && (
+                        <a
+                          className="mt-2 inline-block text-sm text-blue-700 underline"
+                          href={
+                            place.source === "custom"
+                              ? `https://www.google.com/maps/dir/?api=1&destination=${place.latitude},${place.longitude}`
+                              : `https://www.google.com/maps/dir/?api=1&destination=${positions[place.placeId].lat},${positions[place.placeId].lng}&destination_place_id=${encodeURIComponent(place.placeId)}`
+                          }
+                          target="_blank"
+                          rel="noreferrer"
+                        >
+                          Directions
+                        </a>
+                      )}
+                      {place.note && <p className="mt-3 text-sm text-gray-600">{place.note}</p>}
+                    </li>
+                  ))}
+                </ul>
+                {!expanded.includes(category) &&
+                  candidates.filter((place) => place.category === category).length > 5 && (
+                    <button
+                      type="button"
+                      className="mt-3 text-sm font-medium text-blue-700"
+                      onClick={() => setExpanded((current) => [...current, category])}
+                    >
+                      Show more {nearbyCategoryLabels[category].toLowerCase()}
+                    </button>
                   )}
-                  {place.note && <p className="mt-3 text-sm text-gray-600">{place.note}</p>}
-                </li>
-              ))}
-            </ul>
-            {!expanded.includes(category) &&
-              candidates.filter((place) => place.category === category).length > 5 && (
-                <button
-                  type="button"
-                  className="mt-3 text-sm font-medium text-blue-700"
-                  onClick={() => setExpanded((current) => [...current, category])}
-                >
-                  Show more {nearbyCategoryLabels[category].toLowerCase()}
-                </button>
-              )}
-          </section>
-        );
-      })}
+              </section>
+            );
+          })}
+        </div>
+      </div>
     </section>
   );
 }
