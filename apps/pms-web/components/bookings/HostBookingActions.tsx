@@ -181,20 +181,27 @@ export function HostBookingActions({
               </p>
               {preview.impact.cancellationPolicy && (
                 <div>
-                  <p>
-                    {t(
-                      preview.impact.cancellationPolicy.type === "non_refundable"
-                        ? "hostActions.nonRefundable"
-                        : "hostActions.freeCancellationUntil",
-                    )}
-                    {preview.impact.cancellationPolicy.type === "flexible" && (
-                      <>
-                        : {preview.impact.cancellationPolicy.previousDeadline} →{" "}
-                        {preview.impact.cancellationPolicy.newDeadline} (
-                        {preview.impact.cancellationPolicy.timezone})
-                      </>
-                    )}
-                  </p>
+                  {(
+                    preview.impact.cancellationPolicy.lines ?? [preview.impact.cancellationPolicy]
+                  ).map((policy, index) => (
+                    <p key={index}>
+                      {"roomName" in policy && (
+                        <>
+                          {policy.roomCount} × {policy.roomName}:{" "}
+                        </>
+                      )}
+                      {t(
+                        policy.type === "non_refundable"
+                          ? "hostActions.nonRefundable"
+                          : "hostActions.freeCancellationUntil",
+                      )}
+                      {policy.type === "flexible" && (
+                        <>
+                          : {policy.previousDeadline} → {policy.newDeadline} ({policy.timezone})
+                        </>
+                      )}
+                    </p>
+                  ))}
                   <p>{t("hostActions.policyPenalty")}</p>
                 </div>
               )}

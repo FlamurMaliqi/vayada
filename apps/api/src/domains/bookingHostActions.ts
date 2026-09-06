@@ -1,4 +1,5 @@
-import { hostPolicyImpact, type HostPolicyImpact } from "./bookingHostPolicyImpact.js";
+import { projectBookingRoomSelection } from "./bookingRoomSelectionProjection.js";
+import { hostPolicyImpact, hostSelectionPolicyImpact, retainHostRoomPolicies, type HostPolicyImpact } from "./bookingHostPolicyImpact.js";
 import { createHash, randomUUID } from "node:crypto";
 import pg from "pg";
 import { targetBookingHostActionPrimitives as bookingOwner } from "../routes/bookingWebPublic.js";
@@ -82,8 +83,8 @@ export function createBookingHostActions(config: {
     request: HostActionRequest,
     at: Date,
   ) => {
-    await config.guards.lockInventory(client, scope.propertyId);
     const booking = await bookingOwner.loadBooking(client, scope.propertyId, scope.bookingId, true);
+    await config.guards.lockInventory(client, scope.propertyId);
     const metadata = object(booking.bookingMetadata);
     const offer = object(metadata["selectedOffer"]);
     const conflict = hostBookingActionConflict(request.action, {
@@ -128,15 +129,17 @@ export function createBookingHostActions(config: {
         dates.blockReason ?? "These dates are unavailable.",
       );
     const newOffer = dates
-      ? {
+      ? retainHostRoomPolicies(offer, {
           ...object(dates.pricingSnapshot?.["selectedOffer"]),
           publicPolicy: offer["publicPolicy"],
           policySnapshot: offer["policySnapshot"],
           rateSummary: offer["rateSummary"],
-        }
+        })
       : offer;
-    const frozenPolicy = object(metadata["policySnapshot"]);
-    const cancellationPolicy = hostPolicyImpact(
+    const frozenPolicy = offer["roomSelection"] ? object(offer["publicPolicy"]) : object(metadata["policySnapshot"]);
+    const cancellationPolicy = offer["roomSelection"]
+      ? hostSelectionPolicyImpact(offer, booking.checkIn, dates?.requestedCheckIn ?? booking.checkIn, property.timezone)
+      : hostPolicyImpact(
       frozenPolicy,
       {
         ...object(offer["rateSummary"]),
@@ -156,6 +159,7 @@ export function createBookingHostActions(config: {
       pricingFingerprint: hash(
         dates
           ? {
+              ...projectBookingRoomSelection(newOffer),
               nightly: newOffer["nightlyRoomAmounts"],
               promotion: newOffer["promotion"],
               roomTotal: dates.pricingSnapshot?.["roomTotal"],
@@ -172,7 +176,7 @@ export function createBookingHostActions(config: {
       currency: booking.currency,
       cancellationPolicy,
       oldPolicy: frozenPolicy,
-      newPolicy: frozenPolicy,
+      newPolicy: offer["roomSelection"] ? object(newOffer["publicPolicy"]) : frozenPolicy,
       inventory: dates ? "replace" : "release",
       payment,
     };
