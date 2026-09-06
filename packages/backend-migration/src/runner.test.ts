@@ -5106,7 +5106,7 @@ describe.skipIf(!TEST_DATABASE_URL)("target schema migrations (integration)", ()
         ),
       ).rejects.toMatchObject({
         code: "23514",
-        constraint: "chk_pms_inventory_days_linked_requires_canonical",
+        constraint: "chk_pms_inventory_days_linked_requires_revision",
       });
       await verifyClient.query(
         `INSERT INTO booking.guest_bookings
