@@ -18,7 +18,11 @@ export function CookieBanner({
       <button
         id="cookie-settings-trigger"
         type="button"
-        onClick={openSettings}
+        onClick={(event) => {
+          // Safari does not focus buttons on pointer clicks; retain the real dialog opener.
+          event.currentTarget.focus({ preventScroll: true });
+          openSettings();
+        }}
         className="fixed bottom-3 left-3 z-40 rounded-full border border-gray-300 bg-white px-3 py-2 text-xs text-gray-700 shadow-sm focus-visible:ring-2 focus-visible:ring-primary-500"
       >
         Cookie settings
@@ -78,7 +82,11 @@ export function CookieBanner({
             </button>
             <button
               type="button"
-              onClick={openSettings}
+              onClick={(event) => {
+                // Safari does not focus buttons on pointer clicks; retain the real dialog opener.
+                event.currentTarget.focus({ preventScroll: true });
+                openSettings();
+              }}
               className="inline-flex h-10 items-center justify-center rounded-full bg-surface-elevated px-4 text-sm font-medium text-ink transition-colors hover:bg-primary-50 hover:text-primary-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500 focus-visible:ring-offset-2"
             >
               Customize

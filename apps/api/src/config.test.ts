@@ -945,3 +945,12 @@ describe("api config", () => {
     ).toThrow("PLATFORM_MEDIA_CDN_BASE_URL must be an HTTPS origin");
   });
 });
+
+
+describe("API background worker configuration", () => {
+  it("defaults to enabled and allows a request-only staging API", () => {
+    expect(loadConfig({}).backgroundWorkersEnabled).toBe(true);
+    expect(loadConfig({ API_BACKGROUND_WORKERS_ENABLED: "false" }).backgroundWorkersEnabled).toBe(false);
+    expect(() => loadConfig({ API_BACKGROUND_WORKERS_ENABLED: "invalid" })).toThrow();
+  });
+});
