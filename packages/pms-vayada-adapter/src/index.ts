@@ -485,6 +485,15 @@ function validateCommand(
     return validationError("Timestamps must be UTC ISO-8601 values.");
   }
 
+  // This portable single-offer adapter has no production repository. Target API
+  // handoff adopts bundles through its transactional PMS job consumer instead.
+  const offer = isCreateCommand(command)
+    ? command.bookedOffer
+    : isUpdateCommand(command) ? command.changes.bookedOffer : undefined;
+  if (offer && ("roomSelection" in offer || "roomLines" in offer)) {
+    return unsupportedCapabilityError("Complete room selections require atomic PMS bundle handoff.");
+  }
+
   if (isCreateCommand(command)) {
     if (
       command.inventoryReservation !== undefined &&
