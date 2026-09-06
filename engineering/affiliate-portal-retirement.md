@@ -98,12 +98,16 @@ settings enable it. Missing route configuration continues to fail closed.
 
 Existing `?ref=` cookies/click capture, quote attribution and affiliate account /
 Finance routes remain unchanged. The scoped existing-affiliate Connect endpoint
-remains for continuity; this slice adds no provider capability. Old enrolment
-repository methods and administration are subsequent removal slices,
-not a claim that VAY-1499 is complete. Do not delete lifecycle history or migration
-fixtures while removing their old UI/API callers.
+remains for continuity; this slice adds no provider capability. Old affiliate
+administration remains a subsequent removal slice; VAY-1499 is not complete.
+Do not delete lifecycle history or migration fixtures while removing their old UI/API callers.
 
 The retired Booking Web enrolment modal and its exclusive registration/check-email/
 Connect client have been deleted after navigation was disconnected. Server-side
 existing-affiliate Connect compatibility remains available independently. Removing
 this unused client does not remove referral-cookie capture or payment history.
+
+The target public registration writer, email-existence lookup and obsolete registration
+projection tests are removed. Retained Connect checks read existing registration events;
+their identity derivation and event/history formats remain unchanged. No historical rows
+or applied migrations are removed. Test identities are seeded explicitly as existing data.
