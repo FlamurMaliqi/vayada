@@ -8,6 +8,8 @@ type ActiveProfileRow = QueryResultRow & { propertyId: string; publicContent: un
 type CurrentPublicGatesRow = QueryResultRow & {
   domainVerified: boolean;
   referralEnabled: boolean;
+  latitude: number | null;
+  longitude: number | null;
 };
 
 const ACTIVE_PROFILE_SELECT = `SELECT
@@ -111,6 +113,14 @@ async function currentActiveProfile(
   if (profile.hotel.customDomainUrl && !domain) return null;
   const result = await pool.query<CurrentPublicGatesRow>(
     `SELECT
+       (SELECT CASE WHEN geo_public AND map_display_mode='exact' THEN latitude
+         WHEN geo_public AND map_display_mode='approximate' THEN round(latitude,2) END::double precision
+         FROM hotel_catalog.property_locations WHERE property_id=$1::uuid
+           AND latitude IS NOT NULL AND longitude IS NOT NULL) AS latitude,
+       (SELECT CASE WHEN geo_public AND map_display_mode='exact' THEN longitude
+         WHEN geo_public AND map_display_mode='approximate' THEN round(longitude,2) END::double precision
+         FROM hotel_catalog.property_locations WHERE property_id=$1::uuid
+           AND latitude IS NOT NULL AND longitude IS NOT NULL) AS longitude,
        CASE WHEN $2::text IS NULL THEN TRUE ELSE EXISTS (
          SELECT 1
          FROM hotel_catalog.property_domains current_domain
@@ -161,6 +171,11 @@ async function currentActiveProfile(
     ...profile,
     hotel: {
       ...profile.hotel,
+      location: {
+        ...profile.hotel.location,
+        latitude: gates.latitude ?? null,
+        longitude: gates.longitude ?? null,
+      },
       capabilities: {
         ...profile.hotel.capabilities,
         referralCodes: profile.hotel.capabilities.referralCodes && referralEnabled,

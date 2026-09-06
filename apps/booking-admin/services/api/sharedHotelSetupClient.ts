@@ -1,3 +1,4 @@
+import { createNearbyApi } from "@vayada/product-onboarding/nearbyApi";
 import {
   createSharedAccountProfileImageUploader,
   createSharedHotelSetupApi,
@@ -11,3 +12,5 @@ const sharedSetupClient = new ApiClient(SHARED_SETUP_API_BASE_URL);
 export const sharedHotelSetupApi = createSharedHotelSetupApi(sharedSetupClient);
 export const sharedAccountProfileImageUploader =
   createSharedAccountProfileImageUploader(sharedSetupClient);
+
+export const nearbyApi = createNearbyApi(sharedSetupClient);

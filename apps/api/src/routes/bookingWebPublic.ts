@@ -419,6 +419,7 @@ export type BookingWebCalendarReadPool = BookingWebQueryExecutor & {
 };
 
 export type BookingWebPublicRoutesOptions = {
+  nearby?: import("./publicNearby.js").PublicNearbyOptions;
   profileRepository: PublicHotelProfileRepository;
   quoteRepository?: PublicHotelQuoteRepository;
   calendarRepository?: BookingWebCalendarRepository;
@@ -447,6 +448,10 @@ export async function registerBookingWebPublicRoutes(
     reply.code(204);
     return reply.send();
   });
+  if (options.nearby) {
+    const { registerPublicNearbyRoute } = await import("./publicNearby.js");
+    await registerPublicNearbyRoute(app, options.profileRepository, options.nearby);
+  }
 
   if (options.calendarRepository) {
     app.addHook("onClose", async () => {
@@ -484,7 +489,7 @@ export async function registerBookingWebPublicRoutes(
 
     const response = serializePublicHotelProfileProjection(profile);
     assertPublicBookabilityPublicSafe(response);
-    reply.header("Cache-Control", "public, max-age=60, stale-while-revalidate=300");
+    reply.header("Cache-Control", "no-store");
     reply.header("X-Vayada-RateLimit-Policy", "public-booking-web-profile-read");
     return response;
   });

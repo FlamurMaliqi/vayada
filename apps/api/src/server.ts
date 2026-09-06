@@ -215,6 +215,9 @@ import { createPgMarketplaceAffiliateAdminRepository } from "./domains/marketpla
 import { createPgFinanceAffiliateCommissionRepository } from "./domains/financeAffiliateCommissionRepository.js";
 import { createPgMarketplaceCreatorSelfServiceRepository } from "./routes/marketplaceCreatorSelfService.js";
 import { createPgSharedHotelSetupStatusRepository } from "./platform/sharedHotelSetupStatusReadModel.js";
+import { createPgPropertyNearbyDiscoveryRepository } from "./domains/propertyNearbyDiscoveryRepository.js";
+import { createPgPropertyNearbyRepository } from "./domains/propertyNearbyRepository.js";
+import { createPgPublicNearbyRepository } from "./domains/publicNearbyRepository.js";
 import { createPgIdentityAdminUsersReadRepository } from "./routes/identityAdminUsers.js";
 import { createPgIdentityPrivacyRepository } from "./routes/identityPrivacy.js";
 import { createPgMarketplaceCreatorPlatformConnectionRepository } from "./routes/marketplaceCreatorPlatformConnections.js";
@@ -1443,6 +1446,29 @@ const app = buildApp({
   marketplaceCreatorPlatformConnections: creatorPlatformConnectionRuntime,
   marketplaceCreatorProfileMediaRepository: platformMediaRuntime?.profileMediaRepository,
   sharedHotelSetupStatusRepository,
+  propertyNearbyRepository: config.auth
+    ? createPgPropertyNearbyRepository(targetDatabaseUrl)
+    : undefined,
+  publicNearby:
+    config.publicHotelProfileSource === "active_publication"
+      ? {
+          repository: createPgPublicNearbyRepository(targetDatabaseUrl),
+          discovery: createPgPropertyNearbyDiscoveryRepository(targetDatabaseUrl),
+          apiKey:
+            process.env.GOOGLE_NEARBY_ENABLED === "true"
+              ? process.env.GOOGLE_PLACES_SERVER_API_KEY
+              : undefined,
+        }
+      : undefined,
+  propertyNearbyDiscovery: config.auth
+    ? {
+        repository: createPgPropertyNearbyDiscoveryRepository(targetDatabaseUrl),
+        apiKey:
+          process.env.GOOGLE_NEARBY_ENABLED === "true"
+            ? process.env.GOOGLE_PLACES_SERVER_API_KEY
+            : undefined,
+      }
+    : undefined,
   hotelSetupTrackCommandRepository,
   propertySetupDraftCommandRepository,
   propertySetupRouteStateReadPort,

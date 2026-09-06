@@ -1060,6 +1060,9 @@ export default function SettingsPage() {
       {/* Property tab */}
       {activeSection === "property" && (
         <div className="mt-5 space-y-4">
+          <a href="/settings/location" className="block rounded-lg border border-gray-200 bg-white p-4 text-sm font-medium text-blue-700">
+            Location &amp; surroundings <span className="ml-2 font-normal text-gray-500">Address, nearby places and guest preview</span>
+          </a>
           {loading ? (
             <div className="flex items-center justify-center py-10">
               <div className="w-5 h-5 border-2 border-primary-500 border-t-transparent rounded-full animate-spin" />

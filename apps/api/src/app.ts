@@ -105,6 +105,8 @@ import {
   registerMarketplaceCreatorPlatformConnectionRoutes,
   type MarketplaceCreatorPlatformConnectionRoutesOptions,
 } from "./routes/marketplaceCreatorPlatformConnections.js";
+import { registerPropertyNearbyRoutes } from "./routes/propertyNearby.js";
+import type { PropertyNearbyRepository } from "./domains/propertyNearbyRepository.js";
 import {
   registerSharedHotelSetupStatusRoutes,
   type SharedHotelSetupStatusRepository,
@@ -347,6 +349,9 @@ type BuildAppOptions = Pick<FastifyServerOptions, "logger" | "trustProxy"> & {
   >;
   marketplaceCreatorProfileMediaRepository?: MarketplaceCreatorProfileMediaRepository;
   sharedHotelSetupStatusRepository?: SharedHotelSetupStatusRepository;
+  propertyNearbyRepository?: PropertyNearbyRepository;
+  publicNearby?: import("./routes/publicNearby.js").PublicNearbyOptions;
+  propertyNearbyDiscovery?: Parameters<typeof registerPropertyNearbyRoutes>[1]["discovery"];
   propertyLaunchSettingsRepository?: SharedPropertyLaunchSettingsRepository;
   hotelSetupTrackCommandRepository?: HotelSetupTrackCommandRepository;
   propertyMediaCommandRepository?: PropertyMediaCommandRepository;
@@ -481,6 +486,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     app.register(registerBookingWebPublicRoutes, {
       prefix: "/api/booking-web",
       profileRepository: options.publicHotelProfileRepository,
+      nearby: options.publicNearby,
       quoteRepository: options.publicHotelQuoteRepository,
       calendarRepository: options.bookingWebCalendarRepository,
       checkoutAdapter: bookingWebCheckoutAdapter,
@@ -576,6 +582,17 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       ...options.marketplaceCreatorPlatformConnections,
       profileRepository: options.marketplaceCreatorSelfServiceRepository,
       lifecycleCommandBus: options.identityLifecycleCommandBus,
+    });
+  }
+  if (options.propertyNearbyRepository) {
+    if (!options.auth?.propertyAccessRepository) {
+      throw new Error("Nearby routes require property access resolution");
+    }
+    app.register(registerPropertyNearbyRoutes, {
+      prefix: "/api/hotel-setup",
+      repository: options.propertyNearbyRepository,
+      discovery: options.propertyNearbyDiscovery,
+      propertyAccessRepository: options.auth.propertyAccessRepository,
     });
   }
   if (options.sharedHotelSetupStatusRepository) {

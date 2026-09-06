@@ -9,6 +9,20 @@ import type { PublicHotelProfileReadPool } from "./routes/aiHotels.js";
 const profile = PUBLIC_BOOKABILITY_FIXTURES.find(({ caseId }) => caseId === "bookable")!.profile;
 
 describe("active immutable Booking publication profile reads", () => {
+  it("does not return old published coordinates when current location is hidden", async () => {
+    const repository = createActiveBookingPublicationProfileRepository({
+      connectionString: "postgresql://unused",
+      pool: pool(async (text) =>
+        text.includes("identity.product_entitlements")
+          ? [{ domainVerified: true, referralEnabled: true, latitude: null, longitude: null }]
+          : [{ propertyId: profile.hotel.propertyId, publicContent: content(profile) }],
+      ),
+    });
+    expect((await repository.findProfileBySlug(profile.hotel.slug))?.hotel.location).toMatchObject({
+      latitude: null,
+      longitude: null,
+    });
+  });
   it("returns only a profile reached through the active revision pointer", async () => {
     const calls: { text: string; values?: readonly unknown[] }[] = [];
     const repository = createActiveBookingPublicationProfileRepository({
@@ -16,7 +30,14 @@ describe("active immutable Booking publication profile reads", () => {
       pool: pool(async (text, values) => {
         calls.push({ text, values });
         if (text.includes("identity.product_entitlements")) {
-          return [{ domainVerified: true, referralEnabled: true }];
+          return [
+            {
+              domainVerified: true,
+              referralEnabled: true,
+              latitude: profile.hotel.location.latitude,
+              longitude: profile.hotel.location.longitude,
+            },
+          ];
         }
         return [{ propertyId: profile.hotel.propertyId, publicContent: content(profile) }];
       }),
@@ -69,7 +90,14 @@ describe("active immutable Booking publication profile reads", () => {
       pool: pool(async (text, values) => {
         calls.push([text, values]);
         if (text.includes("identity.product_entitlements")) {
-          return [{ domainVerified: true, referralEnabled: true }];
+          return [
+            {
+              domainVerified: true,
+              referralEnabled: true,
+              latitude: profile.hotel.location.latitude,
+              longitude: profile.hotel.location.longitude,
+            },
+          ];
         }
         return [
           { propertyId: domainProfile.hotel.propertyId, publicContent: content(domainProfile) },
