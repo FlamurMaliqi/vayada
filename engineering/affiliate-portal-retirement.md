@@ -115,5 +115,7 @@ or applied migrations are removed. Test identities are seeded explicitly as exis
 Booking Admin `/affiliates` now keeps only an unavailable notice and dashboard link
 inside the existing authenticated shell. Sidebar and search no longer offer affiliate
 management, including for previously active modules. Lifecycle/commission controls no
-longer load or call affiliate APIs. Backend administration and unused UI/service source
-remain subsequent cleanup; account state, commissions and history are not changed.
+longer load or call affiliate APIs. The unused AffiliateWorkspace component, affiliate
+service and its obsolete tests have been deleted. Backend administration and shared
+Feature Hub advertising/activation remain subsequent cleanup; account state, commissions
+and history are not changed.
