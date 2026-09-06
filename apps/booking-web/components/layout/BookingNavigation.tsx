@@ -5,7 +5,6 @@ import { useHotel } from "@/contexts/HotelContext";
 import { useCurrency } from "@/contexts/CurrencyContext";
 import { useTranslations, useLocale } from "next-intl";
 import { Link, useRouter, usePathname } from "@/i18n/navigation";
-import ReferModal from "@/components/affiliate/ReferModal";
 
 const LANGUAGES = [
   { code: "en", label: "English" },
@@ -230,13 +229,11 @@ export default function BookingNavigation() {
   const router = useRouter();
   const pathname = usePathname();
   const [contactOpen, setContactOpen] = useState(false);
-  const [referOpen, setReferOpen] = useState(false);
   const [langOpen, setLangOpen] = useState(false);
   const [currOpen, setCurrOpen] = useState(false);
   const logoUrl = hotel.branding?.logoUrl;
   const header = hotel.headerSettings ?? {
     showContactButton: true,
-    showReferAGuestButton: false,
     showLanguageSelector: true,
     showCurrencySelector: true,
   };
@@ -319,24 +316,6 @@ export default function BookingNavigation() {
                     {t("contact")}
                   </button>
                 </div>
-              )}
-
-              {/* Refer a Guest */}
-              {hotel.referAGuestEnabled && (
-                <button
-                  onClick={() => setReferOpen(true)}
-                  className="px-5 py-2 text-sm font-semibold text-white border-2 border-white/60 rounded-full hover:bg-white/10 transition-colors flex items-center gap-2 focus:outline-none focus-visible:ring-2 focus-visible:ring-white/80 focus-visible:ring-offset-2 focus-visible:ring-offset-transparent"
-                >
-                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                      strokeWidth={2}
-                      d="M8.684 13.342C8.886 12.938 9 12.482 9 12c0-.482-.114-.938-.316-1.342m0 2.684a3 3 0 110-2.684m0 2.684l6.632 3.316m-6.632-6l6.632-3.316m0 0a3 3 0 105.367-2.684 3 3 0 00-5.367 2.684zm0 9.316a3 3 0 105.368 2.684 3 3 0 00-5.368-2.684z"
-                    />
-                  </svg>
-                  {t("referGuest")}
-                </button>
               )}
 
               {/* Language */}
@@ -438,30 +417,6 @@ export default function BookingNavigation() {
                   </button>
                 </div>
               )}
-              {hotel.referAGuestEnabled && (
-                <button
-                  onClick={() => {
-                    closeAll();
-                    setReferOpen(true);
-                  }}
-                  className="flex items-center gap-1 px-2.5 py-1.5 text-xs font-semibold text-white bg-white/20 rounded-full focus:outline-none focus-visible:ring-2 focus-visible:ring-white/80 focus-visible:ring-offset-2 focus-visible:ring-offset-transparent"
-                >
-                  <svg
-                    className="w-3.5 h-3.5"
-                    fill="none"
-                    stroke="currentColor"
-                    viewBox="0 0 24 24"
-                  >
-                    <path
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                      strokeWidth={2}
-                      d="M8.684 13.342C8.886 12.938 9 12.482 9 12c0-.482-.114-.938-.316-1.342m0 2.684a3 3 0 110-2.684m0 2.684l6.632 3.316m-6.632-6l6.632-3.316m0 0a3 3 0 105.367-2.684 3 3 0 00-5.367 2.684zm0 9.316a3 3 0 105.368 2.684 3 3 0 00-5.368-2.684z"
-                    />
-                  </svg>
-                  Refer
-                </button>
-              )}
               {header.showLanguageSelector && availableLanguages.length > 1 && (
                 <div className="relative">
                   <button
@@ -536,9 +491,6 @@ export default function BookingNavigation() {
           </div>
         </div>
       </nav>
-
-      {/* Refer Modal (rendered outside nav for z-index) */}
-      <ReferModal open={referOpen} onClose={() => setReferOpen(false)} hotelSlug={hotel.slug} />
     </>
   );
 }
