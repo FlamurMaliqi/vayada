@@ -64,101 +64,6 @@ test.describe("pms-web smoke", () => {
     await assertHealthy();
   });
 
-  test("shares the supported Feature Hub inventory without unfinished PMS modules", async ({
-    page,
-  }, testInfo) => {
-    const assertHealthy = watchPageHealth(page, testInfo);
-    let affiliatesActive = false;
-    let activationReads = 0;
-    let activationWrites = 0;
-    let releaseInitialRead = () => {};
-    const initialRead = new Promise<void>((resolve) => {
-      releaseInitialRead = resolve;
-    });
-    const activationPath = `/api/pms/properties/${PMS_WEB_PROPERTY_ID}/module-activations`;
-
-    await mockPmsWebAuthenticatedSession(page);
-    await mockPmsWebTargetRoutes(page);
-    await page.route(new RegExp(`${activationPath}(?:/[^/]+)?$`), async (route) => {
-      const request = route.request();
-      if (request.method() === "GET") {
-        activationReads += 1;
-        await initialRead;
-        return route.fulfill({
-          json: {
-            hotelId: PMS_WEB_PROPERTY_ID,
-            canManage: true,
-            supportedModules: ["affiliates"],
-            activeModules: affiliatesActive ? ["affiliates"] : [],
-            activations: [],
-          },
-        });
-      }
-
-      expect(request.method()).toBe("PATCH");
-      expect(new URL(request.url()).pathname).toBe(`${activationPath}/affiliates`);
-      const body = request.postDataJSON() as { moduleId: string; isActive: boolean };
-      expect(body.moduleId).toBe("affiliates");
-      affiliatesActive = body.isActive;
-      activationWrites += 1;
-      return route.fulfill({
-        json: {
-          moduleId: "affiliates",
-          isActive: affiliatesActive,
-          activatedAt: affiliatesActive ? "2026-08-31T00:00:00.000Z" : null,
-          deactivatedAt: affiliatesActive ? null : "2026-08-31T00:00:00.000Z",
-          updatedAt: "2026-08-31T00:00:00.000Z",
-        },
-      });
-    });
-    await page.goto("/settings/feature-hub");
-
-    await expect(page.getByRole("heading", { name: "Feature Hub" })).toBeVisible();
-    await expect.poll(() => activationReads).toBeGreaterThan(0);
-    await expect(page.getByRole("status")).toHaveText("Loading modules...");
-    await expect(page.getByText("No modules in this category.")).toHaveCount(0);
-    await expect(page.getByRole("heading", { name: /navigation$/i })).toHaveCount(0);
-    releaseInitialRead();
-    await expect(page.locator("article")).toHaveCount(1);
-    await expect(page.getByRole("heading", { name: "Affiliates", exact: true })).toBeVisible();
-    await expect(page.getByRole("button", { name: /PMS Modules/i })).toHaveCount(0);
-    for (const unavailable of ["Inbox", "Financials", "Lodgify", "Stripe", "PayPal", "Xendit"]) {
-      await expect(page.getByRole("heading", { name: unavailable, exact: true })).toHaveCount(0);
-    }
-    const preview = page
-      .getByRole("heading", { name: "Booking Engine navigation" })
-      .locator("xpath=ancestor::section");
-    await expect(preview.getByRole("listitem")).toHaveText([
-      "Dashboard",
-      "Design Studio",
-      "Booking Flow",
-      "Promo Codes",
-      "Settings",
-    ]);
-
-    const activate = page.getByRole("switch", { name: "Activate Affiliates" });
-    await activate.focus();
-    await expect(activate).toBeFocused();
-    await activate.press("Space");
-    await expect.poll(() => activationWrites).toBe(1);
-    await expect(page.getByRole("switch", { name: "Deactivate Affiliates" })).toBeChecked();
-
-    const readsBeforeReload = activationReads;
-    await page.reload();
-    await expect.poll(() => activationReads).toBeGreaterThan(readsBeforeReload);
-    await expect(page.getByRole("switch", { name: "Deactivate Affiliates" })).toBeChecked();
-
-    await page.setViewportSize({ width: 390, height: 844 });
-    await expect(page.getByRole("heading", { name: "Affiliates", exact: true })).toBeVisible();
-    await expect(preview).toBeVisible();
-    await page.getByRole("button", { name: "Details" }).click();
-    await expect(page.getByRole("dialog", { name: "Affiliates" })).toBeVisible();
-    await page.keyboard.press("Escape");
-    await expect(page.getByRole("dialog", { name: "Affiliates" })).toHaveCount(0);
-
-    await assertHealthy();
-  });
-
   test("keeps a failed Feature Hub inventory read out of the PMS empty state", async ({ page }) => {
     await mockPmsWebAuthenticatedSession(page);
     await mockPmsWebTargetRoutes(page);
@@ -168,7 +73,7 @@ test.describe("pms-web smoke", () => {
 
     await page.goto("/settings/feature-hub");
 
-    await expect(page.getByText("Feature Hub unavailable.")).toBeVisible();
+    await expect(page.getByText("Could not load modules. Please retry.")).toBeVisible();
     await expect(page.getByText("No modules in this category.")).toHaveCount(0);
     await expect(page.getByRole("heading", { name: /navigation$/i })).toHaveCount(0);
     await expect(page.locator("article")).toHaveCount(0);

@@ -94,36 +94,22 @@ test("switches language through the profile menu and translates the live preview
   await expect(page.locator("html")).toHaveAttribute("lang", "de");
 });
 
-test("a visible activation error follows a later language change", async ({ page }) => {
+test("a visible module inventory error follows a later language change", async ({ page }) => {
   await mockBookingAdminBookingFlow(page);
-  await page.route("**/api/pms/properties/*/module-activations**", (route) => {
-    if (route.request().method() === "PATCH")
-      return route.fulfill({ status: 503, json: { detail: "Backend failure in English" } });
-    return route.fulfill({
-      json: {
-        canManage: true,
-        supportedModules: ["affiliates"],
-        activeModules: [],
-        activations: [],
-      },
-    });
-  });
+  await page.route("**/api/pms/properties/*/module-activations**", (route) =>
+    route.fulfill({ status: 503, json: { detail: "Backend failure in English" } }),
+  );
   const en = catalog("en"),
     de = catalog("de");
   await page.goto("/settings/feature-hub");
-  await page.getByRole("switch", { name: "Activate Affiliates" }).click();
   await expect(
-    page
-      .getByRole("alert")
-      .filter({ hasText: en["featureHub.copy.couldNotUpdateModuleActivation"] }),
+    page.getByRole("alert").filter({ hasText: en["featureHub.copy.couldNotLoadModules"] }),
   ).toBeVisible();
   await page.getByRole("button", { name: "BO", exact: true }).click();
   await page.getByRole("button", { name: new RegExp(en["layout.header.language"]) }).click();
   await page.getByRole("button", { name: /Deutsch/ }).click();
   await expect(
-    page
-      .getByRole("alert")
-      .filter({ hasText: de["featureHub.copy.couldNotUpdateModuleActivation"] }),
+    page.getByRole("alert").filter({ hasText: de["featureHub.copy.couldNotLoadModules"] }),
   ).toBeVisible();
   await expect(page.getByText("Backend failure in English")).toHaveCount(0);
 });

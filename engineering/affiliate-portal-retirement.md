@@ -119,3 +119,9 @@ longer load or call affiliate APIs. The unused AffiliateWorkspace component, aff
 service and its obsolete tests have been deleted. Backend administration and shared
 Feature Hub advertising/activation remain subsequent cleanup; account state, commissions
 and history are not changed.
+
+The shared Feature Hub catalog no longer offers the retired affiliate module, including
+its activation switch and navigation preview in Booking Admin and PMS. Existing module
+activation records are neither removed nor changed. Direct backend module activation and
+administration APIs remain separate retirement work; an empty UI catalog is not a server
+write guard.
