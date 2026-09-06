@@ -988,6 +988,24 @@ describe("hotel operations setup client", () => {
     ).resolves.toMatchObject({ heroImageUrl: "https://cdn/new-hero" });
   });
 
+  it.each(["pending", "succeeded", "failed", "unknown"] as const)(
+    "uses canonical %s publication status",
+    async (status) => {
+      const operation = {
+        operationId: "operation-1",
+        propertyId: "property-1",
+        status,
+        expectedActiveContentRevisionId: null,
+        resultContentRevisionId: status === "succeeded" ? "revision-1" : null,
+        failureCode: null,
+        requestedAt: "2026-09-06T00:00:00Z",
+        updatedAt: "2026-09-06T00:00:00Z",
+        completedAt: null,
+      };
+      expect(isPublicationReady(operation)).toBe(status === "succeeded");
+    },
+  );
+
   it("requires the authoritative publication to be public, fresh, and complete", () => {
     expect(
       isPublicationReady({

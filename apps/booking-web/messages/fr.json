@@ -43,6 +43,8 @@
     "loading": "Chargement...",
     "qty": "Qté",
     "perPerson": "par personne",
+    "checkInWindow": "Arrivée: {time}",
+    "checkOutWindow": "Départ: {time}",
     "checkInFrom": "Arrivée à partir de {time}",
     "checkOutBy": "Départ avant {time}",
     "pricingUpdating": "Les tarifs pour ces dates sont encore en cours de mise à jour. Veuillez patienter un instant puis réessayer."

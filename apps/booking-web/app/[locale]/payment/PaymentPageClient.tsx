@@ -1,5 +1,6 @@
 "use client";
 
+import { formatCheckInTime, formatCheckOutTime } from "@/lib/arrivalTimes";
 import { trackEvent } from "@/services/api/tracking";
 
 import { useState, useEffect, useRef, Suspense, type ReactNode } from "react";
@@ -1224,9 +1225,11 @@ function PaymentPageContent() {
                   <span className="text-gray-500">{tb("checkIn")}</span>
                   <span className="font-semibold text-gray-900 text-right">
                     {formatDate(checkIn, locale)}
-                    {hotel.checkInTime && (
+                    {formatCheckInTime(hotel) && (
                       <span className="block text-xs font-normal text-gray-500">
-                        {tc("checkInFrom", { time: hotel.checkInTime })}
+                        {tc(hotel.checkInUntil ? "checkInWindow" : "checkInFrom", {
+                          time: formatCheckInTime(hotel),
+                        })}
                       </span>
                     )}
                   </span>
@@ -1235,9 +1238,11 @@ function PaymentPageContent() {
                   <span className="text-gray-500">{tb("checkOut")}</span>
                   <span className="font-semibold text-gray-900 text-right">
                     {formatDate(checkOut, locale)}
-                    {hotel.checkOutTime && (
+                    {formatCheckOutTime(hotel) && (
                       <span className="block text-xs font-normal text-gray-500">
-                        {tc("checkOutBy", { time: hotel.checkOutTime })}
+                        {tc(hotel.checkOutFrom ? "checkOutWindow" : "checkOutBy", {
+                          time: formatCheckOutTime(hotel),
+                        })}
                       </span>
                     )}
                   </span>

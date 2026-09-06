@@ -54,6 +54,8 @@ export interface Hotel {
   amenities: string[];
   checkInTime: string;
   checkOutTime: string;
+  checkInUntil?: string;
+  checkOutFrom?: string;
   timezone?: string;
   contact: HotelContact;
   bookingFilters: string[];

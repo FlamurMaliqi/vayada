@@ -321,6 +321,7 @@ const publicOffers = {
 };
 
 type MockBookingApisOptions = {
+  arrivalBounds?: { checkInUntil: string; checkOutFrom: string };
   automaticPromotion?: { name: string; discountPercent: number };
   supportedQuoteParameters?: Partial<typeof publicHotelProfile.hotel.supportedQuoteParameters>;
   supportedLocales?: string[];
@@ -358,6 +359,7 @@ export async function mockBookingApis(page: Page, options: MockBookingApisOption
             },
           }
         : {}),
+      policies: { ...publicHotelProfile.hotel.policies, ...options.arrivalBounds },
       publicContacts: options.publicContacts ?? publicHotelProfile.hotel.publicContacts,
       supportedLocales: options.supportedLocales ?? publicHotelProfile.hotel.supportedLocales,
       supportedCurrencies:

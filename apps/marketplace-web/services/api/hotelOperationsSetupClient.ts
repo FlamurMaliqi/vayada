@@ -1,3 +1,4 @@
+import type { BookingPublicationOperation } from "@vayada/domain-booking";
 import {
   readBankTransferDestination,
   saveBankTransferDestination,
@@ -124,15 +125,17 @@ export type DirectBookingSetup = {
   defaultLanguage: string;
 };
 
-export type PublicBookabilityPublication = {
-  propertyId: string;
-  canonicalSlug: string;
-  canonicalUrl: string;
-  bookingBaseUrl: string;
-  profileStatus: "public" | "incomplete" | "unpublished" | "stale" | "unavailable";
-  freshnessStatus: "fresh" | "stale" | "unavailable" | "unknown";
-  missingReadiness: string[];
-};
+export type PublicBookabilityPublication =
+  | BookingPublicationOperation
+  | {
+      propertyId: string;
+      canonicalSlug: string;
+      canonicalUrl: string;
+      bookingBaseUrl: string;
+      profileStatus: "public" | "incomplete" | "unpublished" | "stale" | "unavailable";
+      freshnessStatus: "fresh" | "stale" | "unavailable" | "unknown";
+      missingReadiness: string[];
+    };
 
 export const DIRECT_BOOKING_SUBTEXT_MAX_LENGTH = 200;
 
@@ -514,6 +517,14 @@ export const hotelOperationsSetupApi = {
     clearPendingDirectBookingHero(propertyId);
   },
 
+  getDirectBookingPublication: async (
+    propertyId: string,
+    operationId: string,
+  ): Promise<BookingPublicationOperation> =>
+    targetApiClient.get(
+      `/api/hotel-setup/properties/${encoded(propertyId)}/publications/booking/${encoded(operationId)}`,
+    ),
+
   publishDirectBooking: async (propertyId: string): Promise<PublicBookabilityPublication> =>
     targetApiClient.post<PublicBookabilityPublication>(
       `/api/booking/hotels/${encoded(propertyId)}/public-bookability`,
@@ -744,6 +755,7 @@ export function isStripeReady(settings: FinancePaymentSettings): boolean {
 }
 
 export function isPublicationReady(publication: PublicBookabilityPublication): boolean {
+  if ("status" in publication) return publication.status === "succeeded";
   return (
     publication.profileStatus === "public" &&
     publication.freshnessStatus === "fresh" &&

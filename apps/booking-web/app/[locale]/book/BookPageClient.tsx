@@ -1,5 +1,6 @@
 "use client";
 
+import { formatCheckInTime, formatCheckOutTime } from "@/lib/arrivalTimes";
 import { useState, useEffect, useRef, Suspense } from "react";
 import { useSearchParams } from "next/navigation";
 import { useLocale, useTranslations } from "next-intl";
@@ -701,9 +702,11 @@ function BookPageContent() {
                   <span className="text-gray-500">{t("checkIn")}</span>
                   <span className="font-semibold text-gray-900 text-right">
                     {formatDate(checkIn, locale)}
-                    {hotel.checkInTime && (
+                    {formatCheckInTime(hotel) && (
                       <span className="block text-xs font-normal text-gray-500">
-                        {tc("checkInFrom", { time: hotel.checkInTime })}
+                        {tc(hotel.checkInUntil ? "checkInWindow" : "checkInFrom", {
+                          time: formatCheckInTime(hotel),
+                        })}
                       </span>
                     )}
                   </span>
@@ -712,9 +715,11 @@ function BookPageContent() {
                   <span className="text-gray-500">{t("checkOut")}</span>
                   <span className="font-semibold text-gray-900 text-right">
                     {formatDate(checkOut, locale)}
-                    {hotel.checkOutTime && (
+                    {formatCheckOutTime(hotel) && (
                       <span className="block text-xs font-normal text-gray-500">
-                        {tc("checkOutBy", { time: hotel.checkOutTime })}
+                        {tc(hotel.checkOutFrom ? "checkOutWindow" : "checkOutBy", {
+                          time: formatCheckOutTime(hotel),
+                        })}
                       </span>
                     )}
                   </span>

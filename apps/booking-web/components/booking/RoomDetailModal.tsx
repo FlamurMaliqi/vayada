@@ -29,6 +29,8 @@ interface RoomDetailModalProps {
   soldOut?: boolean;
   checkInTime?: string;
   checkOutTime?: string;
+  checkInUntil?: string;
+  checkOutFrom?: string;
   checkIn: string;
   hotelTimezone?: string;
   selectRateDisabled?: boolean;
@@ -48,6 +50,8 @@ export default function RoomDetailModal({
   soldOut = false,
   checkInTime,
   checkOutTime,
+  checkInUntil,
+  checkOutFrom,
   checkIn,
   hotelTimezone,
   selectRateDisabled = false,
@@ -555,13 +559,25 @@ export default function RoomDetailModal({
                     />
                   </svg>
                   <span className="flex flex-wrap gap-x-3 gap-y-0.5">
-                    {checkInTime && <span>{tc("checkInFrom", { time: checkInTime })}</span>}
+                    {checkInTime && (
+                      <span>
+                        {tc(checkInUntil ? "checkInWindow" : "checkInFrom", {
+                          time: checkInUntil ? `${checkInTime}–${checkInUntil}` : checkInTime,
+                        })}
+                      </span>
+                    )}
                     {checkInTime && checkOutTime && (
                       <span className="text-gray-300" aria-hidden>
                         ·
                       </span>
                     )}
-                    {checkOutTime && <span>{tc("checkOutBy", { time: checkOutTime })}</span>}
+                    {checkOutTime && (
+                      <span>
+                        {tc(checkOutFrom ? "checkOutWindow" : "checkOutBy", {
+                          time: checkOutFrom ? `${checkOutFrom}–${checkOutTime}` : checkOutTime,
+                        })}
+                      </span>
+                    )}
                   </span>
                 </div>
               )}
