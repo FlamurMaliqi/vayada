@@ -1,3 +1,5 @@
+import { publicRoomCombinationOffer } from "../routes/bookingPublicCombinationProjection.js";
+import { serializePublicHotelQuoteProjection } from "../routes/aiHotelQuotes.js";
 import { createBookingHostActions } from "./bookingHostActions.js";
 import { targetBookingHostActionGuards } from "./bookingHostActionGuards.js";
 import { withPmsHostDateCredit, preparePmsHostDateAmendment, completePmsHostDateAmendment } from "./pmsHostDateAmendment.js";
@@ -239,6 +241,23 @@ describe.skipIf(!url)("mixed room inventory transactions", () => {
     expect(result.options[0]?.totals.totalAmount).toBe("600.00");
     expect(result.options[0]?.paymentOptions).toEqual(["pay_at_property"]);
     expect(result.options[0]?.expiresAt).toBe("2027-01-01T10:15:00.000Z");
+    const offer = publicRoomCombinationOffer(result.options[0]!, "https://example.test/en/book?checkIn=2027-02-01&checkOut=2027-02-03&adults=5&children=1");
+    const serialized = serializePublicHotelQuoteProjection({
+      contractVersion: "public-bookability.v1", generatedAt: input.occurredAt.toISOString(), publicVisibility: "public_safe",
+      request: { hotelSlug: propertyId, checkIn: input.checkIn, checkOut: input.checkOut, nights: 2,
+        adults: 5, children: 1, rooms: 1, currency: "EUR", locale: "en" },
+      status: "bookable", unavailableReasons: [], dataSources: ["booking", "pms"],
+      freshness: { status: "fresh", generatedAt: input.occurredAt.toISOString(), sources: [] },
+      quote: { quoteId: "test", quoteHash: "test", expiresAt: offer.expiresAt!, priceGuarantee: "expires_at", offers: [offer] },
+    }).quote!.offers[0]!;
+    expect(serialized.roomSelection).toEqual(result.options[0]!.selection);
+    expect(serialized.roomLines).toHaveLength(2);
+    expect(serialized.totals.grandTotal).toBe(600);
+    expect(JSON.stringify(serialized)).not.toMatch(/sourceFreshness|receiptId|available_rooms/);
+    expect(new URL(serialized.bookingUrl).searchParams.get("room")).toBe(serialized.offerId);
+    expect(new URL(serialized.bookingUrl).searchParams.get("rooms")).toBe("3");
+    expect(publicRoomCombinationOffer(result.options[0]!, "https://example.test/en/book").offerId).toBe(serialized.offerId);
+
     expect((await search(4, 0)).options.every((option) => option.lines.length === 1)).toBe(true);
     expect(await search(9, 0)).toMatchObject({ complete: true, eligibleOfferCount: 2, options: [] });
     expect(await search(5, 1, 1)).toEqual({ complete: false, eligibleOfferCount: 0, options: [] });
