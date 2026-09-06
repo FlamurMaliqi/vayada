@@ -1,3 +1,7 @@
+import { withPmsHostDateCredit } from "./domains/pmsHostDateAmendment.js";
+import { createFinanceHostBookingPayments } from "./domains/financeHostBookingPayments.js";
+import { createBookingHostActions } from "./domains/bookingHostActions.js";
+import { targetBookingHostActionGuards } from "./domains/bookingHostActionGuards.js";
 import { createPmsConfirmationEmails } from "./domains/pmsConfirmationEmails.js";
 import { createBankTransferBookingOperations } from "./domains/financeBankTransferBooking.js";
 import { createPgPlatformMarketplaceAccountsRepository } from "./domains/platformMarketplaceAccountsRepository.js";
@@ -1239,6 +1243,16 @@ const app = buildApp({
   bookingPromoCodesRepository,
   bookingDashboardMetricsReadPort,
   bookingPropertyAccessRepository,
+  bookingHostActions: pmsOperationsRepository
+    ? createBookingHostActions({
+        pool: new pg.Pool({ connectionString: targetDatabaseUrl }),
+        inventory: withPmsHostDateCredit(createTargetPmsInventoryReservationPort()),
+        guards: {
+          ...targetBookingHostActionGuards,
+          payment: createFinanceHostBookingPayments(stripeBookingPaymentProvider),
+        },
+      })
+    : undefined,
   pmsConfirmationEmails:
     pmsOperationsRepository && config.bookingEmailDelivery
       ? createPmsConfirmationEmails(targetDatabaseUrl)
