@@ -112,6 +112,7 @@ export interface PaymentSettings {
 }
 
 export interface BookingStatus {
+  canEditRequest?: boolean;
   status: string;
   paymentStatus: string | null;
   hostResponseDeadline: string | null;

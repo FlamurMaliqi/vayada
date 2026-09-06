@@ -293,6 +293,7 @@ export function toConfirmationBooking(
     source.paymentStatus !== undefined;
 
   return {
+    canEditRequest: source.canEditRequest ?? context.canEditRequest,
     id:
       nonEmptyString(source.guestBookingId) ??
       nonEmptyString(source.id) ??
