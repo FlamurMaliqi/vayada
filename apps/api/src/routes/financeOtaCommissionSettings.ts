@@ -1,5 +1,10 @@
 import { requireAuthContext, UnauthorizedError } from "@vayada/backend-auth";
-import { AuthorizationError, requireActiveEntitlement } from "@vayada/backend-authorization";
+import {
+  AuthorizationError,
+  requireActiveEntitlement,
+  requirePropertyAccess,
+  type PropertyAccessRepository,
+} from "@vayada/backend-authorization";
 import {
   FINANCE_OTA_CHANNELS,
   FINANCE_ROUTE_CONTRACT_VERSION,
@@ -24,9 +29,14 @@ const BODY_KEYS = "commandId,effectiveFrom,expectedRevision,idempotencyKey,perce
 
 export async function registerFinanceOtaCommissionSettingsRoutes(
   app: FastifyInstance,
-  options: { repository: FinanceOtaCommissionSettingsRepository },
+  options: {
+    repository: FinanceOtaCommissionSettingsRepository;
+    propertyAccessRepository?: PropertyAccessRepository;
+  },
 ): Promise<void> {
-  app.get<{ Params: Params }>(PATH, { onRequest: authorizeRequest }, async (request, reply) => {
+  const authorize = (request: FastifyRequest, reply: FastifyReply) =>
+    authorizeRequest(request, reply, options.propertyAccessRepository);
+  app.get<{ Params: Params }>(PATH, { onRequest: authorize }, async (request, reply) => {
     const propertyId = request.params.propertyId.toLowerCase();
     const values = await options.repository.list(propertyId).catch(() => null);
     if (!values) return portViolation(reply);
@@ -49,7 +59,7 @@ export async function registerFinanceOtaCommissionSettingsRoutes(
 
   app.put<{ Params: Params; Body: unknown }>(
     `${PATH}/:channel`,
-    { onRequest: authorizeRequest },
+    { onRequest: authorize },
     async (request, reply) => {
       const propertyId = request.params.propertyId.toLowerCase();
       const context = requireAuthContext(request);
@@ -116,7 +126,11 @@ export async function registerFinanceOtaCommissionSettingsRoutes(
   );
 }
 
-async function authorizeRequest(request: FastifyRequest, reply: FastifyReply) {
+async function authorizeRequest(
+  request: FastifyRequest,
+  reply: FastifyReply,
+  propertyAccessRepository: PropertyAccessRepository | undefined,
+) {
   const permission = request.method === "GET" ? "pms.finance.read" : "pms.finance.manage";
   try {
     const propertyId = ((request.params as Partial<Params>).propertyId ?? "").toLowerCase();
@@ -133,6 +147,12 @@ async function authorizeRequest(request: FastifyRequest, reply: FastifyReply) {
     if (base.selectedOrganization.kind !== "hotel_group") throw new AuthorizationError();
     requireActiveEntitlement(base, { product: "pms", key: "module:financials", resource });
     if (!UUID.test(propertyId)) return invalid(reply);
+    if (!propertyAccessRepository) throw new AuthorizationError();
+    await requirePropertyAccess(base, propertyAccessRepository, {
+      propertyId,
+      targetResource: resource,
+      allowedRelationships: ["owner", "finance_manager"],
+    });
   } catch (error) {
     if (error instanceof UnauthorizedError)
       return reply.status(401).send({ code: "unauthenticated" });
