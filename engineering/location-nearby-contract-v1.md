@@ -44,15 +44,15 @@ and [non-EEA service terms](https://cloud.google.com/maps-platform/terms/maps-se
 
 ## Storage and refresh
 
-| Data | Owner and retention |
-| --- | --- |
-| Canonical property address, pin, visibility | Existing hotel catalog contract; preserve existing data and provenance. This decision does not retroactively license provider-derived property coordinates. |
-| Google place ID | Provider reference; may persist. Never use it as a property authorization key. |
-| Google destination coordinates | Transient discovery validation only; never persist. UI Kit supplies current map destination coordinates at render time. |
-| Google name, address, photo, rating, hours, URLs, types | No durable storage or shared response cache. UI Kit renders its own display content; discovery classification is request-local. No response-body logs. |
-| Discovery metadata | Property ID, source revision, policy version, category bucket, place IDs, timestamps and status; no copied provider description or exact private origin. |
-| Hotel favorite/hidden/add choice and note | Hotel-owned structured data, independent of provider lookup lifetime. |
-| Custom place name, address, coordinates, category | Independently supplied hotel content; never prefill by copying Google details into a custom record. |
+| Data                                                    | Owner and retention                                                                                                                                         |
+| ------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Canonical property address, pin, visibility             | Existing hotel catalog contract; preserve existing data and provenance. This decision does not retroactively license provider-derived property coordinates. |
+| Google place ID                                         | Provider reference; may persist. Never use it as a property authorization key.                                                                              |
+| Google destination coordinates                          | Transient discovery validation only; never persist. UI Kit supplies current map destination coordinates at render time.                                     |
+| Google name, address, photo, rating, hours, URLs, types | No durable storage or shared response cache. UI Kit renders its own display content; discovery classification is request-local. No response-body logs.      |
+| Discovery metadata                                      | Property ID, source revision, policy version, category bucket, place IDs, timestamps and status; no copied provider description or exact private origin.    |
+| Hotel favorite/hidden/add choice and note               | Hotel-owned structured data, independent of provider lookup lifetime.                                                                                       |
+| Custom place name, address, coordinates, category       | Independently supplied hotel content; never prefill by copying Google details into a custom record.                                                         |
 
 These are conservative implementation limits, not a claim that all provider
 content can be cached for 24 hours. Google's [Places policies](https://developers.google.com/maps/documentation/places/web-service/policies)
@@ -71,12 +71,12 @@ A failed UI Kit lookup omits the corresponding marker. A previously saved place 
 
 Initial limits are product choices to validate in staging, not provider defaults.
 
-| Category key / label | Included types | Radius |
-| --- | --- | --- |
-| `nature` / Beaches & nature | beach, park, national_park, hiking_area | 5 km |
-| `food` / Food & drink | restaurant, cafe, bar, bakery | 2 km |
-| `activities` / Things to do | tourist_attraction, museum, art_gallery | 5 km |
-| `transport` / Transport | airport, train_station, bus_station, ferry_terminal | 20 km |
+| Category key / label        | Included types                                      | Radius |
+| --------------------------- | --------------------------------------------------- | ------ |
+| `nature` / Beaches & nature | beach, park, national_park, hiking_area             | 5 km   |
+| `food` / Food & drink       | restaurant, cafe, bar, bakery                       | 2 km   |
+| `activities` / Things to do | tourist_attraction, museum, art_gallery             | 5 km   |
+| `transport` / Transport     | airport, train_station, bus_station, ferry_terminal | 20 km  |
 
 One [Nearby Search](https://developers.google.com/maps/documentation/places/web-service/nearby-search)
 per category, `rankPreference=DISTANCE`, `maxResultCount=10`; no radius expansion
@@ -147,11 +147,11 @@ the host saves them against the new location. Hidden IDs remain suppressed.
 
 ## Privacy and public projection
 
-| Existing visibility | Discovery origin and guest output |
-| --- | --- |
-| `hidden`, `geoPublic=false`, or no valid coordinate pair | No public map or nearby IDs/custom places. Existing permitted locality text only. Protected editor also suppresses automatic discovery. |
-| `approximate` with `geoPublic=true` | Search only around the same server-rounded public center used by bookability (2 decimals), including host preview. Show an area indicator, never the exact property pin/address. |
-| `exact` with `geoPublic=true` | Search around confirmed canonical coordinates. Publish only the existing permitted address fields and exact pin. |
+| Existing visibility                                      | Discovery origin and guest output                                                                                                                                                |
+| -------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `hidden`, `geoPublic=false`, or no valid coordinate pair | No public map or nearby IDs/custom places. Existing permitted locality text only. Protected editor also suppresses automatic discovery.                                          |
+| `approximate` with `geoPublic=true`                      | Search only around the same server-rounded public center used by bookability (2 decimals), including host preview. Show an area indicator, never the exact property pin/address. |
+| `exact` with `geoPublic=true`                            | Search around confirmed canonical coordinates. Publish only the existing permitted address fields and exact pin.                                                                 |
 
 For approximate properties, ranking, selection, radius and any browser requests
 must depend only on that public center. Do not discover from the private exact
@@ -179,7 +179,7 @@ Proposed routes under `/api/shared/properties/:propertyId/nearby`:
 - `PUT`: atomic replacement of hotel-owned curation only.
 - `POST /refresh`: `{ expectedProfileRevision }`; awaits completion (200 ready/empty), returns 202 for an existing lease, or 429 during cooldown.
 - `POST /search`: authenticated Add search with `{ expectedProfileRevision,
-  query, category }`. Require setup-manage and publication permission; trim
+query, category }`. Require setup-manage and publication permission; trim
   query to 3..120 characters, reject unknown categories. Use one [Text Search
   (New)](https://developers.google.com/maps/documentation/places/web-service/text-search),
   `pageSize=10`, no pagination, `locationBias.circle` using the selected
@@ -198,7 +198,16 @@ without provider calls during save. Search rejection/expiry asks the host to
 search again. Keep explicit additions when automatic discovery no longer finds
 them; UI Kit resolves their current details and coordinates when rendered, bounded to the 20-addition limit.
 
-Public route: `GET /api/booking/public/hotels/:slug/nearby`.
+Public route: `GET /api/booking-web/hotels/:slug/nearby` (the existing guest adapter prefix).
+The route is mounted only for the active-publication target runtime. The catalog
+projection reads current saved curation and visibility through live active-property,
+organization/resource-link, Booking entitlement and active-publication gates.
+It returns the shared preview with `schemaVersion` and public `status`; revisions,
+scope and provider failure details stay server-only. `Cache-Control: no-store`
+keeps privacy changes immediate. Opening surroundings may refresh expired IDs
+through the existing property lease/cooldown; publication and privacy are re-read
+after provider I/O. The UI says that place details load when opened; it does not
+present discovery timestamps as the freshness of third-party descriptions.
 Use existing API envelopes; each success contains `schemaVersion: 1`.
 Exact route mounting must be checked against existing adapters before coding.
 
@@ -267,16 +276,19 @@ reference. Never substitute stale stored Google names.
 
 ```typescript
 type PublicPlace =
-  | { source: "google"; placeId: string; category: Category;
+  | {
+      source: "google";
+      placeId: string;
+      category: Category;
       coordinates: null; // UI Kit obtains Google destination coordinates in the browser
-      favorite: boolean; note: string | null }
+      favorite: boolean;
+      note: string | null;
+    }
   | ({ source: "custom" } & Omit<CustomPlace, "hidden">);
 type PublicNearby = {
   schemaVersion: 1;
-  status: "ready" | "empty" | "refreshing" | "unavailable"
-    | "location_required" | "hidden";
-  location: { mode: "exact" | "approximate";
-    latitude: number; longitude: number } | null;
+  status: "ready" | "empty" | "refreshing" | "unavailable" | "location_required" | "hidden";
+  location: { mode: "exact" | "approximate"; latitude: number; longitude: number } | null;
   places: PublicPlace[];
 };
 type EditorNearby = {
@@ -304,11 +316,11 @@ Representative public states (all include `schemaVersion: 1`):
 
 - Hidden: `{ status: "hidden", location: null, places: [] }`.
 - Approximate: `{ status: "ready", location: { mode: "approximate",
-  latitude: -8.65, longitude: 115.14 }, places: [...] }`; all candidate discovery
+latitude: -8.65, longitude: 115.14 }, places: [...] }`; all candidate discovery
   uses that same public center, regardless of private coordinate precision.
 - Provider failure for an exact property: `{ status: "unavailable",
-  location: { mode: "exact", latitude: -8.65, longitude: 115.14 },
-  places: [/* permitted current custom places only */] }`. A UI Kit failure is
+location: { mode: "exact", latitude: -8.65, longitude: 115.14 },
+places: [/* permitted current custom places only */] }`. A UI Kit failure is
   client-local and removes that Google card without changing saved curation.
 
 Errors: 400 invalid request; 401 missing/invalid auth; 403 permission/link denial;

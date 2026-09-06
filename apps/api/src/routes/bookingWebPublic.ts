@@ -432,6 +432,7 @@ export type BookingWebCalendarReadPool = BookingWebQueryExecutor & {
 };
 
 export type BookingWebPublicRoutesOptions = {
+  nearby?: import("./publicNearby.js").PublicNearbyOptions;
   profileRepository: PublicHotelProfileRepository;
   quoteRepository?: PublicHotelQuoteRepository;
   calendarRepository?: BookingWebCalendarRepository;
@@ -448,6 +449,10 @@ export async function registerBookingWebPublicRoutes(
   options: BookingWebPublicRoutesOptions,
 ): Promise<void> {
   const now = options.now ?? (() => new Date());
+  if (options.nearby) {
+    const { registerPublicNearbyRoute } = await import("./publicNearby.js");
+    await registerPublicNearbyRoute(app, options.profileRepository, options.nearby);
+  }
   const checkoutAdapter = options.checkoutAdapter;
   const affiliateAdapter =
     options.affiliateAdapter ?? createUnavailableBookingWebAffiliateAdapter();
