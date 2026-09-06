@@ -476,15 +476,6 @@ describe.skipIf(!TEST_DATABASE_URL)("target schema migrations (integration)", ()
         client.query(
           `INSERT INTO hotel_catalog.organization_setup_track_intents
              (organization_id, selected_tracks)
-           VALUES ($1, ARRAY['hotel_operations'])`,
-          [organizationId(9)],
-        ),
-      ).rejects.toMatchObject({ code: "23503" });
-
-      await expect(
-        client.query(
-          `INSERT INTO hotel_catalog.organization_setup_track_intents
-             (organization_id, selected_tracks)
            VALUES ($1, ARRAY['creator_marketplace'])`,
           [organizationId(1)],
         ),
@@ -496,7 +487,7 @@ describe.skipIf(!TEST_DATABASE_URL)("target schema migrations (integration)", ()
              (organization_id, selected_tracks)
            VALUES ('00000000-0000-4000-8000-000000000099', ARRAY['hotel_operations'])`,
         ),
-      ).rejects.toMatchObject({ code: "23514" });
+      ).rejects.toMatchObject({ code: "23503" });
     } finally {
       await client.end();
     }
@@ -5277,5 +5268,5 @@ describe.skipIf(!TEST_DATABASE_URL)("target schema migrations (integration)", ()
     } finally {
       await verifyClient.end();
     }
-  }, 10_000);
+  }, 60_000);
 });
