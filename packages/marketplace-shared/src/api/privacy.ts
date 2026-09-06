@@ -113,13 +113,14 @@ export async function saveCookieConsent(
     method: "POST",
     body: JSON.stringify(data),
     includeAuth: false,
+    signal: AbortSignal.timeout(10_000),
   });
 }
 
 export async function getCookieConsent(visitorId: string): Promise<CookieConsentResponse | null> {
   return requestIdentityPrivacy<CookieConsentResponse | null>(
     identityPrivacyEndpoints.cookieConsent(visitorId),
-    { method: "GET", includeAuth: false },
+    { method: "GET", includeAuth: false, signal: AbortSignal.timeout(10_000) },
   );
 }
 
