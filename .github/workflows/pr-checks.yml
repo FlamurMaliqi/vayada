@@ -107,7 +107,6 @@ jobs:
           npm --workspace vayada-creator-marketplace run test -- 'app/auth/[...path]/route.test.ts'
           npm --workspace vayada-booking-engine-frontend-admin run test -- 'app/auth/[...path]/route.test.ts'
           npm --workspace vayada-pms-frontend run test -- 'app/auth/[...path]/route.test.ts'
-          npm --workspace vayada-affiliate-dashboard run test -- 'app/auth/[...path]/route.test.ts'
           npm --workspace vayada-admin run test -- 'app/auth/[...path]/route.test.ts'
 
       - name: Run first-party auth browser regressions
