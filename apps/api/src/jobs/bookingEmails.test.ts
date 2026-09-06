@@ -12,6 +12,31 @@ import {
 } from "./bookingEmails.js";
 
 describe("booking lifecycle email jobs", () => {
+  it("deduplicates retries but sends each accepted host date revision", async () => {
+    const target = createTargetEmailStore();
+    const enqueue = (revision: string) =>
+      enqueueBookingLifecycleEmailJob(
+        target,
+        bookingEmailInput({
+          kind: "booking_updated",
+          transition: {
+            eventType: "guest_booking.host_dates_updated",
+            fromStatus: "confirmed",
+            toStatus: "confirmed",
+            revision,
+          },
+        }),
+      );
+    const first = await enqueue("preview-one");
+    const retry = await enqueue("preview-one");
+    const second = await enqueue("preview-two");
+    expect(retry.jobKey).toBe(first.jobKey);
+    expect(second.jobKey).not.toBe(first.jobKey);
+    expect(target.requiredCall("INSERT INTO platform.jobs").values?.[2]).toBe(
+      "email.booking-updated",
+    );
+  });
+
   it.each([undefined, "  ", "Sorry.\r\n\r\nCall us.\r\n<script>alert(1)</script>"])(
     "renders optional cancellation text safely with paragraphs: %s",
     async (guestMessage) => {

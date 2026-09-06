@@ -214,6 +214,8 @@ export type BookingWebPaymentInstructions = {
 };
 
 export type BookingWebCheckoutCommandContext = {
+  actorUserId?: string;
+  privateAuditPayload?: Record<string, unknown>;
   operation: string;
   requestId: string;
   correlationId: string;
@@ -1278,6 +1280,7 @@ export type TargetBookingRow = QueryResultRow & {
   propertyId: string;
   publicReference: string;
   sourceSystem: string;
+  updatedAt?: Date | string;
   hotelName?: string;
   canEditRequest?: boolean;
   guestFirstName?: string;
@@ -4844,6 +4847,7 @@ export async function loadTargetHotelBooking(
        booking.booking_metadata AS "bookingMetadata",
        card_payment.card_brand AS "cardBrand",
        card_payment.card_last4 AS "cardLast4",
+       booking.updated_at::text AS "updatedAt",
        booking.created_at AS "createdAt"
      FROM booking.guest_bookings booking
      LEFT JOIN LATERAL (
@@ -5018,21 +5022,25 @@ async function applyAcceptedTargetDateChange(
   pool: BookingWebQueryExecutor,
   input: {
     booking: TargetBookingRow;
-    changeRequest: TargetChangeRequestRow;
+    changeRequest: TargetChangeRequestRow | { id: string; hostEdit: true };
     preview: TargetDateChangePreview;
     selectedOffer: Record<string, unknown>;
     inventoryReservation: Record<string, unknown>;
     context: BookingHotelChangeDecisionContext;
   },
 ): Promise<TargetBookingRow> {
+  const hostEdit = "hostEdit" in input.changeRequest;
   const metadata = {
     ...objectValue(input.booking.bookingMetadata),
     selectedOffer: input.selectedOffer,
     inventoryReservation: input.inventoryReservation,
-    lastAcceptedChangeRequestId: input.changeRequest.id,
+    [hostEdit ? "lastHostEditPreviewId" : "lastAcceptedChangeRequestId"]: input.changeRequest.id,
   };
   const result = await pool.query<TargetBookingRow>(
-    `WITH accepted AS (
+    `WITH accepted AS (${
+      hostEdit
+        ? "SELECT $2::uuid AS id"
+        : `
        UPDATE booking.booking_change_requests change_request
           SET status = 'accepted',
               decision_actor_user_id = $3::uuid,
@@ -5041,7 +5049,8 @@ async function applyAcceptedTargetDateChange(
         WHERE change_request.id = $2::uuid
           AND change_request.guest_booking_id = $1::uuid
           AND change_request.status = 'pending'
-      RETURNING change_request.id
+      RETURNING change_request.id`
+    }
      ),
      updated AS (
        UPDATE booking.guest_bookings booking
@@ -5080,7 +5089,7 @@ async function applyAcceptedTargetDateChange(
           actor_user_id, public_visible, public_message, event_payload, occurred_at)
        SELECT
          updated."guestBookingId"::uuid,
-         'guest_booking.change_accepted',
+         '${hostEdit ? "guest_booking.host_dates_updated" : "guest_booking.change_accepted"}',
          'confirmed',
          'confirmed',
          'property_user',
@@ -5827,11 +5836,13 @@ export async function recordTargetCheckoutCommand(
          tenant_scope,
          property_id,
          actor_type,
+         actor_user_id,
          target_resource_product,
          target_resource_type,
          target_resource_id,
          idempotency_key_id,
          correlation_id,
+         private_payload,
          redacted_payload,
          audit_metadata,
          retention_class,
@@ -5845,12 +5856,14 @@ export async function recordTargetCheckoutCommand(
          $9::timestamptz,
          'property',
          $4::uuid,
-         'provider',
+         $16,
+         $17::uuid,
          'booking',
          $6,
          $7,
          (SELECT id FROM upserted_key),
          $8,
+         $18::jsonb,
          $14::jsonb,
          $15::jsonb,
          'guest_pii',
@@ -5880,6 +5893,9 @@ export async function recordTargetCheckoutCommand(
         requestId: input.context.requestId,
         source: "apps/api-booking-web-public",
       }),
+      input.context.actorUserId ? "user" : "provider",
+      input.context.actorUserId ?? null,
+      JSON.stringify(input.context.privateAuditPayload ?? {}),
     ],
   );
 }
@@ -7048,4 +7064,20 @@ function isHttpError(error: unknown): error is HttpError {
 
 type HttpError = Error & {
   statusCode: number;
+};
+
+// Temporary Booking persistence boundary while the checkout owner is extracted from
+// this compatibility module. Host callers never use the public guest-email loader.
+export const targetBookingHostActionPrimitives = {
+  transaction: withTargetCheckoutTransaction,
+  loadBooking: loadTargetHotelBooking,
+  loadProperty: loadTargetPropertyById,
+  previewDates: previewTargetDateChange,
+  applyDates: applyAcceptedTargetDateChange,
+  reserveCommand: reserveTargetCheckoutCommand,
+  recordCommand: recordTargetCheckoutCommand,
+  reversePromo: reverseTargetPromoRedemption,
+  handoff: enqueuePmsReservationHandoff,
+  propertyDate: targetPropertyDateOnly,
+  stableJson,
 };
