@@ -144,3 +144,8 @@ refresh wiring are removed. Scoped entitlement reads and the authorized HTTP 410
 boundary remain. Existing activation rows are retained; the preservation integration
 fixture seeds an existing activation directly instead of calling the retired writer.
 Shared booking publication refresh remains available to its other consumers.
+
+Old administration list/detail GET endpoints now return authorized HTTP 410/no-store
+without reading affiliate data. The unused listing query and input contract are removed.
+The repository retains only the property-scoped lookup required by shared Finance and
+its existing close hook; historical records and migrations remain intact.
