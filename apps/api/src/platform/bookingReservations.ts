@@ -89,6 +89,7 @@ export function createTargetBookingReservationsReadRepository(config: {
              booking.public_reference AS "bookingReference",
              COALESCE(room_type.id::text, quote.selected_offer_snapshot ->> 'roomTypeId', '') AS "roomTypeId",
              COALESCE(room_type.name, quote.selected_offer_snapshot ->> 'roomName', '') AS "roomName",
+             COALESCE(booking.booking_metadata->'selectedOffer',quote.selected_offer_snapshot) AS "selectedRoomOffer",
              COALESCE(
                NULLIF(room_type.occupancy_limits ->> 'maxOccupancy', '')::integer,
                NULLIF(room_type.occupancy_limits ->> 'total', '')::integer,

@@ -84,6 +84,22 @@ describe("PMS target booking projection", () => {
     });
   });
 
+  it("keeps all selected room names and guest allocations before PMS assignment", async () => {
+    const mixed = { ...reservation, roomCount: 3, roomLines: [
+      { roomTypeId: "type-1", roomName: "Double", roomCount: 2, guests: [{ adults: 2, children: 0 }, { adults: 1, children: 1 }], rateSummary: { name: "Flexible" } },
+      { roomTypeId: "type-2", roomName: "Twin", roomCount: 1, guests: [{ adults: 2, children: 0 }], rateSummary: { name: "Non-refundable" } },
+    ] };
+    mocks.get.mockImplementation(async (endpoint: string) => endpoint.endsWith("/room-types") ? { items: roomTypes } : reservationPage(mixed));
+    const result = (await bookingsService.list()).bookings[0]!;
+    expect(result.roomName).toBe("2 × Double + 1 × Twin");
+    expect(result.stays).toMatchObject([
+      { position: 0, roomName: "Double", adults: 2, children: 0, ratePlanName: "Flexible", roomNumber: null },
+      { position: 1, roomName: "Double", adults: 1, children: 1 },
+      { position: 2, roomName: "Twin", adults: 2, children: 0, ratePlanName: "Non-refundable" },
+    ]);
+    expect(result.assignedRooms).toEqual([]);
+  });
+
   it("uses the booked offer and authoritative booking amounts when no PMS assignment exists", async () => {
     const result = await bookingsService.list();
 

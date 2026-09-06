@@ -173,6 +173,7 @@ export type BookingReservationReadModel = {
   bookingReference: string;
   roomTypeId: string;
   roomName: string;
+  roomLines?: Array<{ roomTypeId: string; roomName: string; roomCount: number }>;
   roomMaxOccupancy: number;
   guestFirstName: string;
   guestLastName: string;

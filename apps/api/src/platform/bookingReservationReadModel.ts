@@ -1,3 +1,4 @@
+import { projectBookingRoomSelection } from "../domains/bookingRoomSelectionProjection.js";
 import type { BookingAssignedRoom, BookingReservationReadModel } from "@vayada/domain-booking";
 
 export type BookingReservationReadModelRow = {
@@ -5,6 +6,7 @@ export type BookingReservationReadModelRow = {
   bookingReference: string;
   roomTypeId: string;
   roomName: string;
+  selectedRoomOffer?: unknown;
   roomMaxOccupancy: number | string;
   guestFirstName: string;
   guestLastName: string;
@@ -60,6 +62,7 @@ export type BookingReservationReadModelRow = {
 export function toBookingReservationReadModel(
   reservation: BookingReservationReadModelRow,
 ): BookingReservationReadModel {
+  const roomLines = projectBookingRoomSelection(reservation.selectedRoomOffer).roomLines;
   const checkIn = toDateOnly(reservation.checkIn);
   const checkOut = toDateOnly(reservation.checkOut);
   const numberOfRooms = Math.max(1, reservation.numberOfRooms ?? 1);
@@ -79,6 +82,15 @@ export function toBookingReservationReadModel(
     bookingReference: reservation.bookingReference,
     roomTypeId: reservation.roomTypeId,
     roomName: reservation.roomName,
+    ...(roomLines
+      ? {
+          roomLines: roomLines.map(({ roomTypeId, roomName, roomCount }) => ({
+            roomTypeId,
+            roomName,
+            roomCount,
+          })),
+        }
+      : {}),
     roomMaxOccupancy,
     totalRoomCapacity: roomMaxOccupancy * numberOfRooms,
     guestFirstName: reservation.guestFirstName,
