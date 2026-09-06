@@ -1,4 +1,4 @@
-import type { Hotel, RoomType } from "@/lib/types";
+import type { Hotel, RoomType, RoomSelectionSnapshot } from "@/lib/types";
 
 import { bookingWebPublic, type ApiRequestInit } from "./client";
 
@@ -73,7 +73,8 @@ export type BookingWebPublicHotelResponse = {
   };
 };
 
-export type BookingWebPublicOffer = {
+export type BookingWebPublicOffer = RoomSelectionSnapshot & {
+  expiresAt?: string;
   offerId: string;
   roomTypeId: string;
   ratePlanId: string | null;
@@ -107,6 +108,10 @@ export type BookingWebPublicOffer = {
 
 export type BookingWebPublicOffersResponse = {
   request: {
+    checkIn?: string;
+    checkOut?: string;
+    adults?: number;
+    children?: number;
     nights: number;
     rooms: number;
   };
@@ -378,13 +383,18 @@ export function toLegacyRooms(
   const offers = data.quote?.offers || [];
   const grouped = new Map<string, BookingWebPublicOffer[]>();
   const displayRoomById = new Map(displayRooms.map((room) => [room.id, room]));
-  for (const offer of offers) {
+  for (const offer of offers.filter(
+    (offer) =>
+      offer.roomSelection === undefined &&
+      offer.roomLines === undefined &&
+      !offer.offerId.startsWith("selection-"),
+  )) {
     const existing = grouped.get(offer.roomTypeId) || [];
     existing.push(offer);
     grouped.set(offer.roomTypeId, existing);
   }
 
-  return Array.from(grouped.entries()).flatMap(([roomTypeId, roomOffers]) => {
+  const legacyRooms = Array.from(grouped.entries()).flatMap(([roomTypeId, roomOffers]) => {
     const firstOffer = roomOffers[0];
     if (!firstOffer) return [];
     const flexible = roomOffers.find((offer) => offer.refundable) || firstOffer;
@@ -476,6 +486,59 @@ export function toLegacyRooms(
       },
     };
   });
+  const combinations = offers.flatMap((offer): RoomType[] => {
+    const { roomSelection, roomLines, expiresAt } = offer;
+    const { checkIn, checkOut, adults, children } = data.request;
+    if (!roomSelection) return [];
+    // An incomplete selection must never become a first-room legacy option.
+    if (
+      !roomLines?.length ||
+      roomLines.length !== roomSelection.lines.length ||
+      !expiresAt ||
+      !Number.isFinite(Date.parse(expiresAt)) ||
+      !checkIn ||
+      !checkOut ||
+      adults === undefined ||
+      children === undefined
+    )
+      return [];
+    const quantity = roomLines.reduce((sum, line) => sum + line.roomCount, 0);
+    const display = displayRoomById.get(offer.roomTypeId);
+    return [
+      {
+        id: offer.offerId,
+        name: offer.name,
+        description: offer.name,
+        shortDescription: offer.name,
+        maxOccupancy: adults + children,
+        maxAdults: adults,
+        maxChildren: children,
+        size: 0,
+        baseRate: offer.totals.grandTotal / Math.max(1, data.request.nights),
+        nonRefundableRate: null,
+        currency: offer.totals.currency,
+        amenities: [],
+        images: display?.images?.length ? display.images : [FALLBACK_IMAGE],
+        bedType: "",
+        remainingRooms: quantity,
+        features: [],
+        benefits: [],
+        flexibleRateEnabled: true,
+        ratePaymentMethods: { flexible: offer.paymentOptions },
+        combination: {
+          roomSelection,
+          roomLines,
+          expiresAt,
+          totalAmount: offer.totals.grandTotal,
+          checkIn,
+          checkOut,
+          adults,
+          children,
+        },
+      },
+    ];
+  });
+  return [...legacyRooms, ...combinations];
 }
 
 export function toLegacyCalendar(data: BookingWebPublicCalendarResponse): {

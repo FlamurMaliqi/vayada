@@ -4,6 +4,7 @@ import {
   toLegacyHotel,
   toLegacyRooms,
   type BookingWebPublicHotelResponse,
+  type BookingWebPublicOffersResponse,
 } from "./bookingWebPublic";
 
 function publicHotelResponse(
@@ -217,5 +218,87 @@ describe("Booking Web public hotel adapter", () => {
     response.hotel.branding = undefined;
     expect(toLegacyHotel(response).heroImage).toBe("/vayada-logo.png");
     expect(toLegacyHotel(publicHotelResponse()).images).toEqual([]);
+  });
+});
+
+describe("complete public room selections", () => {
+  it("keeps combinations with the same first room distinct and drops incomplete selections", () => {
+    const lines = [
+      {
+        roomTypeId: "double",
+        publicOfferKey: "double:flex",
+        guests: [
+          { adults: 2, children: 0 },
+          { adults: 1, children: 1 },
+        ],
+      },
+      { roomTypeId: "twin", publicOfferKey: "twin:flex", guests: [{ adults: 2, children: 0 }] },
+    ];
+    const response: BookingWebPublicOffersResponse = {
+      request: {
+        nights: 2,
+        rooms: 1,
+        checkIn: "2027-02-01",
+        checkOut: "2027-02-03",
+        adults: 5,
+        children: 1,
+      },
+      status: "bookable",
+      quote: {
+        offers: ["selection-a", "selection-b"].map((offerId) => ({
+          offerId,
+          roomTypeId: "double",
+          ratePlanId: null,
+          name: "2 × Double + 1 × Twin",
+          expiresAt: "2027-01-01T10:15:00Z",
+          roomSelection: { contractVersion: "booking-room-selection.v1", lines },
+          roomLines: lines.map((line) => ({
+            ...line,
+            roomName: line.roomTypeId,
+            roomCount: line.guests.length,
+            rateSummary: {},
+            policy: {},
+            totals: { totalAmount: String(line.guests.length * 200) },
+          })),
+          occupancy: { maxAdults: 5, maxChildren: 1 },
+          availableRooms: 3,
+          refundable: false,
+          mealPlan: null,
+          paymentOptions: ["pay_at_property"],
+          totals: {
+            currency: "EUR",
+            roomTotal: 600,
+            taxesAndFees: 0,
+            discounts: 0,
+            grandTotal: 600,
+          },
+          policies: { cancellation: null, deposit: null },
+          bookingUrl: "https://example.test/en/book",
+        })),
+      },
+    };
+    const rooms = toLegacyRooms(response);
+    expect(rooms.map((room) => room.id)).toEqual(["selection-a", "selection-b"]);
+    expect(rooms[0]).toMatchObject({
+      name: "2 × Double + 1 × Twin",
+      remainingRooms: 3,
+      combination: {
+        roomSelection: { lines },
+        totalAmount: 600,
+        checkIn: "2027-02-01",
+        adults: 5,
+        children: 1,
+      },
+    });
+    delete response.quote!.offers[0].roomLines;
+    expect(toLegacyRooms(response).map((room) => room.id)).toEqual(["selection-b"]);
+    delete response.quote!.offers[0].roomSelection;
+    expect(toLegacyRooms(response).map((room) => room.id)).toEqual(["selection-b"]);
+    const savedSelection = response.quote!.offers[1].roomSelection;
+    delete response.quote!.offers[1].roomSelection;
+    expect(toLegacyRooms(response)).toEqual([]);
+    response.quote!.offers[1].roomSelection = savedSelection;
+    delete response.request.checkIn;
+    expect(toLegacyRooms(response)).toEqual([]);
   });
 });

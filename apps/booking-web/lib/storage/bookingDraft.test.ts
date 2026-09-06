@@ -277,3 +277,28 @@ describe("toConfirmationBooking", () => {
     expect(booking.depositPercentage).toBe(0);
   });
 });
+
+it("retains server-owned room lines and the complete name in confirmation", () => {
+  const roomSelection = {
+    contractVersion: "booking-room-selection.v1" as const,
+    lines: [
+      { roomTypeId: "double", publicOfferKey: "double:flex", guests: [{ adults: 2, children: 0 }] },
+      { roomTypeId: "twin", publicOfferKey: "twin:flex", guests: [{ adults: 2, children: 0 }] },
+    ],
+  };
+  const roomLines = roomSelection.lines.map((line) => ({
+    ...line,
+    roomName: line.roomTypeId,
+    roomCount: 1,
+    policy: {},
+    rateSummary: {},
+    totals: { totalAmount: "100.00" },
+  }));
+  const booking = toConfirmationBooking(
+    { roomSelection, roomLines, roomName: "1 × Double + 1 × Twin" },
+    { roomName: "Double" },
+  );
+  expect(booking.roomSelection).toEqual(roomSelection);
+  expect(booking.roomLines).toEqual(roomLines);
+  expect(booking.roomName).toBe("1 × Double + 1 × Twin");
+});

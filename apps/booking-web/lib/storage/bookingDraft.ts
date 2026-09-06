@@ -1,4 +1,4 @@
-import { Booking } from "@/lib/types";
+import { Booking, RoomSelection } from "@/lib/types";
 
 /**
  * Centralizes the sessionStorage keys the checkout flow uses, so we read and
@@ -8,6 +8,8 @@ import { Booking } from "@/lib/types";
  */
 
 export interface GuestDetailsDraft {
+  roomSelection?: RoomSelection;
+  selectionId?: string;
   roomTypeId: string;
   guestFirstName: string;
   guestLastName: string;
@@ -293,6 +295,8 @@ export function toConfirmationBooking(
     source.paymentStatus !== undefined;
 
   return {
+    roomSelection: source.roomSelection,
+    roomLines: source.roomLines,
     canEditRequest: source.canEditRequest ?? context.canEditRequest,
     id:
       nonEmptyString(source.guestBookingId) ??
@@ -302,7 +306,9 @@ export function toConfirmationBooking(
     bookingReference:
       nonEmptyString(source.bookingReference) ?? nonEmptyString(context.bookingReference) ?? "",
     hotelName: nonEmptyString(context.hotelName) ?? nonEmptyString(source.hotelName) ?? "",
-    roomName: nonEmptyString(context.roomName) ?? nonEmptyString(source.roomName) ?? "",
+    roomName: source.roomSelection
+      ? (nonEmptyString(source.roomName) ?? "")
+      : (nonEmptyString(context.roomName) ?? nonEmptyString(source.roomName) ?? ""),
     guestFirstName:
       nonEmptyString(context.guestFirstName) ?? nonEmptyString(source.guestFirstName) ?? "",
     guestLastName:
