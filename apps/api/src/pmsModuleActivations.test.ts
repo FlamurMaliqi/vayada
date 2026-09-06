@@ -229,7 +229,7 @@ describe("PMS module activation routes", () => {
     expect(response.body).toMatchObject({
       hotelId: propertyId,
       canManage: true,
-      supportedModules: ["affiliates"],
+      supportedModules: [],
       activeModules: ["affiliates"],
     });
     expect(response.body.activations).toEqual([
@@ -248,6 +248,13 @@ describe("PMS module activation routes", () => {
 
     expect(response.statusCode).toBe(200);
     expect(response.body.canManage).toBe(false);
+    const write = await app.inject({
+      method: "PATCH",
+      url: `/api/pms/properties/${propertyId}/module-activations/affiliates`,
+      headers: { authorization: "Bearer valid-token" },
+      payload: { isActive: true },
+    });
+    expect(write.statusCode).toBe(403);
   });
 
   it("does not advertise manage capability outside owner or operator property scope", async () => {
@@ -266,46 +273,51 @@ describe("PMS module activation routes", () => {
     expect(response.body.canManage).toBe(false);
   });
 
-  it("updates the supported property module activation through the next-api route", async () => {
-    const repository = createActivationRepository();
-    const refreshes: Parameters<BookingPublicationRefreshPort["refresh"]>[0][] = [];
-    app = buildAuthenticatedApp({
-      repository,
-      bookingPublicationRefresh: {
-        async refresh(input) {
-          refreshes.push(input);
-          return {
-            operationId: "a1000000-0000-4000-8000-000000001299",
-            propertyId: input.propertyId,
-            status: "succeeded",
-            expectedActiveContentRevisionId: null,
-            resultContentRevisionId: "a1000000-0000-4000-8000-000000001300",
-            failureCode: null,
-            requestedAt: "2026-09-03T01:00:00.000Z",
-            updatedAt: "2026-09-03T01:00:01.000Z",
-            completedAt: "2026-09-03T01:00:01.000Z",
-          };
+  it.each([false, true])(
+    "retires affiliate module updates without writes or publication refresh (active: %s)",
+    async (isActive) => {
+      const repository = createActivationRepository();
+      const refreshes: Parameters<BookingPublicationRefreshPort["refresh"]>[0][] = [];
+      app = buildAuthenticatedApp({
+        repository,
+        bookingPublicationRefresh: {
+          async refresh(input) {
+            refreshes.push(input);
+            return {
+              operationId: "a1000000-0000-4000-8000-000000001299",
+              propertyId: input.propertyId,
+              status: "succeeded",
+              expectedActiveContentRevisionId: null,
+              resultContentRevisionId: "a1000000-0000-4000-8000-000000001300",
+              failureCode: null,
+              requestedAt: "2026-09-03T01:00:00.000Z",
+              updatedAt: "2026-09-03T01:00:01.000Z",
+              completedAt: "2026-09-03T01:00:01.000Z",
+            };
+          },
         },
-      },
-    });
+      });
 
-    const response = await injectJson<PmsModuleActivation>(app, {
-      method: "PATCH",
-      url: `/api/pms/properties/${propertyId}/module-activations/affiliates`,
-      headers: { authorization: "Bearer valid-token" },
-      payload: { moduleId: "affiliates", isActive: false },
-    });
+      const response = await app.inject({
+        method: "PATCH",
+        url: `/api/pms/properties/${propertyId}/module-activations/affiliates`,
+        headers: { authorization: "Bearer valid-token" },
+        payload: { moduleId: "affiliates", isActive },
+      });
 
-    expect(response.statusCode).toBe(200);
-    expect(response.body).toMatchObject({ moduleId: "affiliates", isActive: false });
-    expect(response.body).toMatchObject({ publicationRefresh: { status: "succeeded" } });
-    expect(repository.updates).toMatchObject([
-      { propertyId, moduleId: "affiliates", isActive: false },
-    ]);
-    expect(refreshes).toHaveLength(1);
-    expect(refreshes[0]).toMatchObject({ propertyId, organizationId, actorUserId });
-    expect(repository.updates[0].context.selectedOrganization.organizationId).toBe(organizationId);
-  });
+      expect(response.statusCode).toBe(410);
+      expect(response.json()).toMatchObject({ code: "affiliate_module_activation_retired" });
+      expect(response.headers["cache-control"]).toBe("no-store");
+      expect(repository.updates).toHaveLength(0);
+      expect(refreshes).toHaveLength(0);
+      const after = await injectJson<PmsModuleActivationsResponse>(app, {
+        method: "GET",
+        url: `/api/pms/properties/${propertyId}/module-activations`,
+        headers: { authorization: "Bearer valid-token" },
+      });
+      expect(after.body.activeModules).toEqual(["affiliates"]);
+    },
+  );
 
   it("rejects malformed module activation updates before writing", async () => {
     const repository = createActivationRepository();
@@ -395,6 +407,12 @@ describe("PMS module activation routes", () => {
       expectedStatus: 401,
     },
     {
+      name: "invalid auth",
+      appOptions: {},
+      headers: { authorization: "Bearer invalid-token" },
+      expectedStatus: 401,
+    },
+    {
       name: "missing read permission",
       appOptions: { permissions: [] },
       headers: { authorization: "Bearer valid-token" },
@@ -430,6 +448,13 @@ describe("PMS module activation routes", () => {
       });
 
       expect(response.statusCode).toBe(expectedStatus);
+      const write = await injectJson(app, {
+        method: "PATCH",
+        url: `/api/pms/properties/${propertyId}/module-activations/affiliates`,
+        headers,
+        payload: { isActive: true },
+      });
+      expect(write.statusCode).toBe(expectedStatus);
     },
   );
 });

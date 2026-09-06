@@ -125,3 +125,10 @@ its activation switch and navigation preview in Booking Admin and PMS. Existing 
 activation records are neither removed nor changed. Direct backend module activation and
 administration APIs remain separate retirement work; an empty UI catalog is not a server
 write guard.
+
+Authorized requests to the old module activation PATCH and affiliate lifecycle POST
+now return HTTP 410 with no-store and no repository/publication side effects. Existing
+CORS, authentication, permission, entitlement and property-scope checks remain in place.
+Module inventory no longer advertises supported modules, while retained activation and
+affiliate reads preserve existing state. Repository write implementations and remaining
+read-only administration cleanup are separate steps; shared Finance is unchanged.

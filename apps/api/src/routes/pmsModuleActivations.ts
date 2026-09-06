@@ -117,28 +117,11 @@ export async function registerPmsModuleActivationRoutes(
       const parsed = parseModuleActivationUpdateBody(moduleId, body);
       if (!parsed.ok) return reply.status(400).send(parsed.error);
 
-      const context = enforceModuleActivationManagePolicy(request, propertyId);
-      const activation = await repository.update(context, propertyId, moduleId, parsed.isActive);
-      if (!options.bookingPublicationRefresh) return activation;
-      try {
-        const publication = await options.bookingPublicationRefresh.refresh({
-          organizationId: context.selectedOrganization.organizationId,
-          propertyId,
-          actorUserId: context.actor.internalUserId,
-          idempotencyKey: context.audit.requestId,
-          audit: context.audit,
-        });
-        return {
-          ...activation,
-          publicationRefresh: { status: publication.status, operationId: publication.operationId },
-        };
-      } catch (error) {
-        request.log.warn(
-          { err: error, propertyId, moduleId },
-          "Booking publication refresh failed after PMS module activation",
-        );
-        return { ...activation, publicationRefresh: { status: "failed" as const } };
-      }
+      enforceModuleActivationManagePolicy(request, propertyId);
+      return reply.header("Cache-Control", "no-store").code(410).send({
+        code: "affiliate_module_activation_retired",
+        message: "Legacy affiliate module changes are no longer available.",
+      });
     },
   );
 }
@@ -239,7 +222,7 @@ function moduleActivationsResponse(
   return {
     hotelId: propertyId,
     canManage,
-    supportedModules: [...PMS_MODULE_IDS],
+    supportedModules: [],
     activeModules: supportedActivations
       .filter((activation) => activation.isActive)
       .map((activation) => activation.moduleId),

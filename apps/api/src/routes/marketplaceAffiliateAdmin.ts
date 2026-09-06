@@ -1,6 +1,5 @@
 import {
   MARKETPLACE_AFFILIATE_ADMIN_CONTRACT_VERSION,
-  MARKETPLACE_AFFILIATE_LIFECYCLE_ACTIONS,
   MARKETPLACE_AFFILIATE_LIFECYCLE_STATUSES,
   type MarketplaceAffiliateAdminRepository,
 } from "@vayada/domain-marketplace";
@@ -20,9 +19,8 @@ type ListQuery = {
 
 export async function registerMarketplaceAffiliateAdminRoutes(
   app: FastifyInstance,
-  options: { repository: MarketplaceAffiliateAdminRepository; now?: () => Date },
+  options: { repository: MarketplaceAffiliateAdminRepository },
 ): Promise<void> {
-  const now = options.now ?? (() => new Date());
   app.addHook("onClose", async () => options.repository.close?.());
 
   app.get<{ Params: PropertyParams; Querystring: ListQuery }>(
@@ -61,26 +59,10 @@ export async function registerMarketplaceAffiliateAdminRoutes(
     async (request, reply) => {
       const context = authorize(request, reply, request.params.propertyId);
       if (!context) return reply;
-      const command = parseLifecycleCommand(request.body);
-      if (typeof command === "string") return sendError(reply, 422, command);
-      const result = await options.repository.applyLifecycle({
-        propertyId: request.params.propertyId,
-        affiliateId: request.params.affiliateId,
-        actorUserId: context.actor.internalUserId,
-        occurredAt: now().toISOString(),
-        ...command,
+      return reply.header("Cache-Control", "no-store").code(410).send({
+        code: "affiliate_administration_retired",
+        message: "Legacy affiliate lifecycle changes are no longer available.",
       });
-      if (result.outcome === "not_found") return sendError(reply, 404, "affiliate_not_found");
-      if (result.outcome === "idempotency_conflict") {
-        return sendError(reply, 409, "idempotency_conflict");
-      }
-      if (result.outcome === "invalid_transition") {
-        return reply.status(409).send({
-          code: "invalid_status_transition",
-          currentStatus: result.currentStatus,
-        });
-      }
-      return result;
     },
   );
 }
@@ -157,31 +139,9 @@ function parseListQuery(query: ListQuery) {
   };
 }
 
-function parseLifecycleCommand(body: unknown) {
-  if (!isRecord(body)) return "invalid_lifecycle_command";
-  const commandId = typeof body.commandId === "string" ? body.commandId.trim() : "";
-  const idempotencyKey = typeof body.idempotencyKey === "string" ? body.idempotencyKey.trim() : "";
-  const action = typeof body.action === "string" ? body.action.trim() : "";
-  if (!commandId || commandId.length > 200 || !idempotencyKey || idempotencyKey.length > 200) {
-    return "invalid_lifecycle_command";
-  }
-  if (!MARKETPLACE_AFFILIATE_LIFECYCLE_ACTIONS.includes(action as never)) {
-    return "invalid_lifecycle_action";
-  }
-  return {
-    commandId,
-    idempotencyKey,
-    action: action as (typeof MARKETPLACE_AFFILIATE_LIFECYCLE_ACTIONS)[number],
-  };
-}
-
 function boundedInteger(value: unknown, fallback: number, min: number, max: number): number {
   const parsed = typeof value === "number" ? value : Number(value);
   return Number.isInteger(parsed) ? Math.min(max, Math.max(min, parsed)) : fallback;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function sendError(reply: FastifyReply, status: number, code: string): FastifyReply {
