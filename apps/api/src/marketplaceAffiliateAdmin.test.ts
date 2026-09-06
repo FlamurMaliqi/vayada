@@ -8,8 +8,6 @@ import { injectJson } from "@vayada/backend-test";
 import type {
   MarketplaceAffiliateAdminRecord,
   MarketplaceAffiliateAdminRepository,
-  MarketplaceAffiliateLifecycleCommand,
-  MarketplaceAffiliateLifecycleResult,
 } from "@vayada/domain-marketplace";
 import Fastify from "fastify";
 import { afterEach, describe, expect, it } from "vitest";
@@ -96,7 +94,7 @@ describe("Marketplace affiliate admin routes", () => {
       expect(response.statusCode).toBe(410);
       expect(response.json()).toMatchObject({ code: "affiliate_administration_retired" });
       expect(response.headers["cache-control"]).toBe("no-store");
-      expect(repository.calls.lifecycle).toEqual([]);
+      expect(repository.calls).toEqual({ list: [], get: [] });
     },
   );
 
@@ -155,8 +153,7 @@ describe("Marketplace affiliate admin routes", () => {
       payload: { action: "approve" },
     });
     expect(write.statusCode).toBe(status);
-    expect(repository.calls.lifecycle).toEqual([]);
-    expect(repository.calls.list).toEqual([]);
+    expect(repository.calls).toEqual({ list: [], get: [] });
   });
 
   it("keeps valid property scope from discovering another property's affiliate", async () => {
@@ -198,17 +195,15 @@ type FakeRepository = MarketplaceAffiliateAdminRepository & {
   calls: {
     list: unknown[];
     get: unknown[];
-    lifecycle: MarketplaceAffiliateLifecycleCommand[];
   };
 };
 
 function fakeRepository(
   options: {
     affiliate?: MarketplaceAffiliateAdminRecord | null;
-    lifecycleResult?: MarketplaceAffiliateLifecycleResult;
   } = {},
 ): FakeRepository {
-  const calls: FakeRepository["calls"] = { list: [], get: [], lifecycle: [] };
+  const calls: FakeRepository["calls"] = { list: [], get: [] };
   const affiliate = options.affiliate === undefined ? affiliateRecord() : options.affiliate;
   return {
     calls,
@@ -219,16 +214,6 @@ function fakeRepository(
     async getAffiliate(...input) {
       calls.get.push(input);
       return affiliate;
-    },
-    async applyLifecycle(command) {
-      calls.lifecycle.push(command);
-      return (
-        options.lifecycleResult ?? {
-          outcome: "applied",
-          commandId: command.commandId,
-          affiliate: { ...affiliateRecord(), lifecycleStatus: "approved" },
-        }
-      );
     },
   };
 }

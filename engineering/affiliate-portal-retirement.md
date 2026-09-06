@@ -132,3 +132,9 @@ CORS, authentication, permission, entitlement and property-scope checks remain i
 Module inventory no longer advertises supported modules, while retained activation and
 affiliate reads preserve existing state. Repository write implementations and remaining
 read-only administration cleanup are separate steps; shared Finance is unchanged.
+
+The unused Marketplace affiliate lifecycle writer and its command/result/action exports
+are removed, including its obsolete mutation integration test. The repository retains
+property-scoped list/detail reads used by administration and shared Finance. Existing
+lifecycle/audit tables, records and migrations remain intact. The module activation
+repository writer and remaining administration reads are subsequent cleanup.
