@@ -1,7 +1,11 @@
+import { pendingBookingEdit } from "../routes/pendingBookingEdits.js";
 import { createTargetMixedCheckoutQuote } from "../routes/bookingWebMixedSnapshot.js";
 import {
   redeemTargetPromo,
   enqueuePmsReservationHandoff,
+  issueTargetBookingConfirmationToken,
+  loadTargetBooking,
+  sha256Hex,
   serializeTargetBooking,
   serializeTargetCheckoutQuote,
   resolveTargetCancellationPreview,
@@ -68,6 +72,10 @@ describe.skipIf(!url)("mixed room inventory transactions", () => {
       await client.query(
         `INSERT INTO hotel_catalog.properties (id,public_id,display_name)
         VALUES ($1::uuid,$1::text,'Mixed room test')`,
+        [propertyId],
+      );
+      await client.query(
+        "INSERT INTO hotel_catalog.property_slugs(property_id,slug,purpose,status) VALUES($1::uuid,$1::text,'canonical','active')",
         [propertyId],
       );
       await client.query(
@@ -148,7 +156,19 @@ describe.skipIf(!url)("mixed room inventory transactions", () => {
   afterAll(async () => {
     await transaction(async (client) => {
       await client.query("SET LOCAL session_replication_role=replica");
+      for (const table of ["booking.booking_guests", "booking.booking_status_events"])
+        await client.query(
+          `DELETE FROM ${table} WHERE guest_booking_id IN (SELECT id FROM booking.guest_bookings WHERE property_id=$1)`,
+          [propertyId],
+        );
       for (const table of [
+        "platform.jobs",
+        "platform.product_audit_events",
+        "booking.pending_booking_edit_attempts",
+        "booking.booking_addon_selections",
+        "booking.direct_booking_summary_read_model",
+        "booking.guest_bookings",
+        "booking.checkout_contexts",
         "booking.promo_applications",
         "booking.promo_definitions",
         "booking.quote_sessions",
@@ -171,6 +191,7 @@ describe.skipIf(!url)("mixed room inventory transactions", () => {
         "pms.room_blocks",
         "distribution.public_hotel_bookability_profiles",
         "hotel_catalog.property_public_profile_read_model",
+        "hotel_catalog.property_slugs",
       ])
         await client.query(`DELETE FROM ${table} WHERE property_id=$1`, [propertyId]);
       await client.query("DELETE FROM hotel_catalog.properties WHERE id=$1", [propertyId]);
@@ -784,6 +805,153 @@ describe.skipIf(!url)("mixed room inventory transactions", () => {
     await expect(reserveLines([input.lines[1]!])).rejects.toMatchObject({ statusCode: 409 });
     expect(await inventory()).toEqual([0, 0, 2, 2]);
     await release(first);
+    expect(await inventory()).toEqual([2, 2, 2, 2]);
+  });
+  it("edits mixed to single and back through prepare/save with atomic failure recovery", async () => {
+    await pool.query(
+      `UPDATE distribution.public_room_offer_snapshots SET rate_summary=rate_summary || '{"rateType":"flexible","refundable":true}'::jsonb WHERE property_id=$1`,
+      [propertyId],
+    );
+    let now = new Date(input.occurredAt.getTime() + 10000);
+    const context = () => {
+      now = new Date(now.getTime() + 1000);
+      const key = randomUUID();
+      return {
+        operation: "edit",
+        requestId: key,
+        correlationId: key,
+        idempotencyKey: key,
+        fingerprint: key,
+        occurredAt: now,
+      };
+    };
+    const property = {
+      propertyId,
+      displayName: "Mixed room test",
+      defaultLocale: "en",
+      timezone: "Europe/Athens",
+    };
+    const request = {
+      roomTypeId: rooms[0],
+      checkIn: input.checkIn,
+      checkOut: input.checkOut,
+      roomSelection: selection,
+      adults: 5,
+      children: 1,
+      numberOfRooms: 3,
+      paymentMethod: "pay_at_property",
+      email: "mixed@example.test",
+    };
+    const original = await transaction(async (client) => {
+      const command = context();
+      const quote = await createTargetMixedCheckoutQuote(client, property, request, now);
+      const booking = await createTargetGuestBooking(
+        client,
+        port,
+        property,
+        { ...request, expectedTotalAmount: quote.totalAmount },
+        command,
+        quote,
+        null,
+        null,
+        null,
+      );
+      await enqueuePmsReservationHandoff(client, propertyId, booking, command, "create");
+      return {
+        booking,
+        token: (await issueTargetBookingConfirmationToken(client, booking, now)).token,
+      };
+    });
+    const config = {
+      connectionString: url!,
+      inventoryReservationPort: port,
+      now: () => now,
+      mixedRoomSelectionsEnabled: true,
+    };
+    const edit = (action: string, body: Record<string, unknown>, command = context()) =>
+      pendingBookingEdit(
+        pool,
+        config,
+        propertyId,
+        original.booking.guestBookingId,
+        action,
+        { ...body, confirmationToken: original.token },
+        command,
+      ) as Promise<any>;
+    const details = await edit("details", {});
+    expect(details.input.roomSelection).toEqual(selection);
+    const single = {
+      ...details.input,
+      roomSelection: undefined,
+      rateType: "",
+      revision: 0,
+      roomTypeId: rooms[1],
+      adults: 2,
+      children: 0,
+      numberOfRooms: 1,
+    };
+    const singleQuote = await edit("quote", single);
+    const singleAttempt = await edit("prepare", {
+      ...single,
+      quoteId: singleQuote.quoteId,
+      expectedTotalAmount: singleQuote.totalAmount,
+    });
+    const first = await edit("save", { revision: 0, attemptId: singleAttempt.attemptId });
+    expect(first.booking.bookingReference).toBe(original.booking.publicReference);
+    expect(await inventory()).toEqual([2, 2, 1, 1]);
+    const nextDetails = await edit("details", {});
+    const mixed = { ...nextDetails.input, ...request, revision: 1 };
+    config.mixedRoomSelectionsEnabled = false;
+    await expect(edit("quote", mixed)).rejects.toThrow(
+      "Mixed room booking edits are not available",
+    );
+    config.mixedRoomSelectionsEnabled = true;
+    const mixedQuote = await edit("quote", mixed);
+    const mixedAttempt = await edit("prepare", {
+      ...mixed,
+      quoteId: mixedQuote.quoteId,
+      expectedTotalAmount: mixedQuote.totalAmount,
+    });
+    await pool.query(
+      "UPDATE distribution.public_room_offer_snapshots SET base_price_amount=101 WHERE property_id=$1 AND room_type_id=$2",
+      [propertyId, rooms[1]],
+    );
+    await expect(
+      edit("save", { revision: 1, attemptId: mixedAttempt.attemptId }),
+    ).rejects.toMatchObject({ statusCode: 409 });
+    expect(await inventory()).toEqual([2, 2, 1, 1]);
+    expect((await edit("details", {})).revision).toBe(1);
+    await pool.query(
+      "UPDATE distribution.public_room_offer_snapshots SET base_price_amount=100 WHERE property_id=$1 AND room_type_id=$2",
+      [propertyId, rooms[1]],
+    );
+    config.mixedRoomSelectionsEnabled = false;
+    await expect(edit("save", { revision: 1, attemptId: mixedAttempt.attemptId })).rejects.toThrow(
+      "Mixed room booking edits are not available",
+    );
+    config.mixedRoomSelectionsEnabled = true;
+    const command = context();
+    const second = await edit("save", { revision: 1, attemptId: mixedAttempt.attemptId }, command);
+    expect(await edit("save", { revision: 1, attemptId: mixedAttempt.attemptId }, command)).toEqual(
+      second,
+    );
+    expect(second.booking.bookingReference).toBe(original.booking.publicReference);
+    expect(second.booking.roomSelection).toEqual(selection);
+    expect(second.booking.hostResponseDeadline).toBe(first.booking.hostResponseDeadline);
+    expect(await inventory()).toEqual([0, 0, 1, 1]);
+    const final = await loadTargetBooking(
+      pool,
+      propertyId,
+      original.booking.guestBookingId,
+      null,
+      sha256Hex(original.token),
+    );
+    const reservation = (final.bookingMetadata as Record<string, unknown>)[
+      "inventoryReservation"
+    ] as PmsInventoryReservationBundle;
+    await transaction((client) =>
+      port.release({ transaction: client, propertyId, reservation, occurredAt: now }),
+    );
     expect(await inventory()).toEqual([2, 2, 2, 2]);
   });
   it("cannot combine two room types selling the same linked space", async () => {
