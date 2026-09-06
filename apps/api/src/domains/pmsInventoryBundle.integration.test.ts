@@ -1,3 +1,4 @@
+import { findTargetRoomCombinationOffers } from "../routes/bookingRoomCombinationOffers.js";
 import { pendingBookingEdit } from "../routes/pendingBookingEdits.js";
 import { createTargetMixedCheckoutQuote } from "../routes/bookingWebMixedSnapshot.js";
 import {
@@ -219,6 +220,40 @@ describe.skipIf(!url)("mixed room inventory transactions", () => {
       today: "2027-01-01",
       requestedAt: input.occurredAt,
     });
+  const search = (adults = 5, children = 1, maxCandidates?: number) =>
+    findTargetRoomCombinationOffers(pool, {
+      ...input, adults, children, today: "2027-01-01", requestedAt: input.occurredAt,
+      paymentMethods: ["pay_at_property"], maxCandidates,
+    });
+  it("discovers and reprices complete selections from canonical full-stay evidence", async () => {
+    const result = await search();
+    expect(result.complete).toBe(true);
+    expect(result.eligibleOfferCount).toBe(2);
+    expect(result.options[0]?.party).toEqual({ adults: 5, children: 1, rooms: 3 });
+    expect(result.options[0]?.lines).toHaveLength(2);
+    expect(result.options[0]?.totals.totalAmount).toBe("600.00");
+    expect(result.options[0]?.paymentOptions).toEqual(["pay_at_property"]);
+    expect(result.options[0]?.expiresAt).toBe("2027-01-01T10:15:00.000Z");
+    expect((await search(4, 0)).options.every((option) => option.lines.length === 1)).toBe(true);
+    expect(await search(9, 0)).toMatchObject({ complete: true, eligibleOfferCount: 2, options: [] });
+    expect(await search(5, 1, 1)).toEqual({ complete: false, eligibleOfferCount: 0, options: [] });
+  });
+  it("uses the minimum occupancy over every night and requires every explicit bound", async () => {
+    const client = await pool.connect();
+    try {
+      await client.query("BEGIN");
+      await client.query("UPDATE distribution.public_room_offer_snapshots SET occupancy=jsonb_set(occupancy,'{maxAdults}','1') WHERE property_id=$1 AND stay_date='2027-02-02'", [propertyId]);
+      const run = () => findTargetRoomCombinationOffers(client, { ...input, adults: 5, children: 0,
+        today: "2027-01-01", requestedAt: input.occurredAt, paymentMethods: ["pay_at_property"] });
+      expect(await run()).toMatchObject({ complete: true, eligibleOfferCount: 2, options: [] });
+      await client.query("UPDATE distribution.public_room_offer_snapshots SET occupancy=occupancy-'maxChildren' WHERE property_id=$1", [propertyId]);
+      expect(await run()).toMatchObject({ complete: false, eligibleOfferCount: 0, options: [] });
+      for (const bound of ['"unknown"', '99999999999999999999999999999']) {
+        await client.query("UPDATE distribution.public_room_offer_snapshots SET occupancy=jsonb_set(occupancy,'{maxChildren}',$2::jsonb) WHERE property_id=$1", [propertyId, bound]);
+        expect(await run()).toMatchObject({ complete: false, eligibleOfferCount: 0, options: [] });
+      }
+    } finally { await client.query("ROLLBACK"); client.release(); }
+  });
   it("quotes six guests using actual per-room caps and exact full-stay combined prices", async () => {
     await pool.query(
       "UPDATE distribution.public_room_offer_snapshots SET base_price_amount=100.01 WHERE property_id=$1",
@@ -253,6 +288,7 @@ describe.skipIf(!url)("mixed room inventory transactions", () => {
     );
     try {
       await expect(quote()).rejects.toMatchObject({ statusCode: 409 });
+      expect(await search()).toMatchObject({ complete: false, options: [] });
     } finally {
       await pool.query(
         `UPDATE distribution.public_room_offer_snapshots SET ${restore} WHERE property_id=$1 AND room_type_id=$2`,
@@ -271,6 +307,7 @@ describe.skipIf(!url)("mixed room inventory transactions", () => {
       );
       try {
         await expect(quote()).rejects.toMatchObject({ statusCode: 409 });
+      expect(await search()).toMatchObject({ complete: false, options: [] });
       } finally {
         await pool.query("DELETE FROM pms.rate_rules WHERE property_id=$1", [propertyId]);
       }
