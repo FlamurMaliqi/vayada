@@ -54,11 +54,8 @@ it("hides inaccessible destinations independently and fails closed on read error
   expect(reads.payments).toHaveBeenCalledWith({ propertyId: "property-1" });
 });
 
-it("requires both affiliate activation and authorized affiliate reads", async () => {
-  reads.modules.mockResolvedValue({ activations: [] });
+it("does not offer retired affiliate management even when activated", async () => {
   expect((await loadSearchAccess("hotel-1")).has("affiliates")).toBe(false);
+  expect(SEARCH_ENTRIES.map((entry) => entry[1])).not.toContain("/affiliates");
   expect(reads.affiliates).not.toHaveBeenCalled();
-  reads.modules.mockResolvedValue({ activations: [{ moduleId: "affiliates", isActive: true }] });
-  reads.affiliates.mockRejectedValue({ status: 403 });
-  expect((await loadSearchAccess("hotel-1")).has("affiliates")).toBe(false);
 });
