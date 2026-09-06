@@ -5,6 +5,7 @@ WORKDIR /app
 
 COPY . .
 RUN npm ci
+RUN npm run build --workspace=@vayada/domain-hotels
 
 ARG NEXT_PUBLIC_API_URL
 ARG NEXT_PUBLIC_BOOKING_WEB_API_URL
