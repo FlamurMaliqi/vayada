@@ -80,20 +80,14 @@ import {
 //   the hotel pays Vayada; payments = how the hotel collects from guests).
 type Section = SettingsSectionId;
 
-const BILLING_SETTINGS_UNAVAILABLE = "Billing settings are not available on next-api yet.";
-const STRIPE_DASHBOARD_ERROR =
-  "Couldn't open your Stripe Dashboard right now. Please try again in a moment.";
-const STRIPE_NOT_CONNECTED =
-  "Your Stripe account isn't connected. Connect Stripe in your payment settings to access the dashboard.";
+const BILLING_SETTINGS_UNAVAILABLE = "admin.billingSettingsAreNotAvailableOnNextApiYet";
+const STRIPE_DASHBOARD_ERROR = "admin.couldnTOpenYourStripeDashboardRightNowPleaseTry";
+const STRIPE_NOT_CONNECTED = "admin.yourStripeAccountIsnTConnectedConnectStripeInYour";
 
 function readBookingHotelId(settings: PropertySettings): string {
   if (settings.id?.trim()) return settings.id.trim();
   if (typeof window === "undefined") return "";
   return localStorage.getItem("selectedHotelId")?.trim() ?? "";
-}
-
-function errorMessage(error: unknown, fallback: string): string {
-  return error instanceof Error && error.message ? error.message : fallback;
 }
 
 function isFinanceStripeReady(response: FinancePaymentSettingsResponse): boolean {
@@ -108,15 +102,15 @@ function isFinanceStripeReady(response: FinancePaymentSettingsResponse): boolean
   );
 }
 
-function formatBillingAmount(amountMinor: number): string {
-  return new Intl.NumberFormat(undefined, { style: "currency", currency: "EUR" }).format(
+function formatBillingAmount(amountMinor: number, locale: string): string {
+  return new Intl.NumberFormat(locale, { style: "currency", currency: "EUR" }).format(
     amountMinor / 100,
   );
 }
 
-function formatBillingDate(value: string | null): string {
+function formatBillingDate(value: string | null, locale: string): string {
   return value
-    ? new Date(value).toLocaleDateString(undefined, {
+    ? new Date(value).toLocaleDateString(locale, {
         day: "numeric",
         month: "long",
         year: "numeric",
@@ -231,11 +225,11 @@ function buildTargetSettingsUpdate(
     };
   }
 
-  return { ok: false, message: "This settings section is not saved by property settings." };
+  return { ok: false, message: "admin.thisSettingsSectionIsNotSavedByPropertySettings" };
 }
 
 export default function SettingsPage() {
-  const { t } = useTranslation();
+  const { t, locale } = useTranslation();
   const [activeSection, setActiveSection] = useState<Section>("property");
   const selectSection = useCallback((section: Section) => {
     setActiveSection(section);
@@ -270,9 +264,9 @@ export default function SettingsPage() {
   const localizationLoadVersion = useRef(0);
   const getBookingHotelIdForLocalization = useCallback(() => {
     const hotelId = readBookingHotelId(settings);
-    if (!hotelId) throw new Error("Booking hotel id is required.");
+    if (!hotelId) throw new Error(t("admin.bookingHotelIdIsRequired"));
     return hotelId;
-  }, [settings]);
+  }, [settings, t]);
   const {
     defaultCurrency,
     setDefaultCurrency,
@@ -337,12 +331,12 @@ export default function SettingsPage() {
       setSettings(data);
       return data;
     } catch {
-      setFeedback({ type: "error", message: t("settings.feedback.loadError") });
+      setFeedback({ type: "error", message: "settings.feedback.loadError" });
       return null;
     } finally {
       setLoading(false);
     }
-  }, [t]);
+  }, []);
 
   const loadBookingAcceptance = useCallback(async (hotelId: string) => {
     setAcceptanceLoading(true);
@@ -351,8 +345,8 @@ export default function SettingsPage() {
     try {
       const result = await settingsService.getBookingAcceptance(hotelId);
       setAcceptanceMode(result.acceptanceMode);
-    } catch (error) {
-      setAcceptanceError(errorMessage(error, "Booking acceptance settings failed to load."));
+    } catch {
+      setAcceptanceError("admin.bookingAcceptanceSettingsFailedToLoad");
     } finally {
       setAcceptanceLoading(false);
     }
@@ -364,8 +358,8 @@ export default function SettingsPage() {
     setSameDayError("");
     try {
       setSameDaySettings(await settingsService.getSameDayBooking(hotelId));
-    } catch (error) {
-      setSameDayError(errorMessage(error, "Same-day booking settings failed to load."));
+    } catch {
+      setSameDayError("admin.sameDayBookingSettingsFailedToLoad");
     } finally {
       setSameDayLoading(false);
     }
@@ -385,9 +379,9 @@ export default function SettingsPage() {
         if (!isCurrentLoad()) return;
         applyLocalizationSettings(localization);
         setCanonicalDefaultCurrency(localization.defaultCurrency);
-      } catch (error) {
+      } catch {
         if (!isCurrentLoad()) return;
-        setLocalizationLoadError(errorMessage(error, "Localization settings failed to load."));
+        setLocalizationLoadError("admin.localizationSettingsFailedToLoad");
       } finally {
         if (isCurrentLoad()) setLocalizationLoading(false);
       }
@@ -456,12 +450,12 @@ export default function SettingsPage() {
         if (!property) {
           setBillingPlanLoading(false);
           setAcceptanceLoading(false);
-          setAcceptanceError("Select a hotel before loading booking acceptance settings.");
+          setAcceptanceError("admin.selectAHotelBeforeLoadingBookingAcceptanceSettings");
           setSameDayLoading(false);
-          setSameDayError("Select a hotel before loading same-day booking settings.");
+          setSameDayError("admin.selectAHotelBeforeLoadingSameDayBookingSettings");
           if (!selectedHotelId) {
             setLocalizationLoading(false);
-            setLocalizationLoadError("Select a hotel before loading localization settings.");
+            setLocalizationLoadError("admin.selectAHotelBeforeLoadingLocalizationSettings");
           }
           return null;
         }
@@ -469,12 +463,12 @@ export default function SettingsPage() {
         if (!hotelId) {
           setBillingPlanLoading(false);
           setAcceptanceLoading(false);
-          setAcceptanceError("Select a hotel before loading booking acceptance settings.");
+          setAcceptanceError("admin.selectAHotelBeforeLoadingBookingAcceptanceSettings");
           setSameDayLoading(false);
-          setSameDayError("Select a hotel before loading same-day booking settings.");
+          setSameDayError("admin.selectAHotelBeforeLoadingSameDayBookingSettings");
           if (!selectedHotelId) {
             setLocalizationLoading(false);
-            setLocalizationLoadError("Select a hotel before loading localization settings.");
+            setLocalizationLoadError("admin.selectAHotelBeforeLoadingLocalizationSettings");
           }
           return null;
         }
@@ -504,15 +498,15 @@ export default function SettingsPage() {
               }
               setBillingPlanConfirmation(
                 plan.planStatus.plan === "fixed"
-                  ? "Fixed Plan is active."
-                  : "Payment received. Your Fixed Plan is still being confirmed.",
+                  ? "admin.fixedPlanIsActive"
+                  : "admin.paymentReceivedYourFixedPlanIsStillBeingConfirmed",
               );
             } else if (billingReturn === "canceled") {
-              setBillingPlanError("Payment failed. Please try again or use a different card.");
+              setBillingPlanError("admin.paymentFailedPleaseTryAgainOrUseADifferentCard");
             }
             setFinancePlanStatus(plan.planStatus);
-          } catch (error) {
-            setBillingPlanError(errorMessage(error, "Billing plan failed to load."));
+          } catch {
+            setBillingPlanError("admin.billingPlanFailedToLoad");
           } finally {
             setBillingPlanLoading(false);
           }
@@ -528,11 +522,11 @@ export default function SettingsPage() {
         }
         applyFinancePaymentSettings(paymentSettings);
       })
-      .catch((err: unknown) => {
+      .catch(() => {
         if (paymentSettingsVersion !== paymentSettingsLoadVersion.current) return;
         setPaymentSettingsLoaded(false);
         setBillingPlanLoading(false);
-        setPaymentError(errorMessage(err, "Payment settings failed to load."));
+        setPaymentError("admin.paymentSettingsFailedToLoad");
       });
   }, [
     applyFinancePaymentSettings,
@@ -591,16 +585,16 @@ export default function SettingsPage() {
         }
         if (isFinanceStripeReady(paymentSettings)) {
           setStripeAccountCreationBlocked(false);
-          setPaymentSuccess("Stripe is connected.");
+          setPaymentSuccess("admin.stripeIsConnected");
         } else {
-          setPaymentError("Stripe setup is still pending. Complete onboarding or check again.");
+          setPaymentError("admin.stripeSetupIsStillPendingCompleteOnboardingOrCheckAgain");
         }
         return "settled";
       } catch (error) {
         if (controller.signal.aborted || (error instanceof Error && error.name === "AbortError")) {
           return "aborted";
         }
-        setPaymentError("Couldn't refresh Stripe status. Check again in a moment.");
+        setPaymentError("admin.couldnTRefreshStripeStatusCheckAgainInAMoment");
         return "settled";
       } finally {
         if (stripeRefreshAbort.current === controller) {
@@ -644,7 +638,7 @@ export default function SettingsPage() {
   const handleAcceptanceToggle = async () => {
     const hotelId = readBookingHotelId(settings);
     if (!hotelId || !acceptanceMode) {
-      setAcceptanceError("Load the current booking acceptance setting before changing it.");
+      setAcceptanceError("admin.loadTheCurrentBookingAcceptanceSettingBeforeChangingIt");
       return;
     }
 
@@ -656,9 +650,9 @@ export default function SettingsPage() {
         hotelId,
       );
       setAcceptanceMode(saved.acceptanceMode);
-      setFeedback({ type: "success", message: "Booking acceptance settings saved." });
-    } catch (error) {
-      setAcceptanceError(errorMessage(error, "Booking acceptance settings could not be saved."));
+      setFeedback({ type: "success", message: "admin.bookingAcceptanceSettingsSaved" });
+    } catch {
+      setAcceptanceError("admin.bookingAcceptanceSettingsCouldNotBeSaved");
     } finally {
       setAcceptanceSaving(false);
     }
@@ -672,7 +666,7 @@ export default function SettingsPage() {
   const saveSameDayBooking = async (enabled: boolean, cutoffLocalTime: string | null) => {
     const hotelId = readBookingHotelId(settings);
     if (!hotelId || !sameDaySettings) {
-      setSameDayError("Load the current same-day booking setting before changing it.");
+      setSameDayError("admin.loadTheCurrentSameDayBookingSettingBeforeChangingIt");
       return;
     }
     setSameDaySaving(true);
@@ -682,9 +676,9 @@ export default function SettingsPage() {
       setSameDaySettings(
         await settingsService.updateSameDayBooking(enabled, cutoffLocalTime, hotelId),
       );
-      setFeedback({ type: "success", message: "Same-day booking settings saved." });
-    } catch (error) {
-      setSameDayError(errorMessage(error, "Same-day booking settings could not be saved."));
+      setFeedback({ type: "success", message: "admin.sameDayBookingSettingsSaved" });
+    } catch {
+      setSameDayError("admin.sameDayBookingSettingsCouldNotBeSaved");
     } finally {
       setSameDaySaving(false);
     }
@@ -699,7 +693,7 @@ export default function SettingsPage() {
     if (!connectEmail) return;
     const stripeTab = window.open("about:blank", "vayada-stripe-connect");
     if (!stripeTab) {
-      setPaymentError("Allow pop-ups to continue to Stripe setup.");
+      setPaymentError("admin.allowPopUpsToContinueToStripeSetup");
       return;
     }
     stripeTab.opener = null;
@@ -709,7 +703,7 @@ export default function SettingsPage() {
       const hotelId = readBookingHotelId(settings);
       if (!hotelId) {
         stripeTab.close();
-        setPaymentError("Select a hotel before creating a Stripe account.");
+        setPaymentError("admin.selectAHotelBeforeCreatingAStripeAccount");
         return;
       }
       let onboardingPropertyId = "";
@@ -737,16 +731,14 @@ export default function SettingsPage() {
       stripeTab.location.assign(result.onboardingUrl);
       if (!trackingFlowId) {
         setStripeAccountCreationBlocked(true);
-        setPaymentError(
-          "Stripe setup opened, but automatic status tracking is unavailable. Check Stripe status when you return.",
-        );
+        setPaymentError("admin.stripeSetupOpenedButAutomaticStatusTrackingIsUnavailableCheck");
       }
     } catch (err: unknown) {
       stripeTab.close();
       const msg =
         err instanceof TypeError
-          ? t("settings.billing.errorPaymentServerUnreachable")
-          : t("settings.billing.errorAccountCreate");
+          ? "settings.billing.errorPaymentServerUnreachable"
+          : "settings.billing.errorAccountCreate";
       setPaymentError(msg);
     } finally {
       setCreatingAccount(false);
@@ -761,7 +753,7 @@ export default function SettingsPage() {
     if (!stripeTab) {
       stripeOnboardingLinkPending.current = false;
       setIssuingStripeOnboardingLink(false);
-      setPaymentError("Allow pop-ups to continue to Stripe setup.");
+      setPaymentError("admin.allowPopUpsToContinueToStripeSetup");
       return;
     }
     stripeTab.opener = null;
@@ -769,7 +761,7 @@ export default function SettingsPage() {
       const hotelId = readBookingHotelId(settings);
       if (!hotelId || !stripeAccountId) {
         stripeTab.close();
-        setPaymentError("Select a hotel and create a Stripe account before onboarding.");
+        setPaymentError("admin.selectAHotelAndCreateAStripeAccountBeforeOnboarding");
         return;
       }
       const propertyLink = await getBookingHotelPropertyLink({ hotelId });
@@ -785,13 +777,11 @@ export default function SettingsPage() {
       stripeTab.location.assign(link.onboardingUrl);
       if (!trackingFlowId) {
         setStripeAccountCreationBlocked(true);
-        setPaymentError(
-          "Stripe setup opened, but automatic status tracking is unavailable. Check Stripe status when you return.",
-        );
+        setPaymentError("admin.stripeSetupOpenedButAutomaticStatusTrackingIsUnavailableCheck");
       }
     } catch {
       stripeTab.close();
-      setPaymentError(t("settings.billing.errorOnboardingLink"));
+      setPaymentError("settings.billing.errorOnboardingLink");
     } finally {
       stripeOnboardingLinkPending.current = false;
       setIssuingStripeOnboardingLink(false);
@@ -840,7 +830,7 @@ export default function SettingsPage() {
     };
     try {
       if (!paymentSettingsLoaded) {
-        fail("Payment settings did not load. Refresh before saving payments.");
+        fail("admin.paymentSettingsDidNotLoadRefreshBeforeSavingPayments");
         return null;
       }
       if (
@@ -849,19 +839,19 @@ export default function SettingsPage() {
         savingCurrencyLang ||
         !canonicalDefaultCurrency
       ) {
-        fail("Localization settings did not load. Retry Localization before saving payments.");
+        fail("admin.localizationSettingsDidNotLoadRetryLocalizationBeforeSavingPayments");
         return null;
       }
       if (
         settings.online_card_payment &&
         (paymentProvider === "xendit" || paymentProvider === "vayada")
       ) {
-        fail(`${paymentProvider === "xendit" ? "Xendit" : "vayada Payments"} is coming soon.`);
+        fail("settings.billing.comingSoon");
         return null;
       }
       const hotelId = readBookingHotelId(settings);
       if (!hotelId) {
-        fail("Select a hotel before saving payment settings.");
+        fail("admin.selectAHotelBeforeSavingPaymentSettings");
         return null;
       }
       const propertyLink = await getBookingHotelPropertyLink({ hotelId });
@@ -918,15 +908,15 @@ export default function SettingsPage() {
         payout_bank_name: "",
         payout_swift: "",
       }));
-      const message = t("settings.billing.paymentSettingsSaved");
+      const message = "settings.billing.paymentSettingsSaved";
       setPaymentSuccess(message);
       if (showPageFeedback) setFeedback({ type: "success", message });
       return propertyLink.propertyId;
     } catch (error) {
       fail(
         error instanceof BankTransferValidationError
-          ? error.message
-          : t("settings.billing.errorPaymentSaveFailed"),
+          ? "admin.enterTheCompleteBankDetailsOrLeaveAllFieldsEmpty"
+          : "settings.billing.errorPaymentSaveFailed",
       );
       return null;
     } finally {
@@ -962,9 +952,9 @@ export default function SettingsPage() {
       setFeedback(null);
       const data = await settingsService.updatePropertySettings(targetSettingsUpdate.data);
       setSettings(data);
-      setFeedback({ type: "success", message: t("settings.feedback.saveSuccess") });
-    } catch (err: unknown) {
-      setFeedback({ type: "error", message: errorMessage(err, t("settings.feedback.saveError")) });
+      setFeedback({ type: "success", message: "settings.feedback.saveSuccess" });
+    } catch {
+      setFeedback({ type: "error", message: "settings.feedback.saveError" });
     } finally {
       setSaving(false);
     }
@@ -979,11 +969,9 @@ export default function SettingsPage() {
         propertyId: billingPropertyId,
       });
       window.location.assign(result.checkout.checkoutUrl);
-    } catch (error) {
+    } catch {
       setBillingPlanModal(null);
-      setBillingPlanError(
-        errorMessage(error, "Payment failed. Please try again or use a different card."),
-      );
+      setBillingPlanError("admin.paymentFailedPleaseTryAgainOrUseADifferentCard");
     } finally {
       setBillingPlanAction(null);
     }
@@ -996,8 +984,8 @@ export default function SettingsPage() {
       setBillingPlanError("");
       const result = await openFinanceCustomerPortal({ propertyId: billingPropertyId });
       window.location.assign(result.customerPortal.portalUrl);
-    } catch (error) {
-      setBillingPlanError(errorMessage(error, "Stripe billing could not be opened."));
+    } catch {
+      setBillingPlanError("admin.stripeBillingCouldNotBeOpened");
     } finally {
       setBillingPlanAction(null);
     }
@@ -1012,11 +1000,13 @@ export default function SettingsPage() {
       setFinancePlanStatus(result.planStatus);
       setBillingPlanModal(null);
       setBillingPlanConfirmation(
-        `Your Fixed Plan remains active through ${formatBillingDate(result.planStatus.currentPeriodEnd)}.`,
+        t("admin.yourFixedPlanRemainsActiveThroughDate", {
+          date: formatBillingDate(result.planStatus.currentPeriodEnd, locale),
+        }),
       );
-    } catch (error) {
+    } catch {
       setBillingPlanModal(null);
-      setBillingPlanError(errorMessage(error, "The plan change could not be scheduled."));
+      setBillingPlanError("admin.thePlanChangeCouldNotBeScheduled");
     } finally {
       setBillingPlanAction(null);
     }
@@ -1030,10 +1020,8 @@ export default function SettingsPage() {
     { id: "property", label: t("settings.tabs.property"), icon: HotelIcon },
     { id: "booking", label: t("settings.tabs.booking"), icon: CalendarDaysIcon },
     { id: "localization", label: t("bookingFlow.tabs.localization"), icon: GlobeAltIcon },
-    // TODO i18n: add settings.tabs.payments to messages/*.json.
-    // Hardcoded English until then.
     { id: "billing", label: t("settings.tabs.billing"), icon: CreditCardIcon },
-    { id: "payments", label: "Payments", icon: BanknotesIcon },
+    { id: "payments", label: t("admin.payments"), icon: BanknotesIcon },
   ];
 
   return (
@@ -1046,14 +1034,14 @@ export default function SettingsPage() {
     >
       {stripeDashboardToast && (
         <div className="fixed right-4 top-4 z-50 w-[min(24rem,calc(100vw-2rem))]" role="alert">
-          <FeedbackAlert type="error" message={stripeDashboardToast} />
+          <FeedbackAlert type="error" message={t(stripeDashboardToast)} />
         </div>
       )}
 
       {/* Feedback banner */}
       {feedback && (
         <div role={feedback.type === "error" ? "alert" : "status"} aria-live="polite">
-          <FeedbackAlert type={feedback.type} message={feedback.message} className="mb-4" />
+          <FeedbackAlert type={feedback.type} message={t(feedback.message)} className="mb-4" />
         </div>
       )}
 
@@ -1251,32 +1239,34 @@ export default function SettingsPage() {
                 enabled={acceptanceMode === "instant"}
                 disabled={acceptanceSaving || Boolean(acceptanceError)}
                 onChange={() => void handleAcceptanceToggle()}
-                label="Accept bookings instantly"
-                description="Confirm card and pay-at-property bookings immediately. Bank transfers always require manual review."
+                label={t("admin.acceptBookingsInstantly")}
+                description={t("admin.confirmCardAndPayAtPropertyBookingsImmediatelyBankTransfers")}
               />
             ) : acceptanceLoading ? (
               <div className="py-3" role="status">
-                <p className="text-[13px] font-semibold text-gray-900">Accept bookings instantly</p>
-                <p className="text-[13px] text-gray-500">Loading current setting…</p>
+                <p className="text-[13px] font-semibold text-gray-900">
+                  {t("admin.acceptBookingsInstantly")}
+                </p>
+                <p className="text-[13px] text-gray-500">{t("admin.loadingCurrentSetting")}</p>
               </div>
             ) : null}
             <p className="border-t border-gray-100 pt-3 text-[12px] text-gray-500">
-              This setting is shared between PMS and Booking Engine.
+              {t("admin.thisSettingIsSharedBetweenPMSAndBookingEngine")}
             </p>
             {acceptanceSaving && (
               <p className="mt-2 text-[12px] text-gray-500" role="status">
-                Saving…
+                {t("admin.saving")}
               </p>
             )}
             {acceptanceError && (
               <div className="mt-3 flex flex-wrap items-center justify-between gap-3" role="alert">
-                <p className="text-[12px] text-red-700">{acceptanceError}</p>
+                <p className="text-[12px] text-red-700">{t(acceptanceError)}</p>
                 <button
                   type="button"
                   onClick={retryBookingAcceptance}
                   className="rounded-md border border-gray-200 bg-white px-3 py-1.5 text-[12px] font-medium text-gray-700 hover:border-gray-400"
                 >
-                  Retry
+                  {t("auth.chooseProperty.retry")}
                 </button>
               </div>
             )}
@@ -1286,7 +1276,7 @@ export default function SettingsPage() {
             settings={sameDaySettings}
             loading={sameDayLoading}
             saving={sameDaySaving}
-            loadError={sameDayError}
+            loadError={t(sameDayError)}
             onSave={(enabled, cutoffLocalTime) => void saveSameDayBooking(enabled, cutoffLocalTime)}
             onRetry={retrySameDayBooking}
           />
@@ -1340,18 +1330,18 @@ export default function SettingsPage() {
         <SettingsSection
           id="localization"
           title={t("bookingFlow.tabs.localization")}
-          description="Choose the currencies and languages available on your booking page."
+          description={t("admin.chooseTheCurrenciesAndLanguagesAvailableOnYourBookingPage")}
         >
           {localizationLoading ? (
             <SettingsCard>
               <p className="text-sm text-gray-500" role="status">
-                Loading localization settings…
+                {t("admin.loadingLocalizationSettings")}
               </p>
             </SettingsCard>
           ) : localizationLoadError ? (
             <SettingsCard>
               <div className="flex flex-wrap items-center justify-between gap-3" role="alert">
-                <p className="text-sm text-red-700">{localizationLoadError}</p>
+                <p className="text-sm text-red-700">{t(localizationLoadError)}</p>
                 <button
                   type="button"
                   onClick={() => {
@@ -1361,7 +1351,7 @@ export default function SettingsPage() {
                   disabled={!readBookingHotelId(settings)}
                   className="rounded-md border border-gray-200 bg-white px-3 py-1.5 text-sm font-medium text-gray-700 hover:border-gray-400 disabled:opacity-50"
                 >
-                  Retry
+                  {t("auth.chooseProperty.retry")}
                 </button>
               </div>
             </SettingsCard>
@@ -1431,7 +1421,7 @@ export default function SettingsPage() {
                   disabled={billingPlanLoading || billingPlanAction !== null}
                   className="w-full py-2 text-[12px] font-semibold border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-60 transition-colors"
                 >
-                  Switch to Commission Plan
+                  {t("admin.switchToCommissionPlan")}
                 </button>
               )}
             </div>
@@ -1454,15 +1444,17 @@ export default function SettingsPage() {
                   </span>
                 )}
               </div>
-              <p className="text-[12px] text-gray-500 mb-3">Fixed fee based on active rooms</p>
+              <p className="text-[12px] text-gray-500 mb-3">
+                {t("admin.fixedFeeBasedOnActiveRooms")}
+              </p>
               <div className="bg-gray-50 rounded-xl p-4 text-center mb-4">
                 <span className="text-3xl font-bold text-gray-900">
-                  {formatBillingAmount(financePlanStatus?.amountMinor ?? 3_000)}
+                  {formatBillingAmount(financePlanStatus?.amountMinor ?? 3_000, locale)}
                 </span>
-                <p className="text-[11px] text-gray-400 mt-1">every 30 days</p>
+                <p className="text-[11px] text-gray-400 mt-1">{t("admin.every30Days")}</p>
                 <p className="text-[10px] text-gray-400 mt-0.5">
-                  €30 for the first active room + €5 per additional room ·{" "}
-                  {financePlanStatus?.activeRoomCount ?? 0} active rooms
+                  {t("admin.30ForTheFirstActiveRoom5PerAdditionalRoom")}{" "}
+                  {financePlanStatus?.activeRoomCount ?? 0} {t("admin.activeRooms")}
                 </p>
               </div>
               {financePlanStatus?.plan !== "fixed" && (
@@ -1476,13 +1468,16 @@ export default function SettingsPage() {
                   }
                   className="w-full py-2 text-[12px] font-semibold border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-60 transition-colors"
                 >
-                  {financePlanStatus?.checkoutPending ? "Resume payment" : "Switch to Fixed Plan"}
+                  {financePlanStatus?.checkoutPending
+                    ? t("admin.resumePayment")
+                    : t("admin.switchToFixedPlan")}
                 </button>
               )}
               {financePlanStatus?.plan === "fixed" && (
                 <div className="space-y-2">
                   <p className="text-center text-[11px] text-gray-500">
-                    Next billing date: {formatBillingDate(financePlanStatus.nextBillingDate)}
+                    {t("admin.nextBillingDate")}
+                    {formatBillingDate(financePlanStatus.nextBillingDate, locale)}
                   </p>
                   <button
                     onClick={manageFixedPlanBilling}
@@ -1491,7 +1486,9 @@ export default function SettingsPage() {
                     }
                     className="w-full py-2 text-[12px] font-semibold border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-60 transition-colors"
                   >
-                    {billingPlanAction === "portal" ? "Opening billing…" : "Manage billing"}
+                    {billingPlanAction === "portal"
+                      ? t("admin.openingBilling")
+                      : t("admin.manageBilling")}
                   </button>
                 </div>
               )}
@@ -1500,7 +1497,7 @@ export default function SettingsPage() {
 
           {billingPlanLoading && (
             <div className="rounded-lg border border-gray-200 bg-white p-4 text-[13px] text-gray-500">
-              Loading your current billing plan…
+              {t("admin.loadingYourCurrentBillingPlan")}
             </div>
           )}
           {billingPlanError && (
@@ -1508,12 +1505,12 @@ export default function SettingsPage() {
               role="alert"
               className="rounded-lg border border-red-200 bg-red-50 p-4 text-[13px] text-red-800"
             >
-              {billingPlanError}
+              {t(billingPlanError)}
             </div>
           )}
           {billingPlanConfirmation && (
             <div className="rounded-lg border border-green-200 bg-green-50 p-4 text-[13px] text-green-800">
-              {billingPlanConfirmation}
+              {t(billingPlanConfirmation)}
             </div>
           )}
           {financePlanStatus?.status === "past_due" && (
@@ -1521,16 +1518,15 @@ export default function SettingsPage() {
               role="alert"
               className="rounded-lg border border-red-200 bg-red-50 p-4 text-[13px] text-red-800"
             >
-              Your renewal payment is past due. Stripe will retry it automatically; use Manage
-              billing to update your card.
+              {t("admin.yourRenewalPaymentIsPastDueStripeWillRetryIt")}
             </div>
           )}
           {financePlanStatus?.cancelAtPeriodEnd && (
             <div className="bg-amber-50 border border-amber-200 rounded-lg p-4">
               <p className="text-[13px] text-amber-800">
-                Your Fixed Plan is paid through{" "}
-                <strong>{formatBillingDate(financePlanStatus.currentPeriodEnd)}</strong>. Commission
-                will apply to bookings created after that date.
+                {t("admin.yourFixedPlanIsPaidThroughDateCommissionWillApply", {
+                  date: formatBillingDate(financePlanStatus.currentPeriodEnd, locale),
+                })}
               </p>
             </div>
           )}
@@ -1548,13 +1544,17 @@ export default function SettingsPage() {
                   className="text-base font-semibold text-gray-900"
                 >
                   {billingPlanModal === "fixed"
-                    ? "Switch to Fixed Plan"
-                    : "Switch to Commission Plan"}
+                    ? t("admin.switchToFixedPlan")
+                    : t("admin.switchToCommissionPlan")}
                 </h2>
                 <p className="mt-3 text-[13px] leading-5 text-gray-600">
                   {billingPlanModal === "fixed"
-                    ? `You're switching to the Fixed Plan at ${formatBillingAmount(financePlanStatus.amountMinor)}/month. Your first payment will be charged today. Future payments will be charged every 30 days. Any bookings created before today will still settle under your current commission terms.`
-                    : `You're switching back to the Commission Plan. Your current Fixed Plan is paid through ${formatBillingDate(financePlanStatus.currentPeriodEnd)}. Commission will apply to all bookings created after that date.`}
+                    ? t("admin.youReSwitchingToTheFixedPlanAtAmountMonth", {
+                        amount: formatBillingAmount(financePlanStatus.amountMinor, locale),
+                      })
+                    : t("admin.youReSwitchingBackToTheCommissionPlanYourCurrent", {
+                        date: formatBillingDate(financePlanStatus.currentPeriodEnd, locale),
+                      })}
                 </p>
                 <div className="mt-6 flex justify-end gap-2">
                   <button
@@ -1562,7 +1562,7 @@ export default function SettingsPage() {
                     disabled={billingPlanAction !== null}
                     className="rounded-lg border border-gray-300 px-4 py-2 text-[12px] font-semibold text-gray-700 hover:bg-gray-50 disabled:opacity-60"
                   >
-                    Cancel
+                    {t("settings.totp.cancel")}
                   </button>
                   <button
                     onClick={
@@ -1573,11 +1573,11 @@ export default function SettingsPage() {
                   >
                     {billingPlanModal === "fixed"
                       ? billingPlanAction === "checkout"
-                        ? "Opening payment…"
-                        : "Continue to payment"
+                        ? t("admin.openingPayment")
+                        : t("admin.continueToPayment")
                       : billingPlanAction === "commission"
-                        ? "Scheduling…"
-                        : "Switch to Commission Plan"}
+                        ? t("admin.scheduling")
+                        : t("admin.switchToCommissionPlan")}
                   </button>
                 </div>
               </div>
@@ -1755,15 +1755,14 @@ export default function SettingsPage() {
                   </svg>
                   <span className="text-[13px] font-semibold text-gray-900">PayPal</span>
                   <p className="text-[11px] text-gray-500 mt-1 mb-3">
-                    Guests send payment manually to your PayPal email. Confirm it in PMS once
-                    received.
+                    {t("admin.guestsSendPaymentManuallyToYourPayPalEmailConfirmIt")}
                   </p>
                 </button>
                 {settings.paypal_enabled && (
                   <div className="mt-3 pt-3 border-t border-gray-200 space-y-3">
                     <div>
                       <label className="block text-[11px] font-medium text-gray-600 mb-1">
-                        PayPal email
+                        {t("admin.paypalEmail")}
                       </label>
                       <input
                         type="email"
@@ -1775,7 +1774,7 @@ export default function SettingsPage() {
                     </div>
                     <div>
                       <label className="block text-[11px] font-medium text-gray-600 mb-1">
-                        Payment window (hours)
+                        {t("admin.paymentWindowHours")}
                       </label>
                       <input
                         type="number"
@@ -1791,7 +1790,7 @@ export default function SettingsPage() {
                         className="w-full rounded-lg border border-gray-200 px-3 py-2 text-[12px] text-gray-900 focus:outline-none focus:ring-2 focus:ring-primary-500/20 focus:border-primary-500"
                       />
                       <p className="mt-1 text-[10px] text-gray-500">
-                        Guests are asked to pay within this window. Confirm receipt manually in PMS.
+                        {t("admin.guestsAreAskedToPayWithinThisWindowConfirmReceipt")}
                       </p>
                     </div>
                   </div>
@@ -2069,17 +2068,19 @@ export default function SettingsPage() {
 
           {settings.bank_transfer && bankDestination?.maskedAccount && (
             <p className="text-sm text-gray-600">
-              Saved account: {bankDestination.maskedAccount}. Leave bank fields empty to keep it, or
-              enter complete replacement details.
+              {t("admin.savedAccount")} {bankDestination.maskedAccount}{" "}
+              {t("admin.leaveBankFieldsEmptyToKeepItOrEnterComplete")}
             </p>
           )}
           {/* Direct-transfer details */}
           {settings.bank_transfer && (
             <div className="bg-white rounded-lg border border-gray-200 p-4 md:p-5 space-y-3">
               <div>
-                <h2 className="text-sm font-semibold text-gray-900">Direct guest bank transfers</h2>
+                <h2 className="text-sm font-semibold text-gray-900">
+                  {t("admin.directGuestBankTransfers")}
+                </h2>
                 <p className="text-[12px] text-gray-500 mt-0.5">
-                  Guests receive these bank details after submitting a bank-transfer booking.
+                  {t("admin.guestsReceiveTheseBankDetailsAfterSubmittingABankTransfer")}
                 </p>
               </div>
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
@@ -2199,20 +2200,19 @@ export default function SettingsPage() {
       {activeSection === "payments" && (
         <SettingsSection
           id="payments"
-          title="Payments"
-          description="How your hotel collects payments from guests."
+          title={t("admin.payments")}
+          description={t("admin.howYourHotelCollectsPaymentsFromGuests")}
         >
           {!stripeAccountId &&
           (stripeAccountCreationBlocked || !paymentSettingsLoaded) &&
           paymentError ? (
             <SettingsCard>
-              <FeedbackAlert type="error" message={paymentError} className="mb-3" />
+              <FeedbackAlert type="error" message={t(paymentError)} className="mb-3" />
               <span className="mb-3 inline-flex rounded-full bg-yellow-100 px-2 py-0.5 text-[11px] font-medium text-yellow-700">
                 {t("settings.billing.pendingOnboarding")}
               </span>
               <p className="mb-3 text-sm text-gray-700">
-                Stripe account status couldn&apos;t be confirmed. Check the existing account before
-                starting setup again.
+                {t("admin.stripeAccountStatusCouldnTBeConfirmedCheckTheExisting")}
               </p>
               <button
                 type="button"
@@ -2220,21 +2220,20 @@ export default function SettingsPage() {
                 disabled={refreshingStripe || !billingPropertyId}
                 className="px-4 py-2 text-[13px] font-medium border border-gray-300 bg-white text-gray-800 rounded-lg hover:bg-gray-50 disabled:opacity-50 transition-colors"
               >
-                {refreshingStripe ? "Checking Stripe..." : "Check Stripe status"}
+                {refreshingStripe ? t("admin.checkingStripe") : t("admin.checkStripeStatus")}
               </button>
             </SettingsCard>
           ) : !settings.online_card_payment ? (
             <SettingsCard>
               <p className="text-sm text-gray-700">
-                Enable <strong>Online card payment</strong> in{" "}
+                {t("admin.enableOnlineCardPaymentInBillingPaymentMethodsFirstTo")}{" "}
                 <button
                   type="button"
                   onClick={() => selectSection("billing")}
                   className="text-primary-600 hover:underline"
                 >
-                  Billing &rarr; Payment methods
-                </button>{" "}
-                first to set up your payment provider.
+                  {t("admin.billingPaymentMethods")}
+                </button>
               </p>
             </SettingsCard>
           ) : (
@@ -2248,10 +2247,10 @@ export default function SettingsPage() {
                 </p>
 
                 {paymentError && (
-                  <FeedbackAlert type="error" message={paymentError} className="mb-3" />
+                  <FeedbackAlert type="error" message={t(paymentError)} className="mb-3" />
                 )}
                 {paymentSuccess && (
-                  <FeedbackAlert type="success" message={paymentSuccess} className="mb-3" />
+                  <FeedbackAlert type="success" message={t(paymentSuccess)} className="mb-3" />
                 )}
 
                 {/* Provider selector */}
@@ -2367,9 +2366,11 @@ export default function SettingsPage() {
                 {paymentProvider === "vayada" ? (
                   <div className="space-y-3">
                     <div className="bg-amber-50 border border-amber-200 rounded-lg px-4 py-3">
-                      <p className="text-[13px] text-amber-900 font-medium">Coming soon</p>
+                      <p className="text-[13px] text-amber-900 font-medium">
+                        {t("admin.comingSoon")}
+                      </p>
                       <p className="text-[12px] text-amber-800 mt-1">
-                        vayada Payments is not available in target checkout yet.
+                        {t("admin.vayadaPaymentsIsNotAvailableInTargetCheckoutYet")}
                       </p>
                     </div>
                   </div>
@@ -2454,7 +2455,7 @@ export default function SettingsPage() {
                             className="px-4 py-2 text-[13px] font-medium bg-primary-600 text-white rounded-lg hover:bg-primary-700 disabled:opacity-50 transition-colors"
                           >
                             {issuingStripeOnboardingLink
-                              ? "Opening Stripe..."
+                              ? t("admin.openingStripe")
                               : t("settings.billing.completeOnboarding")}
                           </button>
                           <button
@@ -2463,7 +2464,9 @@ export default function SettingsPage() {
                             disabled={refreshingStripe}
                             className="px-4 py-2 text-[13px] font-medium border border-gray-300 bg-white text-gray-800 rounded-lg hover:bg-gray-50 disabled:opacity-50 transition-colors"
                           >
-                            {refreshingStripe ? "Checking Stripe..." : "Check Stripe status"}
+                            {refreshingStripe
+                              ? t("admin.checkingStripe")
+                              : t("admin.checkStripeStatus")}
                           </button>
                         </div>
                       </div>
@@ -2476,11 +2479,12 @@ export default function SettingsPage() {
                         className="inline-flex items-center gap-2 rounded-lg border border-gray-300 bg-white px-3 py-2 text-[13px] font-medium text-gray-800 transition-colors hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-60"
                       >
                         <ArrowTopRightOnSquareIcon className="h-4 w-4" aria-hidden="true" />
-                        {openingStripeDashboard ? "Opening Stripe..." : "View Stripe Dashboard"}
+                        {openingStripeDashboard
+                          ? t("admin.openingStripe")
+                          : t("admin.viewStripeDashboard")}
                       </button>
                       <p className="mt-2 text-[12px] text-gray-500">
-                        Check your payouts, balance, and payment history, or update your bank
-                        account.
+                        {t("admin.checkYourPayoutsBalanceAndPaymentHistoryOrUpdateYour")}
                       </p>
                     </div>
                     <div className="flex justify-end pt-2">
@@ -2492,8 +2496,7 @@ export default function SettingsPage() {
                 ) : stripeAccountCreationBlocked || !paymentSettingsLoaded ? (
                   <div className="space-y-3">
                     <p className="text-[13px] text-gray-600">
-                      Stripe account status couldn&apos;t be confirmed. Check the existing account
-                      before starting setup again.
+                      {t("admin.stripeAccountStatusCouldnTBeConfirmedCheckTheExisting")}
                     </p>
                     <button
                       type="button"
@@ -2501,7 +2504,7 @@ export default function SettingsPage() {
                       disabled={refreshingStripe || !billingPropertyId}
                       className="px-4 py-2 text-[13px] font-medium border border-gray-300 bg-white text-gray-800 rounded-lg hover:bg-gray-50 disabled:opacity-50 transition-colors"
                     >
-                      {refreshingStripe ? "Checking Stripe..." : "Check Stripe status"}
+                      {refreshingStripe ? t("admin.checkingStripe") : t("admin.checkStripeStatus")}
                     </button>
                   </div>
                 ) : (

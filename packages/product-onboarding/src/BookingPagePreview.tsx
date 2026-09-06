@@ -6,6 +6,7 @@ import type { ReactNode } from "react";
 import type { FontPairing } from "./bookingPageBranding";
 
 export function BookingPagePreview({
+  translate,
   bookingUrl = "yourhotel.vayada.com",
   className = "",
   currency,
@@ -24,6 +25,7 @@ export function BookingPagePreview({
   supportedLanguages,
   supportedCurrencies,
 }: {
+  translate?: (key: string, params?: Record<string, string | number>) => string;
   bookingUrl?: string;
   className?: string;
   currency: string;
@@ -42,6 +44,14 @@ export function BookingPagePreview({
   supportedLanguages?: readonly string[];
   supportedCurrencies?: readonly string[];
 }) {
+  const t =
+    translate ??
+    ((key: string, params?: Record<string, string | number>) => {
+      let value = bookingPreviewMessages[key as keyof typeof bookingPreviewMessages];
+      for (const [name, replacement] of Object.entries(params ?? {}))
+        value = value.split(`{${name}}`).join(String(replacement));
+      return value;
+    });
   const accent = /^#[0-9a-f]{6}$/i.test(primaryColor) ? primaryColor : "#4F46E5";
   const tint = `${accent}18`;
   const languageCount = supportedLanguages
@@ -53,7 +63,7 @@ export function BookingPagePreview({
 
   return (
     <div
-      aria-label="Live booking page preview"
+      aria-label={t("bookingPreview.liveBookingPagePreview")}
       className={`min-h-[360px] overflow-hidden rounded-2xl border border-gray-200 bg-white ${className}`}
     >
       <div className="border-b border-gray-200 bg-gray-50 px-3 py-2">
@@ -69,7 +79,7 @@ export function BookingPagePreview({
         <div className="relative h-[260px] w-full bg-gray-300">
           {heroImage ? (
             <img
-              alt="Booking page hero preview"
+              alt={t("bookingPreview.bookingPageHeroPreview")}
               className="h-full w-full object-cover"
               src={heroImage}
             />
@@ -79,13 +89,15 @@ export function BookingPagePreview({
           <div className="absolute inset-x-0 top-0 z-10 flex h-11 items-center justify-between px-4">
             {headerLogo ? (
               <img
-                alt={`${propertyName || "Property"} logo`}
+                alt={t("bookingPreview.logoForName", {
+                  name: propertyName || t("bookingPreview.yourHotel"),
+                })}
                 className="max-h-6 max-w-[140px] object-contain object-left"
                 src={headerLogo}
               />
             ) : (
               <span className="truncate text-[11px] font-semibold text-white">
-                {propertyName || "Your Hotel"}
+                {propertyName || t("bookingPreview.yourHotel")}
               </span>
             )}
             <div className="flex items-center gap-1.5">
@@ -94,7 +106,7 @@ export function BookingPagePreview({
                   className="rounded-full px-2.5 py-1 text-[9px] font-semibold text-white"
                   style={{ backgroundColor: accent }}
                 >
-                  Contact
+                  {t("bookingPreview.contact")}
                 </span>
               )}
               {showReferAGuestButton && (
@@ -102,8 +114,8 @@ export function BookingPagePreview({
                   data-testid="booking-preview-refer"
                   className="rounded-full border border-white/60 px-2.5 py-1 text-[9px] font-semibold text-white"
                 >
-                  <span className="sm:hidden">Refer</span>
-                  <span className="hidden sm:inline">Refer a Guest</span>
+                  <span className="sm:hidden">{t("bookingPreview.refer")}</span>
+                  <span className="hidden sm:inline">{t("bookingPreview.referAGuest")}</span>
                 </span>
               )}
               {showLanguageSelector && languageCount > 1 && (
@@ -121,10 +133,10 @@ export function BookingPagePreview({
 
           <div className="absolute inset-0 flex flex-col items-center justify-center px-6 text-center">
             <h2 className="mb-1.5 text-2xl text-white" style={{ fontFamily: font.headingFamily }}>
-              {heroHeading || propertyName || "Your Hotel Name"}
+              {heroHeading || propertyName || t("bookingPreview.yourHotelName")}
             </h2>
             <p className="max-w-sm text-[11px] leading-relaxed text-white/90">
-              {heroSubtext || "Your hotel tagline will appear here."}
+              {heroSubtext || t("bookingPreview.yourHotelTaglineWillAppearHere")}
             </p>
           </div>
         </div>
@@ -134,19 +146,19 @@ export function BookingPagePreview({
             <PreviewSearchValue
               accent={accent}
               icon={<CalendarDaysIcon className="h-3.5 w-3.5" />}
-              label="Your stay"
-              subvalue="5 nights"
+              label={t("bookingPreview.yourStay")}
+              subvalue={t("bookingPreview.5nights")}
               tint={tint}
-              value="Feb 13 - Feb 18"
+              value={t("bookingPreview.feb13Feb18")}
             />
             <div className="h-8 w-px bg-gray-200" />
             <PreviewSearchValue
               accent={accent}
               icon={<UserGroupIcon className="h-3.5 w-3.5" />}
-              label="Guests"
-              subvalue="1 room"
+              label={t("bookingPreview.guests")}
+              subvalue={t("bookingPreview.1room")}
               tint={tint}
-              value="2 adults"
+              value={t("bookingPreview.2adults")}
             />
             <button
               className="ml-auto shrink-0 rounded-full px-3 py-2 text-[9px] font-semibold text-white"
@@ -154,42 +166,52 @@ export function BookingPagePreview({
               tabIndex={-1}
               type="button"
             >
-              Check Availability
+              {t("bookingPreview.checkAvailability")}
             </button>
           </div>
         </div>
 
         <div className="px-4 py-5">
           <h3 className="mb-3 text-sm text-gray-900" style={{ fontFamily: font.headingFamily }}>
-            Available Accommodations
+            {t("bookingPreview.availableAccommodations")}
           </h3>
           <div className="overflow-hidden rounded-xl border border-gray-200">
             <div className="flex min-h-28">
               <div className="w-32 shrink-0 bg-gray-200 sm:w-40">
                 {heroImage ? (
-                  <img alt="Room preview" className="h-full w-full object-cover" src={heroImage} />
+                  <img
+                    alt={t("bookingPreview.roomPreview")}
+                    className="h-full w-full object-cover"
+                    src={heroImage}
+                  />
                 ) : null}
               </div>
               <div className="min-w-0 flex-1 p-3">
-                <h4 className="text-[12px] font-bold text-gray-900">Your featured room</h4>
-                <p className="mt-1 text-[9px] text-gray-500">For 2 guests</p>
+                <h4 className="text-[12px] font-bold text-gray-900">
+                  {t("bookingPreview.yourFeaturedRoom")}
+                </h4>
+                <p className="mt-1 text-[9px] text-gray-500">{t("bookingPreview.for2Guests")}</p>
                 <div className="mt-2 flex flex-wrap gap-1">
-                  {["Best rate", "Instant confirmation"].map((feature) => (
-                    <span
-                      className="inline-flex items-center gap-1 rounded-full border border-gray-200 px-1.5 py-0.5 text-[8px] text-gray-700"
-                      key={feature}
-                    >
-                      <CheckIcon className="h-2.5 w-2.5" style={{ color: accent }} />
-                      {feature}
-                    </span>
-                  ))}
+                  {[t("bookingPreview.bestRate"), t("bookingPreview.instantConfirmation")].map(
+                    (feature) => (
+                      <span
+                        className="inline-flex items-center gap-1 rounded-full border border-gray-200 px-1.5 py-0.5 text-[8px] text-gray-700"
+                        key={feature}
+                      >
+                        <CheckIcon className="h-2.5 w-2.5" style={{ color: accent }} />
+                        {feature}
+                      </span>
+                    ),
+                  )}
                 </div>
                 <div
                   className="mt-2 rounded-lg border-2 px-2.5 py-2"
                   style={{ borderColor: accent }}
                 >
                   <div className="flex items-center justify-between gap-2">
-                    <span className="text-[9px] font-bold text-gray-900">Flexible rate</span>
+                    <span className="text-[9px] font-bold text-gray-900">
+                      {t("bookingPreview.flexibleRate")}
+                    </span>
                     <span className="text-[11px] font-bold" style={{ color: accent }}>
                       {currency || "EUR"} 120
                     </span>
@@ -237,3 +259,30 @@ function PreviewSearchValue({
     </div>
   );
 }
+
+export const bookingPreviewMessages = {
+  "bookingPreview.liveBookingPagePreview": "Live booking page preview",
+  "bookingPreview.bookingPageHeroPreview": "Booking page hero preview",
+  "bookingPreview.yourHotel": "Your Hotel",
+  "bookingPreview.contact": "Contact",
+  "bookingPreview.refer": "Refer",
+  "bookingPreview.referAGuest": "Refer a Guest",
+  "bookingPreview.yourHotelName": "Your Hotel Name",
+  "bookingPreview.yourHotelTaglineWillAppearHere": "Your hotel tagline will appear here.",
+  "bookingPreview.yourStay": "Your stay",
+  "bookingPreview.5nights": "5 nights",
+  "bookingPreview.feb13Feb18": "Feb 13 - Feb 18",
+  "bookingPreview.guests": "Guests",
+  "bookingPreview.1room": "1 room",
+  "bookingPreview.2adults": "2 adults",
+  "bookingPreview.checkAvailability": "Check Availability",
+  "bookingPreview.availableAccommodations": "Available Accommodations",
+  "bookingPreview.roomPreview": "Room preview",
+  "bookingPreview.yourFeaturedRoom": "Your featured room",
+  "bookingPreview.for2Guests": "For 2 guests",
+  "bookingPreview.bestRate": "Best rate",
+  "bookingPreview.instantConfirmation": "Instant confirmation",
+  "bookingPreview.flexibleRate": "Flexible rate",
+  "bookingPreview.yourBookingUrl": "Your booking URL",
+  "bookingPreview.logoForName": "{name} logo",
+};

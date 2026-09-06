@@ -27,7 +27,10 @@ import type {
 } from "./types";
 import { useFeatureModuleActivations } from "./useFeatureModuleActivations";
 
+type Translate = (key: string, params?: Record<string, string | number>) => string;
+
 interface FeatureHubPageProps {
+  translate?: Translate;
   /**
    * Prefer a module-scoped or memoized client. The hook stores the latest value
    * in a ref so refresh callbacks stay stable across renders.
@@ -54,6 +57,7 @@ const PRODUCT_PREVIEW_LABELS: Record<FeatureProduct, string> = {
 const ALL_PRODUCTS = Object.keys(PRODUCT_LABELS) as FeatureProduct[];
 
 export function FeatureHubPage({
+  translate: t = defaultTranslate,
   activationClient,
   initialProduct = "pms",
   products,
@@ -113,13 +117,17 @@ export function FeatureHubPage({
       const matchesCategory = category === "All" || module.category === category;
       const matchesSearch =
         !normalized ||
-        [module.name, module.description, module.category]
+        [
+          t(`featureHub.module.${module.id}.name`),
+          t(`featureHub.module.${module.id}.description`),
+          t(`featureHub.category.${module.category}`),
+        ]
           .join(" ")
           .toLowerCase()
           .includes(normalized);
       return matchesCategory && matchesSearch;
     });
-  }, [category, displayedProduct, query, supportedModuleSet]);
+  }, [category, displayedProduct, query, supportedModuleSet, t]);
 
   const toggleModule = async (module: FeatureModule, isActive: boolean) => {
     if (savingModuleId) return;
@@ -130,11 +138,17 @@ export function FeatureHubPage({
       await setModuleActive(module.id, isActive);
       setNotice(
         isActive && module.settingsNote
-          ? `Activated. ${module.settingsNote}`
-          : `${module.name} ${isActive ? "activated" : "deactivated"}.`,
+          ? t("admin.activatedNote", { note: module.settingsNote ?? "" })
+          : t(isActive ? "featureHub.activated" : "featureHub.deactivated", {
+              name: t(`featureHub.module.${module.id}.name`),
+            }),
       );
-    } catch (err) {
-      setUpdateError(err instanceof Error ? err.message : "Could not update module activation.");
+    } catch (error) {
+      setUpdateError(
+        t === defaultTranslate && error instanceof Error
+          ? error.message
+          : "featureHub.copy.couldNotUpdateModuleActivation",
+      );
     } finally {
       setSavingModuleId(null);
     }
@@ -147,19 +161,21 @@ export function FeatureHubPage({
       <div className="pb-4">
         <header className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
           <div className="min-w-0">
-            <h1 className="text-xl font-semibold text-gray-900 md:text-2xl">Feature Hub</h1>
+            <h1 className="text-xl font-semibold text-gray-900 md:text-2xl">
+              {t("featureHub.copy.featureHub")}
+            </h1>
             <p className="mt-1 max-w-2xl text-[13px] text-gray-500">
-              Activate property modules and keep navigation focused on the tools your team uses.
+              {t("featureHub.copy.activatePropertyModulesAndKeepNavigationFocusedOnTheTools")}
             </p>
             <div className="mt-3 flex flex-wrap items-center gap-2">
               <span className="inline-flex items-center gap-1 rounded-md border border-gray-200 bg-gray-50 px-2 py-1 text-xs font-medium text-gray-700">
                 <CheckCircleIcon className="h-3.5 w-3.5 text-primary-600" />
-                {productActiveCount} active
+                {productActiveCount} {t("featureHub.copy.active")}
               </span>
               {loading && (
                 <span className="inline-flex items-center gap-1 rounded-md border border-gray-200 bg-white px-2 py-1 text-xs font-medium text-gray-500">
                   <ArrowPathIcon className="h-3.5 w-3.5 animate-spin" />
-                  Syncing
+                  {t("featureHub.copy.syncing")}
                 </span>
               )}
             </div>
@@ -180,8 +196,10 @@ export function FeatureHubPage({
                         : "border-gray-200 bg-white text-gray-700 hover:border-gray-400",
                     )}
                   >
-                    {PRODUCT_LABELS[key]}{" "}
-                    <span className="ml-1 text-xs opacity-75">· {count} active</span>
+                    {t(`featureHub.product.${key}`)}{" "}
+                    <span className="ml-1 text-xs opacity-75">
+                      · {count} {t("featureHub.copy.active")}
+                    </span>
                   </button>
                 );
               })}
@@ -197,7 +215,9 @@ export function FeatureHubPage({
               role="alert"
               className="mb-4 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800"
             >
-              {updateError || error}
+              {updateError
+                ? t(updateError) || updateError
+                : t("featureHub.copy.couldNotLoadModules")}
             </div>
           )}
           {notice && (
@@ -215,15 +235,15 @@ export function FeatureHubPage({
                     <input
                       value={query}
                       onChange={(event) => setQuery(event.target.value)}
-                      placeholder="Search modules..."
+                      placeholder={t("featureHub.copy.searchModules")}
                       className="h-10 w-full rounded-md border border-gray-200 bg-white pl-9 pr-9 text-sm outline-none transition focus:border-primary-500 focus:ring-2 focus:ring-primary-100"
                     />
                     {query && (
                       <button
                         type="button"
                         onClick={clearSearch}
-                        aria-label="Clear search"
-                        title="Clear search"
+                        aria-label={t("featureHub.copy.clearSearch")}
+                        title={t("featureHub.copy.clearSearch")}
                         className="absolute right-2 top-1/2 inline-flex h-7 w-7 -translate-y-1/2 items-center justify-center rounded-md text-gray-500 hover:bg-gray-100 hover:text-gray-900"
                       >
                         <XMarkIcon className="h-4 w-4" />
@@ -256,13 +276,15 @@ export function FeatureHubPage({
                   className="flex items-center justify-center gap-2 rounded-lg border border-gray-200 bg-white px-5 py-12 text-sm text-gray-500"
                 >
                   <ArrowPathIcon className="h-4 w-4 animate-spin" />
-                  Loading modules...
+                  {t("featureHub.copy.loadingModules")}
                 </div>
               ) : inventoryFailed ? null : filteredModules.length === 0 ? (
                 <div className="rounded-lg border border-dashed border-gray-300 bg-white px-5 py-12 text-center">
                   <SparklesIcon className="mx-auto h-8 w-8 text-gray-400" />
                   <p className="mt-3 text-sm font-semibold text-gray-900">
-                    {query ? `No modules match "${query}"` : "No modules in this category."}
+                    {query
+                      ? t("featureHub.noSearchResults", { query })
+                      : t("featureHub.copy.noModulesInThisCategory")}
                   </p>
                   {query && (
                     <button
@@ -271,7 +293,7 @@ export function FeatureHubPage({
                       className="mt-3 inline-flex items-center gap-1.5 rounded-md border border-gray-200 bg-white px-3 py-2 text-sm font-medium text-gray-700 hover:border-gray-400"
                     >
                       <XMarkIcon className="h-4 w-4" />
-                      Clear search
+                      {t("featureHub.copy.clearSearch")}
                     </button>
                   )}
                 </div>
@@ -280,6 +302,7 @@ export function FeatureHubPage({
                   <div className="divide-y divide-gray-100">
                     {filteredModules.map((module) => (
                       <ModuleCard
+                        t={t}
                         key={module.id}
                         module={module}
                         isActive={activeModuleSet.has(module.id)}
@@ -296,7 +319,11 @@ export function FeatureHubPage({
 
             {!waitingForInventory && !inventoryFailed && (
               <aside className="lg:sticky lg:top-4 lg:self-start">
-                <NavigationPreview product={displayedProduct} activeModuleIds={activeModuleIds} />
+                <NavigationPreview
+                  t={t}
+                  product={displayedProduct}
+                  activeModuleIds={activeModuleIds}
+                />
               </aside>
             )}
           </div>
@@ -305,11 +332,12 @@ export function FeatureHubPage({
 
       {selectedModule && (
         <DetailModal
+          t={t}
           module={selectedModule}
           isActive={activeModuleSet.has(selectedModule.id)}
           disabled={loading || !canManage || savingModuleId !== null}
           saving={savingModuleId === selectedModule.id}
-          error={updateError}
+          error={updateError ? t(updateError) || updateError : ""}
           onClose={() => setSelectedModule(null)}
           onToggle={(isActive) => toggleModule(selectedModule, isActive)}
         />
@@ -319,6 +347,7 @@ export function FeatureHubPage({
 }
 
 function ModuleCard({
+  t,
   module,
   isActive,
   disabled,
@@ -326,6 +355,7 @@ function ModuleCard({
   onOpen,
   onToggle,
 }: {
+  t: Translate;
   module: FeatureModule;
   isActive: boolean;
   disabled: boolean;
@@ -344,10 +374,12 @@ function ModuleCard({
         <ModuleIcon module={module} active={isActive} />
         <div className="min-w-0">
           <div className="flex min-h-6 flex-wrap items-center gap-2">
-            <h2 className="text-[14px] font-semibold text-gray-900">{module.name}</h2>
+            <h2 className="text-[14px] font-semibold text-gray-900">
+              {t(`featureHub.module.${module.id}.name`)}
+            </h2>
             {module.isNew && (
               <span className="shrink-0 rounded-md bg-amber-100 px-1.5 py-0.5 text-[10px] font-bold text-amber-700">
-                NEW
+                {t("featureHub.copy.new")}
               </span>
             )}
             <span
@@ -356,17 +388,19 @@ function ModuleCard({
                 isActive ? "bg-primary-100 text-primary-700" : "bg-gray-100 text-gray-600",
               )}
             >
-              {isActive ? "Active" : "Inactive"}
+              {isActive ? t("featureHub.copy.active") : t("featureHub.copy.inactive")}
             </span>
           </div>
-          <p className="mt-1 text-[13px] leading-5 text-gray-500">{module.description}</p>
+          <p className="mt-1 text-[13px] leading-5 text-gray-500">
+            {t(`featureHub.module.${module.id}.description`)}
+          </p>
           <div className="mt-2 flex flex-wrap gap-1.5">
             <span className="rounded-md bg-gray-100 px-2 py-1 text-[11px] font-medium text-gray-600">
-              {module.category}
+              {t(`featureHub.category.${module.category}`)}
             </span>
             {module.type === "external" && (
               <span className="rounded-md bg-primary-50 px-2 py-1 text-[11px] font-medium text-primary-700">
-                External
+                {t("featureHub.copy.external")}
               </span>
             )}
           </div>
@@ -378,12 +412,15 @@ function ModuleCard({
           onClick={onOpen}
           className="inline-flex h-9 items-center justify-center rounded-md border border-gray-200 bg-white px-3 text-[13px] font-medium text-gray-700 hover:border-gray-400 hover:text-gray-900"
         >
-          Details
+          {t("featureHub.copy.details")}
         </button>
         <ToggleSwitch
           checked={isActive}
           disabled={disabled || saving}
-          ariaLabel={`${isActive ? "Deactivate" : "Activate"} ${module.name}`}
+          ariaLabel={t("admin.actionName", {
+            action: isActive ? t("featureHub.copy.deactivate") : t("admin.activate"),
+            name: t(`featureHub.module.${module.id}.name`),
+          })}
           onChange={(checked) => onToggle(checked)}
         />
       </div>
@@ -469,9 +506,11 @@ function BrandMark({ id }: { id: string }) {
 }
 
 function NavigationPreview({
+  t,
   product,
   activeModuleIds,
 }: {
+  t: Translate;
   product: FeatureProduct;
   activeModuleIds: string[];
 }) {
@@ -508,9 +547,9 @@ function NavigationPreview({
       >
         <div>
           <h2 className="text-[14px] font-semibold text-gray-900">
-            {PRODUCT_PREVIEW_LABELS[product]}
+            {t(`featureHub.navigation.${product}`)}
           </h2>
-          <p className="mt-0.5 text-xs text-gray-500">Live preview</p>
+          <p className="mt-0.5 text-xs text-gray-500">{t("admin.livePreview2")}</p>
         </div>
         <ChevronDownIcon className="h-4 w-4 text-gray-400 lg:hidden" />
       </button>
@@ -530,7 +569,7 @@ function NavigationPreview({
                   item.isModule ? "h-2 w-2 bg-primary-500" : "h-1.5 w-1.5 bg-gray-300",
                 )}
               />
-              <span className="truncate">{item.label}</span>
+              <span className="truncate">{t(`featureHub.navigationItem.${item.label}`)}</span>
             </li>
           ))}
         </ol>
@@ -541,14 +580,19 @@ function NavigationPreview({
                 key={module.id}
                 className="rounded-md bg-primary-50 px-3 py-2 text-xs text-primary-700"
               >
-                <span className="font-semibold">{module.name}</span>: {module.settingsNote}
+                <span className="font-semibold">{t(`featureHub.module.${module.id}.name`)}</span>:{" "}
+                {module.settingsNote}
               </div>
             ))}
           </div>
         )}
         <div className="mt-4 flex items-center justify-between border-t border-gray-100 pt-3 text-xs font-medium text-gray-500">
-          <span>{previewItems.length} items</span>
-          <span>{navModules.length} module items</span>
+          <span>
+            {previewItems.length} {t("featureHub.copy.items")}
+          </span>
+          <span>
+            {navModules.length} {t("featureHub.copy.moduleItems")}
+          </span>
         </div>
       </div>
     </section>
@@ -556,6 +600,7 @@ function NavigationPreview({
 }
 
 function DetailModal({
+  t,
   error,
   module,
   isActive,
@@ -564,6 +609,7 @@ function DetailModal({
   onClose,
   onToggle,
 }: {
+  t: Translate;
   module: FeatureModule;
   isActive: boolean;
   disabled: boolean;
@@ -642,21 +688,21 @@ function DetailModal({
           <div className="min-w-0 flex-1">
             <div className="flex flex-wrap items-center gap-2">
               <h2 id={titleId} className="text-xl font-semibold text-gray-950">
-                {module.name}
+                {t(`featureHub.module.${module.id}.name`)}
               </h2>
               {module.isNew && (
                 <span className="rounded-md bg-amber-100 px-1.5 py-0.5 text-[10px] font-bold text-amber-700">
-                  NEW
+                  {t("featureHub.copy.new")}
                 </span>
               )}
             </div>
             <div className="mt-1 flex flex-wrap gap-1.5">
               <span className="rounded-md bg-gray-100 px-2 py-1 text-xs font-medium text-gray-600">
-                {module.category}
+                {t(`featureHub.category.${module.category}`)}
               </span>
               {module.type === "external" && (
                 <span className="rounded-md bg-primary-50 px-2 py-1 text-xs font-medium text-primary-700">
-                  External integration
+                  {t("featureHub.copy.externalIntegration")}
                 </span>
               )}
             </div>
@@ -665,8 +711,8 @@ function DetailModal({
             ref={closeButtonRef}
             type="button"
             onClick={onClose}
-            aria-label="Close"
-            title="Close"
+            aria-label={t("featureHub.copy.close")}
+            title={t("featureHub.copy.close")}
             className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-gray-500 hover:bg-gray-100 hover:text-gray-900"
           >
             <XMarkIcon className="h-5 w-5" />
@@ -674,25 +720,28 @@ function DetailModal({
         </div>
 
         <div className="overflow-y-auto px-4 py-4 sm:px-5">
-          <p className="text-base font-medium leading-7 text-gray-900">{module.detail.headline}</p>
+          <p className="text-base font-medium leading-7 text-gray-900">
+            {t(`featureHub.module.${module.id}.headline`)}
+          </p>
           <div className="mt-4 overflow-hidden rounded-md border border-gray-200 bg-gray-50">
-            <ModuleVisual type={module.detail.visualType} />
+            <ModuleVisual type={module.detail.visualType} t={t} />
           </div>
           <div className="mt-4 grid gap-2 sm:grid-cols-2">
-            {module.detail.features.map((feature) => (
+            {module.detail.features.map((feature, index) => (
               <div
-                key={feature.text}
+                key={t(`featureHub.module.${module.id}.feature.${index}`)}
                 className="flex min-h-14 items-start gap-2 rounded-md border border-gray-200 bg-white p-3"
               >
                 <feature.icon className="mt-0.5 h-4 w-4 shrink-0 text-primary-600" />
-                <p className="text-sm leading-5 text-gray-700">{feature.text}</p>
+                <p className="text-sm leading-5 text-gray-700">
+                  {t(`featureHub.module.${module.id}.feature.${index}`)}
+                </p>
               </div>
             ))}
           </div>
           {isActive && (
             <p className="mt-4 rounded-md bg-amber-50 px-3 py-2 text-sm text-amber-800">
-              Deactivating hides this module from navigation or settings. Your data is preserved and
-              will be available if you reactivate.
+              {t("featureHub.copy.deactivatingHidesThisModuleFromNavigationOrSettingsYourData")}
             </p>
           )}
         </div>
@@ -702,11 +751,14 @@ function DetailModal({
             <ToggleSwitch
               checked={isActive}
               disabled={disabled || saving}
-              ariaLabel={`${isActive ? "Deactivate" : "Activate"} ${module.name}`}
+              ariaLabel={t("admin.actionName", {
+                action: isActive ? t("featureHub.copy.deactivate") : t("admin.activate"),
+                name: t(`featureHub.module.${module.id}.name`),
+              })}
               onChange={onToggle}
             />
             <span className="text-sm font-semibold text-gray-700">
-              {isActive ? "Active" : "Inactive"}
+              {isActive ? t("featureHub.copy.active") : t("featureHub.copy.inactive")}
             </span>
           </div>
           <button
@@ -721,7 +773,7 @@ function DetailModal({
             )}
           >
             <PowerIcon className="h-4 w-4" />
-            {isActive ? "Deactivate" : "Activate Module"}
+            {isActive ? t("featureHub.copy.deactivate") : t("featureHub.copy.activateModule")}
           </button>
         </div>
       </div>
@@ -729,9 +781,9 @@ function DetailModal({
   );
 }
 
-function ModuleVisual({ type }: { type: FeatureModule["detail"]["visualType"] }) {
+function ModuleVisual({ type, t }: { type: FeatureModule["detail"]["visualType"]; t: Translate }) {
   if (type === "financials") return <FinancialsVisual />;
-  if (type === "affiliates") return <AffiliatesVisual />;
+  if (type === "affiliates") return <AffiliatesVisual t={t} />;
   if (type === "stripe") return <StripeVisual />;
   if (type === "paypal") return <PayPalVisual />;
   if (type === "xendit") return <XenditVisual />;
@@ -837,18 +889,29 @@ function FinancialsVisual() {
   );
 }
 
-function AffiliatesVisual() {
+function AffiliatesVisual({ t = defaultTranslate }: { t?: Translate }) {
   const rows = [
     ["Bali Stay Guide", "1,248", "36", "EUR 9,420", "EUR 471"],
     ["Surf School Co", "642", "18", "EUR 4,820", "EUR 241"],
     ["Villa Concierge", "388", "11", "EUR 3,104", "EUR 155"],
   ];
   return (
-    <svg viewBox="0 0 760 300" className="h-auto w-full" role="img" aria-label="Affiliates preview">
+    <svg
+      viewBox="0 0 760 300"
+      className="h-auto w-full"
+      role="img"
+      aria-label={t("featureHub.copy.affiliatesPreview")}
+    >
       <rect width="760" height="300" fill="#f8faf8" />
       <rect x="38" y="40" width="684" height="220" rx="10" fill="#fff" stroke="#d6d3d1" />
       <rect x="60" y="66" width="640" height="34" rx="6" fill="#f5f5f4" />
-      {["Partner", "Clicks", "Bookings", "Revenue", "Commission"].map((label, index) => (
+      {[
+        t("featureHub.copy.partner"),
+        t("featureHub.copy.clicks"),
+        t("featureHub.copy.bookings"),
+        t("featureHub.copy.revenue"),
+        t("featureHub.copy.commission"),
+      ].map((label, index) => (
         <text
           key={label}
           x={[78, 286, 388, 504, 620][index]}
@@ -1066,4 +1129,79 @@ function UsersGlyph({ className }: { className?: string }) {
       <path d="M16 8a3 3 0 1 1 0 6M17 17a5 5 0 0 1 4 4" />
     </svg>
   );
+}
+
+export const featureHubMessages = {
+  "featureHub.noSearchResults": "No modules match “{query}”",
+  "featureHub.activated": "{name} activated.",
+  "featureHub.deactivated": "{name} deactivated.",
+  "featureHub.copy.couldNotLoadModules": "Could not load modules. Please retry.",
+  "featureHub.copy.deactivate": "Deactivate",
+  "admin.activate": "Activate",
+  "manageProperties.activeBadge": "Active",
+  "bookingFlow.promoCodes.inactive": "Inactive",
+  "admin.actionName": "{action} {name}",
+  "admin.activatedNote": "Activated. {note}",
+  "admin.nameStatus": "{name}: {status}",
+  "admin.livePreview2": "Live preview",
+  "featureHub.module.affiliates.name": "Affiliates",
+  "featureHub.module.affiliates.description":
+    "Let partners earn commission on the bookings they refer to you.",
+  "featureHub.module.affiliates.headline":
+    "Open a partner channel without adding manual commission tracking.",
+  "featureHub.category.All": "All",
+  "featureHub.category.Distribution": "Distribution",
+  "featureHub.product.pms": "PMS Modules",
+  "featureHub.product.booking_engine": "Booking Engine Modules",
+  "featureHub.navigation.pms": "PMS navigation",
+  "featureHub.navigation.booking_engine": "Booking Engine navigation",
+  "featureHub.module.affiliates.feature.0": "Invite partners and track their referral activity.",
+  "featureHub.module.affiliates.feature.1": "See clicks, bookings, revenue, and commission earned.",
+  "featureHub.module.affiliates.feature.2": "Issue partner links tied to your booking engine.",
+  "featureHub.module.affiliates.feature.3": "Prepare payout-ready commission records.",
+  "featureHub.navigationItem.Dashboard": "Dashboard",
+  "featureHub.navigationItem.Calendar": "Calendar",
+  "featureHub.navigationItem.Reservations": "Reservations",
+  "featureHub.navigationItem.Reviews": "Reviews",
+  "featureHub.navigationItem.Rooms & Rates": "Rooms & Rates",
+  "featureHub.navigationItem.Channel Manager": "Channel Manager",
+  "featureHub.navigationItem.Settings": "Settings",
+  "featureHub.navigationItem.Design Studio": "Design Studio",
+  "featureHub.navigationItem.Booking Flow": "Booking Flow",
+  "featureHub.navigationItem.Promo Codes": "Promo Codes",
+  "featureHub.navigationItem.Affiliates": "Affiliates",
+  "featureHub.copy.couldNotUpdateModuleActivation": "Could not update module activation.",
+  "featureHub.copy.featureHub": "Feature Hub",
+  "featureHub.copy.activatePropertyModulesAndKeepNavigationFocusedOnTheTools":
+    "Activate property modules and keep navigation focused on the tools your team uses.",
+  "featureHub.copy.active": "Active",
+  "featureHub.copy.syncing": "Syncing",
+  "featureHub.copy.searchModules": "Search modules...",
+  "featureHub.copy.clearSearch": "Clear search",
+  "featureHub.copy.loadingModules": "Loading modules...",
+  "featureHub.copy.noModulesInThisCategory": "No modules in this category.",
+  "featureHub.copy.new": "NEW",
+  "featureHub.copy.inactive": "Inactive",
+  "featureHub.copy.external": "External",
+  "featureHub.copy.details": "Details",
+  "featureHub.copy.items": "items",
+  "featureHub.copy.moduleItems": "module items",
+  "featureHub.copy.externalIntegration": "External integration",
+  "featureHub.copy.close": "Close",
+  "featureHub.copy.deactivatingHidesThisModuleFromNavigationOrSettingsYourData":
+    "Deactivating hides this module from navigation or settings. Your data is preserved and will be available if you reactivate.",
+  "featureHub.copy.activateModule": "Activate Module",
+  "featureHub.copy.affiliatesPreview": "Affiliates preview",
+  "featureHub.copy.partner": "Partner",
+  "featureHub.copy.clicks": "Clicks",
+  "featureHub.copy.bookings": "Bookings",
+  "featureHub.copy.revenue": "Revenue",
+  "featureHub.copy.commission": "Commission",
+};
+
+function defaultTranslate(key: string, params?: Record<string, string | number>): string {
+  let text = featureHubMessages[key as keyof typeof featureHubMessages] ?? key;
+  for (const [name, value] of Object.entries(params ?? {}))
+    text = text.split(`{${name}}`).join(String(value));
+  return text;
 }

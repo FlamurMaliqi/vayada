@@ -1,4 +1,5 @@
 "use client";
+import { useTranslation } from "@/lib/i18n";
 
 import { useCallback, useEffect, useState } from "react";
 import Promotions from "@/components/booking-flow/Promotions";
@@ -41,6 +42,7 @@ function toPromoCodeBody(values: PromoCodeFormValues): CreateBookingPromoCodeBod
 }
 
 export default function PromoCodesPage() {
+  const { t } = useTranslation();
   const [hotelId, setHotelId] = useState<string | null>(null);
   const [promoCodes, setPromoCodes] = useState<BookingPromoCode[]>([]);
   const [roomTypes, setRoomTypes] = useState<PromoRoomType[]>([]);
@@ -52,7 +54,7 @@ export default function PromoCodesPage() {
   const load = useCallback(async () => {
     const selectedHotelId = getSelectedBookingHotelId();
     if (!selectedHotelId) {
-      setError("Select a property before managing promo codes.");
+      setError("admin.selectAPropertyBeforeManagingPromoCodes");
       setLoading(false);
       return;
     }
@@ -73,8 +75,8 @@ export default function PromoCodesPage() {
       setPropertyCurrency(localization.defaultCurrency);
       setPropertyTimeZone(propertySettings.time_zone || "Etc/UTC");
       setRoomTypes(roomTypeResponse.items.filter((room) => room.roomTypeId && room.name));
-    } catch (nextError) {
-      setError(nextError instanceof Error ? nextError.message : "Promo codes are unavailable.");
+    } catch {
+      setError("admin.promoCodesAreUnavailable");
     } finally {
       setLoading(false);
     }
@@ -85,7 +87,7 @@ export default function PromoCodesPage() {
   }, [load]);
 
   const requireHotelId = () => {
-    if (!hotelId) throw new Error("Select a property before managing promo codes.");
+    if (!hotelId) throw new Error(t("admin.selectAPropertyBeforeManagingPromoCodes"));
     return hotelId;
   };
 
@@ -128,7 +130,7 @@ export default function PromoCodesPage() {
     return (
       <div className="flex min-h-full items-center justify-center p-8">
         <div
-          aria-label="Loading promo codes"
+          aria-label={t("admin.loadingPromoCodes")}
           className="h-7 w-7 animate-spin rounded-full border-2 border-gray-300 border-t-gray-900"
         />
       </div>
@@ -139,14 +141,16 @@ export default function PromoCodesPage() {
     return (
       <div className="mx-auto max-w-7xl p-6 lg:p-8">
         <div className="rounded-xl border border-red-200 bg-white p-6">
-          <h1 className="text-lg font-semibold text-gray-950">Promo codes unavailable</h1>
-          <p className="mt-2 text-sm text-red-700">{error}</p>
+          <h1 className="text-lg font-semibold text-gray-950">
+            {t("admin.promoCodesUnavailable")}
+          </h1>
+          <p className="mt-2 text-sm text-red-700">{t(error)}</p>
           <button
             type="button"
             onClick={() => void load()}
             className="mt-4 rounded-lg bg-gray-950 px-4 py-2 text-sm font-medium text-white"
           >
-            Try again
+            {t("dashboard.pageViewsModal.retry")}
           </button>
         </div>
       </div>

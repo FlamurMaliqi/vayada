@@ -1,7 +1,15 @@
 "use client";
 
-import { createContext, useContext, useState, useEffect, useCallback, type ReactNode } from "react";
-import { DEFAULT_LOCALE } from "./languages";
+import {
+  createContext,
+  useContext,
+  useState,
+  useEffect,
+  useCallback,
+  useRef,
+  type ReactNode,
+} from "react";
+import { DEFAULT_LOCALE, SUPPORTED_LANGUAGES } from "./languages";
 import defaultEnMessages from "../../messages/en.json";
 
 type Messages = Record<string, string>;
@@ -21,47 +29,56 @@ const messageCache: Record<string, Messages> = {
   en: defaultEnMessages as Messages,
 };
 
-async function loadMessages(locale: string): Promise<Messages> {
+async function loadMessages(locale: string): Promise<Messages | undefined> {
   if (messageCache[locale]) return messageCache[locale];
   try {
     const messages = (await import(`../../messages/${locale}.json`)).default;
     messageCache[locale] = messages;
     return messages;
   } catch {
-    // Fallback to English if locale file not found
-    if (locale !== DEFAULT_LOCALE) {
-      return loadMessages(DEFAULT_LOCALE);
-    }
-    return messageCache[DEFAULT_LOCALE] ?? {};
+    return undefined;
   }
 }
 
 export function LanguageProvider({ children }: { children: ReactNode }) {
   const [locale, setLocaleState] = useState(DEFAULT_LOCALE);
   const [messages, setMessages] = useState<Messages>(defaultEnMessages as Messages);
+  const requestVersion = useRef(0);
+
+  const applyLocale = useCallback(async (nextLocale: string) => {
+    const version = ++requestVersion.current;
+    const nextMessages = await loadMessages(nextLocale);
+    if (version !== requestVersion.current || !nextMessages) return;
+    localStorage.setItem(STORAGE_KEY, nextLocale);
+    setLocaleState(nextLocale);
+    setMessages(nextMessages);
+    document.documentElement.lang = nextLocale;
+  }, []);
 
   useEffect(() => {
     const stored = localStorage.getItem(STORAGE_KEY);
-    if (stored && stored !== DEFAULT_LOCALE) {
-      setLocaleState(stored);
-      document.documentElement.lang = stored;
-      loadMessages(stored).then(setMessages);
-    }
-  }, []);
+    if (stored && SUPPORTED_LANGUAGES.some(({ code }) => code === stored)) {
+      void applyLocale(stored);
+    } else document.documentElement.lang = DEFAULT_LOCALE;
+    return () => {
+      requestVersion.current += 1;
+    };
+  }, [applyLocale]);
 
-  const setLocale = useCallback((newLocale: string) => {
-    setLocaleState(newLocale);
-    localStorage.setItem(STORAGE_KEY, newLocale);
-    document.documentElement.lang = newLocale;
-    loadMessages(newLocale).then(setMessages);
-  }, []);
+  const setLocale = useCallback(
+    (newLocale: string) => {
+      if (!SUPPORTED_LANGUAGES.some(({ code }) => code === newLocale)) return;
+      void applyLocale(newLocale);
+    },
+    [applyLocale],
+  );
 
   const t = useCallback(
     (key: string, params?: Record<string, string | number>): string => {
       let value = messages[key] || key;
       if (params) {
         Object.entries(params).forEach(([k, v]) => {
-          value = value.replace(`{${k}}`, String(v));
+          value = value.split(`{${k}}`).join(String(v));
         });
       }
       return value;
