@@ -336,7 +336,7 @@ describe.skipIf(!url)("mixed room inventory transactions", () => {
       }
     },
   );
-  it("retains every room line when confirmed dates are repriced and replaced", async () => {
+  it.each(["host", "guest"])("retains every room line when confirmed dates change through %s decisions", async (source) => {
     const client = await pool.connect();
     try {
       await client.query("BEGIN");
@@ -366,10 +366,16 @@ describe.skipIf(!url)("mixed room inventory transactions", () => {
       await port.release({ transaction: client, propertyId, reservation: oldReceipt.inventoryReservation, occurredAt: input.occurredAt });
       const revision = randomUUID();
       const receipt = await bookingOwner.reserveDates(port, selectedOffer, { transaction: client, propertyId,
-        quoteSessionId: `host-edit:${revision}`, roomTypeId: rooms[0]!, publicOfferKey: rooms[0]!,
+        quoteSessionId: `${source === "host" ? "host-edit" : "change-request"}:${revision}`, roomTypeId: rooms[0]!, publicOfferKey: rooms[0]!,
         checkIn: preview.requestedCheckIn, checkOut: preview.requestedCheckOut, roomCount: 3, currency: "EUR", occurredAt: input.occurredAt });
       expect(receipt && "receipts" in receipt && receipt.receipts.length).toBe(2);
-      const updated = await bookingOwner.applyDates(client, { booking, changeRequest: { id: revision, hostEdit: true },
+      if (source === "guest") await client.query(`INSERT INTO booking.booking_change_requests
+        (id,guest_booking_id,request_type,requested_by,status,requested_changes)
+        VALUES($1,$2,'date_change','guest','pending',$3::jsonb)`, [revision, booking.guestBookingId, JSON.stringify(preview)]);
+      const updated = await bookingOwner.applyDates(client, { booking, changeRequest: source === "host" ? { id: revision, hostEdit: true } : {
+        id: revision, guestBookingId: booking.guestBookingId, status: "pending", requestedChanges: preview,
+        decisionNote: null, decidedAt: null, createdAt: input.occurredAt,
+      },
         preview, selectedOffer, inventoryReservation: { ...receipt! }, context });
       expect(updated.publicReference).toBe(created.publicReference);
       expect(updated.roomCount).toBe(3);
@@ -383,6 +389,37 @@ describe.skipIf(!url)("mixed room inventory transactions", () => {
         .toMatchObject({ blocked: false, newTotal: 600 });
       expect(await bookingOwner.previewDates(client, port, property, { ...updated, paymentStatus: "paid" }, { checkIn: input.checkIn, checkOut: input.checkOut }, input.occurredAt))
         .toMatchObject({ blocked: true });
+      const assign = async () => {
+        const receipts = (await client.query("SELECT receipt_id,room_type_id FROM pms.inventory_reservation_receipts WHERE property_id=$1 AND quote_session_id=$2", [propertyId, `${source === "host" ? "host-edit" : "change-request"}:${revision}`])).rows;
+        let position = 0;
+        for (const line of selection.lines) for (const guest of line.guests) {
+          const roomId = randomUUID();
+          await client.query("INSERT INTO pms.rooms(id,property_id,room_type_id,room_number) VALUES($1::uuid,$2,$3,$1::text)", [roomId, propertyId, line.roomTypeId]);
+          await client.query(`INSERT INTO pms.operational_booking_assignments
+            (property_id,guest_booking_id,room_type_id,position,assignment_status,source,stay_evidence_kind,
+             check_in,check_out,adults,children,assignment_payload,assigned_at,room_id)
+            VALUES($1,$2,$3,$4,'pending','direct_booking','exact',$5,$6,$7,$8,$9::jsonb,$10,$11)`,
+            [propertyId, booking.guestBookingId, line.roomTypeId, ++position, updated.checkIn, updated.checkOut,
+              guest.adults, guest.children, JSON.stringify({ inventoryReservation: {
+                contractVersion: "pms-inventory-reservation-lifecycle.v1", owner: "pms",
+                receiptId: receipts.find((row) => row.room_type_id === line.roomTypeId)!.receipt_id,
+              } }), input.occurredAt, roomId]);
+        }
+        await client.query("SET CONSTRAINTS ALL IMMEDIATE");
+      };
+      await client.query("SAVEPOINT unproven_decision");
+      if (source === "guest") await client.query("UPDATE booking.booking_change_requests SET status='declined' WHERE id=$1", [revision]);
+      await expect(assign()).rejects.toMatchObject({ constraint: "chk_pms_direct_booking_receipt_handoff_scope" });
+      await client.query("ROLLBACK TO SAVEPOINT unproven_decision");
+      if (source === "host") await client.query(`INSERT INTO booking.host_action_previews
+        (id,property_id,guest_booking_id,actor_user_id,booking_revision,action,request,impact,created_at,expires_at)
+        VALUES($1,$2,$3,$4,'test','edit_dates',$5::jsonb,'{}',$6,$6::timestamptz+interval '10 minutes')`,
+        [revision, propertyId, booking.guestBookingId, context.actorUserId,
+          JSON.stringify({ checkIn: updated.checkIn, checkOut: updated.checkOut }), input.occurredAt]);
+      await assign();
+      expect((await client.query("SELECT lifecycle_state FROM pms.inventory_reservation_statuses WHERE receipt_id=ANY($1::uuid[])", [(receipt as PmsInventoryReservationBundle).receipts.map((item) => item.receiptId)])).rows.map((row) => row.lifecycle_state))
+        .toEqual(["handed_off", "handed_off"]);
+
     } finally { await client.query("ROLLBACK"); client.release(); }
   });
   it("persists the full selection, prices add-ons once, and rejects quote selection tampering", async () => {
