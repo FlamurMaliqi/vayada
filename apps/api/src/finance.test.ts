@@ -277,6 +277,33 @@ afterEach(async () => {
 });
 
 describe("finance route contracts", () => {
+  it("denies unassigned Stripe dashboard commands before the provider port", async () => {
+    const issueStripeDashboardLoginLink = vi.fn(async () => ({
+      ok: true as const,
+      url: "https://stripe.example.test/dashboard",
+    }));
+    app = buildFinanceApp({
+      permissions: financeManagePermissions(),
+      repository: { ...financeRepository, issueStripeDashboardLoginLink },
+      propertyAccessRepository: {
+        findMembershipPropertyScope: async () => ({
+          mode: "assigned",
+          roleKey: "finance_manager",
+          accessOrigin: "agency",
+          assignedPropertyIds: [],
+        }),
+      },
+    });
+    const response = await app.inject({
+      method: "POST",
+      url: `/api/finance/properties/${propertyId}/provider-accounts/stripe/dashboard-link`,
+      headers: { authorization: "Bearer valid-token" },
+    });
+    expect(response.statusCode).toBe(403);
+    expect(response.json().code).toBe("missing_resource_access");
+    expect(issueStripeDashboardLoginLink).not.toHaveBeenCalled();
+  });
+
   it.each(["payment-settings", "cancellation-policy"])(
     "denies unassigned %s before repository reads",
     async (route) => {

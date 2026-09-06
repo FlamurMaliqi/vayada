@@ -51,7 +51,12 @@ export async function registerFinanceBankTransferRoutes(
                 request.params.propertyId,
                 options.propertyAccessRepository,
               )
-            : enforceFinancePropertyWritePolicy(request, reply, request.params.propertyId);
+            : await enforceFinancePropertyWritePolicy(
+                request,
+                reply,
+                request.params.propertyId,
+                options.propertyAccessRepository,
+              );
         if (!allowed) return reply;
       },
       async handler(request, reply) {
