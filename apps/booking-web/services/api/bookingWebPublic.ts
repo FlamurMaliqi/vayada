@@ -109,6 +109,7 @@ export type BookingWebPublicOffersResponse = {
     rooms: number;
   };
   status: "bookable" | "unavailable" | "stale";
+  unavailableReasons?: Array<{ code: string }>;
   quote?: {
     offers: BookingWebPublicOffer[];
   };

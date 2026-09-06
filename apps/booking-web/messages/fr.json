@@ -50,6 +50,12 @@
     "payment": "Paiement"
   },
   "home": {
+    "guestCountUnsupported": "La recherche en ligne ne prend pas en charge votre groupe de {count} personnes. Essayez avec moins de personnes ou contactez-nous.",
+    "guestCountUnavailable": "Aucun de nos hébergements disponibles ne peut accueillir votre groupe de {count} personnes. Essayez avec moins de personnes ou à d’autres dates.",
+    "noAvailability": "Aucun hébergement disponible pour cette recherche. Essayez d’autres dates ou options.",
+    "availabilityError": "Nous n’avons pas pu vérifier la disponibilité. Veuillez réessayer.",
+    "noMatchingRooms": "Aucun hébergement ne correspond à vos filtres. Essayez de retirer un filtre.",
+
     "yourStay": "Votre séjour",
     "addPromo": "Ajouter un code promo",
     "promoTitle": "Vous avez un code promo ?",
