@@ -189,6 +189,7 @@ jobs:
           src/jobs/pmsChannexBookingRevisionTombstones.integration.test.ts
           src/jobs/channexBookings.integration.test.ts
           src/routes/bookingWebPublicAttribution.integration.test.ts
+          src/routes/pendingBookingEdits.integration.test.ts
           src/jobs/financeSubscriptions.integration.test.ts
           src/platform/postgresRuntime.integration.test.ts
           src/platform/workosWebhooks.integration.test.ts
@@ -200,6 +201,7 @@ jobs:
           npm --workspace @vayada/backend-migration run test --
           --no-file-parallelism
           src/bookingAddonEconomics.test.ts
+          src/pendingBookingEdits.integration.test.ts
           src/manualBookingReadiness.integration.test.ts
           src/workosBackfill.test.ts
           src/financeFolioRecipientCiphertextMigration.integration.test.ts
