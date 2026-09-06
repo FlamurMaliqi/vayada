@@ -1,16 +1,16 @@
 "use client";
+import { useTranslation } from "@/lib/i18n";
 
 import { useState } from "react";
 import type { BookingPromotion } from "@/services/api/bookingLastMinuteSettingsClient";
 import type { PromoRoomType } from "./PromoCodesTab";
 
 export const names = {
-  LAST_MINUTE: "Last minute escape",
-  EARLY_BIRD: "Early bird",
-  EXTENDED_STAY: "Extended stay",
-  MIDWEEK: "Midweek getaway",
+  LAST_MINUTE: "admin.lastMinuteEscape",
+  EARLY_BIRD: "admin.earlyBird",
+  EXTENDED_STAY: "admin.extendedStay",
+  MIDWEEK: "admin.midweekGetaway",
 };
-const weekdays = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 const types = Object.keys(names) as BookingPromotion["type"][];
 export const fresh = (type: BookingPromotion["type"]): BookingPromotion => ({
   type,
@@ -43,6 +43,12 @@ export default function PromotionForm({
   save: (next: BookingPromotion[]) => Promise<void>;
   onCancel: () => void;
 }) {
+  const { t, locale } = useTranslation();
+  const weekdayLabels = Array.from({ length: 7 }, (_, day) =>
+    new Intl.DateTimeFormat(locale, { weekday: "short", timeZone: "UTC" }).format(
+      new Date(Date.UTC(2026, 0, 4 + day)),
+    ),
+  );
   const [draft, setDraft] = useState(initial);
   const [discountFormat, setDiscountFormat] = useState(
     initial.freeNights > 0 ? "free" : "percentage",
@@ -60,9 +66,11 @@ export default function PromotionForm({
         );
       }}
     >
-      <h3 className="font-semibold">{editing ? "Edit promotion" : "New promotion"}</h3>
+      <h3 className="font-semibold">
+        {editing ? t("admin.editPromotion") : t("admin.newPromotion")}
+      </h3>
       <label className="block text-sm">
-        Promotion type
+        {t("admin.promotionType")}
         <select
           className={field}
           disabled={editing || busy}
@@ -78,14 +86,14 @@ export default function PromotionForm({
             )
             .map((type) => (
               <option key={type} value={type}>
-                {names[type]}
+                {t(names[type])}
               </option>
             ))}
         </select>
       </label>
       {draft.type === "EXTENDED_STAY" && (
         <label className="block text-sm">
-          Discount format
+          {t("admin.discountFormat")}
           <select
             className={field}
             value={discountFormat}
@@ -98,14 +106,14 @@ export default function PromotionForm({
               );
             }}
           >
-            <option value="percentage">Percentage off</option>
-            <option value="free">Free nights (cheapest nights per stay)</option>
+            <option value="percentage">{t("admin.percentageOff")}</option>
+            <option value="free">{t("admin.freeNightsCheapestNightsPerStay")}</option>
           </select>
         </label>
       )}
       {!draft.tiers.length && (
         <label className="block text-sm">
-          {discountFormat === "free" ? "Free nights" : "Discount percentage"}
+          {discountFormat === "free" ? t("admin.freeNights") : t("admin.discountPercentage")}
           <input
             required
             type="number"
@@ -127,10 +135,10 @@ export default function PromotionForm({
       {draft.type !== "MIDWEEK" && !draft.tiers.length && (
         <label className="block text-sm">
           {draft.type === "LAST_MINUTE"
-            ? "Check-in within days"
+            ? t("admin.checkInWithinDays")
             : draft.type === "EARLY_BIRD"
-              ? "Minimum days ahead"
-              : "Minimum stay nights"}
+              ? t("admin.minimumDaysAhead")
+              : t("admin.minimumStayNights")}
           <input
             required
             type="number"
@@ -144,19 +152,19 @@ export default function PromotionForm({
       )}
       {draft.tiers.length > 0 && (
         <fieldset>
-          <legend className="text-sm">Existing last-minute tiers</legend>
+          <legend className="text-sm">{t("admin.existingLastMinuteTiers")}</legend>
           <p className="text-xs text-gray-500">
-            Your existing windows and discounts are preserved. Empty end day means no upper limit.
+            {t("admin.yourExistingWindowsAndDiscountsArePreservedEmptyEndDay")}
           </p>
           {draft.tiers.map((tier, index) => (
             <div key={index} className="mt-2 grid grid-cols-3 gap-2">
               {(["daysBeforeMin", "daysBeforeMax", "discountPercent"] as const).map((key) => (
                 <label key={key} className="text-xs">
                   {key === "daysBeforeMin"
-                    ? "From day"
+                    ? t("admin.fromDay")
                     : key === "daysBeforeMax"
-                      ? "Through day"
-                      : "Discount %"}
+                      ? t("admin.throughDay")
+                      : t("admin.discount2")}
                   <input
                     type="number"
                     required={key !== "daysBeforeMax"}
@@ -189,9 +197,9 @@ export default function PromotionForm({
       )}
       {draft.type === "MIDWEEK" && (
         <fieldset>
-          <legend className="text-sm">Discounted weekdays</legend>
+          <legend className="text-sm">{t("admin.discountedWeekdays")}</legend>
           <div className="mt-2 flex flex-wrap gap-3">
-            {weekdays.map((day, index) => (
+            {weekdayLabels.map((day, index) => (
               <label key={day} className="text-sm">
                 <input
                   type="checkbox"
@@ -211,7 +219,7 @@ export default function PromotionForm({
         </fieldset>
       )}
       <fieldset>
-        <legend className="text-sm">Room targeting</legend>
+        <legend className="text-sm">{t("admin.roomTargeting")}</legend>
         <label className="mt-2 block text-sm">
           <input
             type="checkbox"
@@ -222,7 +230,7 @@ export default function PromotionForm({
               })
             }
           />{" "}
-          All rooms
+          {t("admin.allRooms")}
         </label>
         <div className="mt-2 flex flex-wrap gap-3">
           {roomTypes.map((room) => (
@@ -248,10 +256,10 @@ export default function PromotionForm({
           disabled={busy || (draft.type === "MIDWEEK" && !draft.weekdays.length)}
           className="rounded-lg bg-primary-600 px-4 py-2 text-sm font-semibold text-white disabled:opacity-50"
         >
-          {busy ? "Saving…" : "Save promotion"}
+          {busy ? t("admin.saving") : t("admin.savePromotion")}
         </button>
         <button type="button" disabled={busy} className={button} onClick={() => onCancel()}>
-          Cancel
+          {t("settings.totp.cancel")}
         </button>
       </div>
     </form>
