@@ -803,6 +803,185 @@ describe("AuthKit session routes", () => {
     expect(restored.json().csrfToken).toEqual(expect.any(String));
   });
 
+  it.each([
+    { surface: "pms-web", kind: "hotel_group", selected: "org_hotel" },
+    { surface: "booking-admin", kind: "hotel_group", selected: "org_hotel" },
+    { surface: "platform-admin", kind: "platform", selected: "org_platform" },
+  ] as const)(
+    "selects only the organization appropriate for Google $surface login",
+    async ({ surface, kind, selected }) => {
+      let state = "";
+      const select = vi.fn(async (input: { organizationId: string }) => ({
+        ...session,
+        organizationId: input.organizationId,
+      }));
+      app = buildAuthSessionApp({
+        allowedOrigins: ["https://admin.localhost"],
+        surfacePolicies: { [surface]: { requiredOrganizationKind: kind } },
+        identityRepository: createIdentityRepository({
+          organizationByWorkosOrgId: async (id) => ({
+            organizationId: id,
+            workosOrgId: id,
+            name: id,
+            kind: id === "org_hotel" ? "hotel_group" : "platform",
+            status: "active",
+          }),
+          activeMembership: async () => ({
+            membershipId: "membership",
+            status: "active",
+            roleKey: kind === "hotel_group" ? "hotel_owner" : "platform_admin",
+            workosMembershipId: "om_member",
+            workosRoleSlugs: [],
+          }),
+        }),
+        authKitClient: createAuthKitClient({
+          getAuthorizationUrl(input) {
+            state = input.state;
+            return "https://auth.workos.test/google";
+          },
+          async authenticateWithCode() {
+            throw {
+              code: "organization_selection_required",
+              rawData: {
+                pending_authentication_token: "pending-google-secret",
+                organizations: [{ id: "org_platform" }, { id: "org_hotel" }, { id: "org_hotel" }],
+              },
+            };
+          },
+          authenticateWithOrganizationSelection: select,
+        }),
+      });
+      const start = await app.inject({
+        method: "GET",
+        url: `/auth/oauth/google/start?surface=${surface}&flow=login&return_to=https%3A%2F%2Fadmin.localhost%2Flogin&error_return_to=https%3A%2F%2Fadmin.localhost%2Flogin`,
+        headers: { host: "api.localhost", "x-forwarded-proto": "https" },
+      });
+      const response = await app.inject({
+        method: "GET",
+        url: `/auth/oauth/google/callback?code=google-code&state=${encodeURIComponent(state)}`,
+        headers: { cookie: cookieHeader(start, "vayada_oauth_state"), "user-agent": "test-agent" },
+      });
+      expect(select).toHaveBeenCalledExactlyOnceWith({
+        organizationId: selected,
+        pendingAuthenticationToken: "pending-google-secret",
+        ipAddress: "127.0.0.1",
+        userAgent: "test-agent",
+      });
+      expect(response.statusCode).toBe(302);
+      expect(response.headers.location).toBe("https://admin.localhost/login");
+      expect(cookieHeader(response, "vayada_workos_session")).toContain("sealed-session");
+      expect(JSON.stringify(response.headers)).not.toContain("pending-google-secret");
+    },
+  );
+
+  it.each([
+    { reason: "no hotel", offered: ["org_platform"], selectCalled: false },
+    { reason: "two hotels", offered: ["org_hotel", "org_hotel_other"], selectCalled: false },
+    { reason: "unknown organization", offered: ["org_unknown"], selectCalled: false },
+    {
+      reason: "inactive organization",
+      offered: ["org_hotel"],
+      inactiveOrganization: true,
+      selectCalled: false,
+    },
+    {
+      reason: "missing pending token",
+      offered: ["org_hotel"],
+      missingToken: true,
+      selectCalled: false,
+    },
+    {
+      reason: "no local membership",
+      offered: ["org_hotel"],
+      missingMembership: true,
+      selectCalled: true,
+    },
+    { reason: "inactive user", offered: ["org_hotel"], inactiveUser: true, selectCalled: true },
+    {
+      reason: "wrong returned organization",
+      offered: ["org_hotel"],
+      wrongSession: true,
+      selectCalled: true,
+    },
+    {
+      reason: "provider requires MFA",
+      offered: ["org_hotel"],
+      providerFailure: true,
+      selectCalled: true,
+    },
+  ])("denies Google organization continuation for $reason", async (scenario) => {
+    let state = "";
+    const select = vi.fn(async () => {
+      if (scenario.providerFailure)
+        throw { code: "mfa_challenge", rawData: { pending_authentication_token: "mfa-secret" } };
+      return { ...session, organizationId: scenario.wrongSession ? "org_platform" : "org_hotel" };
+    });
+    app = buildAuthSessionApp({
+      surfacePolicies: { "pms-web": { requiredOrganizationKind: "hotel_group" } },
+      identityRepository: createIdentityRepository({
+        userByProviderUserId: async () => ({
+          ...user,
+          status: scenario.inactiveUser ? "suspended" : "active",
+        }),
+        organizationByWorkosOrgId: async (id) =>
+          id === "org_unknown"
+            ? null
+            : {
+                organizationId: id,
+                workosOrgId: id,
+                name: id,
+                kind: id === "org_platform" ? "platform" : "hotel_group",
+                status: scenario.inactiveOrganization ? "suspended" : "active",
+              },
+        activeMembership: async () =>
+          scenario.missingMembership
+            ? null
+            : {
+                membershipId: "membership",
+                status: "active",
+                roleKey: "hotel_owner",
+                workosMembershipId: "om_member",
+                workosRoleSlugs: [],
+              },
+      }),
+      authKitClient: createAuthKitClient({
+        getAuthorizationUrl(input) {
+          state = input.state;
+          return "https://auth.workos.test/google";
+        },
+        async authenticateWithCode() {
+          throw {
+            code: "organization_selection_required",
+            rawData: {
+              pending_authentication_token: scenario.missingToken
+                ? undefined
+                : "pending-google-secret",
+              organizations: scenario.offered.map((id) => ({ id })),
+            },
+          };
+        },
+        authenticateWithOrganizationSelection: select,
+      }),
+    });
+    const start = await app.inject({
+      method: "GET",
+      url: "/auth/oauth/google/start?surface=pms-web&flow=login&return_to=https%3A%2F%2Fadmin.localhost%2Flogin&error_return_to=https%3A%2F%2Fadmin.localhost%2Flogin",
+      headers: { host: "api.localhost", "x-forwarded-proto": "https" },
+    });
+    const response = await app.inject({
+      method: "GET",
+      url: `/auth/oauth/google/callback?code=google-code&state=${encodeURIComponent(state)}`,
+      headers: { cookie: cookieHeader(start, "vayada_oauth_state") },
+    });
+    expect(select).toHaveBeenCalledTimes(scenario.selectCalled ? 1 : 0);
+    expect(response.statusCode).toBe(302);
+    expect(new URL(response.headers.location!).searchParams.has("auth_error")).toBe(true);
+    const headers = JSON.stringify(response.headers);
+    expect(headers).not.toContain("vayada_workos_session=");
+    expect(headers).not.toContain("pending-google-secret");
+    expect(headers).not.toContain("mfa-secret");
+  });
+
   it("logs sanitized OAuth diagnostics and preserves the failure redirect", async () => {
     const warn = vi.fn();
     let state = "";
