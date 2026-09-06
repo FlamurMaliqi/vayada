@@ -55,6 +55,8 @@ const contactSchema = z
   });
 const policiesSchema = z.strictObject({
   checkInFrom: localTime.nullable().optional(),
+  checkInUntil: localTime.nullable().optional(),
+  checkOutFrom: localTime.nullable().optional(),
   checkOutUntil: localTime.nullable().optional(),
   cancellationSummary: optionalText,
   termsUrl: httpsUrl.nullable().optional(),

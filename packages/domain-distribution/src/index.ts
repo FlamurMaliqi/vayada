@@ -183,6 +183,8 @@ export type PublicBookabilityPublicContact = {
 
 export type PublicBookabilityPolicies = {
   checkInFrom?: string | null;
+  checkInUntil?: string | null;
+  checkOutFrom?: string | null;
   checkOutUntil?: string | null;
   cancellationSummary?: string | null;
   termsUrl?: string | null;
@@ -763,6 +765,8 @@ function sanitizePolicies(policies: PublicBookabilityPolicies): PublicBookabilit
   return {
     checkInFrom: policies.checkInFrom ?? null,
     checkOutUntil: policies.checkOutUntil ?? null,
+    ...(policies.checkInUntil ? { checkInUntil: policies.checkInUntil } : {}),
+    ...(policies.checkOutFrom ? { checkOutFrom: policies.checkOutFrom } : {}),
     cancellationSummary: policies.cancellationSummary ?? null,
     termsUrl: policies.termsUrl ?? null,
   };

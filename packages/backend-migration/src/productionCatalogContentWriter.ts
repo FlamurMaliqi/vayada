@@ -61,20 +61,23 @@ export async function writeProductionCatalogContent(
   );
   const policies = await client.query(
     `INSERT INTO hotel_catalog.property_policy_summaries
-       (property_id, check_in_time, check_out_time, cancellation_summary,
+       (property_id, check_in_time, check_out_time, check_in_until, check_out_from, cancellation_summary,
         payment_policy_summary, policy_source_owner, updated_at)
      SELECT source."propertyId", source."checkInTime"::time, source."checkOutTime"::time,
+            source."checkInUntil"::time, source."checkOutFrom"::time,
             source."cancellationSummary", source."paymentPolicySummary", 'booking',
             source."updatedAt"
      FROM jsonb_to_recordset($1::jsonb) AS source(
        "propertyId" uuid, "checkInTime" text, "checkOutTime" text,
+       "checkInUntil" text, "checkOutFrom" text,
        "cancellationSummary" text, "paymentPolicySummary" text, "updatedAt" timestamptz)
      ON CONFLICT (property_id) DO UPDATE SET
        check_in_time = EXCLUDED.check_in_time, check_out_time = EXCLUDED.check_out_time,
+       check_in_until = EXCLUDED.check_in_until, check_out_from = EXCLUDED.check_out_from,
        cancellation_summary = EXCLUDED.cancellation_summary,
        payment_policy_summary = EXCLUDED.payment_policy_summary,
        updated_at = EXCLUDED.updated_at
-     WHERE hotel_catalog.property_policy_summaries.updated_at < EXCLUDED.updated_at
+     WHERE hotel_catalog.property_policy_summaries.updated_at <= EXCLUDED.updated_at
        AND COALESCE((SELECT revision FROM hotel_catalog.property_owner_revisions
                      WHERE property_id = EXCLUDED.property_id
                        AND owner_key = 'hotel_catalog.policy'), 1) <= 1`,
