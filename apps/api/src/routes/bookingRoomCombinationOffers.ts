@@ -8,7 +8,23 @@ import { quoteTargetRoomSelection } from "./bookingWebMixedQuote.js";
 import { moneyToCents, type BookingWebQueryExecutor } from "./bookingWebPublic.js";
 
 type CombinationQuote = Awaited<ReturnType<typeof quoteTargetRoomSelection>>;
+type UnavailableReason =
+  | "unavailable_data"
+  | "stale_data"
+  | "unpublished"
+  | "sold_out"
+  | "stay_restricted"
+  | "min_stay_not_met"
+  | "max_stay_exceeded"
+  | "payment_disabled"
+  | "occupancy_unavailable";
 type CandidateRow = {
+  fresh: boolean;
+  public: boolean;
+  sellable: boolean;
+  minStay: number | null;
+  maxStay: number | null;
+  restrictionsReady: boolean;
   roomTypeId: string;
   publicOfferKey: string;
   nightCount: number;
@@ -32,6 +48,7 @@ export async function findTargetRoomCombinationOffers(
 ): Promise<{
   complete: boolean;
   eligibleOfferCount: number;
+  unavailableReasons: { code: UnavailableReason }[];
   options: (CombinationQuote & { expiresAt: string })[];
 }> {
   const rows = await pool.query<CandidateRow>(
@@ -43,34 +60,64 @@ export async function findTargetRoomCombinationOffers(
        bool_and(COALESCE(occupancy->>'maxAdults' ~ '^[0-9]{1,6}$',false)
          AND COALESCE(occupancy->>'maxChildren' ~ '^[0-9]{1,6}$',false)
          AND COALESCE(occupancy->>'maxOccupancy' ~ '^[0-9]{1,6}$',false)) AS "occupancyReady",
+       bool_and(freshness_status='fresh' AND (expires_at IS NULL OR expires_at > $5::timestamptz)) AS fresh,
+       bool_and(public_visibility='public_safe') AS public,
+       bool_and(sellable_publicly AND availability_status IN ('available','limited') AND available_rooms > 0) AS sellable,
+       MAX(CASE WHEN rate_summary->>'minStayNights' ~ '^[0-9]{1,6}$' THEN (rate_summary->>'minStayNights')::int END) FILTER (WHERE stay_date=$2::date) AS "minStay",
+       MAX(CASE WHEN rate_summary->>'maxStayNights' ~ '^[0-9]{1,6}$' THEN (rate_summary->>'maxStayNights')::int END) FILTER (WHERE stay_date=$2::date) AS "maxStay",
+       bool_and((NULLIF(rate_summary->>'minStayNights','') IS NULL OR rate_summary->>'minStayNights' ~ '^[0-9]{1,6}$')
+         AND (NULLIF(rate_summary->>'maxStayNights','') IS NULL OR rate_summary->>'maxStayNights' ~ '^[0-9]{1,6}$')) AS "restrictionsReady",
        MIN(expires_at) AS "expiresAt"
      FROM distribution.public_room_offer_snapshots
      WHERE property_id=$1::uuid AND stay_date >= $2::date AND stay_date < $3::date AND currency=$4
      GROUP BY room_type_id, public_offer_key
      ORDER BY room_type_id, public_offer_key`,
-    [input.propertyId, input.checkIn, input.checkOut, input.currency],
+    [
+      input.propertyId,
+      input.checkIn,
+      input.checkOut,
+      input.currency,
+      input.requestedAt.toISOString(),
+    ],
   );
+  const unavailable = (eligibleOfferCount: number) => ({
+    complete: false,
+    eligibleOfferCount,
+    unavailableReasons: [{ code: "unavailable_data" as const }],
+    options: [],
+  });
   // Exceeding an internal budget is unavailable data, never a capacity verdict.
-  if (rows.rows.length > (input.maxCandidates ?? 250))
-    return { complete: false, eligibleOfferCount: 0, options: [] };
+  if (rows.rows.length > (input.maxCandidates ?? 250)) return unavailable(0);
   const conflicts = await readPmsRoomSelectionConflicts(
     pool,
     input.propertyId,
     rows.rows.map((row) => row.roomTypeId),
   );
   const candidates: RoomCombinationCandidate[] = [];
-  let unavailableEvidence = false;
+  const reasons = new Set<UnavailableReason>();
+  const nights = (Date.parse(input.checkOut) - Date.parse(input.checkIn)) / 86_400_000;
   const expiries = new Map<string, string>();
   for (const row of rows.rows) {
-    if (
-      !row.occupancyReady ||
-      row.nightCount !== (Date.parse(input.checkOut) - Date.parse(input.checkIn)) / 86_400_000
-    ) {
-      unavailableEvidence = true;
+    if (!row.occupancyReady || !row.restrictionsReady || row.nightCount !== nights) {
+      reasons.add("unavailable_data");
       continue;
     }
-    if (conflicts.get(row.roomTypeId) === undefined)
-      return { complete: false, eligibleOfferCount: candidates.length, options: [] };
+    const reason: UnavailableReason | null = !row.public
+      ? "unpublished"
+      : !row.fresh
+        ? "stale_data"
+        : !row.sellable
+          ? "sold_out"
+          : (row.minStay ?? 1) > nights
+            ? "min_stay_not_met"
+            : row.maxStay !== null && row.maxStay < nights
+              ? "max_stay_exceeded"
+              : null;
+    if (reason) {
+      reasons.add(reason);
+      continue;
+    }
+    if (conflicts.get(row.roomTypeId) === undefined) return unavailable(candidates.length);
     try {
       const quote = await quoteTargetRoomSelection(pool, {
         ...input,
@@ -88,7 +135,10 @@ export async function findTargetRoomCombinationOffers(
       const paymentMethods = quote.paymentOptions.filter((method) =>
         input.paymentMethods.includes(method),
       );
-      if (!paymentMethods.length) continue;
+      if (!paymentMethods.length) {
+        reasons.add("payment_disabled");
+        continue;
+      }
       candidates.push({
         ...row,
         availableRooms: Number(quote.lines[0]!.offer.availableRooms),
@@ -106,12 +156,11 @@ export async function findTargetRoomCombinationOffers(
       expiries.set(JSON.stringify([row.roomTypeId, row.publicOfferKey]), expiresAt);
     } catch (error) {
       if (!isUnavailableQuote(error)) throw error;
-      unavailableEvidence = true;
+      reasons.add(quoteUnavailableReason(error));
     }
   }
   const result = searchRoomCombinations(candidates, input, { maxWork: input.maxWork });
-  if (!result.complete)
-    return { complete: false, eligibleOfferCount: candidates.length, options: [] };
+  if (!result.complete) return unavailable(candidates.length);
   const options: (CombinationQuote & { expiresAt: string })[] = [];
   for (const option of result.options) {
     try {
@@ -120,8 +169,7 @@ export async function findTargetRoomCombinationOffers(
       const paymentOptions = quote.paymentOptions.filter((method) =>
         input.paymentMethods.includes(method),
       );
-      if (!paymentOptions.length)
-        return { complete: false, eligibleOfferCount: candidates.length, options: [] };
+      if (!paymentOptions.length) return unavailable(candidates.length);
       options.push({
         ...quote,
         paymentOptions,
@@ -132,15 +180,29 @@ export async function findTargetRoomCombinationOffers(
     } catch (error) {
       if (!isUnavailableQuote(error)) throw error;
       // Evidence moved while evaluating candidates; discarded alternatives may now win.
-      return { complete: false, eligibleOfferCount: candidates.length, options: [] };
+      return unavailable(candidates.length);
     }
   }
   options.sort((a, b) => {
     const difference = moneyToCents(a.totals.totalAmount) - moneyToCents(b.totals.totalAmount);
     return difference < 0n ? -1 : difference > 0n ? 1 : a.party.rooms - b.party.rooms;
   });
+  const uncertain = reasons.has("unavailable_data") || reasons.has("stale_data");
+  if (!options.length && !reasons.size && candidates.length) {
+    // Distinguish a party that fits only across incompatible payment methods.
+    const capacity = searchRoomCombinations(
+      candidates.map((candidate) => ({ ...candidate, paymentMethods: ["capacity-probe"] })),
+      input,
+      { maxWork: input.maxWork },
+    );
+    if (!capacity.complete) return unavailable(candidates.length);
+    reasons.add(capacity.options.length ? "payment_disabled" : "occupancy_unavailable");
+  }
+  if (!options.length && !reasons.size) reasons.add("unavailable_data");
   return {
-    complete: options.length > 0 || !unavailableEvidence,
+    complete:
+      options.length > 0 || (!uncertain && reasons.size > 0 && !reasons.has("unavailable_data")),
+    unavailableReasons: options.length ? [] : [...reasons].sort().map((code) => ({ code })),
     eligibleOfferCount: candidates.length,
     options,
   };
@@ -150,4 +212,18 @@ function isUnavailableQuote(error: unknown): boolean {
   return (
     typeof error === "object" && error !== null && "statusCode" in error && error.statusCode === 409
   );
+}
+
+function quoteUnavailableReason(error: unknown): UnavailableReason {
+  if (typeof error === "object" && error !== null && "availabilityReason" in error) {
+    if (
+      error.availabilityReason === "sold_out" ||
+      error.availabilityReason === "payment_disabled" ||
+      error.availabilityReason === "stay_restricted" ||
+      error.availabilityReason === "min_stay_not_met" ||
+      error.availabilityReason === "max_stay_exceeded"
+    )
+      return error.availabilityReason;
+  }
+  return "unavailable_data";
 }

@@ -3243,7 +3243,7 @@ export async function loadTargetCheckoutOffer(
     objectValue(offer.profileCapabilities),
   );
   if (paymentOptions.length === 0) {
-    throw createHttpError(409, "Checkout payment methods are no longer available. Please refresh.");
+    throw Object.assign(createHttpError(409, "Checkout payment methods are no longer available. Please refresh."), { availabilityReason: "payment_disabled" });
   }
   return { ...offer, paymentOptions };
 }

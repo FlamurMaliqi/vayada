@@ -13,6 +13,7 @@ export const PUBLIC_BOOKABILITY_STATUSES = ["bookable", "unavailable", "stale", 
 
 export const PUBLIC_BOOKABILITY_REASON_CODES = [
   "sold_out",
+  "stay_restricted",
   "payment_disabled",
   "min_stay_not_met",
   "max_stay_exceeded",
@@ -707,6 +708,7 @@ function buildQuoteUnavailableReasons(
     offers.length === 0 &&
     !reasons.some((reason) =>
       [
+        "stay_restricted",
         "min_stay_not_met",
         "max_stay_exceeded",
         "same_day_cutoff_passed",

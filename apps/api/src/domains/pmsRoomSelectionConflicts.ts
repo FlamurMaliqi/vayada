@@ -14,7 +14,7 @@ export async function readPmsRoomSelectionConflicts(
   return new Map(result.rows.map((row) => [row.roomTypeId, row.groupId]));
 }
 
-export async function pmsRoomStayRestrictionsAllow(
+export async function pmsRoomStayRestrictionReason(
   transaction: InventoryReservationTransaction,
   input: {
     propertyId: string;
@@ -23,16 +23,28 @@ export async function pmsRoomStayRestrictionsAllow(
     checkIn: string;
     checkOut: string;
   },
-): Promise<boolean> {
-  const result = await transaction.query<{ blocked: boolean }>(
-    `SELECT EXISTS(SELECT 1 FROM pms.rate_rules rule
-      WHERE property_id=$1::uuid AND room_type_id=$2::uuid
-        AND (rate_plan_id IS NULL OR rate_plan_id=$3::uuid)
-        AND (($4::date BETWEEN starts_on AND ends_on AND EXTRACT(DOW FROM $4::date)::int=ANY(days_of_week)
-          AND (closed_to_arrival OR min_stay_nights>($5::date-$4::date) OR max_stay_nights<($5::date-$4::date)))
-          OR ($5::date BETWEEN starts_on AND ends_on AND EXTRACT(DOW FROM $5::date)::int=ANY(days_of_week)
-            AND closed_to_departure))) AS blocked`,
+): Promise<
+  "stay_restricted" | "min_stay_not_met" | "max_stay_exceeded" | "unavailable_data" | null
+> {
+  const result = await transaction.query<{ closed: boolean; minimum: boolean; maximum: boolean }>(
+    `SELECT
+       COALESCE(bool_or((arrival AND closed_to_arrival) OR (departure AND closed_to_departure)),false) AS closed,
+       COALESCE(bool_or(arrival AND min_stay_nights>($5::date-$4::date)),false) AS minimum,
+       COALESCE(bool_or(arrival AND max_stay_nights<($5::date-$4::date)),false) AS maximum
+     FROM (SELECT rule.*,
+       ($4::date BETWEEN starts_on AND ends_on AND EXTRACT(DOW FROM $4::date)::int=ANY(days_of_week)) AS arrival,
+       ($5::date BETWEEN starts_on AND ends_on AND EXTRACT(DOW FROM $5::date)::int=ANY(days_of_week)) AS departure
+       FROM pms.rate_rules rule WHERE property_id=$1::uuid AND room_type_id=$2::uuid
+       AND (rate_plan_id IS NULL OR rate_plan_id=$3::uuid)) rules`,
     [input.propertyId, input.roomTypeId, input.ratePlanId, input.checkIn, input.checkOut],
   );
-  return result.rows[0]?.blocked === false;
+  const row = result.rows[0];
+  if (!row) return "unavailable_data";
+  return row.closed
+    ? "stay_restricted"
+    : row.minimum
+      ? "min_stay_not_met"
+      : row.maximum
+        ? "max_stay_exceeded"
+        : null;
 }
