@@ -43,6 +43,8 @@
     "loading": "Loading...",
     "qty": "Qty",
     "perPerson": "per person",
+    "checkInWindow": "Check-in: {time}",
+    "checkOutWindow": "Check-out: {time}",
     "checkInFrom": "Check-in from {time}",
     "checkOutBy": "Check-out by {time}",
     "pricingUpdating": "Pricing is still updating for these dates. Please wait a moment and try again."

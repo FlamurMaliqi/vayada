@@ -47,6 +47,8 @@ export type BookingWebPublicHotelResponse = {
     policies: {
       checkInFrom: string | null;
       checkOutUntil: string | null;
+      checkInUntil?: string | null;
+      checkOutFrom?: string | null;
       cancellationSummary: string | null;
       termsUrl: string | null;
     };
@@ -285,6 +287,8 @@ export function toLegacyHotel(data: BookingWebPublicHotelResponse): Hotel {
     amenities: hotel.amenities,
     checkInTime: hotel.policies.checkInFrom || "",
     checkOutTime: hotel.policies.checkOutUntil || "",
+    checkInUntil: hotel.policies.checkInUntil || undefined,
+    checkOutFrom: hotel.policies.checkOutFrom || undefined,
     timezone: hotel.timezone,
     contact: {
       address,

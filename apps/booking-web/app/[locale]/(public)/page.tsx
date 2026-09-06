@@ -818,7 +818,9 @@ function HomePageContent() {
               }
               soldOut={modalSoldOut}
               checkInTime={hotel.checkInTime}
+              checkInUntil={hotel.checkInUntil}
               checkOutTime={hotel.checkOutTime}
+              checkOutFrom={hotel.checkOutFrom}
               checkIn={committedCheckIn}
               hotelTimezone={hotel.timezone}
               onSelectRate={(rateType) => {

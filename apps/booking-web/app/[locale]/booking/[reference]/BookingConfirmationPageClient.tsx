@@ -1,5 +1,6 @@
 "use client";
 
+import { formatCheckInTime, formatCheckOutTime } from "@/lib/arrivalTimes";
 import { useState, useEffect, useRef } from "react";
 import { useLocale, useTranslations } from "next-intl";
 import { paymentMethodLabelKey, type PaymentMethodLabelKey } from "@vayada/locale-constants";
@@ -615,13 +616,13 @@ export default function BookingConfirmationPageClient({
               <div className="flex justify-between py-3">
                 <span className="text-gray-600">{t("checkIn")}</span>
                 <span className="font-medium text-gray-900">
-                  {booking?.checkIn ? `${booking.checkIn}, ${hotel.checkInTime}` : "—"}
+                  {booking?.checkIn ? `${booking.checkIn}, ${formatCheckInTime(hotel)}` : "—"}
                 </span>
               </div>
               <div className="flex justify-between py-3">
                 <span className="text-gray-600">{t("checkOut")}</span>
                 <span className="font-medium text-gray-900">
-                  {booking?.checkOut ? `${booking.checkOut}, ${hotel.checkOutTime}` : "—"}
+                  {booking?.checkOut ? `${booking.checkOut}, ${formatCheckOutTime(hotel)}` : "—"}
                 </span>
               </div>
               <div className="flex justify-between py-3">

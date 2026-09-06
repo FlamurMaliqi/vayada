@@ -43,6 +43,8 @@
     "loading": "Memuat...",
     "qty": "Jml",
     "perPerson": "per orang",
+    "checkInWindow": "Check-in: {time}",
+    "checkOutWindow": "Check-out: {time}",
     "checkInFrom": "Check-in mulai {time}",
     "checkOutBy": "Check-out sampai {time}",
     "pricingUpdating": "Harga untuk tanggal ini masih diperbarui. Mohon tunggu sebentar dan coba lagi."

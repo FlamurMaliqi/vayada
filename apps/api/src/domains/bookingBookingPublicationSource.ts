@@ -215,6 +215,8 @@ async function load(
     policies: {
       checkInFrom: projection.policy.checkInTime,
       checkOutUntil: projection.policy.checkOutTime,
+      ...(projection.policy.checkInUntil ? { checkInUntil: projection.policy.checkInUntil } : {}),
+      ...(projection.policy.checkOutFrom ? { checkOutFrom: projection.policy.checkOutFrom } : {}),
       cancellationSummary: null,
       termsUrl: null,
     },

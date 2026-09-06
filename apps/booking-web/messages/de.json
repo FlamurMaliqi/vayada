@@ -43,6 +43,8 @@
     "loading": "Wird geladen...",
     "qty": "Anz",
     "perPerson": "pro Person",
+    "checkInWindow": "Check-in: {time}",
+    "checkOutWindow": "Check-out: {time}",
     "checkInFrom": "Check-in ab {time}",
     "checkOutBy": "Check-out bis {time}",
     "pricingUpdating": "Die Preise für diese Daten werden noch aktualisiert. Bitte warten Sie einen Moment und versuchen Sie es erneut."

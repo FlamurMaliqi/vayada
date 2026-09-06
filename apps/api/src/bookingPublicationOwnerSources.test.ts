@@ -7,6 +7,8 @@ import { createHotelMediaResolutionPort } from "@vayada/domain-hotels";
 import { describe, expect, it, vi } from "vitest";
 
 import {
+  choices,
+  compositionFixture,
   now,
   organizationId,
   pricingEvidence,
@@ -129,7 +131,7 @@ describe("production Booking publication owner sources", () => {
       design,
       guestPolicy: {
         async getCurrentGuestPolicy() {
-          return revisionFixture();
+          return revisionFixture({ bundle: compositionFixture({ ...choices, checkInUntil: "23:00", checkOutFrom: "07:00" }).bundle });
         },
       },
     });
@@ -156,6 +158,7 @@ describe("production Booking publication owner sources", () => {
           heroImage: "https://cdn.test/cover.webp",
           heroSubtext: "Book direct.",
         },
+        policies: { checkInFrom: choices.checkInTime, checkOutUntil: choices.checkOutTime, checkInUntil: "23:00", checkOutFrom: "07:00" },
         capabilities: { instantBook: true, promoCodes: true, referralCodes: true },
         supportedQuoteParameters: { childrenSupported: true, adultAgeThreshold: 18 },
       },

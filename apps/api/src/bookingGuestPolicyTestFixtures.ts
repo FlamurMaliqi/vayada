@@ -127,7 +127,7 @@ export function applicationHarness(
   };
 }
 
-export function compositionFixture() {
+export function compositionFixture(policyChoices: typeof choices = choices) {
   const evidence = pricingEvidence();
   const pricingSourceFingerprint = createBookingPricingSourceFingerprint(
     { organizationId, propertyId },
@@ -135,7 +135,7 @@ export function compositionFixture() {
   );
   const composition = composeBookingGuestPolicy({
     request: { organizationId, propertyId },
-    choices,
+    choices: policyChoices,
     catalogProfile: {
       outcome: "available",
       evidence: {
