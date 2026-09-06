@@ -41,6 +41,8 @@ it.each([
   "operator",
   "allowed",
   "booking-only",
+  "unassigned",
+  "no-canonical",
 ])("enforces %s authorization before reading or writing secrets", async (variant) => {
   const repository = {
     read: vi.fn(async () => summary),
@@ -51,9 +53,11 @@ it.each([
   app.addHook("onRequest", async (request) => {
     if (["missing", "invalid"].includes(variant)) return;
     request.authContext = {
-      actor: { internalUserId: "14660000-0000-4000-8000-000000000004" },
-      selectedOrganization: { organizationId: "org", kind: "hotel_group" },
+      actor: { internalUserId: "14660000-0000-4000-8000-000000000004", status: "active" },
+      selectedOrganization: { organizationId: "org", kind: "hotel_group", status: "active" },
       membership: {
+        roleKey: "hotel_owner",
+        status: "active",
         permissions:
           variant === "permission"
             ? []
@@ -63,6 +67,17 @@ it.each([
         variant === "link"
           ? []
           : [
+              ...(variant === "no-canonical"
+                ? []
+                : [
+                    {
+                      product: "hotel_catalog",
+                      resourceType: "property",
+                      resourceId: propertyId,
+                      relationship: "owner",
+                      status: "active",
+                    },
+                  ]),
               {
                 ...resource,
                 relationship: variant === "operator" ? "operator" : "owner",
@@ -87,6 +102,14 @@ it.each([
   await app.register(registerFinanceBankTransferRoutes, {
     prefix: "/api",
     repository,
+    propertyAccessRepository: {
+      findMembershipPropertyScope: async () => ({
+        mode: "assigned",
+        roleKey: "hotel_owner",
+        accessOrigin: "agency",
+        assignedPropertyIds: variant === "unassigned" ? [] : [propertyId],
+      }),
+    },
     publicBookabilityPublisher: publisher,
   });
   try {

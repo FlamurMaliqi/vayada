@@ -6,6 +6,7 @@ import {
   type VerifiedSession,
 } from "@vayada/backend-auth";
 import { injectJson } from "@vayada/backend-test";
+import type { PropertyAccessRepository } from "@vayada/backend-authorization";
 import type {
   CancellationPolicy,
   FinanceAffiliatePayoutSettingsPatchCommand,
@@ -276,6 +277,62 @@ afterEach(async () => {
 });
 
 describe("finance route contracts", () => {
+  it("denies unassigned Stripe dashboard commands before the provider port", async () => {
+    const issueStripeDashboardLoginLink = vi.fn(async () => ({
+      ok: true as const,
+      url: "https://stripe.example.test/dashboard",
+    }));
+    app = buildFinanceApp({
+      permissions: financeManagePermissions(),
+      repository: { ...financeRepository, issueStripeDashboardLoginLink },
+      propertyAccessRepository: {
+        findMembershipPropertyScope: async () => ({
+          mode: "assigned",
+          roleKey: "finance_manager",
+          accessOrigin: "agency",
+          assignedPropertyIds: [],
+        }),
+      },
+    });
+    const response = await app.inject({
+      method: "POST",
+      url: `/api/finance/properties/${propertyId}/provider-accounts/stripe/dashboard-link`,
+      headers: { authorization: "Bearer valid-token" },
+    });
+    expect(response.statusCode).toBe(403);
+    expect(response.json().code).toBe("missing_resource_access");
+    expect(issueStripeDashboardLoginLink).not.toHaveBeenCalled();
+  });
+
+  it.each(["payment-settings", "cancellation-policy"])(
+    "denies unassigned %s before repository reads",
+    async (route) => {
+      const repository = {
+        getPaymentSettings: vi.fn(async () => paymentSettings),
+        getCancellationPolicy: vi.fn(async () => cancellationPolicy),
+      };
+      app = buildFinanceApp({
+        repository,
+        propertyAccessRepository: {
+          findMembershipPropertyScope: async () => ({
+            mode: "assigned",
+            roleKey: "finance_manager",
+            accessOrigin: "agency",
+            assignedPropertyIds: [],
+          }),
+        },
+      });
+      const response = await app.inject({
+        url: `/api/finance/properties/${propertyId}/${route}`,
+        headers: { authorization: "Bearer valid-token" },
+      });
+      expect(response.statusCode).toBe(403);
+      expect(response.json().code).toBe("missing_resource_access");
+      expect(repository.getPaymentSettings).not.toHaveBeenCalled();
+      expect(repository.getCancellationPolicy).not.toHaveBeenCalled();
+    },
+  );
+
   it("passes F1b payment-settings read and public projection fixture cases in target mode", async () => {
     app = buildFinanceApp();
 
@@ -3948,6 +4005,7 @@ function affiliatePayoutSettingsPatchCommand(
 
 function buildFinanceApp(
   options: {
+    propertyAccessRepository?: PropertyAccessRepository;
     permissions?: PermissionKey[];
     entitlements?: ProductEntitlement[];
     linkedPropertyId?: string | null;
@@ -3978,7 +4036,7 @@ function buildFinanceApp(
         linkedResourceType: options.linkedResourceType,
         linkedAffiliateId: options.linkedAffiliateId,
       }),
-      propertyAccessRepository: agencyPropertyAccessRepository,
+      propertyAccessRepository: options.propertyAccessRepository ?? agencyPropertyAccessRepository,
       rolePermissionRepository: {
         async findPermissionsForRole() {
           return options.permissions ?? ["pms.finance.read"];
@@ -4657,6 +4715,22 @@ function identityRepository(
     async findLinkedResources() {
       const resources = [];
       if (options.linkedPropertyId !== null) {
+        resources.push({
+          product: "hotel_catalog",
+          resourceType: "property",
+          resourceId: options.linkedPropertyId ?? propertyId,
+          relationship: "finance_manager",
+          status: "active",
+        });
+        if (options.linkedResourceType === "property") {
+          resources.push({
+            product: "pms",
+            resourceType: "pms_property",
+            resourceId: options.linkedPropertyId ?? propertyId,
+            relationship: "finance_manager",
+            status: "active",
+          });
+        }
         resources.push({
           product: "pms",
           resourceType: options.linkedResourceType ?? "pms_property",

@@ -27,7 +27,7 @@ the WorkOS dashboard; Vayada signups must start from product-specific `/signup`
 routes so the callback carries a `creator` or `hotel` organization intent.
 
 The launcher registers an exact Google callback for Vayada Admin, Marketplace,
-Booking Admin, PMS, and Affiliate, plus the temporary `api.localhost`
+Booking Admin and PMS, plus the temporary `api.localhost`
 compatibility callback. Portless review ports and worktree-qualified hosts are
 preserved. Each authenticated frontend receives these server-only settings:
 
@@ -36,10 +36,10 @@ AUTH_PUBLIC_ORIGIN=https://<that-frontend-origin>
 AUTH_GATEWAY_UPSTREAM_ORIGIN=http://127.0.0.1:8003
 ```
 
-Browser auth uses the literal relative `/auth` path on all five migrated
+Browser auth uses the literal relative `/auth` path on all four migrated
 frontends. `NEXT_PUBLIC_AUTH_API_URL` continues to point at
 `api.localhost` for existing non-auth TypeScript API consumers; do not repoint
-it to a frontend. The launcher enables all five values in
+it to a frontend. The launcher enables all four values in
 `AUTH_FIRST_PARTY_SURFACES` by default; override the variable only when testing
 a deliberate compatibility scenario.
 
