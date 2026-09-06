@@ -50,6 +50,25 @@ jobs:
 
       - name: Build
         run: npm run build
+        env:
+          NEXT_PUBLIC_CLOUDFLARE_ANALYTICS_TOKEN: "00000000000000000000000000000000"
+
+      - name: Landing consent browser regressions
+        run: |
+          npx playwright install --with-deps chromium
+          npm --workspace vayada-landing run start -- --port 3006 &
+          landing_pid=$!
+          trap 'kill "$landing_pid" 2>/dev/null || true' EXIT
+          for attempt in $(seq 1 30); do
+            if curl --silent --fail http://127.0.0.1:3006/ >/dev/null; then break; fi
+            sleep 1
+          done
+          npm run e2e:landing -- --workers=2
+        env:
+          CI: "false"
+          E2E_START_SERVERS: "0"
+          E2E_LANDING_BASE_URL: http://127.0.0.1:3006
+          E2E_LANDING_ANALYTICS: "1"
 
   first_party_auth:
     name: First-Party Auth Contracts

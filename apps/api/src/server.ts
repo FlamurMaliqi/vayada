@@ -1454,7 +1454,10 @@ const app = buildApp({
     affiliateScope: marketplaceAffiliateAdminRepository,
   },
   marketplaceCreatorSelfServiceRepository,
-  marketplaceCreatorPlatformConnections: creatorPlatformConnectionRuntime,
+  marketplaceCreatorPlatformConnections: {
+    ...creatorPlatformConnectionRuntime,
+    credentialCleanupEnabled: config.backgroundWorkersEnabled,
+  },
   marketplaceCreatorProfileMediaRepository: platformMediaRuntime?.profileMediaRepository,
   sharedHotelSetupStatusRepository,
   hotelSetupTrackCommandRepository,
@@ -1522,7 +1525,7 @@ const app = buildApp({
 });
 
 const creatorPlatformSyncConfig = config.creatorPlatformConnections?.sync;
-const creatorPlatformSyncWorker = creatorPlatformSyncConfig?.enabled
+const creatorPlatformSyncWorker = config.backgroundWorkersEnabled && creatorPlatformSyncConfig?.enabled
   ? startCreatorPlatformSyncWorker({
       store: createPgCreatorPlatformSyncStore({ connectionString: targetDatabaseUrl }),
       repository: createPgMarketplaceCreatorPlatformConnectionRepository({
@@ -1541,7 +1544,7 @@ const creatorPlatformSyncWorker = creatorPlatformSyncConfig?.enabled
     })
   : undefined;
 
-const staffRemovalWorker = staffInvitationRuntime
+const staffRemovalWorker = config.backgroundWorkersEnabled && staffInvitationRuntime
   ? startStaffRemovalWorker({
       repository: staffInvitationRuntime.removalJobRepository,
       coordinator: staffInvitationRuntime.removal,
@@ -1549,7 +1552,7 @@ const staffRemovalWorker = staffInvitationRuntime
     })
   : undefined;
 
-const pmsInboxAssignmentReconciliationWorker = pmsInboxRuntime
+const pmsInboxAssignmentReconciliationWorker = config.backgroundWorkersEnabled && pmsInboxRuntime
   ? startPmsInboxAssignmentReconciliationWorker({
       connectionString: targetDatabaseUrl,
       workerId: `pms-inbox-assignment-reconciliation:${process.pid}`,
@@ -1557,7 +1560,7 @@ const pmsInboxAssignmentReconciliationWorker = pmsInboxRuntime
     })
   : undefined;
 
-const pmsInboxFollowUpReleaseWorker = pmsInboxRuntime
+const pmsInboxFollowUpReleaseWorker = config.backgroundWorkersEnabled && pmsInboxRuntime
   ? startPmsInboxFollowUpReleaseWorker({
       connectionString: targetDatabaseUrl,
       workerId: `pms-inbox-follow-up-release:${process.pid}`,
@@ -1575,7 +1578,7 @@ app.addHook("onClose", async () => {
   await postgresRuntime.close();
 });
 
-const bookingPublicationWorker = bookingPublicationRuntime
+const bookingPublicationWorker = config.backgroundWorkersEnabled && bookingPublicationRuntime
   ? startBookingPublicationWorker({
       projector: bookingPublicationRuntime.projector,
       workerId: `booking-publication:${process.pid}`,
@@ -1623,6 +1626,7 @@ app.addHook("onClose", async () => {
 
 let activeChannexReviewBatch: Promise<void> | undefined;
 const runChannexReviews = () => {
+  if (!config.backgroundWorkersEnabled) return;
   if (activeChannexReviewBatch) return;
   activeChannexReviewBatch = runChannexReviewJobs(targetDatabaseUrl)
     .then(({ failed }) => {
@@ -1644,6 +1648,7 @@ const channexBookingWorkerEnabled =
   config.channexManagement.bookingMutationOwner === "target" &&
   Boolean(config.channexManagement.apiBaseUrl && config.channexManagement.apiKey);
 const runChannexBookings = () => {
+  if (!config.backgroundWorkersEnabled) return;
   if (activeChannexBookingBatch || !channexBookingWorkerEnabled) return;
   activeChannexBookingBatch = runChannexBookingJobs(targetDatabaseUrl, {
     apiBaseUrl: config.channexManagement.apiBaseUrl!,
@@ -1673,6 +1678,7 @@ const channexMessageWorkerEnabled =
   config.channexManagement.capabilityModes.messaging === "mutating" &&
   Boolean(config.channexManagement.apiBaseUrl && config.channexManagement.apiKey);
 const runChannexMessages = () => {
+  if (!config.backgroundWorkersEnabled) return;
   if (activeChannexMessageBatch || !channexMessageWorkerEnabled) return;
   activeChannexMessageBatch = runChannexMessageJobs(targetDatabaseUrl, {
     apiBaseUrl: config.channexManagement.apiBaseUrl!,
@@ -1728,6 +1734,7 @@ app.addHook("onClose", async () => {
 
 let activeChannexManagementRun: Promise<void> | undefined;
 const runChannexManagement = () => {
+  if (!config.backgroundWorkersEnabled) return;
   if (!channexManagementWorkerStore || !channexManagementProvider || activeChannexManagementRun) {
     return;
   }
@@ -1763,6 +1770,7 @@ app.addHook("onClose", async () => {
 
 let activeCalendarAutoOpenRun: Promise<void> | undefined;
 const runCalendarAutoOpen = () => {
+  if (!config.backgroundWorkersEnabled) return;
   if (!pmsCalendarAutoOpenWorkerStore || activeCalendarAutoOpenRun) return;
   activeCalendarAutoOpenRun = runPmsCalendarAutoOpenWorkerOnce({
     store: pmsCalendarAutoOpenWorkerStore,
@@ -1797,6 +1805,7 @@ const financeSubscriptionWebhooksEnabled = Boolean(
 );
 const financeSubscriptionJobsEnabled = config.financeSource === "target";
 const runFinanceSubscriptionJobs = () => {
+  if (!config.backgroundWorkersEnabled) return;
   if (activeFinanceSubscriptionBatch || !financeSubscriptionJobsEnabled) return;
   const batches = [
     runFinanceSubscriptionNotificationJobs(targetDatabaseUrl, (notification) => {
@@ -1855,6 +1864,7 @@ const stripeAccountCompensationEnabled = Boolean(
   config.financeSource === "target" && stripeConnectProvider,
 );
 const runStripeAccountCompensation = () => {
+  if (!config.backgroundWorkersEnabled) return;
   if (!stripeConnectProvider || activeStripeAccountCompensation) return;
   activeStripeAccountCompensation = runFinanceStripeAccountCompensationJobs(
     targetDatabaseUrl,
@@ -1886,6 +1896,7 @@ app.addHook("onClose", async () => {
 
 let activeFinanceExpenseGeneration: Promise<void> | undefined;
 const runFinanceExpenseGeneration = () => {
+  if (!config.backgroundWorkersEnabled) return;
   if (!financeExpenseGenerationPool || activeFinanceExpenseGeneration) return;
   activeFinanceExpenseGeneration = runFinanceExpenseGenerationCycle(financeExpenseGenerationPool)
     .then((result) => {
@@ -1916,6 +1927,7 @@ let pmsPublicOfferRetryTimer: NodeJS.Timeout | undefined;
 
 if (pmsInventoryPublicOfferProjector) {
   const runRetryBatch = () => {
+    if (!config.backgroundWorkersEnabled) return;
     if (activeRetryBatch) return;
     activeRetryBatch = pmsInventoryPublicOfferProjector
       .runRetryBatch()
@@ -1969,6 +1981,7 @@ if (platformMediaRuntime) {
   let activeCleanup: Promise<void> | undefined;
   let activePropertyMediaPublication: Promise<void> | undefined;
   const runCleanup = () => {
+    if (!config.backgroundWorkersEnabled) return;
     if (activeCleanup) return;
     activeCleanup = runPlatformMediaCleanupJobs(platformMediaRuntime.cleanupStore)
       .then((result) => {
@@ -1991,6 +2004,7 @@ if (platformMediaRuntime) {
   if (config.platformMediaCleanupEnabled) runCleanup();
 
   const runPropertyMediaPublication = () => {
+    if (!config.backgroundWorkersEnabled) return;
     if (activePropertyMediaPublication) return;
     activePropertyMediaPublication = platformMediaRuntime.propertyMediaCommands
       .runPublicationBatch()
@@ -2035,6 +2049,7 @@ const bookingLifecycleStore = createPgBookingLifecycleStore({
 });
 let activeBookingLifecycleRun: Promise<void> | undefined;
 const runBookingLifecycle = () => {
+  if (!config.backgroundWorkersEnabled) return;
   if (activeBookingLifecycleRun) return;
   activeBookingLifecycleRun = runBookingLifecycleSchedulerJobs(bookingLifecycleStore)
     .then((result) => {
@@ -2055,7 +2070,7 @@ bookingLifecycleTimer.unref();
 runBookingLifecycle();
 
 const pmsInboxDeliveryWorker =
-  pmsInboxDeliveryStore && pmsInboxDeliveryPool
+  config.backgroundWorkersEnabled && pmsInboxDeliveryStore && pmsInboxDeliveryPool
     ? startPmsInboxDeliveryWorker({
         enabled: config.pmsInboxSendingEnabled,
         store: pmsInboxDeliveryStore,
@@ -2073,6 +2088,7 @@ const bookingEmailDelivery = config.bookingEmailDelivery
   : undefined;
 let activeBookingEmailDelivery: Promise<void> | undefined;
 const runBookingEmailDelivery = () => {
+  if (!config.backgroundWorkersEnabled) return;
   if (!bookingEmailDelivery || activeBookingEmailDelivery) return;
   activeBookingEmailDelivery = runBookingEmailDeliveryJobs(
     targetDatabaseUrl,
@@ -2111,7 +2127,7 @@ const propertySetupDraftRetentionWorker = startPropertySetupDraftRetentionWorker
   store: createPgPropertySetupDraftRetentionStore({
     connectionString: targetDatabaseUrl,
   }),
-  enabled: config.propertySetupDraftRetentionEnabled,
+  enabled: config.backgroundWorkersEnabled && config.propertySetupDraftRetentionEnabled,
   intervalMs: config.propertySetupDraftRetentionIntervalMs,
   batchSize: config.propertySetupDraftRetentionBatchSize,
   logger: app.log,
@@ -2124,6 +2140,7 @@ app.addHook("onClose", async () => {
 if (authSessionHandoffRepository) {
   let activeHandoffCleanup: Promise<void> | undefined;
   const runHandoffCleanup = () => {
+    if (!config.backgroundWorkersEnabled) return;
     if (activeHandoffCleanup) return;
     const now = new Date();
     activeHandoffCleanup = authSessionHandoffRepository
