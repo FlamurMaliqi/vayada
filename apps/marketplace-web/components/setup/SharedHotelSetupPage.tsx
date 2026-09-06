@@ -189,7 +189,11 @@ export function SharedHotelSetupPage({
 
   const handleExit = (selectedPropertyId?: string | null) => {
     const propertyId = selectedPropertyId?.trim() || initialPropertyId?.trim() || null;
-    void handoffToProduct("pms", pmsSetupExitPath(propertyId), propertyId);
+    void handoffToProduct(
+      "pms",
+      setupExitPathForContext(searchParams.toString(), propertyId),
+      propertyId,
+    );
   };
 
   if (checkingAuth || !authorized) {
@@ -339,4 +343,11 @@ export function productHandoffReturnTo(
     fragment.set("workos_organization_id", organization.workosOrganizationId);
   }
   return `/handoff?${query.toString()}${fragment.size > 0 ? `#${fragment.toString()}` : ""}`;
+}
+
+export function setupExitPathForContext(query: string, propertyId: string | null): string {
+  const params = new URLSearchParams(query);
+  return params.get("recovery") === "pms-calendar" && params.get("returnProduct") === "pms"
+    ? safeSharedHotelSetupReturnTo(params.get("returnTo"), "/settings#calendar")
+    : pmsSetupExitPath(propertyId);
 }

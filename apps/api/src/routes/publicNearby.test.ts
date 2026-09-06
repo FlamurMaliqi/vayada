@@ -26,12 +26,14 @@ async function setup() {
   const read = vi.fn().mockResolvedValue(snapshot);
   const profile = vi.fn().mockResolvedValue({ hotel: { propertyId: "property" } });
   const discover = vi.fn().mockResolvedValue({ status: "provider_unavailable", places: [] });
-  const claim = vi.fn().mockResolvedValue({
-    status: "claimed",
-    token: "private-token",
-    profileRevision: 1,
-    origin: { latitude: 1.01, longitude: 2.02 },
-  });
+  const claim = vi
+    .fn()
+    .mockResolvedValue({
+      status: "claimed",
+      token: "private-token",
+      profileRevision: 1,
+      origin: { latitude: 1.01, longitude: 2.02 },
+    });
   const complete = vi.fn();
   await registerBookingWebPublicRoutes(app, {
     profileRepository: { findProfileBySlug: profile } as PublicHotelProfileRepository,
@@ -77,10 +79,12 @@ it("rechecks revocation and hidden-location changes after I/O", async () => {
   const s = await setup();
   s.read.mockResolvedValueOnce(s.snapshot).mockResolvedValueOnce(null);
   expect((await s.app.inject("/hotels/revoked/nearby")).statusCode).toBe(404);
-  s.read.mockResolvedValueOnce(s.snapshot).mockResolvedValueOnce({
-    ...s.snapshot,
-    public: { schemaVersion: 1, status: "hidden", location: null, places: [] },
-  });
+  s.read
+    .mockResolvedValueOnce(s.snapshot)
+    .mockResolvedValueOnce({
+      ...s.snapshot,
+      public: { schemaVersion: 1, status: "hidden", location: null, places: [] },
+    });
   expect((await s.app.inject("/hotels/hidden/nearby")).json()).toEqual({
     schemaVersion: 1,
     status: "hidden",

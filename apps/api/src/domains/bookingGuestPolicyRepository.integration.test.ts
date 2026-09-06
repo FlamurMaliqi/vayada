@@ -105,6 +105,32 @@ describe.skipIf(!TEST_DATABASE_URL)("PostgreSQL Booking guest-policy repository"
     await admin.end();
   });
 
+  it("persists and reloads ranges in immutable bundles, with revision checks and public projection", async () => {
+    const input = command("ranges", 0, { checkInUntil: "23:00", checkOutFrom: "07:00" });
+    const result = await repository.persistGuestPolicy(input);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const current = await repository.getCurrentGuestPolicy({ organizationId, propertyId });
+    expect(current?.bundle.choices).toMatchObject({ checkInUntil: "23:00", checkOutFrom: "07:00" });
+    expect(await repository.persistGuestPolicy(input)).toMatchObject({
+      ok: true,
+      outcome: "idempotent_replay",
+    });
+    expect(await repository.persistGuestPolicy(command("stale-ranges", 0))).toMatchObject({
+      ok: false,
+      error: { code: "guest_policy_revision_conflict" },
+    });
+    expect(
+      await repository.getGuestPolicyPublicProjection({
+        organizationId,
+        propertyId,
+        revisionId: result.revision.revisionId,
+        guestPolicyRevision: 1,
+        outboxEventId: result.revision.outboxEventId,
+      }),
+    ).toMatchObject({ policy: { checkInUntil: "23:00", checkOutFrom: "07:00" } });
+  });
+
   it("atomically persists exact confirmation, secret-safe events, audit, outbox, and current evidence", async () => {
     await expect(
       currentOwnerEvidence.getCurrentGuestPolicyOwnerEvidence({ organizationId, propertyId }),
@@ -590,12 +616,16 @@ function command(
   overrides: Partial<{
     phoneRequired: boolean;
     checkInTime: string;
+    checkInUntil: string;
+    checkOutFrom: string;
     confirmPolicyBundle: boolean;
   }> = {},
 ): PersistBookingGuestPolicyCommand {
   const policy = bundle({
     phoneRequired: overrides.phoneRequired ?? true,
     checkInTime: overrides.checkInTime ?? "15:00",
+    ...(overrides.checkInUntil ? { checkInUntil: overrides.checkInUntil } : {}),
+    ...(overrides.checkOutFrom ? { checkOutFrom: overrides.checkOutFrom } : {}),
   });
   return {
     organizationId,
@@ -615,7 +645,12 @@ function command(
   };
 }
 
-function bundle(input: { phoneRequired: boolean; checkInTime: string }): BookingGuestPolicyBundle {
+function bundle(input: {
+  phoneRequired: boolean;
+  checkInTime: string;
+  checkInUntil?: string;
+  checkOutFrom?: string;
+}): BookingGuestPolicyBundle {
   const flexibleSource = source(
     "pms_flexible_rate_plan.v1",
     "b1000000-0000-4000-8000-000000000005",
@@ -655,6 +690,8 @@ function bundle(input: { phoneRequired: boolean; checkInTime: string }): Booking
     specialRequestsEnabled: true,
     checkInTime: input.checkInTime,
     checkOutTime: "11:00",
+    ...(input.checkInUntil ? { checkInUntil: input.checkInUntil } : {}),
+    ...(input.checkOutFrom ? { checkOutFrom: input.checkOutFrom } : {}),
   };
   const rates = [
     {
@@ -708,6 +745,8 @@ function bundle(input: { phoneRequired: boolean; checkInTime: string }): Booking
       adultAgeThreshold: choices.adultAgeThreshold,
       checkInTime: choices.checkInTime,
       checkOutTime: choices.checkOutTime,
+      ...(choices.checkInUntil ? { checkInUntil: choices.checkInUntil } : {}),
+      ...(choices.checkOutFrom ? { checkOutFrom: choices.checkOutFrom } : {}),
     },
     "EUR",
     "Europe/Berlin",

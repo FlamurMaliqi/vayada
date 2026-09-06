@@ -68,6 +68,67 @@ describe("production PMS migration transaction", () => {
     expect(client.sql.at(-1)).toBe("ROLLBACK");
   });
 
+  it("rolls back all writes when the post-write Inbox consistency check blocks", async () => {
+    const client = new TransactionFixture();
+    const services = serviceFixture();
+    let builds = 0;
+    services.buildPlan = vi.fn(() =>
+      ++builds === 3
+        ? {
+            ...plan(false),
+            blockers: [
+              {
+                code: "INBOX_TARGET_THREAD_SUMMARY_MISMATCH",
+                source: "pms.message_threads",
+                sourceId: "thread",
+                message: "target unreadCount disagrees",
+              },
+            ],
+          }
+        : plan(true),
+    );
+    const report = await runProductionPmsTransaction(
+      client as never,
+      { sourceRunId: RUN, mode: "apply" },
+      services,
+    );
+    expect(report.applied).toBe(false);
+    expect(report.blockers).toEqual([
+      {
+        code: "INBOX_TARGET_THREAD_SUMMARY_MISMATCH",
+        source: "pms.message_threads",
+        sourceId: "thread",
+        message: "target unreadCount disagrees",
+      },
+    ]);
+    expect(services.writeRecords).toHaveBeenCalledOnce();
+    expect(services.writeProvenance).toHaveBeenCalledOnce();
+    expect(client.sql.at(-1)).toBe("ROLLBACK");
+    expect(client.sql).not.toContain("COMMIT");
+  });
+
+  it.each(["checksum", "writes"])(
+    "still rejects post-write %s drift without blockers",
+    async (field) => {
+      const client = new TransactionFixture();
+      const services = serviceFixture();
+      let builds = 0;
+      services.buildPlan = vi.fn(() =>
+        ++builds === 3
+          ? {
+              ...plan(false),
+              ...(field === "checksum" ? { checksum: "changed" } : { writes: plan(true).writes }),
+            }
+          : plan(true),
+      );
+      await expect(
+        runProductionPmsTransaction(client as never, { sourceRunId: RUN, mode: "apply" }, services),
+      ).rejects.toThrow("Post-write PMS verification does not match the migration plan");
+      expect(client.sql.at(-1)).toBe("ROLLBACK");
+      expect(client.sql).not.toContain("COMMIT");
+    },
+  );
+
   it.each(["records", "provenance"])("rolls back when a later %s batch fails", async (layer) => {
     const sql: string[] = [];
     let batches = 0;

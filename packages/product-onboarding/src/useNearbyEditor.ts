@@ -29,6 +29,7 @@ export function useNearbyEditor(
   useEffect(() => {
     let disposed = false;
     const generation = ++refreshGeneration.current;
+    setRefreshing(false);
     setProfile(null);
     setSaved(null);
     setDraft(null);

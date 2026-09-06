@@ -261,10 +261,27 @@ describe("Booking Web public bootstrap parity", () => {
       },
     });
 
+    for (const consent of [
+      {},
+      { analyticsConsent: false, consentVersion: 1 },
+      { analyticsConsent: "true", consentVersion: 1 },
+      { analyticsConsent: true, consentVersion: 2 },
+    ]) {
+      const denied = await app.inject({
+        method: "POST",
+        url: "/api/booking-web/events",
+        payload: { hotelSlug: "unknown-hotel", eventType: "page_visit", ...consent },
+      });
+      expect(denied.statusCode).toBe(204);
+      expect(events).toEqual([]);
+    }
+
     const response = await app.inject({
       method: "POST",
       url: "/api/booking-web/events",
       payload: {
+        analyticsConsent: true,
+        consentVersion: 1,
         hotelSlug: "hotel-alpenrose",
         eventType: "page_visit",
         eventId: "event_page_visit_001",
@@ -273,10 +290,22 @@ describe("Booking Web public bootstrap parity", () => {
       },
     });
 
-    for (const metadata of [{ funnelVersion: 1, funnelSequence: 0 },
-      { funnelVersion: 1, funnelSequence: 2, paymentMethod: "unknown" }]) {
-      const invalid = await app.inject({ method: "POST", url: "/api/booking-web/events",
-        payload: { hotelSlug: "hotel-alpenrose", eventType: "complete_booking_clicked", sessionId: "sid", metadata } });
+    for (const metadata of [
+      { funnelVersion: 1, funnelSequence: 0 },
+      { funnelVersion: 1, funnelSequence: 2, paymentMethod: "unknown" },
+    ]) {
+      const invalid = await app.inject({
+        method: "POST",
+        url: "/api/booking-web/events",
+        payload: {
+          analyticsConsent: true,
+          consentVersion: 1,
+          hotelSlug: "hotel-alpenrose",
+          eventType: "complete_booking_clicked",
+          sessionId: "sid",
+          metadata,
+        },
+      });
       expect(invalid.statusCode).toBe(400);
     }
     expect(response.statusCode).toBe(204);
@@ -310,7 +339,12 @@ describe("Booking Web public bootstrap parity", () => {
     const response = await app.inject({
       method: "POST",
       url: "/api/booking-web/events",
-      payload: { hotelSlug: "unknown-hotel", eventType: "page_visit" },
+      payload: {
+        analyticsConsent: true,
+        consentVersion: 1,
+        hotelSlug: "unknown-hotel",
+        eventType: "page_visit",
+      },
     });
 
     expect(response.statusCode).toBe(404);
@@ -1180,6 +1214,7 @@ describe("Booking Web public bootstrap parity", () => {
     const calls: Array<{ text: string; values: readonly unknown[] | undefined }> = [];
     let ended = 0;
     let addonPricingModel = "per_guest_night";
+    let addonMaxQuantity = 1;
     const pool = {
       async query(text: string, values?: readonly unknown[]) {
         calls.push({ text, values });
@@ -1246,6 +1281,7 @@ describe("Booking Web public bootstrap parity", () => {
                 sourceAddonId: "spa_partner",
                 name: "Partner spa",
                 pricingModel: addonPricingModel,
+                maxQuantity: addonMaxQuantity,
                 unitAmount: "10.25",
                 currency: "EUR",
                 ownershipKind: "partner",
@@ -1305,6 +1341,93 @@ describe("Booking Web public bootstrap parity", () => {
       },
     );
 
+    for (const [model, expected] of [
+      ["per_stay", 10.25],
+      ["per_guest", 20.5],
+      ["per_night", 30.75],
+      ["per_guest_night", 61.5],
+    ] as const) {
+      addonPricingModel = model;
+      const priced = await adapter.quoteBooking("hotel-alpenrose", {
+        roomTypeId: "room_deluxe",
+        checkIn: "2026-09-12",
+        checkOut: "2026-09-15",
+        adults: 2,
+        children: 0,
+        numberOfRooms: 1,
+        paymentMethod: "pay_at_property",
+        rateType: "flexible",
+        addonIds: ["spa_partner"],
+      });
+      expect(priced).toMatchObject({ addonTotal: expected });
+    }
+    addonPricingModel = "per_stay";
+    await expect(
+      adapter.quoteBooking("hotel-alpenrose", {
+        roomTypeId: "room_deluxe",
+        checkIn: "2026-09-12",
+        checkOut: "2026-09-15",
+        adults: 2,
+        children: 0,
+        numberOfRooms: 1,
+        paymentMethod: "pay_at_property",
+        rateType: "flexible",
+        addonIds: ["spa_partner"],
+        addonQuantities: { spa_partner: 2 },
+      }),
+    ).rejects.toThrow("exceeds the maximum per booking");
+
+    addonMaxQuantity = 2;
+    for (const [model, expected] of [
+      ["per_stay", 20.5],
+      ["per_guest", 41],
+      ["per_night", 61.5],
+      ["per_guest_night", 123],
+    ] as const) {
+      addonPricingModel = model;
+      const request = {
+        roomTypeId: "room_deluxe",
+        checkIn: "2026-09-12",
+        checkOut: "2026-09-15",
+        adults: 2,
+        children: 0,
+        numberOfRooms: 1,
+        paymentMethod: "pay_at_property",
+        rateType: "flexible",
+        addonIds: ["spa_partner"],
+        addonPackageQuantities: { spa_partner: 2 },
+      };
+      expect(await adapter.quoteBooking("hotel-alpenrose", request)).toMatchObject({
+        addonTotal: expected,
+      });
+      await expect(
+        adapter.quoteBooking("hotel-alpenrose", {
+          ...request,
+          addonPackageQuantities: { spa_partner: 3 },
+        }),
+      ).rejects.toThrow("exceeds the maximum per booking");
+    }
+    for (const invalid of [
+      { spa_partner: 0 },
+      { spa_partner: -1 },
+      { spa_partner: 1.5 },
+      { unknown: 1 },
+    ]) {
+      await expect(
+        adapter.quoteBooking("hotel-alpenrose", {
+          roomTypeId: "room_deluxe",
+          checkIn: "2026-09-12",
+          checkOut: "2026-09-15",
+          adults: 2,
+          children: 0,
+          numberOfRooms: 1,
+          paymentMethod: "pay_at_property",
+          rateType: "flexible",
+          addonIds: ["spa_partner"],
+          addonPackageQuantities: invalid,
+        }),
+      ).rejects.toThrow("invalid");
+    }
     const quoteSessionWrites = calls.filter((call) =>
       call.text.includes("INSERT INTO booking.quote_sessions"),
     ).length;
@@ -1443,6 +1566,7 @@ describe("Booking Web public bootstrap parity", () => {
     const calls: string[] = [];
     let termsText: string | null = "Hotel Alpenrose booking terms.";
     let paypalConfigured = true;
+    let paymentsEnabled = true;
     const pool = {
       async query(text: string) {
         calls.push(text);
@@ -1466,7 +1590,7 @@ describe("Booking Web public bootstrap parity", () => {
                 phoneRequired: false,
                 termsText,
                 cancellationPolicyText: "Free cancellation until seven days before arrival.",
-                paymentsEnabled: true,
+                paymentsEnabled,
                 onlineCardReady: false,
                 acceptedMethods: [
                   "card",
@@ -1477,6 +1601,7 @@ describe("Booking Web public bootstrap parity", () => {
                   "paypal",
                   "pay_at_property",
                 ].filter((method) => paypalConfigured || method !== "paypal"),
+                bankTransferReady: true,
                 depositPolicy: {
                   bankTransferInstructions: "Bank: Vayada Bank\nIBAN: DE123",
                   paypalEmail: paypalConfigured ? "payments@alpenrose.test" : "",
@@ -1537,6 +1662,12 @@ describe("Booking Web public bootstrap parity", () => {
       paypalEnabled: true,
       paypalPaymentWindowHours: 48,
     });
+    paymentsEnabled = false;
+    await expect(adapter.getCheckoutConfig("hotel-alpenrose")).resolves.toMatchObject({
+      paymentsEnabled: false,
+      onlineCardPayment: false,
+    });
+    paymentsEnabled = true;
     paypalConfigured = false;
     await expect(
       adapter.getPaymentInstructions("hotel-alpenrose", "B-PAYPAL-1"),
@@ -1572,6 +1703,7 @@ describe("Booking Web public bootstrap parity", () => {
       withAutomatic = false,
       corruptPromotion = false,
       withLosingCode = false,
+      packageCount = 1,
     ) => {
       const calls: string[] = [];
       let bookingWriteValues: readonly unknown[] | undefined;
@@ -1621,15 +1753,18 @@ describe("Booking Web public bootstrap parity", () => {
                       addonIds: ["spa_partner"],
                       addonQuantities: { spa_partner: 2 },
                       addonDates: {},
+                      ...(packageCount > 1
+                        ? { addonPackageQuantities: { spa_partner: packageCount } }
+                        : {}),
                     },
                     addonPurchases: [
                       {
                         addonDefinitionId: "d8000000-0000-0000-0000-000000000682",
                         // prettier-ignore
                         addonSnapshot: { addonDefinitionId: "d8000000-0000-0000-0000-000000000682", sourceAddonId: "spa_partner", name: "Partner spa", pricingModel: "per_guest", unitAmount: addonUnitAmount, currency: "EUR" },
-                        quantity: 2,
+                        quantity: 2 * packageCount,
                         serviceDate: "2026-09-12",
-                        totalAmount: "20.50",
+                        totalAmount: (20.5 * packageCount).toFixed(2),
                         currency: "EUR",
                         ownershipKind: "partner",
                         partnerCommissionRate: "18.7500",
@@ -1659,7 +1794,7 @@ describe("Booking Web public bootstrap parity", () => {
                       : {}),
                   },
                   // prettier-ignore
-                  totals: { roomTotal: withPromo || withAutomatic ? "99.50" : "79.50", addonTotal, promoDiscount: withPromo ? "20.00" : "0.00", ...(withAutomatic ? { promotionDiscount: "20.00" } : {}), totalAmount: "100.00", balanceAmount: "100.00" },
+                  totals: { roomTotal: withPromo || withAutomatic ? "99.50" : "79.50", addonTotal, promoDiscount: withPromo ? "20.00" : "0.00", ...(withAutomatic ? { promotionDiscount: "20.00" } : {}), totalAmount: packageCount > 1 ? "120.50" : "100.00", balanceAmount: packageCount > 1 ? "120.50" : "100.00" },
                   promoCode: withPromo || withLosingCode ? "SUMMER20" : null,
                   policySnapshot: { freeUntilDays: 7 },
                   expiresAt: "2026-09-12T12:00:00.000Z",
@@ -1844,6 +1979,43 @@ describe("Booking Web public bootstrap parity", () => {
         context,
       ),
     ).rejects.toThrow("Checkout pricing evidence is invalid");
+
+    const packageRequest = {
+      ...request,
+      addonPackageQuantities: { spa_partner: 2 },
+      expectedTotalAmount: 120.5,
+      balanceAmount: 120.5,
+    };
+    await expect(
+      createAdapter(
+        false,
+        "41.00",
+        "request",
+        "10.25",
+        false,
+        false,
+        false,
+        false,
+        2,
+      ).adapter.createBooking("hotel-alpenrose", packageRequest, context),
+    ).resolves.toMatchObject({ bookingReference: "B-OPTIONAL" });
+    await expect(
+      createAdapter(
+        false,
+        "41.00",
+        "request",
+        "10.25",
+        false,
+        false,
+        false,
+        false,
+        2,
+      ).adapter.createBooking(
+        "hotel-alpenrose",
+        { ...packageRequest, addonPackageQuantities: { spa_partner: 1 } },
+        context,
+      ),
+    ).rejects.toThrow("Booking add-ons changed");
 
     const optionalPhone = createAdapter(false);
     await expect(
@@ -2522,7 +2694,7 @@ describe("Booking Web public bootstrap parity", () => {
     );
   });
 
-  it("creates a pending bank-transfer booking without emailing details before host acceptance", async () => {
+  it("binds bank-transfer bookings without persisting raw instructions", async () => {
     const propertyId = "a9fccec2-eb4c-4c35-bfd3-02a748c2e117";
     const guestBookingId = "b9fccec2-eb4c-4c35-bfd3-02a748c2e951";
     const calls: Array<{ text: string; values: readonly unknown[] | undefined }> = [];
@@ -2577,6 +2749,7 @@ describe("Booking Web public bootstrap parity", () => {
                 phoneRequired: true,
                 paymentsEnabled: true,
                 acceptedMethods: ["bank_transfer"],
+                bankTransferReady: true,
                 depositPolicy: {
                   bankTransferInstructions: "IBAN: DE89370400440532013000",
                 },
@@ -2641,7 +2814,9 @@ describe("Booking Web public bootstrap parity", () => {
       },
       async end() {},
     };
+    const bind = vi.fn(async () => undefined);
     const adapter = createTargetBookingWebCheckoutAdapter({
+      bankTransfers: { bind, confirmation: async () => null, email: async () => null },
       connectionString: "postgres://unused",
       inventoryReservationPort: createTargetPmsInventoryReservationPort(),
       billingConfigReadPortFactory: () => ({
@@ -2696,6 +2871,8 @@ describe("Booking Web public bootstrap parity", () => {
       },
     });
 
+    expect(bind).toHaveBeenCalledWith(expect.anything(), propertyId, guestBookingId);
+    expect(JSON.stringify(calls)).not.toContain("DE89370400440532013000");
     const quoteRead = calls.find((call) => call.text.includes("FROM booking.quote_sessions"));
     expect(quoteRead?.text).toContain("profile.freshness_status = 'fresh'");
     expect(quoteRead?.text).toContain("profile.public_setup_completeness ->> 'status' = 'ready'");
@@ -2711,9 +2888,6 @@ describe("Booking Web public bootstrap parity", () => {
     expect(JSON.parse(String(bookingInsert?.values?.[18]))).toMatchObject({
       paymentMethod: "bank_transfer",
       pendingExpiresAt: "2026-09-02T10:00:00.000Z",
-      paymentInstructions: {
-        bankTransferDetails: "IBAN: DE89370400440532013000",
-      },
     });
     expect(
       calls.some((call) => call.values?.includes("email.booking-reserved-pending-payment")),
@@ -3292,11 +3466,21 @@ describe("Booking Web public bootstrap parity", () => {
 
     confirmationMetadata = { ...confirmationMetadata, paymentMethod: undefined };
     await expect(
-      adapter.confirmation?.("hotel-alpenrose", {
-        bookingReference: "B-CARD952",
-        confirmationToken: created.confirmationToken,
-      }, { operation: "booking-confirmation", requestId: "manual-card-read", correlationId: "manual-card-read", idempotencyKey: "manual-card-read",
-        fingerprint: "d".repeat(64), occurredAt: new Date("2026-09-02T09:00:01.000Z") }),
+      adapter.confirmation?.(
+        "hotel-alpenrose",
+        {
+          bookingReference: "B-CARD952",
+          confirmationToken: created.confirmationToken,
+        },
+        {
+          operation: "booking-confirmation",
+          requestId: "manual-card-read",
+          correlationId: "manual-card-read",
+          idempotencyKey: "manual-card-read",
+          fingerprint: "d".repeat(64),
+          occurredAt: new Date("2026-09-02T09:00:01.000Z"),
+        },
+      ),
     ).resolves.toMatchObject({
       roomName: "Deluxe Suite",
       paymentMethod: "manual_card",

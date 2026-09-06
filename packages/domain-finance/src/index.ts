@@ -187,7 +187,12 @@ export type PaymentSettingsReadModel = {
 export type FinanceJsonPolicy = Record<string, string | number | boolean | null>;
 export type FinanceJsonObject = Record<string, FinanceJsonValue>;
 export type FinanceJsonValue =
-  string | number | boolean | null | FinanceJsonValue[] | { [key: string]: FinanceJsonValue };
+  | string
+  | number
+  | boolean
+  | null
+  | FinanceJsonValue[]
+  | { [key: string]: FinanceJsonValue };
 
 export type FinanceProviderAccountReadModel = {
   providerAccountId: string | null;
@@ -231,6 +236,7 @@ export type FinanceAffiliatePayoutSettingsResponse = {
 };
 
 export type FinancePaymentSettingsReadModel = {
+  bankTransferReady?: boolean;
   propertyId: FinancePropertyId;
   paymentsEnabled: boolean;
   paymentProvider: FinanceRoutePaymentProvider;
@@ -546,7 +552,8 @@ export type CreateStripeAffiliateAccountCommand = Omit<
 };
 
 export type CreateStripeProviderAccountCommand =
-  CreateStripePropertyAccountCommand | CreateStripeAffiliateAccountCommand;
+  | CreateStripePropertyAccountCommand
+  | CreateStripeAffiliateAccountCommand;
 
 export type IssueStripeOnboardingLinkPayload = {
   providerAccountId: string;
@@ -570,7 +577,8 @@ export type IssueStripeAffiliateOnboardingLinkCommand = Omit<
 };
 
 export type IssueStripeOnboardingLinkCommand =
-  IssueStripePropertyOnboardingLinkCommand | IssueStripeAffiliateOnboardingLinkCommand;
+  | IssueStripePropertyOnboardingLinkCommand
+  | IssueStripeAffiliateOnboardingLinkCommand;
 
 export type ReconcileStripePropertyAccountCommand = FinanceCommandBase<
   "finance.provider_account.stripe.reconcile",
@@ -898,7 +906,10 @@ export type FinanceAffiliatePayoutSettingsPatchResult =
       ok: false;
       statusCode: 400 | 404 | 409 | 500;
       code:
-        "invalid_command" | "affiliate_not_found" | "idempotency_conflict" | "write_unavailable";
+        | "invalid_command"
+        | "affiliate_not_found"
+        | "idempotency_conflict"
+        | "write_unavailable";
       message: string;
     };
 
@@ -1144,7 +1155,10 @@ export function toFinancePaymentSettingsResponse(
   return {
     contractVersion: FINANCE_ROUTE_CONTRACT_VERSION,
     propertyId,
-    paymentSettings,
+    paymentSettings: {
+      ...paymentSettings,
+      depositPolicy: safeDepositPolicy(paymentSettings.depositPolicy),
+    },
   };
 }
 
@@ -1258,7 +1272,7 @@ function publicPaymentMethods(
     if (method === "card" || method === "wallet") return canChargeOnline;
     if (method === "xendit") return canChargeOnline && settings.paymentProvider === "xendit";
     if (method === "bank_transfer") {
-      return hasPublicPaymentInstruction(settings.depositPolicy["bankTransferInstructions"]);
+      return settings.bankTransferReady === true;
     }
     if (method === "paypal") {
       return validPublicPaymentEmail(settings.depositPolicy["paypalEmail"]);
@@ -1267,8 +1281,22 @@ function publicPaymentMethods(
   });
 }
 
-function hasPublicPaymentInstruction(value: unknown): boolean {
-  return typeof value === "string" && value.trim().length > 0;
+export const BANK_POLICY_FIELDS = [
+  "bankTransferDetails",
+  "bankTransferInstructions",
+  "bankName",
+  "accountHolder",
+  "accountNumber",
+  "bicSwift",
+  "iban",
+  "swift",
+] as const;
+export function safeDepositPolicy(policy: FinanceJsonPolicy): FinanceJsonPolicy {
+  return Object.fromEntries(
+    Object.entries(policy).filter(
+      ([key]) => !(BANK_POLICY_FIELDS as readonly string[]).includes(key),
+    ),
+  );
 }
 
 function validPublicPaymentEmail(value: unknown): boolean {
