@@ -520,6 +520,122 @@ describe.skipIf(!url)("mixed room inventory transactions", () => {
       ).rows[0].status,
     ).toBe("active");
   });
+  it("adopts only the complete bundle and rejects partial or mismatched assignments", async () => {
+    const property = {
+      propertyId,
+      displayName: "Mixed room test",
+      defaultLocale: "en",
+      timezone: "Europe/Athens",
+    };
+    const now = new Date(input.occurredAt.getTime() + 5000);
+    const request = {
+      checkIn: input.checkIn,
+      checkOut: input.checkOut,
+      roomSelection: selection,
+      adults: 5,
+      children: 1,
+      numberOfRooms: 3,
+      paymentMethod: "pay_at_property",
+      email: "mixed@example.test",
+    };
+    const quote = await transaction((client) =>
+      createTargetMixedCheckoutQuote(client, property, request, now),
+    );
+    const context = {
+      operation: "create",
+      requestId: randomUUID(),
+      correlationId: randomUUID(),
+      idempotencyKey: randomUUID(),
+      fingerprint: randomUUID(),
+      occurredAt: now,
+    };
+    const rollback = new Error("rollback adoption fixture");
+    for (const shape of ["partial", "wrong_receipt", "complete"]) {
+      const operation = transaction(async (client) => {
+        const booking = await createTargetGuestBooking(
+          client,
+          port,
+          property,
+          { ...request, expectedTotalAmount: quote.totalAmount },
+          context,
+          quote,
+          null,
+          null,
+          null,
+        );
+        const receipts = (
+          await client.query(
+            `SELECT receipt_id::text,room_type_id::text FROM pms.inventory_reservation_receipts
+          WHERE property_id=$1 AND quote_session_id=$2`,
+            [propertyId, quote.quoteSessionId],
+          )
+        ).rows;
+        let position = 0;
+        for (const [index, line] of selection.lines.entries()) {
+          if (shape === "partial" && index === 1) continue;
+          const receipt = receipts.find(
+            (row) => row.room_type_id === (shape === "wrong_receipt" ? rooms[0] : line.roomTypeId),
+          )!;
+          for (const guest of line.guests) {
+            const physicalRoomId = randomUUID();
+            await client.query(
+              "INSERT INTO pms.rooms(id,property_id,room_type_id,room_number) VALUES($1::uuid,$2::uuid,$3::uuid,$1::text)",
+              [physicalRoomId, propertyId, line.roomTypeId],
+            );
+            await client.query(
+              `INSERT INTO pms.operational_booking_assignments
+              (property_id,guest_booking_id,room_type_id,position,assignment_status,source,stay_evidence_kind,
+                check_in,check_out,adults,children,assignment_payload,assigned_at,room_id)
+              VALUES ($1,$2,$3,$4,'pending','direct_booking','exact',$5,$6,$7,$8,$9::jsonb,$10,$11)`,
+              [
+                propertyId,
+                booking.guestBookingId,
+                line.roomTypeId,
+                ++position,
+                input.checkIn,
+                input.checkOut,
+                guest.adults,
+                guest.children,
+                JSON.stringify({
+                  inventoryReservation: {
+                    contractVersion: "pms-inventory-reservation-lifecycle.v1",
+                    owner: "pms",
+                    receiptId: receipt.receipt_id,
+                  },
+                }),
+                now,
+                physicalRoomId,
+              ],
+            );
+          }
+        }
+        await client.query("SET CONSTRAINTS ALL IMMEDIATE");
+        expect(
+          (
+            await client.query(
+              "SELECT lifecycle_state FROM pms.inventory_reservation_statuses WHERE property_id=$1 AND receipt_id=ANY($2::uuid[])",
+              [propertyId, receipts.map((row) => row.receipt_id)],
+            )
+          ).rows.map((row) => row.lifecycle_state),
+        ).toEqual(["handed_off", "handed_off"]);
+        expect(
+          (
+            await client.query(
+              "SELECT available_count FROM pms.inventory_days WHERE property_id=$1 ORDER BY room_type_id,stay_date",
+              [propertyId],
+            )
+          ).rows.map((row) => row.available_count),
+        ).toEqual([0, 0, 1, 1]);
+        throw rollback;
+      });
+      if (shape === "complete") await expect(operation).rejects.toBe(rollback);
+      else
+        await expect(operation).rejects.toMatchObject({
+          constraint: "chk_pms_direct_booking_receipt_handoff_scope",
+        });
+      expect(await inventory()).toEqual([2, 2, 2, 2]);
+    }
+  });
   it("rolls back earlier room holds when a later room fails", async () => {
     await expect(
       transaction((client) =>
