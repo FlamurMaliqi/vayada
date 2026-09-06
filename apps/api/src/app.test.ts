@@ -3394,9 +3394,7 @@ describe("vayada-api", () => {
     const body = response.json();
 
     expect(response.statusCode).toBe(200);
-    expect(response.headers["cache-control"]).toBe(
-      "public, max-age=60, stale-while-revalidate=300",
-    );
+    expect(response.headers["cache-control"]).toBe("no-store");
     expect(response.headers["x-vayada-ratelimit-policy"]).toBe("public-ai-profile-read");
     expect(body).toMatchObject({
       contractVersion: "public-bookability.v1",

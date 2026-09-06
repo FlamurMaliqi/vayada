@@ -121,7 +121,7 @@ export async function registerAiHotelRoutes(
 
     const response = serializePublicHotelProfileProjection(profile);
     assertPublicBookabilityPublicSafe(response);
-    reply.header("Cache-Control", "public, max-age=60, stale-while-revalidate=300");
+    reply.header("Cache-Control", "no-store");
     reply.header("X-Vayada-RateLimit-Policy", "public-ai-profile-read");
     return response;
   });

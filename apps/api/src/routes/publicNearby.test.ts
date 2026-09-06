@@ -1,6 +1,7 @@
 import Fastify from "fastify";
 import { afterEach, expect, it, vi } from "vitest";
-import { registerPublicNearbyRoute } from "./publicNearby.js";
+import { registerBookingWebPublicRoutes } from "./bookingWebPublic.js";
+import { unusedBookingWebCheckoutAdapter } from "./bookingWebPublic.fixtures.js";
 import type { PublicHotelProfileRepository } from "./aiHotels.js";
 import type { PublicNearbySnapshot } from "../domains/publicNearbyRepository.js";
 const apps: ReturnType<typeof Fastify>[] = [];
@@ -34,24 +35,30 @@ async function setup() {
       origin: { latitude: 1.01, longitude: 2.02 },
     });
   const complete = vi.fn();
-  await registerPublicNearbyRoute(
-    app,
-    { findProfileBySlug: profile } as PublicHotelProfileRepository,
-    {
+  await registerBookingWebPublicRoutes(app, {
+    profileRepository: { findProfileBySlug: profile } as PublicHotelProfileRepository,
+    checkoutAdapter: unusedBookingWebCheckoutAdapter,
+    nearby: {
       repository: { read, close: vi.fn() },
       discovery: { read: vi.fn(), claim, complete, close: vi.fn() },
       apiKey: "server-secret",
       discover,
     },
-  );
+  });
   return { app, read, profile, discover, claim, complete, snapshot, publicView };
 }
 it("refreshes once with public origin and returns only the public envelope even on provider failure", async () => {
   const s = await setup();
-  const response = await s.app.inject("/hotels/example/nearby");
+  const response = await s.app.inject({
+    url: "/hotels/example/nearby",
+    headers: { origin: "https://example.booking.vayada.com" },
+  });
   expect(response.statusCode).toBe(200);
   expect(response.json()).toEqual(s.publicView);
   expect(response.headers["cache-control"]).toBe("no-store");
+  expect(response.headers["access-control-allow-origin"]).toBe(
+    "https://example.booking.vayada.com",
+  );
   expect(s.discover).toHaveBeenCalledWith({
     apiKey: "server-secret",
     origin: { latitude: 1.01, longitude: 2.02 },
