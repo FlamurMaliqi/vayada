@@ -6,6 +6,8 @@ import type { StripeBookingPaymentProvider } from "./stripeBookingPayments.js";
 function fixture(status = "requires_capture") {
   const payment = {
     id: "payment",
+    activePaymentId: "payment" as string | null,
+    superseded: false,
     status: "authorized",
     method: "card",
     intentId: "pi_test",
@@ -25,8 +27,9 @@ function fixture(status = "requires_capture") {
     amountMinor: 10000,
     currency: "EUR",
   };
+  const payments = [payment];
   const query = vi.fn(async (sql: string) => ({
-    rows: sql.includes("SELECT payment") ? [payment] : [],
+    rows: sql.includes("SELECT payment") ? payments : [],
     rowCount: 1,
   }));
   const provider = {
@@ -43,6 +46,7 @@ function fixture(status = "requires_capture") {
   };
   return {
     payment,
+    payments,
     intent,
     query,
     provider,
@@ -64,9 +68,39 @@ describe("Finance host-request rejection", () => {
     expect(f.provider.cancelPaymentIntent).toHaveBeenCalledWith(
       "pi_test",
       "acct_test",
-      "booking-host-reject:property:booking:v1",
+      "booking-host-reject:property:booking:payment:v1",
     );
     expect(f.query.mock.calls.some(([sql]) => sql.includes("UPDATE finance.payments"))).toBe(true);
+  });
+  it("ignores only superseded pending authorizations managed by the edit workflow", async () => {
+    const f = fixture();
+    f.payments.push({ ...f.payment, id: "old", superseded: true });
+    await expect(f.run(f.client, { ...f.input, apply: false })).resolves.toBe("authorization_void");
+    f.payments[1]!.status = "captured";
+    await expect(f.run(f.client, f.input)).rejects.toMatchObject({
+      code: "payment_adjustment_required",
+    });
+  });
+  it("allows offline rejection after an edit supersedes its former card", async () => {
+    const f = fixture();
+    f.payment.superseded = true;
+    f.payment.activePaymentId = null;
+    await expect(f.run(f.client, { ...f.input, authorized: false })).resolves.toBe(
+      "no_payment_received",
+    );
+    expect(f.provider.cancelPaymentIntent).not.toHaveBeenCalled();
+  });
+  it("uses distinct void keys when an edit replaces the authorization", async () => {
+    const f = fixture();
+    await f.run(f.client, f.input);
+    f.payment.id = "replacement";
+    f.payment.intentId = "pi_replacement";
+    f.intent.paymentIntentId = "pi_replacement";
+    await f.run(f.client, f.input);
+    const keys = f.provider.cancelPaymentIntent.mock.calls.map(
+      (call) => (call as unknown as string[])[2],
+    );
+    expect(new Set(keys).size).toBe(2);
   });
   it("reconciles a lost cancellation response and retries an already canceled intent", async () => {
     const f = fixture();

@@ -34,11 +34,14 @@ export function createFinanceHostBookingPayments(
       amount: string;
       currency: string;
       reference: string;
+      activePaymentId: string | null;
+      superseded: boolean;
     }>(
       `SELECT payment.id::text,payment.status,payment.payment_method AS method,
          payment.provider_payment_intent_id AS "intentId",account.provider_account_id AS "accountRef",
          payment.payment_metadata->>'chargeType' AS "chargeType",payment.amount::text,trim(payment.currency) AS currency,
-         booking.public_reference AS reference
+         booking.public_reference AS reference,booking.active_card_payment_id::text AS "activePaymentId",
+         payment.payment_metadata->>'supersededByEdit'='true' AS superseded
        FROM finance.payments payment
        JOIN booking.guest_bookings booking ON booking.id=payment.guest_booking_id AND booking.property_id=payment.property_id
        LEFT JOIN finance.payment_provider_accounts account ON account.id=payment.provider_account_id AND account.property_id=payment.property_id
@@ -46,13 +49,24 @@ export function createFinanceHostBookingPayments(
          AND payment.status NOT IN ('failed','canceled') FOR UPDATE OF payment`,
       [input.propertyId, input.bookingId],
     );
-    if (!result.rows.length) {
+    // Pending edits own durable release of explicitly superseded authorizations.
+    // Keep unexpected active or captured financial evidence visible and fail closed.
+    const payments = result.rows.filter(
+      (payment) =>
+        !(
+          payment.method === "card" &&
+          payment.superseded &&
+          payment.activePaymentId !== payment.id &&
+          ["pending", "authorized"].includes(payment.status)
+        ),
+    );
+    if (!payments.length) {
       if (input.authorized) throw conflict();
       return "no_payment_received";
     }
-    const payment = result.rows[0]!;
+    const payment = payments[0]!;
     if (
-      result.rows.length !== 1 ||
+      payments.length !== 1 ||
       input.action !== "reject" ||
       payment.status !== "authorized" ||
       payment.method !== "card" ||
@@ -81,7 +95,7 @@ export function createFinanceHostBookingPayments(
         intent = await provider.cancelPaymentIntent(
           payment.intentId,
           account,
-          `booking-host-reject:${input.propertyId}:${input.bookingId}:v1`,
+          `booking-host-reject:${input.propertyId}:${input.bookingId}:${payment.id}:v1`,
         );
       } catch {
         intent = await provider.retrievePaymentIntent(payment.intentId, account);
