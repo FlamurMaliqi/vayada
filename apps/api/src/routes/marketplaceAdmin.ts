@@ -3105,9 +3105,7 @@ export async function syncOfferReadModel(
        jsonb_strip_nulls(jsonb_build_object(
          'countryCode', public_profile.location ->> 'countryCode',
          'region', public_profile.location ->> 'region',
-         'city', public_profile.location ->> 'city',
-         'geo', public_profile.location -> 'geo',
-         'mapDisplayMode', public_profile.location ->> 'mapDisplayMode'
+         'city', public_profile.location ->> 'city'
        )),
        COALESCE(offer_media.urls, offer.image_urls, '{}'::text[]),
        COALESCE(compensation.items, '[]'::jsonb),

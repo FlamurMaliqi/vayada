@@ -174,6 +174,15 @@ describe.skipIf(!url)("host actions PostgreSQL consistency", () => {
       inventory: "replace",
     });
     await actions.apply(scope, p.previewId, "edit");
+    const evidence = await pool.query(
+      `SELECT stay_date::text,sum(occupied_room_nights)::int AS occupied,sum(gross_room_amount)::text AS amount
+       FROM booking.nightly_revenue_evidence WHERE guest_booking_id=$1 GROUP BY stay_date ORDER BY stay_date`,
+      [scope.bookingId],
+    );
+    expect(evidence.rows).toEqual([
+      { stay_date: "2026-09-12", occupied: 0, amount: "0.0000" },
+      { stay_date: "2026-09-14", occupied: 1, amount: "120.0000" },
+    ]);
     const row = (
       await pool.query(
         `SELECT check_in::text,check_out::text,total_amount::text,booking_metadata FROM booking.guest_bookings WHERE id=$1`,
@@ -295,14 +304,15 @@ describe.skipIf(!url)("host actions PostgreSQL consistency", () => {
     await expect(
       actions.apply({ ...scope, actorUserId: randomUUID() }, p.previewId, "other"),
     ).rejects.toMatchObject({ code: "stale_preview" });
+    clock = new Date("2026-09-06T10:10:00Z");
+    await expect(actions.apply(scope, p.previewId, "expired")).rejects.toMatchObject({
+      code: "stale_preview",
+    });
+    clock = new Date("2026-09-06T10:00:00Z");
     await pool.query(`UPDATE booking.guest_bookings SET total_amount=120 WHERE id=$1`, [
       scope.bookingId,
     ]);
     await expect(actions.apply(scope, p.previewId, "changed")).rejects.toMatchObject({
-      code: "stale_preview",
-    });
-    clock = new Date("2026-09-06T10:10:00Z");
-    await expect(actions.apply(scope, p.previewId, "expired")).rejects.toMatchObject({
       code: "stale_preview",
     });
     expect(await status()).toBe("confirmed");
