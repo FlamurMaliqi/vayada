@@ -1,4 +1,5 @@
 "use client";
+import { useTranslation } from "@/lib/i18n";
 
 import { COLOR_PRESETS } from "@/lib/constants/branding";
 
@@ -9,15 +10,20 @@ interface ColorsTabProps {
 }
 
 export default function ColorsTab({ primaryColor, setPrimaryColor, applyPreset }: ColorsTabProps) {
+  const { t } = useTranslation();
   return (
     <div className="bg-white rounded-lg border border-gray-200 p-4">
-      <h2 className="text-[13px] font-semibold text-gray-900">Color Profile</h2>
-      <p className="text-[12px] text-gray-500 mt-0.5 mb-3">Define your brand colors</p>
+      <h2 className="text-[13px] font-semibold text-gray-900">{t("designStudio.colors.title")}</h2>
+      <p className="text-[12px] text-gray-500 mt-0.5 mb-3">{t("designStudio.colors.subtitle")}</p>
 
       <div className="space-y-4">
         <div>
-          <h3 className="text-[12px] font-semibold text-gray-900">Primary Brand Color</h3>
-          <p className="text-[11px] text-gray-500 mt-0.5 mb-1.5">Buttons, links, and accents</p>
+          <h3 className="text-[12px] font-semibold text-gray-900">
+            {t("designStudio.colors.primaryBrandColor")}
+          </h3>
+          <p className="text-[11px] text-gray-500 mt-0.5 mb-1.5">
+            {t("designStudio.colors.primaryDescription")}
+          </p>
           <div className="flex items-center gap-2">
             <label
               className="w-8 h-8 rounded-full border border-gray-200 cursor-pointer shrink-0"
@@ -25,7 +31,7 @@ export default function ColorsTab({ primaryColor, setPrimaryColor, applyPreset }
             >
               <input
                 type="color"
-                aria-label="Primary brand color picker"
+                aria-label={t("admin.primaryBrandColorPicker")}
                 value={primaryColor}
                 onChange={(e) => setPrimaryColor(e.target.value)}
                 className="opacity-0 w-0 h-0"
@@ -33,7 +39,7 @@ export default function ColorsTab({ primaryColor, setPrimaryColor, applyPreset }
             </label>
             <input
               type="text"
-              aria-label="Primary brand color"
+              aria-label={t("admin.primaryBrandColor")}
               value={primaryColor}
               onChange={(e) => setPrimaryColor(e.target.value)}
               className="w-20 px-2 py-1 border border-gray-300 rounded-lg text-[12px] focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent"
@@ -42,7 +48,9 @@ export default function ColorsTab({ primaryColor, setPrimaryColor, applyPreset }
         </div>
 
         <div>
-          <h3 className="text-[12px] font-semibold text-gray-900 mb-1.5">Quick Presets</h3>
+          <h3 className="text-[12px] font-semibold text-gray-900 mb-1.5">
+            {t("designStudio.colors.quickPresets")}
+          </h3>
           <div className="flex flex-wrap gap-1.5">
             {COLOR_PRESETS.map((preset) => (
               <button

@@ -1,4 +1,5 @@
 "use client";
+import { useTranslation } from "@/lib/i18n";
 
 import { FONT_PAIRINGS } from "@/lib/constants/branding";
 
@@ -8,10 +9,11 @@ interface FontsTabProps {
 }
 
 export default function FontsTab({ selectedFont, setSelectedFont }: FontsTabProps) {
+  const { t } = useTranslation();
   return (
     <div className="bg-white rounded-lg border border-gray-200 p-4">
-      <h2 className="text-[13px] font-semibold text-gray-900">Typography</h2>
-      <p className="text-[12px] text-gray-500 mt-0.5 mb-3">Select a font pairing</p>
+      <h2 className="text-[13px] font-semibold text-gray-900">{t("designStudio.fonts.title")}</h2>
+      <p className="text-[12px] text-gray-500 mt-0.5 mb-3">{t("designStudio.fonts.subtitle")}</p>
 
       <div className="space-y-1.5">
         {FONT_PAIRINGS.map((pairing) => (

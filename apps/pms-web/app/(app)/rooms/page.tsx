@@ -20,6 +20,7 @@ import {
   type RoomType,
   type Room,
 } from "@/services/rooms";
+import { ApiErrorResponse } from "@/services/api/client";
 import ConfirmDialog from "@/components/ConfirmDialog";
 import { formatCurrency } from "@/lib/formatCurrency";
 import { useTranslation } from "@/lib/i18n";
@@ -118,6 +119,14 @@ function formatRateRange(min: number, max: number, currency: string): string {
   return `${formatCurrency(min, currency)}–${formatCurrency(max, currency).replace(/^[^0-9]+/, "")}`;
 }
 
+function isDuplicateRoomNumberError(error: unknown): boolean {
+  return (
+    error instanceof ApiErrorResponse &&
+    error.status === 409 &&
+    error.data.code === "operational_label_conflict"
+  );
+}
+
 function RoomTypeCard({
   room,
   rooms,
@@ -137,10 +146,12 @@ function RoomTypeCard({
   const [expanded, setExpanded] = useState(false);
   const [addingRoom, setAddingRoom] = useState(false);
   const [newRoomNumber, setNewRoomNumber] = useState("");
+  const [newRoomNumberError, setNewRoomNumberError] = useState<string | null>(null);
   const [newRoomFloor, setNewRoomFloor] = useState("");
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
   const [editingRoomId, setEditingRoomId] = useState<string | null>(null);
   const [editingRoomNumber, setEditingRoomNumber] = useState("");
+  const [editingRoomNumberError, setEditingRoomNumberError] = useState<string | null>(null);
   const category = room.category ? room.category.toLowerCase() : getCategoryFromName(room.name);
   const categoryStyle = CATEGORY_STYLES[category] || CATEGORY_STYLES["standard"];
 
@@ -150,11 +161,18 @@ function RoomTypeCard({
   const thumbnailUrl = imageReferenceUrl(room.images?.[0]);
 
   const handleAddRoom = async () => {
-    if (!newRoomNumber.trim()) return;
+    const trimmed = newRoomNumber.trim();
+    if (!trimmed) return;
+    if (
+      rooms.some((candidate) => candidate.roomNumber.trim().toLowerCase() === trimmed.toLowerCase())
+    ) {
+      setNewRoomNumberError(t("rooms.duplicateRoomNumber"));
+      return;
+    }
     try {
       await individualRoomsService.create({
         roomTypeId: room.id,
-        roomNumber: newRoomNumber.trim(),
+        roomNumber: trimmed,
         floor: newRoomFloor.trim(),
       });
       setNewRoomNumber("");
@@ -162,6 +180,10 @@ function RoomTypeCard({
       setAddingRoom(false);
       onRoomsChange();
     } catch (err: any) {
+      if (isDuplicateRoomNumberError(err)) {
+        setNewRoomNumberError(t("rooms.duplicateRoomNumber"));
+        return;
+      }
       alert(err.message || t("rooms.failedToAddRoom"));
     }
   };
@@ -184,17 +206,29 @@ function RoomTypeCard({
   const startRenameRoom = (roomId: string, currentNumber: string) => {
     setEditingRoomId(roomId);
     setEditingRoomNumber(currentNumber);
+    setEditingRoomNumberError(null);
   };
 
   const cancelRenameRoom = () => {
     setEditingRoomId(null);
     setEditingRoomNumber("");
+    setEditingRoomNumberError(null);
   };
 
   const saveRenameRoom = async (roomId: string, currentNumber: string) => {
     const trimmed = editingRoomNumber.trim();
     if (!trimmed || trimmed === currentNumber) {
       cancelRenameRoom();
+      return;
+    }
+    if (
+      rooms.some(
+        (candidate) =>
+          candidate.id !== roomId &&
+          candidate.roomNumber.trim().toLowerCase() === trimmed.toLowerCase(),
+      )
+    ) {
+      setEditingRoomNumberError(t("rooms.duplicateRoomNumber"));
       return;
     }
     try {
@@ -204,6 +238,10 @@ function RoomTypeCard({
       cancelRenameRoom();
       onRoomsChange();
     } catch (err: any) {
+      if (isDuplicateRoomNumberError(err)) {
+        setEditingRoomNumberError(t("rooms.duplicateRoomNumber"));
+        return;
+      }
       alert(err.message || t("rooms.failedToRenameRoom"));
     }
   };
@@ -407,13 +445,29 @@ function RoomTypeCard({
                           type="text"
                           autoFocus
                           value={editingRoomNumber}
-                          onChange={(e) => setEditingRoomNumber(e.target.value)}
+                          onChange={(e) => {
+                            setEditingRoomNumber(e.target.value);
+                            setEditingRoomNumberError(null);
+                          }}
                           onKeyDown={(e) => {
                             if (e.key === "Enter") saveRenameRoom(r.id, r.roomNumber);
                             else if (e.key === "Escape") cancelRenameRoom();
                           }}
-                          className="text-[13px] font-medium text-gray-800 px-2 py-1 border border-primary-300 rounded-md focus:outline-none focus:border-primary-500 min-w-0 w-40"
+                          aria-invalid={editingRoomNumberError ? true : undefined}
+                          aria-describedby={
+                            editingRoomNumberError ? `room-number-error-${r.id}` : undefined
+                          }
+                          className={`text-[13px] font-medium text-gray-800 px-2 py-1 border rounded-md focus:outline-none min-w-0 w-40 ${editingRoomNumberError ? "border-red-500 focus:border-red-500" : "border-primary-300 focus:border-primary-500"}`}
                         />
+                        {editingRoomNumberError && (
+                          <p
+                            id={`room-number-error-${r.id}`}
+                            role="alert"
+                            className="basis-full text-xs text-red-600"
+                          >
+                            {editingRoomNumberError}
+                          </p>
+                        )}
                         {r.floor && (
                           <span className="text-gray-400 text-[11px]">
                             {t("rooms.floorNumber", { floor: r.floor })}
@@ -501,12 +555,26 @@ function RoomTypeCard({
               <input
                 type="text"
                 value={newRoomNumber}
-                onChange={(e) => setNewRoomNumber(e.target.value)}
+                onChange={(e) => {
+                  setNewRoomNumber(e.target.value);
+                  setNewRoomNumberError(null);
+                }}
                 placeholder={t("rooms.roomNumberPlaceholder")}
-                className="flex-1 min-w-[120px] md:flex-initial md:w-32 px-2.5 py-1.5 text-[12px] border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500"
+                aria-invalid={newRoomNumberError ? true : undefined}
+                aria-describedby={newRoomNumberError ? "new-room-number-error" : undefined}
+                className={`flex-1 min-w-[120px] md:flex-initial md:w-32 px-2.5 py-1.5 text-[12px] border rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500 ${newRoomNumberError ? "border-red-500" : "border-gray-200"}`}
                 autoFocus
                 onKeyDown={(e) => e.key === "Enter" && handleAddRoom()}
               />
+              {newRoomNumberError && (
+                <p
+                  id="new-room-number-error"
+                  role="alert"
+                  className="basis-full text-xs text-red-600"
+                >
+                  {newRoomNumberError}
+                </p>
+              )}
               <input
                 type="text"
                 value={newRoomFloor}
@@ -525,6 +593,7 @@ function RoomTypeCard({
                 onClick={() => {
                   setAddingRoom(false);
                   setNewRoomNumber("");
+                  setNewRoomNumberError(null);
                   setNewRoomFloor("");
                 }}
                 className="px-2 py-1.5 text-[11px] text-gray-500 hover:text-gray-700"

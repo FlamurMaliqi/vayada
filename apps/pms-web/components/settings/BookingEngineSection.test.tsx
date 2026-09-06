@@ -4,6 +4,8 @@ import { describe, expect, it, vi } from "vitest";
 
 import { BookingEngineSection } from "./BookingEngineSection";
 
+vi.mock("./ArrivalTimesSection", () => ({ ArrivalTimesSection: () => null }));
+
 vi.mock("@/lib/i18n", () => ({
   useTranslation: () => ({
     t: (key: string) =>

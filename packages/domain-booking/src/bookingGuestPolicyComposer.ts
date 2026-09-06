@@ -19,6 +19,7 @@ import {
 import {
   BOOKING_GUEST_POLICY_CONTRACT_VERSION,
   parseBookingGuestPolicyChoices,
+  bookingArrivalBounds,
   type BookingGuestPolicyBundle,
   type BookingGuestPolicyCatalogProfileEvidence,
   type BookingGuestPolicyCatalogProfileEvidenceResult,
@@ -171,6 +172,7 @@ export function composeBookingGuestPolicy(
         adultAgeThreshold: choices.childrenEnabled ? choices.adultAgeThreshold : null,
         checkInTime: choices.checkInTime,
         checkOutTime: choices.checkOutTime,
+        ...bookingArrivalBounds(choices),
       },
       pricing.pricing.pricingCurrency.currency,
       catalog.timeZone,

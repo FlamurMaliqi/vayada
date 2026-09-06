@@ -1,4 +1,5 @@
 "use client";
+import { useTranslation } from "@/lib/i18n";
 
 import { useEffect, useState } from "react";
 import { BoltIcon, SunIcon, MoonIcon, CalendarDaysIcon } from "@heroicons/react/24/outline";
@@ -17,21 +18,32 @@ const icons = {
   EXTENDED_STAY: MoonIcon,
   MIDWEEK: CalendarDaysIcon,
 };
-const weekdays = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 const types = Object.keys(names) as BookingPromotion["type"][];
 const button =
   "rounded-lg border border-gray-300 px-3 py-2 text-sm font-medium disabled:opacity-50";
 
-function summary(p: BookingPromotion) {
+function summary(p: BookingPromotion, t: ReturnType<typeof useTranslation>["t"], locale: string) {
   if (p.type === "LAST_MINUTE")
     return p.tiers.length
       ? p.tiers
-          .map((t) => `${t.daysBeforeMin}–${t.daysBeforeMax ?? "∞"} days: ${t.discountPercent}%`)
+          .map((tier) =>
+            t("admin.minMaxDaysDiscount", {
+              min: tier.daysBeforeMin,
+              max: tier.daysBeforeMax ?? "∞",
+              discount: tier.discountPercent,
+            }),
+          )
           .join("; ")
-      : `Check-in within ${p.threshold} days`;
-  if (p.type === "EARLY_BIRD") return `Book ${p.threshold}+ days ahead`;
-  if (p.type === "EXTENDED_STAY") return `Stay ${p.threshold}+ nights`;
-  return p.weekdays.map((day) => weekdays[day]).join(", ");
+      : t("admin.checkInWithinDaysDays", { days: p.threshold });
+  if (p.type === "EARLY_BIRD") return t("admin.bookDaysDaysAhead", { days: p.threshold });
+  if (p.type === "EXTENDED_STAY") return t("admin.stayNightsNights", { nights: p.threshold });
+  return p.weekdays
+    .map((day) =>
+      new Intl.DateTimeFormat(locale, { weekday: "short", timeZone: "UTC" }).format(
+        new Date(Date.UTC(2026, 0, 4 + day)),
+      ),
+    )
+    .join(", ");
 }
 
 export default function Promotions({
@@ -41,6 +53,7 @@ export default function Promotions({
   hotelId: string;
   roomTypes: PromoRoomType[];
 }) {
+  const { t, locale } = useTranslation();
   const [settings, setSettings] = useState<BookingLastMinuteSettings | null>(null);
   const [promotions, setPromotions] = useState<BookingPromotion[]>([]);
   const [draft, setDraft] = useState<BookingPromotion | null>(null);
@@ -61,8 +74,8 @@ export default function Promotions({
               : []),
         );
       })
-      .catch((e) => {
-        if (current) setError(e.message);
+      .catch(() => {
+        if (current) setError("admin.couldNotLoadPromotions");
       });
     return () => {
       current = false;
@@ -86,8 +99,8 @@ export default function Promotions({
       setSettings(saved);
       setPromotions(saved.promotions ?? next);
       setDraft(null);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Could not save promotions.");
+    } catch {
+      setError("admin.couldNotSavePromotions");
     } finally {
       setBusy(false);
     }
@@ -96,14 +109,12 @@ export default function Promotions({
     <section className="mt-10 border-t border-gray-200 pt-8">
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div>
-          <h2 className="text-xl font-semibold text-gray-950">Promotions</h2>
+          <h2 className="text-xl font-semibold text-gray-950">{t("admin.promotions")}</h2>
           <p className="mt-1 text-sm text-gray-500">
-            Automatic rate rules that apply without a code. Guests see the discount as soon as their
-            dates match.
+            {t("admin.automaticRateRulesThatApplyWithoutACodeGuestsSee")}
           </p>
           <p className="mt-2 text-xs text-gray-500">
-            The highest single discount applies. Promotions and promo codes never stack; the better
-            deal wins.
+            {t("admin.theHighestSingleDiscountAppliesPromotionsAndPromoCodesNever")}
           </p>
         </div>
         {promotions.length < 4 && (
@@ -115,7 +126,7 @@ export default function Promotions({
               setDraft(fresh(types.find((type) => !promotions.some((p) => p.type === type))!));
             }}
           >
-            + New promotion
+            {t("admin.newPromotion2")}
           </button>
         )}
       </div>
@@ -124,7 +135,9 @@ export default function Promotions({
           {error}
         </p>
       )}
-      {!settings && !error && <p className="mt-4 text-sm text-gray-500">Loading promotions…</p>}
+      {!settings && !error && (
+        <p className="mt-4 text-sm text-gray-500">{t("admin.loadingPromotions")}</p>
+      )}
       <div className="mt-5 grid gap-4 md:grid-cols-2">
         {promotions.map((p) => {
           const Icon = icons[p.type];
@@ -135,30 +148,30 @@ export default function Promotions({
             >
               <div className="flex items-center gap-3">
                 <Icon className="h-5 w-5" />
-                <h3 className="font-semibold">{names[p.type]}</h3>
+                <h3 className="font-semibold">{t(names[p.type])}</h3>
                 <span
                   className={`ml-auto rounded-full px-2 py-1 text-xs ${p.active ? "bg-green-50 text-green-700" : "bg-gray-200"}`}
                 >
-                  {p.active ? "Active" : "Paused"}
+                  {p.active ? t("promos.status.Active") : t("admin.paused")}
                 </span>
               </div>
-              <p className="mt-2 text-xs tracking-wide text-gray-500">{p.type}</p>
               <div className="mt-4 flex flex-wrap gap-2 text-xs">
                 {[
                   p.freeNights
-                    ? `${p.freeNights} free night(s)`
+                    ? t("admin.freeNightsCount", { count: p.freeNights })
                     : p.tiers.length
-                      ? "Tiered percentage off"
-                      : `${p.discountPercent}% off`,
-                  summary(p),
+                      ? t("admin.tieredPercentageOff")
+                      : `${p.discountPercent}${t("bookingFlow.promoCodes.percentageOff")}`,
+                  summary(p, t, locale),
                   p.roomTypeIds.length
                     ? p.roomTypeIds
                         .map(
                           (id) =>
-                            roomTypes.find((r) => r.roomTypeId === id)?.name ?? "Unavailable room",
+                            roomTypes.find((r) => r.roomTypeId === id)?.name ??
+                            t("admin.unavailableRoom"),
                         )
                         .join(", ")
-                    : "All rooms",
+                    : t("admin.allRooms"),
                 ].map((tag, index) => (
                   <span key={index} className="rounded-md bg-gray-100 px-2 py-1">
                     {tag}
@@ -174,22 +187,22 @@ export default function Promotions({
                     setDraft(structuredClone(p));
                   }}
                 >
-                  Edit {names[p.type]}
+                  {t("common.edit")} {t(names[p.type])}
                 </button>
                 <button
                   className={button}
                   disabled={busy}
                   onClick={() => {
-                    if (window.confirm(`Delete ${names[p.type]}?`))
+                    if (window.confirm(t("admin.deleteName", { name: t(names[p.type]) })))
                       void save(promotions.filter((item) => item.type !== p.type));
                   }}
                 >
-                  Delete
+                  {t("common.delete")}
                 </button>
                 <button
                   role="switch"
                   aria-checked={p.active}
-                  aria-label={`Activate ${names[p.type]}`}
+                  aria-label={t("admin.activateName", { name: t(names[p.type]) })}
                   disabled={busy}
                   onClick={() =>
                     void save(

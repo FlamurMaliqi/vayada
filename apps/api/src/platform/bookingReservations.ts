@@ -133,7 +133,7 @@ export function createTargetBookingReservationsReadRepository(config: {
              primary_room.room_number AS "roomNumber",
              COALESCE(assigned_rooms.assigned_rooms, '[]'::jsonb) AS "assignedRooms",
              COALESCE(primary_assignment.channel, 'direct') AS "channel",
-             payment.payment_method AS "paymentMethod",
+             COALESCE(booking.booking_metadata->>'paymentMethod', booking.expected_payment_method, payment.payment_method) AS "paymentMethod",
              booking.payment_status AS "paymentStatus",
              (
                COALESCE(NULLIF(quote.totals ->> 'depositDue', '')::numeric, 0) > 0
@@ -242,6 +242,8 @@ export function createTargetBookingReservationsReadRepository(config: {
              FROM finance.payments payment
              WHERE payment.guest_booking_id = booking.id
                AND payment.property_id = booking.property_id
+               AND payment.payment_metadata->>'supersededByEdit' IS DISTINCT FROM 'true'
+               AND (payment.payment_method <> 'card' OR booking.active_card_payment_id IS NULL OR booking.active_card_payment_id=payment.id)
            ) payment ON TRUE
            LEFT JOIN LATERAL (
              SELECT jsonb_agg(
@@ -271,6 +273,7 @@ export function createTargetBookingReservationsReadRepository(config: {
              WITH expanded AS (
                SELECT item.*
                FROM booking.booking_addon_selection_items item
+        JOIN booking.active_booking_addon_selections current_selection ON current_selection.id = item.selection_id
                WHERE item.guest_booking_id = booking.id
                  AND item.property_id = booking.property_id
              )
@@ -281,7 +284,7 @@ export function createTargetBookingReservationsReadRepository(config: {
                  AS addon_names,
                (
                  SELECT SUM(selection.total_amount)
-                 FROM booking.booking_addon_selections selection
+                 FROM booking.active_booking_addon_selections selection
                  WHERE selection.guest_booking_id = booking.id
                    AND selection.property_id = booking.property_id
                ) AS addon_total,

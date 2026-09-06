@@ -5,6 +5,7 @@ import {
   createBookingPricingSourceFingerprint,
   parseBookingGuestPolicyRevision,
   type BookingGuestPolicyBundle,
+  type BookingGuestPolicyChoices,
   type BookingGuestPolicyCurrentOwnerEvidenceResult,
   type BookingGuestPolicyOwnerEvidencePorts,
   type BookingGuestPolicyProjectionReceipt,
@@ -127,7 +128,7 @@ export function applicationHarness(
   };
 }
 
-export function compositionFixture() {
+export function compositionFixture(policyChoices: BookingGuestPolicyChoices = choices) {
   const evidence = pricingEvidence();
   const pricingSourceFingerprint = createBookingPricingSourceFingerprint(
     { organizationId, propertyId },
@@ -135,7 +136,7 @@ export function compositionFixture() {
   );
   const composition = composeBookingGuestPolicy({
     request: { organizationId, propertyId },
-    choices,
+    choices: policyChoices,
     catalogProfile: {
       outcome: "available",
       evidence: {
