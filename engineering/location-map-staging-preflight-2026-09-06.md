@@ -1,5 +1,10 @@
 # VAY-1480 staging preflight — 2026-09-06
 
+> **Historical snapshot.** This report predates the isolated maps canary and the
+> canonical `0158`/`0159` migration reconciliation. Later canary evidence and the
+> current checked-in migration catalog supersede its rollout status and version
+> instructions; keep the observations below only as dated preflight evidence.
+
 The rebuilt map is not deployed to shared `next`. Do not treat the local preview
 or this integration candidate as a staging smoke result.
 
