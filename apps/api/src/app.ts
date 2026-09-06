@@ -1,3 +1,5 @@
+import { registerBookingHostActionRoutes } from "./routes/bookingHostActions.js";
+import type { BookingHostActions } from "./domains/bookingHostActions.js";
 import { registerPmsConfirmationEmailRoutes } from "./routes/pmsConfirmationEmails.js";
 import type { PmsConfirmationEmails } from "./domains/pmsConfirmationEmails.js";
 import {
@@ -277,6 +279,7 @@ type BuildAppOptions = Pick<FastifyServerOptions, "logger" | "trustProxy"> & {
   bookingGuestPolicy?: BookingGuestPolicyRoutesOptions;
   bookingChangeRequestRepository?: BookingHotelChangeRequestRepository;
   pmsConfirmationEmails?: PmsConfirmationEmails;
+  bookingHostActions?: BookingHostActions;
   pmsOperationsRepository?: PmsOperationsReadRepository;
   pmsInboxAssistancePort?: PmsInboxAssistancePort;
   pmsInboxReadPort?: PmsInboxReadPort;
@@ -700,6 +703,14 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     repository: options.affiliateDashboardRepository,
     financeRepository: options.financeRepository,
   });
+  if (options.bookingHostActions && options.auth) {
+    app.register(registerBookingHostActionRoutes, {
+      prefix: "/api/pms",
+      actions: options.bookingHostActions,
+      propertyAccessRepository: options.auth.propertyAccessRepository,
+      allowedOrigins: options.pmsOperationsAllowedOrigins,
+    });
+  }
   if (options.pmsConfirmationEmails && options.auth) {
     app.register(registerPmsConfirmationEmailRoutes, {
       prefix: "/api/pms",
