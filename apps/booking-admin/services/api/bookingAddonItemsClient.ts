@@ -1,3 +1,4 @@
+import type { AddonPhoto } from "@vayada/product-onboarding/AddonEditor";
 import { apiClient, omitHotelContext, type ApiClient } from "./client";
 import {
   toBookingSettingsClientErrorInput,
@@ -28,6 +29,11 @@ export interface BookingAddonItem {
   category: "dining" | "experience" | "transport" | "wellness" | "other";
   imageUrl: string | null;
   imageMediaObjectId: string | null;
+  photos?: AddonPhoto[];
+  location?: string | null;
+  maxGuests?: number | null;
+  maxQuantity?: number;
+  leadTime?: string | null;
   duration: string | null;
   pricingModel: BookingAddonPricingModel;
   publicVisible: boolean;
@@ -40,6 +46,7 @@ export interface BookingAddonItem {
 }
 
 export interface ListBookingAddonItemsResponse {
+  propertyCurrency?: string;
   addonItems: BookingAddonItem[];
   propertyPlan: BookingPropertyPlan;
 }
@@ -61,6 +68,11 @@ type BookingAddonItemWriteFields = {
   currency: string;
   category: BookingAddonItem["category"];
   imageMediaObjectId?: string | null;
+  photos?: AddonPhoto[];
+  location?: string | null;
+  maxGuests?: number | null;
+  maxQuantity?: number;
+  leadTime?: string | null;
   duration?: string | null;
   pricingModel?: BookingAddonPricingModel;
   publicVisible?: boolean;

@@ -43,6 +43,37 @@ export async function runPromotionAcceptance(input: {
   });
   const guestUrl = `https://${slug}.next-booking.vayada.com/en/book`;
 
+  async function waitForGuestPromotion(active: boolean) {
+    // Offers allow 15s freshness + 60s stale-while-revalidate. Reload so a
+    // cached pre-edit response cannot remain in the mounted page indefinitely.
+    await expect(async () => {
+      const [response] = await Promise.all([
+        guest.waitForResponse((response) => {
+          const url = new URL(response.url());
+          return (
+            url.pathname.endsWith(`/hotels/${slug}/offers`) &&
+            url.searchParams.get("check_in") === stay.checkIn
+          );
+        }),
+        guest.goto(`${guestUrl}?${query}`),
+      ]);
+      expect(response.ok()).toBe(true);
+      const body = await response.json();
+      expect(
+        body.quote.offers.some(
+          (offer: { totals: { promotion?: { name: string } } }) =>
+            offer.totals.promotion?.name === "Early bird",
+        ),
+      ).toBe(active);
+      await expect(
+        guest.getByRole("heading", { name: "Booking Summary", exact: true }),
+      ).toBeVisible();
+      const label = guest.getByText("Early bird", { exact: true });
+      if (active) await expect(label.first()).toBeVisible();
+      else await expect(label).toHaveCount(0);
+    }).toPass({ timeout: 90_000, intervals: [1_000, 3_000, 5_000] });
+  }
+
   await test.step("create, edit and pause an automatic promotion in deployed Promos", async () => {
     await page.goto(`${NEXT_STACK_ORIGINS.bookingAdmin}/promo-codes`);
     await expect(page.getByRole("heading", { name: "Promos", exact: true })).toBeVisible();
@@ -93,8 +124,7 @@ export async function runPromotionAcceptance(input: {
   await expect(card).toContainText("Active");
 
   await test.step("show the named promotion and persist the better deal without stacking", async () => {
-    await guest.goto(`${guestUrl}?${query}`);
-    await expect(guest.getByText("Early bird", { exact: true }).first()).toBeVisible();
+    await waitForGuestPromotion(true);
     for (const [mode, percent] of [
       ["instant", 10],
       ["request", 30],
@@ -167,11 +197,7 @@ export async function runPromotionAcceptance(input: {
     await expect(card).toHaveCount(0);
     const saved = await api.json<Record<string, unknown>>("GET", settingsPath);
     expect(saved.promotions).toEqual([]);
-    await guest.goto(`${guestUrl}?${query}`);
-    await expect(
-      guest.getByRole("heading", { name: "Booking Summary", exact: true }),
-    ).toBeVisible();
-    await expect(guest.getByText("Early bird", { exact: true })).toHaveCount(0);
+    await waitForGuestPromotion(false);
   });
   await guest.close();
 }

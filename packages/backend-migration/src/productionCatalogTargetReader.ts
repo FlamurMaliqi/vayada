@@ -126,7 +126,8 @@ export async function readProductionCatalogTargetState(
   );
   const policies = await client.query<CatalogTargetRow>(
     `SELECT property_id::text AS "propertyId", check_in_time::text AS "checkInTime",
-            check_out_time::text AS "checkOutTime", cancellation_summary AS "cancellationSummary",
+            check_out_time::text AS "checkOutTime", check_in_until::text AS "checkInUntil",
+            check_out_from::text AS "checkOutFrom", cancellation_summary AS "cancellationSummary",
             cancellation_terms_url AS "cancellationTermsUrl",
             deposit_policy_summary AS "depositPolicySummary",
             payment_policy_summary AS "paymentPolicySummary",

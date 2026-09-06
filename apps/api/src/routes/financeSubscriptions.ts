@@ -1,4 +1,5 @@
 import { requireAuthContext } from "@vayada/backend-auth";
+import type { PropertyAccessRepository } from "@vayada/backend-authorization";
 import {
   toFinancePlanStatusResponse,
   type FinanceCommandAudit,
@@ -22,7 +23,10 @@ type CommandBody = {
 
 export async function registerFinanceSubscriptionRoutes(
   app: FastifyInstance,
-  options: { service: FinanceSubscriptionService },
+  options: {
+    service: FinanceSubscriptionService;
+    propertyAccessRepository?: PropertyAccessRepository;
+  },
 ): Promise<void> {
   app.addHook("onClose", async () => options.service.close?.());
 
@@ -30,7 +34,15 @@ export async function registerFinanceSubscriptionRoutes(
     "/finance/properties/:propertyId/plan-status",
     async (request, reply) => {
       const { propertyId } = request.params;
-      if (!enforceFinancePropertyReadPolicy(request, reply, propertyId)) return reply;
+      if (
+        !(await enforceFinancePropertyReadPolicy(
+          request,
+          reply,
+          propertyId,
+          options.propertyAccessRepository,
+        ))
+      )
+        return reply;
       return toFinancePlanStatusResponse(await options.service.getPlanStatus(propertyId));
     },
   );
@@ -39,7 +51,15 @@ export async function registerFinanceSubscriptionRoutes(
     "/finance/properties/:propertyId/billing",
     async (request, reply) => {
       const { propertyId } = request.params;
-      if (!enforceFinancePropertyReadPolicy(request, reply, propertyId)) return reply;
+      if (
+        !(await enforceFinancePropertyReadPolicy(
+          request,
+          reply,
+          propertyId,
+          options.propertyAccessRepository,
+        ))
+      )
+        return reply;
       return {
         contractVersion: "finance-billing.v1",
         ...(await options.service.getBillingOverview(propertyId)),
@@ -51,7 +71,15 @@ export async function registerFinanceSubscriptionRoutes(
     "/finance/properties/:propertyId/select-commission",
     async (request, reply) => {
       const { propertyId } = request.params;
-      if (!enforceFinancePropertyWritePolicy(request, reply, propertyId)) return reply;
+      if (
+        !(await enforceFinancePropertyWritePolicy(
+          request,
+          reply,
+          propertyId,
+          options.propertyAccessRepository,
+        ))
+      )
+        return reply;
       const command = subscriptionCommand(request, propertyId, "Select Commission Plan");
       if (!command) {
         return reply.code(400).send({
@@ -73,7 +101,15 @@ export async function registerFinanceSubscriptionRoutes(
     "/finance/properties/:propertyId/fixed-plan/checkout",
     async (request, reply) => {
       const { propertyId } = request.params;
-      if (!enforceFinancePropertyWritePolicy(request, reply, propertyId)) return reply;
+      if (
+        !(await enforceFinancePropertyWritePolicy(
+          request,
+          reply,
+          propertyId,
+          options.propertyAccessRepository,
+        ))
+      )
+        return reply;
       const command = subscriptionCommand(request, propertyId, "Start Fixed Plan checkout");
       const customerEmail = email(requireAuthContext(request).actor.email);
       if (!command || !customerEmail) {
@@ -100,7 +136,15 @@ export async function registerFinanceSubscriptionRoutes(
     "/finance/properties/:propertyId/customer-portal",
     async (request, reply) => {
       const { propertyId } = request.params;
-      if (!enforceFinancePropertyWritePolicy(request, reply, propertyId)) return reply;
+      if (
+        !(await enforceFinancePropertyWritePolicy(
+          request,
+          reply,
+          propertyId,
+          options.propertyAccessRepository,
+        ))
+      )
+        return reply;
       const command = subscriptionCommand(request, propertyId, "Open Stripe Customer Portal");
       if (!command) {
         return reply.code(400).send({
@@ -125,7 +169,15 @@ export async function registerFinanceSubscriptionRoutes(
     "/finance/properties/:propertyId/fixed-plan/invoice",
     async (request, reply) => {
       const { propertyId } = request.params;
-      if (!enforceFinancePropertyWritePolicy(request, reply, propertyId)) return reply;
+      if (
+        !(await enforceFinancePropertyWritePolicy(
+          request,
+          reply,
+          propertyId,
+          options.propertyAccessRepository,
+        ))
+      )
+        return reply;
       const command = subscriptionCommand(request, propertyId, "Activate invoiced Fixed Plan");
       if (!command) return invalidCommand(reply);
       const result = await options.service.activateFixedPlanByInvoice(command);
@@ -138,7 +190,15 @@ export async function registerFinanceSubscriptionRoutes(
     "/finance/properties/:propertyId/fixed-plan/card",
     async (request, reply) => {
       const { propertyId } = request.params;
-      if (!enforceFinancePropertyWritePolicy(request, reply, propertyId)) return reply;
+      if (
+        !(await enforceFinancePropertyWritePolicy(
+          request,
+          reply,
+          propertyId,
+          options.propertyAccessRepository,
+        ))
+      )
+        return reply;
       const command = subscriptionCommand(request, propertyId, "Activate card-funded Fixed Plan");
       if (!command) return invalidCommand(reply);
       const result = await options.service.activateFixedPlanByCard(command);
@@ -151,7 +211,15 @@ export async function registerFinanceSubscriptionRoutes(
     "/finance/properties/:propertyId/switch-to-commission",
     async (request, reply) => {
       const { propertyId } = request.params;
-      if (!enforceFinancePropertyWritePolicy(request, reply, propertyId)) return reply;
+      if (
+        !(await enforceFinancePropertyWritePolicy(
+          request,
+          reply,
+          propertyId,
+          options.propertyAccessRepository,
+        ))
+      )
+        return reply;
       const command = subscriptionCommand(request, propertyId, "Schedule Commission Plan");
       if (!command) {
         return reply.code(400).send({
@@ -173,7 +241,15 @@ export async function registerFinanceSubscriptionRoutes(
     "/finance/properties/:propertyId/switch-to-commission-now",
     async (request, reply) => {
       const { propertyId } = request.params;
-      if (!enforceFinancePropertyWritePolicy(request, reply, propertyId)) return reply;
+      if (
+        !(await enforceFinancePropertyWritePolicy(
+          request,
+          reply,
+          propertyId,
+          options.propertyAccessRepository,
+        ))
+      )
+        return reply;
       const command = subscriptionCommand(request, propertyId, "Switch to Commission Plan now");
       if (!command) return invalidCommand(reply);
       const result = await options.service.switchToCommissionNow(command);
@@ -190,7 +266,15 @@ export async function registerFinanceSubscriptionRoutes(
     "/finance/properties/:propertyId/billing-details",
     async (request, reply) => {
       const { propertyId } = request.params;
-      if (!enforceFinancePropertyWritePolicy(request, reply, propertyId)) return reply;
+      if (
+        !(await enforceFinancePropertyWritePolicy(
+          request,
+          reply,
+          propertyId,
+          options.propertyAccessRepository,
+        ))
+      )
+        return reply;
       const command = subscriptionCommand(request, propertyId, "Update billing details");
       const companyName = boundedString(request.body?.companyName);
       const billingEmail = email(request.body?.billingEmail);
@@ -211,7 +295,15 @@ export async function registerFinanceSubscriptionRoutes(
     "/finance/properties/:propertyId/payment-method",
     async (request, reply) => {
       const { propertyId } = request.params;
-      if (!enforceFinancePropertyWritePolicy(request, reply, propertyId)) return reply;
+      if (
+        !(await enforceFinancePropertyWritePolicy(
+          request,
+          reply,
+          propertyId,
+          options.propertyAccessRepository,
+        ))
+      )
+        return reply;
       const command = subscriptionCommand(request, propertyId, "Update billing payment method");
       const paymentMethod = request.body?.paymentMethod;
       if (!command || (paymentMethod !== "card" && paymentMethod !== "bank_transfer")) {

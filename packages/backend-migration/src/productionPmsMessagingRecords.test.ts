@@ -15,6 +15,134 @@ const ATTACHMENT = "60000000-0000-4000-a000-000000000001";
 const MEDIA = "70000000-0000-4000-a000-000000000001";
 
 describe("production PMS messaging", () => {
+  it.each(["guest", "system", "channel", "property", "property_user", "host", "hotel"])(
+    "preserves explicit %s inquiry context, sender/read history and source evidence",
+    (sender) => {
+      const source = explicitInquiryRows(sender);
+      const checksum = sha256(source);
+      const context = contextFor(source);
+      const records = buildPmsMessagingRecords(context);
+      expect(context.blockers).toEqual([]);
+      const inbound = sender === "guest" || sender === "system";
+      expect(records.find((entry) => entry.targetId === MESSAGE)?.row).toMatchObject({
+        body: "Can we stay these dates?",
+        direction: inbound ? "inbound" : "outbound",
+        senderType: ["guest", "system", "channel"].includes(sender) ? sender : "property_user",
+        readAt: null,
+        rawPayload: {},
+      });
+      expect(records.find((entry) => entry.targetId === THREAD)?.row).toMatchObject({
+        guestBookingId: null,
+        conversationContextState: "inquiry",
+        sourceBookingId: "inquiry-ext",
+        inquiryArrivalDate: "2026-09-01",
+        inquiryDepartureDate: "2026-09-03",
+        inquiryAdults: 2,
+        inquiryChildren: 0,
+        unreadCount: inbound ? 1 : 0,
+      });
+      expect(sha256(source)).toBe(checksum);
+      expect(buildPmsMessagingRecords(contextFor(source))).toEqual(records);
+      expect(JSON.stringify(records)).not.toContain("private-token");
+    },
+  );
+
+  it.each(["inquiry_id", "nested", "read-linked"])(
+    "retains alternate explicit inquiry evidence: %s",
+    (kind) => {
+      const source = explicitInquiryRows();
+      const raw = inquiryPayload(source);
+      delete raw["provider_inquiry_id"];
+      raw["inquiry"] = kind === "nested" ? { id: "inquiry-ext" } : {};
+      if (kind !== "nested") raw["inquiry_id"] = "inquiry-ext";
+      if (kind === "read-linked") {
+        Object.assign(source.find((entry) => entry.sourceTable === "message_threads")!.data, {
+          booking_id: BOOKING,
+          source_booking_id: "booking-ext",
+          status: "closed",
+          unread_count: 0,
+        });
+        source.find((entry) => entry.sourceTable === "messages")!.data["read_at"] =
+          "2026-09-01T12:01:00Z";
+      }
+      const context = contextFor(source);
+      const records = buildPmsMessagingRecords(context);
+      expect(context.blockers).toEqual([]);
+      expect(records.find((entry) => entry.targetId === THREAD)?.row).toMatchObject({
+        sourceBookingId: kind === "read-linked" ? "booking-ext" : "inquiry-ext",
+        conversationContextState: kind === "read-linked" ? "linked" : "inquiry",
+        inquiryAdults: null,
+        inquiryArrivalDate: null,
+        ...(kind === "read-linked"
+          ? { unreadCount: 0, attentionState: "done", guestBookingId: BOOKING }
+          : {}),
+      });
+      if (kind === "read-linked")
+        expect(records.find((entry) => entry.targetId === MESSAGE)?.row["readAt"]).toBe(
+          "2026-09-01T12:01:00.000Z",
+        );
+    },
+  );
+
+  it.each([true, false])(
+    "handles flat meta identity without inventing context (identity: %s)",
+    (hasIdentity) => {
+      const source = explicitInquiryRows();
+      const raw: Record<string, unknown> = inquiryPayload(source);
+      delete raw["provider_inquiry_id"];
+      raw["inquiry"] = {};
+      raw["meta"] = hasIdentity ? { live_feed_event_id: "inquiry-ext" } : {};
+      const context = contextFor(source);
+      const records = buildPmsMessagingRecords(context);
+      expect(context.blockers).toEqual([]);
+      expect(records.find((entry) => entry.targetId === THREAD)?.row).toMatchObject({
+        conversationContextState: hasIdentity ? "inquiry" : "unlinked",
+        sourceBookingId: hasIdentity ? "inquiry-ext" : null,
+        inquiryArrivalDate: null,
+        inquiryAdults: null,
+      });
+    },
+  );
+
+  it.each([
+    { inquiry_id: "private-token" },
+    { inquiry: { id: "private-token" } },
+    { meta: { live_feed_event_id: "private-token" } },
+    { meta: [] },
+    { meta: { booking_details: [] } },
+    { meta: { property_id: HOTEL } },
+    { property_id: HOTEL },
+    { property_id: null },
+    { inquiry: { property_id: HOTEL } },
+    { provider: "booking.com" },
+    { channel: "booking.com" },
+    { id: "private-token" },
+    { message_id: "private-token" },
+    { thread_id: "private-token" },
+    { booking_id: "private-token" },
+    { source_booking_id: "private-token" },
+    { sender: "unknown" },
+    { sender: { type: "guest" } },
+    { sender: "host" },
+    { message: "private-token" },
+    { inquiry: [] },
+    { inquiry: { adults: "2" } },
+    { provider_inquiry_id: null, inquiry: {}, message_type: "inquiry" },
+  ])("blocks unverified explicit inquiry evidence %j", (fields) => {
+    const source = explicitInquiryRows();
+    Object.assign(inquiryPayload(source), fields);
+    const context = contextFor(source);
+    buildPmsMessagingRecords(context);
+    expect(context.blockers).toContainEqual(
+      expect.objectContaining({
+        code: "INBOX_INQUIRY_REQUIRES_REVIEW",
+        sourceId: MESSAGE,
+        message: expect.stringContaining(PROPERTY),
+      }),
+    );
+    expect(JSON.stringify(context.blockers)).not.toContain("private-token");
+  });
+
   it.each(["open", "closed", "no_reply_needed"])(
     "counts unknown system-inquiry read history as unread without changing %s attention",
     (status) => {
@@ -282,6 +410,8 @@ describe("production PMS messaging", () => {
         "raw_payload"
       ] as Record<string, unknown>;
       raw["sender"] = sender;
+      // A non-system sender's text alone is not inquiry evidence.
+      delete raw["meta"];
       const context = contextFor(source);
       const records = buildPmsMessagingRecords(context);
       expect(context.blockers).toEqual([]);
@@ -902,6 +1032,34 @@ function inquiryPayload(source: IdentitySourceRow[]) {
     meta: { live_feed_event_id: string; booking_details: Record<string, unknown> };
     [field: string]: unknown;
   };
+}
+
+function explicitInquiryRows(sender = "guest") {
+  const source = systemInquiryRows();
+  const body = "Can we stay these dates?";
+  Object.assign(source.find((entry) => entry.sourceTable === "messages")!.data, {
+    body,
+    direction: sender === "guest" ? "inbound" : "outbound",
+    raw_payload: {
+      sender,
+      message: body,
+      property_id: MEDIA,
+      provider_inquiry_id: "inquiry-ext",
+      token: "private-token",
+      inquiry: {
+        arrival_date: "2026-09-01",
+        departure_date: "2026-09-03",
+        adults: 2,
+        children: 0,
+      },
+    },
+  });
+  Object.assign(source.find((entry) => entry.sourceTable === "message_threads")!.data, {
+    last_message_preview: body,
+    last_message_direction: sender === "guest" ? "inbound" : "outbound",
+    unread_count: sender === "guest" ? 1 : 0,
+  });
+  return source;
 }
 
 function target(mediaIds: string[]) {

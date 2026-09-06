@@ -43,6 +43,20 @@ const financeFolioKmsEnv = {
 };
 
 describe("api config", () => {
+  it("parses the Inbox-only sending control without changing Channex or Booking email", () => {
+    expect(loadConfig({}).pmsInboxSendingEnabled).toBe(true);
+    expect(loadConfig({ PMS_INBOX_SENDING_ENABLED: "true" }).pmsInboxSendingEnabled).toBe(true);
+    const email = { RESEND_API_KEY: "test-key", BOOKING_EMAIL_FROM: "sender@example.test" };
+    const paused = loadConfig({ ...email, PMS_INBOX_SENDING_ENABLED: "false" });
+    expect(paused.pmsInboxSendingEnabled).toBe(false);
+    expect(paused.bookingEmailDelivery).toEqual(loadConfig(email).bookingEmailDelivery);
+    expect(paused.bookingEmailDelivery).toBeDefined();
+    expect(paused.channexManagement).toEqual(loadConfig(email).channexManagement);
+    expect(() => loadConfig({ PMS_INBOX_SENDING_ENABLED: "flase" })).toThrow(
+      "PMS_INBOX_SENDING_ENABLED",
+    );
+  });
+
   it("keeps Channex management fail-closed until each capability is cut over", () => {
     expect(loadConfig({}).channexManagement).toMatchObject({
       bookingMutationOwner: "legacy",
@@ -929,5 +943,14 @@ describe("api config", () => {
         PLATFORM_MEDIA_CDN_ORIGIN_HOST: "vayada-media-production.s3.us-east-1.amazonaws.com",
       }),
     ).toThrow("PLATFORM_MEDIA_CDN_BASE_URL must be an HTTPS origin");
+  });
+});
+
+
+describe("API background worker configuration", () => {
+  it("defaults to enabled and allows a request-only staging API", () => {
+    expect(loadConfig({}).backgroundWorkersEnabled).toBe(true);
+    expect(loadConfig({ API_BACKGROUND_WORKERS_ENABLED: "false" }).backgroundWorkersEnabled).toBe(false);
+    expect(() => loadConfig({ API_BACKGROUND_WORKERS_ENABLED: "invalid" })).toThrow();
   });
 });

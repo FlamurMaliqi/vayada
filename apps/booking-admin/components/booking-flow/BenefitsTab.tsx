@@ -1,4 +1,5 @@
 "use client";
+import { useTranslation } from "@/lib/i18n";
 
 import { XMarkIcon, CheckIcon } from "@heroicons/react/24/outline";
 
@@ -29,6 +30,7 @@ export default function BenefitsTab({
   saveBenefits,
   savingBenefits,
 }: BenefitsTabProps) {
+  const { t } = useTranslation();
   const addCustomBenefit = () => {
     const trimmed = benefitInput.trim();
     if (trimmed && !benefits.includes(trimmed)) {
@@ -39,14 +41,13 @@ export default function BenefitsTab({
 
   return (
     <div className="bg-white border border-gray-200 rounded-xl p-5">
-      <h3 className="text-[14px] font-semibold text-gray-900 mb-0.5">Book Direct Benefits</h3>
-      <p className="text-[12px] text-gray-500 mb-4">
-        These appear in the room detail modal, encouraging guests to book via your website instead
-        of OTAs. Benefits apply to all rooms.
-      </p>
+      <h3 className="text-[14px] font-semibold text-gray-900 mb-0.5">
+        {t("bookingFlow.benefits.title")}
+      </h3>
+      <p className="text-[12px] text-gray-500 mb-4">{t("bookingFlow.benefits.subtitle")}</p>
 
       <div className="space-y-2 mb-4">
-        {BENEFIT_OPTIONS.map((benefit) => {
+        {BENEFIT_OPTIONS.map((benefit, index) => {
           const isSelected = benefits.includes(benefit);
           return (
             <button
@@ -72,7 +73,7 @@ export default function BenefitsTab({
               >
                 {isSelected && <CheckIcon className="w-2 h-2 text-white" />}
               </div>
-              <span className="text-[12px] text-gray-700">{benefit}</span>
+              <span className="text-[12px] text-gray-700">{t(`benefits.option.${index}`)}</span>
             </button>
           );
         })}
@@ -81,7 +82,8 @@ export default function BenefitsTab({
       {/* Custom benefit input */}
       <div className="mb-4">
         <label className="block text-[11px] text-gray-500 mb-1.5">
-          Custom Benefit <span className="text-gray-400">(optional)</span>
+          {t("bookingFlow.benefits.customBenefitLabel")}
+          <span className="text-gray-400">{t("common.optional")}</span>
         </label>
         <input
           type="text"
@@ -94,7 +96,7 @@ export default function BenefitsTab({
             }
           }}
           className="w-full px-3 py-2 bg-gray-50 border border-gray-200 rounded-lg text-[12px] focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent focus:bg-white text-gray-900"
-          placeholder="e.g. Complimentary sunset cocktail"
+          placeholder={t("bookingFlow.benefits.customBenefitPlaceholder")}
         />
       </div>
 
@@ -102,7 +104,7 @@ export default function BenefitsTab({
       {benefits.filter((b) => !BENEFIT_OPTIONS.includes(b)).length > 0 && (
         <div className="mb-4 space-y-1">
           <span className="text-[10px] text-gray-400 uppercase tracking-wider">
-            Custom benefits
+            {t("bookingFlow.benefits.customBenefits")}
           </span>
           <div className="flex flex-wrap gap-2">
             {benefits
@@ -134,7 +136,7 @@ export default function BenefitsTab({
         {savingBenefits && (
           <div className="w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full animate-spin" />
         )}
-        {savingBenefits ? "Saving..." : "Save Benefits"}
+        {savingBenefits ? t("bookingFlow.benefits.saving") : t("bookingFlow.benefits.save")}
       </button>
     </div>
   );

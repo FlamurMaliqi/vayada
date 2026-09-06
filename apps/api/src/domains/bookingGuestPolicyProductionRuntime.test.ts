@@ -37,7 +37,22 @@ describe("Booking guest-policy production application", () => {
     const application = createBookingGuestPolicyProductionApplication({
       repository: { getCurrentGuestPolicy } as unknown as BookingGuestPolicyRepository,
       catalogPool: {
-        async query() {
+        async query(sql: string, values: unknown[]) {
+          if (sql.includes("property_policy_summaries")) {
+            expect(values).toEqual([organizationId, propertyId]);
+            expect(sql).toContain("resource.organization_id");
+            return {
+              rows: [
+                {
+                  checkInTime: "12:00",
+                  checkOutTime: "11:00",
+                  checkInUntil: "23:00",
+                  checkOutFrom: null,
+                },
+              ],
+              rowCount: 1,
+            };
+          }
           return {
             rows: [{ propertyId, profileRevision: 8, timeZone: "Europe/Berlin" }],
             rowCount: 1,
@@ -61,7 +76,17 @@ describe("Booking guest-policy production application", () => {
     });
 
     await expect(application.getGuestPolicySetup({ organizationId, propertyId })).resolves.toEqual(
-      expect.objectContaining({ propertyId, current: null, draft: expect.any(Object) }),
+      expect.objectContaining({
+        propertyId,
+        current: null,
+        draft: expect.objectContaining({
+          checkInTime: "12:00",
+          checkOutTime: "11:00",
+          checkInUntil: "23:00",
+          defaultGuestLanguage: null,
+          childrenEnabled: null,
+        }),
+      }),
     );
     await expect(
       application.previewGuestPolicy({ organizationId, propertyId, choices }),

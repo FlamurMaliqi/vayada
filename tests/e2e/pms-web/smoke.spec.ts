@@ -168,7 +168,9 @@ test.describe("pms-web smoke", () => {
 
     await page.goto("/settings/feature-hub");
 
-    await expect(page.getByText("Feature Hub unavailable.")).toBeVisible();
+    await expect(
+      page.getByRole("alert").filter({ hasText: "Could not load modules. Please retry." }),
+    ).toBeVisible();
     await expect(page.getByText("No modules in this category.")).toHaveCount(0);
     await expect(page.getByRole("heading", { name: /navigation$/i })).toHaveCount(0);
     await expect(page.locator("article")).toHaveCount(0);
