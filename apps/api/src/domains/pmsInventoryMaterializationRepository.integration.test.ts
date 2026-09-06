@@ -182,6 +182,27 @@ describe.skipIf(!TEST_DATABASE_URL)("PostgreSQL PMS inventory materialization re
     });
   });
 
+  it("finishes an earlier partial rematerialization at the current calendar revision", async () => {
+    const fixture = await createFixture(admin, repositories, [2, 1]);
+    await fixture.repository.materializeInventory(
+      materializationCommand(fixture, "initial-full", 1, "2026-08-04", "2026-08-07"),
+    );
+    await activateCalendarRevision(admin, fixture, 2);
+    await expect(fixture.repository.materializeInventory(
+      materializationCommand(fixture, "partial-new", 2, "2026-08-04", "2026-08-05"),
+    )).resolves.toMatchObject({ ok: true, outcome: "rematerialized" });
+    const retained = await readFirstDay(admin, fixture);
+    const command = materializationCommand(fixture, "finish-new", 2, "2026-08-04", "2026-08-07");
+    const completed = await fixture.repository.materializeInventory(command);
+    expect(completed).toMatchObject({ ok: true, outcome: "rematerialized", changedDayCount: 2 });
+    await expect(fixture.repository.materializeInventory(command)).resolves.toEqual(completed);
+    await expect(readFirstDay(admin, fixture)).resolves.toEqual(retained);
+    await expect(fixture.repository.getInventoryLaunchReadiness({
+      propertyId: fixture.propertyId,
+      requiredCoverage: { from: "2026-08-04", through: "2026-08-07" },
+    })).resolves.toMatchObject({ ready: true, blockers: [] });
+  });
+
   it("stop-sells newly extended dates for an existing linked cause", async () => {
     const fixture = await createFixture(admin, repositories, [2]);
     const groupId = randomUUID();

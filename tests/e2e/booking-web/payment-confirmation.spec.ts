@@ -121,6 +121,10 @@ test("recovers a completed card payment and survives refresh or a new tab", asyn
   });
   await page.addInitScript(
     ({ slug, token }) => {
+      localStorage.setItem(
+        `vayada_booking_analytics:${slug}`,
+        JSON.stringify({ version: 1, analytics: true }),
+      );
       sessionStorage.setItem(
         "pendingBookingCreateRecovery",
         JSON.stringify({

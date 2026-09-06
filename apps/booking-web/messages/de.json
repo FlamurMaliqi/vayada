@@ -1,4 +1,15 @@
 {
+  "analyticsConsent": {
+    "settings": "Datenschutzeinstellungen",
+    "title": "Optionale Analyse",
+    "description": "Wir nutzen optionale Analysen, um Besuche und Buchungsschritte zu verstehen. Buchungen funktionieren auch ohne Analyse. Ihre Auswahl gilt nur für die Buchungsseite dieses Hotels.",
+    "enabled": "Analyse ist aktiviert.",
+    "disabled": "Analyse ist deaktiviert.",
+    "saveError": "Ihre Auswahl konnte nicht gespeichert werden. Analyse bleibt deaktiviert.",
+    "reject": "Analyse ablehnen",
+    "accept": "Analyse erlauben",
+    "close": "Aktuelle Auswahl behalten"
+  },
   "common": {
     "checkAvailability": "Verfügbarkeit prüfen",
     "bookNow": "Jetzt buchen",

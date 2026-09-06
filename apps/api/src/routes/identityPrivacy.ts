@@ -171,7 +171,6 @@ export type GdprDeletionCancelResponse = {
 export type IdentityPrivacyRepository = {
   upsertCookieConsent(input: {
     visitorId: string;
-    userId?: string;
     functional: boolean;
     analytics: boolean;
     marketing: boolean;
@@ -222,6 +221,7 @@ export type IdentityPrivacyPool = {
     text: string,
     values?: readonly unknown[],
   ): Promise<Pick<QueryResult<T>, "rows">>;
+  connect(): Promise<Pick<IdentityPrivacyPool, "query"> & { release(): void }>;
   end(): Promise<void>;
 };
 
@@ -234,7 +234,7 @@ export function createPgIdentityPrivacyRepository(config: {
     throw new Error("Identity privacy repository connectionString must not be empty");
   }
 
-  const pool =
+  const pool: IdentityPrivacyPool =
     config.pool ??
     new pg.Pool({
       connectionString: config.connectionString,
@@ -243,33 +243,59 @@ export function createPgIdentityPrivacyRepository(config: {
 
   return {
     async upsertCookieConsent(input) {
-      const result = await pool.query<CookieConsentRow>(
-        `INSERT INTO identity.cookie_consents
-           (visitor_id, user_id, necessary, functional, analytics, marketing)
-         VALUES ($1, $2, TRUE, $3, $4, $5)
-         ON CONFLICT (visitor_id)
-         DO UPDATE SET
-           user_id = COALESCE(EXCLUDED.user_id, identity.cookie_consents.user_id),
-           necessary = TRUE,
-           functional = EXCLUDED.functional,
-           analytics = EXCLUDED.analytics,
-           marketing = EXCLUDED.marketing,
-           updated_at = now()
-         RETURNING id, visitor_id, user_id, necessary, functional, analytics, marketing, created_at, updated_at`,
-        [input.visitorId, input.userId ?? null, input.functional, input.analytics, input.marketing],
-      );
-      await recordConsent(pool, {
-        userId: input.userId,
-        visitorId: input.visitorId,
-        consentType: "cookies",
-        consentGiven: true,
-        metadata: {
-          functional: input.functional,
-          analytics: input.analytics,
-          marketing: input.marketing,
-        },
-      });
-      return serializeCookieConsent(result.rows[0]!);
+      const client = await pool.connect();
+      try {
+        await client.query("BEGIN");
+        // Serialize creation as well as updates; a row lock alone cannot lock a missing row.
+        await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [
+          `identity.cookie-consent:${input.visitorId}`,
+        ]);
+        const current = await client.query<CookieConsentRow>(
+          "SELECT * FROM identity.cookie_consents WHERE visitor_id = $1",
+          [input.visitorId],
+        );
+        const previous = current.rows[0];
+        if (
+          previous &&
+          previous.necessary === true &&
+          previous.functional === input.functional &&
+          previous.analytics === input.analytics &&
+          previous.marketing === input.marketing
+        ) {
+          await client.query("COMMIT");
+          return serializeCookieConsent(previous);
+        }
+        const result = await client.query<CookieConsentRow>(
+          `INSERT INTO identity.cookie_consents
+             (visitor_id, necessary, functional, analytics, marketing)
+           VALUES ($1, TRUE, $2, $3, $4)
+           ON CONFLICT (visitor_id) DO UPDATE SET
+             necessary = TRUE, functional = EXCLUDED.functional,
+             analytics = EXCLUDED.analytics, marketing = EXCLUDED.marketing,
+             updated_at = clock_timestamp()
+           RETURNING *`,
+          [input.visitorId, input.functional, input.analytics, input.marketing],
+        );
+        await recordConsent(client, {
+          visitorId: input.visitorId,
+          consentType: "cookies",
+          // This is a choice event, not a blanket grant of the optional purposes.
+          consentGiven: input.functional || input.analytics || input.marketing,
+          version: "1",
+          metadata: {
+            functional: input.functional,
+            analytics: input.analytics,
+            marketing: input.marketing,
+          },
+        });
+        await client.query("COMMIT");
+        return serializeCookieConsent(result.rows[0]!);
+      } catch (error) {
+        await client.query("ROLLBACK");
+        throw error;
+      } finally {
+        client.release();
+      }
     },
     async findCookieConsent(visitorId) {
       const result = await pool.query<CookieConsentRow>(
@@ -533,21 +559,32 @@ export async function registerIdentityPrivacyRoutes(
 
   app.post<{ Body: CookieConsentRequest }>("/consent/cookies", async (request, reply) => {
     const body = request.body;
-    if (!body?.visitor_id) {
-      return sendPrivacyError(reply, 422, "invalid_payload", "visitor_id is required.");
+    if (
+      !validVisitorId(body?.visitor_id) ||
+      [body.functional, body.analytics, body.marketing].some(
+        (value) => typeof value !== "boolean",
+      ) ||
+      (body.necessary !== undefined && body.necessary !== true)
+    ) {
+      return sendPrivacyError(
+        reply,
+        422,
+        "invalid_payload",
+        "A valid visitor_id and boolean cookie choices are required.",
+      );
     }
     return options.repository.upsertCookieConsent({
       visitorId: body.visitor_id,
-      functional: Boolean(body.functional),
-      analytics: Boolean(body.analytics),
-      marketing: Boolean(body.marketing),
+      functional: body.functional,
+      analytics: body.analytics,
+      marketing: body.marketing,
     });
   });
 
   app.get<{ Querystring: CookieConsentQuery }>("/consent/cookies", async (request, reply) => {
     const visitorId = firstQueryValue(request.query.visitor_id);
-    if (!visitorId) {
-      return sendPrivacyError(reply, 422, "invalid_query", "visitor_id is required.");
+    if (!validVisitorId(visitorId)) {
+      return sendPrivacyError(reply, 422, "invalid_query", "A valid visitor_id is required.");
     }
     return options.repository.findCookieConsent(visitorId);
   });
@@ -718,7 +755,7 @@ function serializeCookieConsent(row: CookieConsentRow): CookieConsentResponse {
   return {
     id: row.id,
     visitor_id: row.visitor_id,
-    user_id: row.user_id,
+    user_id: null,
     necessary: row.necessary,
     functional: row.functional,
     analytics: row.analytics,
@@ -777,7 +814,7 @@ function serializeGdprRequest(row: GdprRequestRow): GdprRequestStatusResponse {
 }
 
 async function recordConsent(
-  pool: IdentityPrivacyPool,
+  pool: Pick<IdentityPrivacyPool, "query">,
   input: {
     userId?: string;
     visitorId?: string;
@@ -789,8 +826,8 @@ async function recordConsent(
 ) {
   await pool.query(
     `INSERT INTO identity.consent_history
-       (user_id, visitor_id, consent_type, consent_given, version, metadata)
-     VALUES ($1, $2, $3, $4, $5, $6)`,
+       (user_id, visitor_id, consent_type, consent_given, version, metadata, created_at)
+     VALUES ($1, $2, $3, $4, $5, $6, clock_timestamp())`,
     [
       input.userId ?? null,
       input.visitorId ?? null,
@@ -800,6 +837,10 @@ async function recordConsent(
       JSON.stringify(input.metadata ?? {}),
     ],
   );
+}
+
+function validVisitorId(value: unknown): value is string {
+  return typeof value === "string" && /^[A-Za-z0-9_-]{1,128}$/.test(value);
 }
 
 function sendPrivacyError(
