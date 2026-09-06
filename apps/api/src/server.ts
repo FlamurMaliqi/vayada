@@ -1440,7 +1440,10 @@ const app = buildApp({
     affiliateScope: marketplaceAffiliateAdminRepository,
   },
   marketplaceCreatorSelfServiceRepository,
-  marketplaceCreatorPlatformConnections: creatorPlatformConnectionRuntime,
+  marketplaceCreatorPlatformConnections: {
+    ...creatorPlatformConnectionRuntime,
+    credentialCleanupEnabled: config.backgroundWorkersEnabled,
+  },
   marketplaceCreatorProfileMediaRepository: platformMediaRuntime?.profileMediaRepository,
   sharedHotelSetupStatusRepository,
   hotelSetupTrackCommandRepository,
@@ -1910,7 +1913,7 @@ let pmsPublicOfferRetryTimer: NodeJS.Timeout | undefined;
 
 if (pmsInventoryPublicOfferProjector) {
   const runRetryBatch = () => {
-  if (!config.backgroundWorkersEnabled) return;
+    if (!config.backgroundWorkersEnabled) return;
     if (activeRetryBatch) return;
     activeRetryBatch = pmsInventoryPublicOfferProjector
       .runRetryBatch()
@@ -1964,7 +1967,7 @@ if (platformMediaRuntime) {
   let activeCleanup: Promise<void> | undefined;
   let activePropertyMediaPublication: Promise<void> | undefined;
   const runCleanup = () => {
-  if (!config.backgroundWorkersEnabled) return;
+    if (!config.backgroundWorkersEnabled) return;
     if (activeCleanup) return;
     activeCleanup = runPlatformMediaCleanupJobs(platformMediaRuntime.cleanupStore)
       .then((result) => {
@@ -1987,7 +1990,7 @@ if (platformMediaRuntime) {
   if (config.platformMediaCleanupEnabled) runCleanup();
 
   const runPropertyMediaPublication = () => {
-  if (!config.backgroundWorkersEnabled) return;
+    if (!config.backgroundWorkersEnabled) return;
     if (activePropertyMediaPublication) return;
     activePropertyMediaPublication = platformMediaRuntime.propertyMediaCommands
       .runPublicationBatch()
@@ -2123,7 +2126,7 @@ app.addHook("onClose", async () => {
 if (authSessionHandoffRepository) {
   let activeHandoffCleanup: Promise<void> | undefined;
   const runHandoffCleanup = () => {
-  if (!config.backgroundWorkersEnabled) return;
+    if (!config.backgroundWorkersEnabled) return;
     if (activeHandoffCleanup) return;
     const now = new Date();
     activeHandoffCleanup = authSessionHandoffRepository
