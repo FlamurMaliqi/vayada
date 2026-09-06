@@ -123,6 +123,7 @@ export interface SearchParams {
 }
 
 export interface Booking {
+  canEditRequest?: boolean;
   id: string;
   bookingReference: string;
   hotelName: string;

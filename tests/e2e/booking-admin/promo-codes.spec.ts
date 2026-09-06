@@ -224,7 +224,7 @@ test.describe("booking-admin promo-code settings cutover", () => {
     await roomSelector.click();
     await page.getByRole("checkbox", { name: "Pool Villa" }).check();
     await roomSelector.click();
-    await expect(roomSelector).toHaveAccessibleName("Applicable rooms 1 room selected");
+    await expect(roomSelector).toHaveAccessibleName("Applicable rooms Selected rooms: 1");
     await page.getByLabel(/^Valid from/).fill("2026-07-01");
     await page.getByLabel(/^Valid until/).fill("2026-08-31");
     await page.getByLabel("Stays from").fill("2026-08-01");

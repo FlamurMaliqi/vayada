@@ -14,6 +14,61 @@ import type {
 const fixedNow = new Date("2026-06-11T12:00:00.000Z");
 
 describe("target provider webhook routes", () => {
+  it.each([
+    ["booking", true, 0, 200, "ignored_booking_notification"],
+    ["booking", false, 0, 400, null],
+    ["pms_inbox", true, 0, 503, null],
+    ["unknown", true, 0, 503, null],
+    [null, true, 0, 503, null],
+    ["pms_inbox", true, 2, 503, null],
+    ["pms_inbox", true, 1, 200, "recorded"],
+  ])(
+    "routes signed product tag %s without weakening receipt matching",
+    async (tag, signed, matchCount, status, result) => {
+      const secret = `whsec_${Buffer.from("resend-routing-test").toString("base64")}`;
+      const payload = JSON.stringify({
+        type: "email.delivered",
+        created_at: "2026-09-06T08:00:00Z",
+        data: { email_id: "email-routing-test", tags: tag ? { vayada_product: tag } : undefined },
+      });
+      const id = "msg_resend_routing";
+      const timestamp = new Date();
+      const recordTrustedProviderReceipt = vi.fn(async () => ({
+        matchCount,
+        recorded: matchCount === 1,
+      }));
+      const app = buildApp({
+        providerWebhooks: {
+          secrets: { resend: secret },
+          store: createMemoryProviderWebhookStore(),
+          pmsInboxDeliveryReceipts: { recordTrustedProviderReceipt },
+        },
+      });
+      try {
+        const response = await app.inject({
+          method: "POST",
+          url: "/webhooks/resend",
+          headers: {
+            "content-type": "application/json",
+            "svix-id": id,
+            "svix-timestamp": String(Math.floor(timestamp.getTime() / 1000)),
+            "svix-signature": signed
+              ? new Webhook(secret).sign(id, timestamp, payload)
+              : "v1,invalid",
+          },
+          payload,
+        });
+        expect(response.statusCode).toBe(status);
+        if (result) expect(response.json()).toEqual({ status: result });
+        expect(recordTrustedProviderReceipt).toHaveBeenCalledTimes(
+          signed && tag !== "booking" ? 1 : 0,
+        );
+      } finally {
+        await app.close();
+      }
+    },
+  );
+
   it("records an authenticated Resend delivery receipt against its provider reference", async () => {
     const secret = `whsec_${Buffer.from("resend-webhook-secret").toString("base64")}`;
     const payload = JSON.stringify({

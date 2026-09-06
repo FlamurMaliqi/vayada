@@ -3900,7 +3900,7 @@ async function inspectRoomTypeRetirement(
            AND assignment.room_type_id = room_type.id
            AND assignment.assignment_status IN ('pending','assigned','checked_in','in_house'))
         +
-        (SELECT count(*) FROM pms.inventory_reservation_receipts receipt
+        (SELECT count(*) FROM pms.active_inventory_reservation_receipts receipt
          JOIN pms.inventory_reservation_statuses status
            ON status.receipt_id = receipt.receipt_id
          WHERE receipt.property_id = room_type.property_id
@@ -6756,6 +6756,8 @@ async function loadBookingPaymentLifecycle(
        WHERE card.property_id = booking.property_id
          AND card.guest_booking_id = booking.id
          AND card.payment_method = 'card'
+         AND (booking.active_card_payment_id IS NULL OR booking.active_card_payment_id=card.id)
+         AND card.payment_metadata->>'supersededByEdit' IS DISTINCT FROM 'true'
          AND card.provider_payment_intent_id IS NOT NULL
        ORDER BY card.created_at DESC, card.id DESC
        LIMIT 1

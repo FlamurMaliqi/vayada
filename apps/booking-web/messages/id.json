@@ -1,4 +1,15 @@
 {
+  "analyticsConsent": {
+    "settings": "Pilihan privasi",
+    "title": "Analitik opsional",
+    "description": "Kami menggunakan analitik opsional untuk memahami kunjungan dan langkah pemesanan. Pemesanan tetap berfungsi tanpa analitik. Pilihan Anda hanya berlaku untuk situs pemesanan hotel ini.",
+    "enabled": "Analitik aktif.",
+    "disabled": "Analitik nonaktif.",
+    "saveError": "Pilihan Anda tidak dapat disimpan. Analitik tetap nonaktif.",
+    "reject": "Tolak analitik",
+    "accept": "Izinkan analitik",
+    "close": "Pertahankan pilihan saat ini"
+  },
   "common": {
     "checkAvailability": "Cek Ketersediaan",
     "bookNow": "Pesan Sekarang",

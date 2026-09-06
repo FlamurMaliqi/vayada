@@ -1,4 +1,15 @@
 {
+  "analyticsConsent": {
+    "settings": "Choix de confidentialité",
+    "title": "Statistiques facultatives",
+    "description": "Nous utilisons des statistiques facultatives pour comprendre les visites et les étapes de réservation. Vous pouvez réserver sans les activer. Votre choix concerne uniquement le site de réservation de cet hôtel.",
+    "enabled": "Statistiques activées.",
+    "disabled": "Statistiques désactivées.",
+    "saveError": "Impossible d’enregistrer votre choix. Les statistiques restent désactivées.",
+    "reject": "Refuser les statistiques",
+    "accept": "Autoriser les statistiques",
+    "close": "Conserver le choix actuel"
+  },
   "common": {
     "checkAvailability": "Vérifier la disponibilité",
     "bookNow": "Réserver maintenant",

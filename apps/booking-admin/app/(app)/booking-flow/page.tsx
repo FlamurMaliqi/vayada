@@ -262,7 +262,7 @@ export default function BookingFlowPage() {
   const getBookingHotelIdForSave = () => {
     const hotelId = bookingHotelId || getSelectedBookingHotelId();
     if (!hotelId) {
-      throw new Error("Booking hotel id is required.");
+      throw new Error(t("admin.bookingHotelIdIsRequired"));
     }
     return hotelId;
   };
@@ -442,10 +442,7 @@ export default function BookingFlowPage() {
       setAddons((current) => orderAddons([...current, toSettingsAddonItem(saved)]));
       showFeedback("success", t("bookingFlow.addons.feedback.createSuccess"));
     } catch (error) {
-      const message =
-        error instanceof BookingAddonItemsClientError
-          ? error.detail
-          : t("bookingFlow.addons.feedback.saveError");
+      const message = t("bookingFlow.addons.feedback.saveError");
       showFeedback("error", message);
       if (error instanceof BookingAddonItemsClientError && error.statusCode === 409) {
         try {
@@ -480,10 +477,7 @@ export default function BookingFlowPage() {
       );
       showFeedback("success", t("bookingFlow.addons.feedback.updateSuccess"));
     } catch (error) {
-      const message =
-        error instanceof BookingAddonItemsClientError
-          ? error.detail
-          : t("bookingFlow.addons.feedback.saveError");
+      const message = t("bookingFlow.addons.feedback.saveError");
       showFeedback("error", message);
       throw error;
     }
@@ -513,7 +507,7 @@ export default function BookingFlowPage() {
     } catch {
       setAddons(previousAddons);
       showFeedback("error", t("bookingFlow.addons.feedback.saveError"));
-      throw new Error("Failed to reorder add-ons.");
+      throw new Error(t("admin.failedToReorderAddOns"));
     }
   };
 
@@ -527,7 +521,7 @@ export default function BookingFlowPage() {
       showFeedback("success", t("bookingFlow.addons.feedback.deleteSuccess"));
     } catch {
       showFeedback("error", t("bookingFlow.addons.feedback.deleteError"));
-      throw new Error("Failed to delete add-on.");
+      throw new Error(t("admin.failedToDeleteAddOn"));
     }
   };
 

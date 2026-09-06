@@ -1,4 +1,5 @@
 "use client";
+import { useTranslation } from "@/lib/i18n";
 
 import { useState, type DragEvent } from "react";
 import {
@@ -10,7 +11,7 @@ import Link from "next/link";
 import { PlusIcon, PencilSquareIcon, TrashIcon } from "@heroicons/react/24/outline";
 import { ToggleSwitch } from "@/components/ui";
 import type { AddonItem, AddonSettings } from "@/services/settings";
-import { getCurrencySymbol } from "@/lib/utils";
+import { formatCurrency } from "@/lib/utils";
 
 const CATEGORY_COLORS: Record<string, string> = {
   transport: "bg-blue-100 text-blue-700",
@@ -103,6 +104,7 @@ export default function AddonsTab({
   onDeleteAddon,
   onReorderAddon,
 }: AddonsTabProps) {
+  const { t, locale } = useTranslation();
   const [filterCategory, setFilterCategory] = useState("all");
   const [draft, setDraft] = useState<AddonItemFormValues>(() => emptyAddonValues(propertyCurrency));
   const [editingAddon, setEditingAddon] = useState<AddonItem | null>(null);
@@ -123,9 +125,9 @@ export default function AddonsTab({
   const addonLimitMessage =
     propertyPlan.plan === "commission"
       ? addons.length > maxAddons
-        ? "You have more add-ons than your plan allows. Remove add-ons to add new ones, or upgrade for up to 9."
-        : "You've reached the 3 add-on limit. Upgrade to the paid plan for up to 9 add-ons."
-      : "You've reached the 9 add-on limit for the paid plan.";
+        ? t("admin.youHaveMoreAddOnsThanYourPlanAllowsRemove")
+        : t("admin.youVeReachedThe3AddOnLimitUpgradeTo")
+      : t("admin.youVeReachedThe9AddOnLimitForThe");
 
   const openCreateEditor = () => {
     setEditingAddon(null);
@@ -161,13 +163,13 @@ export default function AddonsTab({
   };
 
   const handleDelete = async (addon: AddonItem) => {
-    if (!window.confirm(`Delete ${addon.name}?`)) return;
+    if (!window.confirm(t("admin.deleteName", { name: addon.name }))) return;
     setDeletingAddonId(addon.id);
     setItemError(null);
     try {
       await onDeleteAddon(addon.id);
     } catch {
-      setItemError("Failed to delete add-on.");
+      setItemError(t("admin.failedToDeleteAddOn"));
     } finally {
       setDeletingAddonId(null);
     }
@@ -201,7 +203,7 @@ export default function AddonsTab({
     try {
       await onReorderAddon(sourceAddonId, targetAddonId);
     } catch {
-      setItemError("Failed to reorder add-ons.");
+      setItemError(t("admin.failedToReorderAddOns"));
     }
   };
 
@@ -211,10 +213,10 @@ export default function AddonsTab({
       <div className="bg-white rounded-lg border border-gray-200 p-5">
         <div className="flex items-center justify-between mb-4">
           <div>
-            <h2 className="text-[14px] font-semibold text-gray-900">Guest Experiences</h2>
-            <p className="text-[12px] text-gray-500 mt-0.5">
-              Upsells and add-ons shown during the booking flow
-            </p>
+            <h2 className="text-[14px] font-semibold text-gray-900">
+              {t("bookingFlow.addons.title")}
+            </h2>
+            <p className="text-[12px] text-gray-500 mt-0.5">{t("bookingFlow.addons.subtitle")}</p>
           </div>
           <button
             onClick={openCreateEditor}
@@ -222,13 +224,13 @@ export default function AddonsTab({
             className="inline-flex items-center gap-1 px-3 py-1.5 bg-gray-900 text-white text-[12px] font-medium rounded-lg hover:bg-gray-800 disabled:cursor-not-allowed disabled:opacity-50"
           >
             <PlusIcon className="w-3.5 h-3.5" />
-            Add Experience
+            {t("bookingFlow.addons.addExperience")}
           </button>
         </div>
 
         <div className="mb-4 flex items-center justify-between gap-3 text-[12px]">
           <span className="text-gray-500">
-            {addons.length}/{maxAddons} add-ons
+            {addons.length}/{maxAddons} {t("admin.addOns")}
           </span>
         </div>
 
@@ -240,7 +242,7 @@ export default function AddonsTab({
                 href="/settings?section=billing"
                 className="mt-1 inline-block font-semibold underline underline-offset-2"
               >
-                Upgrade to offer up to 9 add-ons and increase your upsell revenue.
+                {t("admin.upgradeToOfferUpTo9AddOnsAndIncrease")}
               </Link>
             )}
           </div>
@@ -259,7 +261,8 @@ export default function AddonsTab({
               onClick={() => setFilterCategory("all")}
               className={`px-3 py-1 rounded-full text-[11px] font-medium border transition-colors ${filterCategory === "all" ? "border-gray-900 text-gray-900 bg-gray-50" : "border-gray-200 text-gray-500 hover:border-gray-300"}`}
             >
-              All ({addons.length})
+              {t("admin.all")}
+              {addons.length})
             </button>
             {categories.map((cat) => (
               <button
@@ -267,8 +270,7 @@ export default function AddonsTab({
                 onClick={() => setFilterCategory(cat)}
                 className={`px-3 py-1 rounded-full text-[11px] font-medium border transition-colors ${filterCategory === cat ? "border-gray-900 text-gray-900 bg-gray-50" : "border-gray-200 text-gray-500 hover:border-gray-300"}`}
               >
-                {cat.charAt(0).toUpperCase() + cat.slice(1)} (
-                {addons.filter((a) => a.category === cat).length})
+                {t(`addons.category.${cat}`)} ({addons.filter((a) => a.category === cat).length})
               </button>
             ))}
           </div>
@@ -279,9 +281,11 @@ export default function AddonsTab({
             <div className="w-10 h-10 bg-gray-200 rounded-full mx-auto flex items-center justify-center mb-2">
               <AddonsIcon className="w-5 h-5 text-gray-400" />
             </div>
-            <p className="text-[13px] font-medium text-gray-600">No add-ons yet</p>
+            <p className="text-[13px] font-medium text-gray-600">
+              {t("bookingFlow.addons.noAddons")}
+            </p>
             <p className="text-[12px] text-gray-400 mt-0.5">
-              Create your first guest experience to show during booking
+              {t("bookingFlow.addons.noAddonsDesc")}
             </p>
           </div>
         ) : (
@@ -300,8 +304,12 @@ export default function AddonsTab({
               >
                 <button
                   type="button"
-                  aria-label={`Drag ${addon.name}`}
-                  title={canReorder ? "Drag to reorder" : "Reordering is available in All view"}
+                  aria-label={t("admin.dragName", { name: addon.name })}
+                  title={
+                    canReorder
+                      ? t("admin.dragToReorder")
+                      : t("admin.reorderingIsAvailableInAllView")
+                  }
                   draggable={canReorder}
                   disabled={!canReorder}
                   onDragStart={(event) => handleDragStart(event, addon.id)}
@@ -347,15 +355,15 @@ export default function AddonsTab({
                     <span
                       className={`text-[10px] font-medium px-1.5 py-0.5 rounded-full ${CATEGORY_COLORS[addon.category] || "bg-gray-100 text-gray-600"}`}
                     >
-                      {addon.category.charAt(0).toUpperCase() + addon.category.slice(1)}
+                      {t(`addons.category.${addon.category}`)}
                     </span>
                     {addon.duration && (
                       <span className="text-[11px] text-gray-400">{addon.duration}</span>
                     )}
                     <span className="text-[11px] text-gray-400">
                       {addon.ownershipKind === "partner"
-                        ? `Partner · ${addon.partnerCommissionRate}%`
-                        : "Own"}
+                        ? t("admin.partnerRate", { rate: addon.partnerCommissionRate ?? "" })
+                        : t("admin.own")}
                     </span>
                   </div>
                 </div>
@@ -363,17 +371,21 @@ export default function AddonsTab({
                 {/* Price */}
                 <div className="text-right shrink-0">
                   <p className="text-[13px] font-semibold text-gray-900">
-                    {getCurrencySymbol(propertyCurrency)}
-                    {addon.price.toFixed(2)}
+                    {formatCurrency(addon.price, propertyCurrency, locale, {
+                      minimumFractionDigits: 2,
+                      maximumFractionDigits: 2,
+                    })}
                   </p>
-                  {addon.perPerson && <p className="text-[10px] text-gray-400">per person</p>}
+                  {addon.perPerson && (
+                    <p className="text-[10px] text-gray-400">{t("bookingFlow.addons.perPerson")}</p>
+                  )}
                 </div>
 
                 {/* Actions */}
                 <div className="flex items-center gap-1 shrink-0">
                   <button
                     onClick={() => openEditEditor(addon)}
-                    aria-label={`Edit ${addon.name}`}
+                    aria-label={t("admin.editName", { name: addon.name })}
                     className="p-1.5 text-gray-500 hover:text-gray-900 rounded-md hover:bg-gray-100"
                   >
                     <PencilSquareIcon className="w-4 h-4" />
@@ -381,7 +393,7 @@ export default function AddonsTab({
                   <button
                     onClick={() => handleDelete(addon)}
                     disabled={deletingAddonId === addon.id}
-                    aria-label={`Delete ${addon.name}`}
+                    aria-label={t("admin.deleteName2", { name: addon.name })}
                     className="p-1.5 text-gray-500 hover:text-red-600 rounded-md hover:bg-red-50 disabled:opacity-50"
                   >
                     <TrashIcon className="w-4 h-4" />
@@ -395,9 +407,11 @@ export default function AddonsTab({
 
       {/* Display Settings */}
       <div className="bg-white rounded-lg border border-gray-200 p-5">
-        <h2 className="text-[14px] font-semibold text-gray-900">Display Settings</h2>
+        <h2 className="text-[14px] font-semibold text-gray-900">
+          {t("bookingFlow.addons.displaySettings")}
+        </h2>
         <p className="text-[12px] text-gray-500 mt-0.5 mb-4">
-          Control how add-ons appear in the booking flow
+          {t("bookingFlow.addons.displaySettingsDesc")}
         </p>
 
         <div className="space-y-2">
@@ -405,21 +419,22 @@ export default function AddonsTab({
             size="sm"
             enabled={addonSettings.showAddonsStep}
             onChange={() => handleToggleAddonSetting("showAddonsStep")}
-            label="Show Add-ons Step"
-            description="Display the add-ons step in the booking flow"
+            label={t("bookingFlow.addons.showAddonsStep")}
+            description={t("bookingFlow.addons.showAddonsStepDesc")}
           />
           <ToggleSwitch
             size="sm"
             enabled={addonSettings.groupAddonsByCategory}
             onChange={() => handleToggleAddonSetting("groupAddonsByCategory")}
-            label="Group by Category"
-            description="Organize add-ons by category (Transport, Wellness, etc.)"
+            label={t("bookingFlow.addons.groupByCategory")}
+            description={t("bookingFlow.addons.groupByCategoryDesc")}
           />
         </div>
       </div>
 
       {isEditorOpen && (
         <AddonEditor
+          translate={t}
           initialValues={draft}
           currency={propertyCurrency}
           editing={Boolean(editingAddon)}

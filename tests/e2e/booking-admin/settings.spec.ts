@@ -75,7 +75,7 @@ test.describe("booking-admin settings no-legacy guard", () => {
     await page.goto("/settings?section=booking");
 
     await expect(
-      page.getByRole("alert").filter({ hasText: "Same-day settings unavailable." }),
+      page.getByRole("alert").filter({ hasText: "Same-day booking settings failed to load." }),
     ).toBeVisible();
     await expect(page.getByRole("switch", { name: "Allow same-day bookings" })).toHaveCount(0);
     await expect(page.getByLabel("Same-day booking cutoff")).toHaveCount(0);
@@ -101,7 +101,7 @@ test.describe("booking-admin settings no-legacy guard", () => {
     await cutoff.selectOption("17:00");
     await expect(success).toHaveCount(0);
     await expect(
-      page.getByRole("alert").filter({ hasText: "Same-day settings were not saved." }),
+      page.getByRole("alert").filter({ hasText: "Same-day booking settings could not be saved." }),
     ).toBeVisible();
     await assertNoLegacyCalls();
   });
@@ -283,7 +283,9 @@ test.describe("booking-admin settings no-legacy guard", () => {
 
     await page.goto("/design-studio");
 
-    const canonicalBookingUrl = "hotel-alpenrose.booking.vayada.com";
+    const canonicalBookingUrl = new URL(page.url()).hostname.endsWith(".localhost")
+      ? `hotel-alpenrose.booking.localhost${new URL(page.url()).port ? `:${new URL(page.url()).port}` : ""}`
+      : "hotel-alpenrose.booking.vayada.com";
     await expect(page.getByRole("button", { name: "Content" })).toBeVisible();
     await expect(page.getByRole("button", { name: "Colors" })).toBeVisible();
     await expect(page.getByRole("button", { name: "Typography" })).toBeVisible();
@@ -327,7 +329,9 @@ test.describe("booking-admin settings no-legacy guard", () => {
     await expect(currentBookingUrl).toBeVisible();
     await expect(page.getByRole("heading", { name: "Custom Domain" })).toBeVisible();
     await expect(heroImageHeading).toHaveCount(0);
-    await expect(currentBookingUrl.getByText(canonicalBookingUrl, { exact: true })).toBeVisible();
+    await expect(
+      currentBookingUrl.getByText("hotel-alpenrose.booking.vayada.com", { exact: true }),
+    ).toBeVisible();
     await expect(preview).toContainText(canonicalBookingUrl);
 
     await page.getByPlaceholder("booking.yourdomain.com").fill("book.alpenrose.example");
