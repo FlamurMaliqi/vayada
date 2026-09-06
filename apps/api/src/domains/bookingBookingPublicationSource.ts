@@ -345,7 +345,6 @@ const sourceKey = ({ ownerDomain, entityType, entityId, revision }: SourceEntity
   JSON.stringify([ownerDomain, entityType, entityId, revision]);
 const validBindingSource = (source: SourceEntityRevision): source is BookingLaunchSourceRevision =>
   source.ownerDomain === "hotel_catalog" ||
-  source.ownerDomain === "booking" ||
   source.ownerDomain === "pms" ||
   source.ownerDomain === "finance";
 const sha256 = (value: string) => createHash("sha256").update(value).digest("hex");
