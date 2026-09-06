@@ -34,17 +34,21 @@ export function GoogleNearbyPlace({
   const [failed, setFailed] = useState(!apiKey);
   useEffect(() => {
     let disposed = false;
+    let settled = false;
     let element: PlaceElement | undefined;
     let timer: ReturnType<typeof setTimeout>;
     const target = container.current;
     const fail = () => {
-      if (!disposed) {
+      if (!disposed && !settled) {
+        settled = true;
+        clearTimeout(timer);
         setFailed(true);
         callbacks.current.onUnavailable?.();
         target?.replaceChildren();
       }
     };
     const load = () => {
+      if (disposed || settled) return;
       clearTimeout(timer);
       const position = element?.place?.location;
       if (position && !disposed)
@@ -58,7 +62,7 @@ export function GoogleNearbyPlace({
     timer = setTimeout(fail, 8000);
     void importGoogleMapsLibrary(apiKey, "places")
       .then(() => {
-        if (disposed || !target) return;
+        if (disposed || settled || !target) return;
         // Google defers offscreen cards until they approach the viewport.
         // Bound SDK loading, but let the mounted widget report its own failure.
         clearTimeout(timer);
@@ -123,14 +127,23 @@ export function NearbyMap({
   useEffect(() => {
     let disposed = false;
     let hotel: MapItem | undefined;
+    let expired = false;
+    const timer = setTimeout(() => {
+      expired = true;
+      if (!disposed) setFailed(true);
+    }, 8000);
     setFailed(!apiKey);
-    if (!apiKey) return;
+    if (!apiKey) {
+      clearTimeout(timer);
+      return;
+    }
     void Promise.all([
       importGoogleMapsLibrary<MapsLibrary>(apiKey, "maps"),
       importGoogleMapsLibrary<MarkerLibrary>(apiKey, "marker"),
     ])
       .then(([maps, marker]) => {
-        if (disposed || !target.current) return;
+        if (disposed || expired || !target.current) return;
+        clearTimeout(timer);
         const center = { lat: location.latitude, lng: location.longitude };
         map.current = new maps.Map(target.current, {
           center,
@@ -155,10 +168,12 @@ export function NearbyMap({
         setLibrary(marker);
       })
       .catch(() => {
+        clearTimeout(timer);
         if (!disposed) setFailed(true);
       });
     return () => {
       disposed = true;
+      clearTimeout(timer);
       hotel?.setMap(null);
       markers.current.forEach((marker) => marker.setMap(null));
       map.current = undefined;
@@ -208,14 +223,17 @@ export default function NearbyPreview({ preview, apiKey }: { preview: Preview; a
         The map and nearby places are hidden from guests.
       </p>
     );
-  const visible = preview.places.filter(
-    (place) =>
-      place.source === "custom" || (!unavailable.includes(place.placeId) && Boolean(apiKey)),
-  );
-  const displayed = visible.filter(
+  const candidates = preview.places.filter((place) => place.source === "custom" || Boolean(apiKey));
+  const windowed = candidates.filter(
     (place) =>
       expanded.includes(place.category) ||
-      visible.filter((other) => other.category === place.category).indexOf(place) < 5,
+      candidates.filter((other) => other.category === place.category).indexOf(place) < 5,
+  );
+  const visible = candidates.filter(
+    (place) => place.source === "custom" || !unavailable.includes(place.placeId),
+  );
+  const displayed = windowed.filter(
+    (place) => place.source === "custom" || !unavailable.includes(place.placeId),
   );
   const destinations = displayed.flatMap((place) =>
     place.source === "custom"
@@ -240,7 +258,8 @@ export default function NearbyPreview({ preview, apiKey }: { preview: Preview; a
       )}
       {NEARBY_CATEGORIES.map((category) => {
         const places = displayed.filter((place) => place.category === category);
-        if (!places.length) return null;
+        if (!places.length && candidates.filter((place) => place.category === category).length <= 5)
+          return null;
         return (
           <section key={category} aria-label={nearbyCategoryLabels[category]}>
             <h3 className="mb-3 font-semibold text-gray-900">{nearbyCategoryLabels[category]}</h3>
@@ -283,7 +302,7 @@ export default function NearbyPreview({ preview, apiKey }: { preview: Preview; a
               ))}
             </ul>
             {!expanded.includes(category) &&
-              visible.filter((place) => place.category === category).length > 5 && (
+              candidates.filter((place) => place.category === category).length > 5 && (
                 <button
                   type="button"
                   className="mt-3 text-sm font-medium text-blue-700"

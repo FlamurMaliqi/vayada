@@ -3,6 +3,7 @@ import { useTranslation } from "@/lib/i18n";
 
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
+import { useNearbyHistoryGuard } from "@vayada/product-onboarding/useNearbyNavigationGuard";
 import Header from "@/components/layout/Header";
 import Sidebar from "@/components/layout/Sidebar";
 import { authService } from "@/services/auth";
@@ -11,6 +12,7 @@ import { resolveBookingSetupGuard } from "@/lib/utils/sharedSetupGuard";
 export default function AppLayout({ children }: { children: React.ReactNode }) {
   const { t } = useTranslation();
   const router = useRouter();
+  useNearbyHistoryGuard(router);
   const [isAuthorized, setIsAuthorized] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [setupGuardError, setSetupGuardError] = useState(false);
