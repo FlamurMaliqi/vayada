@@ -79,6 +79,13 @@ describe("discoverMigrations", () => {
     await expect(discoverMigrations(tmpDir)).rejects.toThrow("Duplicate migration version 0001");
   });
 
+  it("accepts the checked-in migration catalog without version collisions", async () => {
+    const migrations = await discoverMigrations(
+      fileURLToPath(new URL("../migrations/", import.meta.url)),
+    );
+    expect(migrations.length).toBeGreaterThan(0);
+  });
+
   it("exposes version, name, filename, and path on each result", async () => {
     await writeFile(join(tmpDir, "0001_identity.sql"), "SELECT 1;");
 
