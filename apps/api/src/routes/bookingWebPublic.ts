@@ -98,7 +98,7 @@ type BookingWebGuestActionRequest = {
   guest_email?: string;
 };
 
-type BookingWebCheckoutRequest = Record<string, unknown>;
+export type BookingWebCheckoutRequest = Record<string, unknown>;
 type BookingWebLookupRequest = {
   bookingReference?: string;
   guestEmail?: string;
@@ -230,6 +230,13 @@ export type BookingWebCheckoutAdapter = {
     slug: string,
     request: BookingWebCheckoutRequest,
     context?: BookingWebCheckoutCommandContext,
+  ): Promise<unknown>;
+  editRequest?(
+    slug: string,
+    bookingId: string,
+    action: string,
+    request: BookingWebCheckoutRequest,
+    context: BookingWebCheckoutCommandContext,
   ): Promise<unknown>;
   createBooking(
     slug: string,
@@ -409,7 +416,7 @@ export type BookingWebCalendarRepository = {
   close?(): Promise<void>;
 };
 
-type BookingWebQueryExecutor = {
+export type BookingWebQueryExecutor = {
   query<T extends QueryResultRow = QueryResultRow>(
     text: string,
     values?: readonly unknown[],
@@ -1197,7 +1204,7 @@ export function createTargetBookingWebCalendarRepository(config: {
   };
 }
 
-type TargetCheckoutPropertyRow = QueryResultRow & {
+export type TargetCheckoutPropertyRow = QueryResultRow & {
   propertyId: string;
   displayName: string;
   defaultLocale: string;
@@ -1240,12 +1247,13 @@ type TargetCheckoutConfigRow = QueryResultRow & {
   bankTransferReady?: boolean;
 };
 
-type TargetBookingRow = QueryResultRow & {
+export type TargetBookingRow = QueryResultRow & {
   guestBookingId: string;
   propertyId: string;
   publicReference: string;
   sourceSystem: string;
   hotelName?: string;
+  canEditRequest?: boolean;
   guestFirstName?: string;
   guestLastName?: string;
   guestEmail?: string;
@@ -1365,7 +1373,7 @@ type TargetCheckoutAddonExpansion = {
   error: "unsupported" | "guest_quantity" | "night_quantity" | "night_selection_mismatch" | null;
 };
 
-type TargetCheckoutQuoteSnapshot = {
+export type TargetCheckoutQuoteSnapshot = {
   quoteSessionId: string;
   publicQuoteReference: string;
   checkIn: string;
@@ -1417,7 +1425,7 @@ type TargetChangeRequestRow = QueryResultRow & {
   createdAt: Date | string;
 };
 
-type PgTargetBookingWebCheckoutAdapterConfig = {
+export type PgTargetBookingWebCheckoutAdapterConfig = {
   bankTransfers?: BankTransferBookingOperations;
   connectionString: string;
   inventoryReservationPort: DirectBookingInventoryReservationPort;
@@ -1446,7 +1454,7 @@ type TargetCheckoutCommandReservation = { status: "reserved" } | { status: "repl
 // prettier-ignore
 type TargetBookingChangeDecisionReservation = { status: "reserved" } | { status: "replay"; body: unknown };
 
-async function withTargetCheckoutTransaction<T>(
+export async function withTargetCheckoutTransaction<T>(
   pool: pg.Pool,
   action: (client: pg.PoolClient) => Promise<T>,
 ): Promise<T> {
@@ -1796,6 +1804,8 @@ export function createTargetBookingWebCheckoutAdapter(
           request,
           context.occurredAt,
         );
+        if (quote.selectedOfferSnapshot["editBookingId"])
+          throw createHttpError(409, "Use the request editor to save this quote.");
         const billingConfigReadPort = config.billingConfigReadPortFactory?.(client);
         if (!billingConfigReadPort) {
           throw createHttpError(503, "Finance billing configuration is not available.");
@@ -2368,7 +2378,7 @@ export function createTargetBookingWebCheckoutAdapter(
   };
 }
 
-async function issueTargetBookingConfirmationToken(
+export async function issueTargetBookingConfirmationToken(
   pool: BookingWebQueryExecutor,
   booking: Pick<TargetBookingRow, "guestBookingId" | "propertyId">,
   issuedAt: Date,
@@ -2404,7 +2414,7 @@ async function issueTargetBookingConfirmationToken(
   return { token, expiresAt };
 }
 
-function assertTargetBookingConfirmationTokenActive(
+export function assertTargetBookingConfirmationTokenActive(
   booking: Pick<TargetBookingRow, "bookingMetadata" | "createdAt">,
   tokenHash: string,
   now: Date,
@@ -2505,7 +2515,7 @@ export async function resolveTargetCheckoutProperty(
   return { ...property, ...policy };
 }
 
-async function resolveTargetHistoricalBookingProperty(
+export async function resolveTargetHistoricalBookingProperty(
   pool: BookingWebQueryExecutor,
   slug: string,
 ): Promise<TargetCheckoutPropertyRow> {
@@ -2532,7 +2542,7 @@ async function resolveTargetHistoricalBookingProperty(
   return property;
 }
 
-async function loadTargetCheckoutConfig(
+export async function loadTargetCheckoutConfig(
   pool: BookingWebQueryExecutor,
   propertyId: string,
 ): Promise<TargetCheckoutConfigRow | null> {
@@ -2647,11 +2657,16 @@ function isValidPaymentEmail(value: unknown): boolean {
   return typeof value === "string" && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value.trim());
 }
 
-async function createTargetCheckoutQuote(
+export async function createTargetCheckoutQuote(
   pool: BookingWebQueryExecutor,
   property: TargetCheckoutPropertyRow,
   request: BookingWebCheckoutRequest,
   requestedAt: Date,
+  edit?: {
+    bookingId: string;
+    revision: number;
+    availabilityCredit?: { checkIn: string; checkOut: string; roomCount: number };
+  },
 ): Promise<TargetCheckoutQuoteSnapshot> {
   const checkIn = dateField(request, "checkIn");
   const checkOut = dateField(request, "checkOut");
@@ -2668,7 +2683,7 @@ async function createTargetCheckoutQuote(
   }
 
   const settings = await loadTargetCheckoutConfig(pool, property.propertyId);
-  const acceptanceMode = settings?.acceptanceMode === "request" ? "request" : "instant";
+  const acceptanceMode = edit || settings?.acceptanceMode === "request" ? "request" : "instant";
   const currency = uppercaseCurrency(
     stringField(request, "currency") ?? settings?.defaultCurrency ?? "EUR",
   );
@@ -2692,6 +2707,7 @@ async function createTargetCheckoutQuote(
     roomTypeId,
     rateType,
     requestedAt,
+    availabilityCredit: edit?.availabilityCredit,
   });
   const addonRequest = parseTargetCheckoutAddonRequest(request);
   const addonPurchases = await resolveTargetCheckoutAddonPurchases(pool, {
@@ -2735,6 +2751,7 @@ async function createTargetCheckoutQuote(
     bookingTotal: bookingTotalBeforePromo,
     currency,
     occurredAt: requestedAt,
+    editingBookingId: edit?.bookingId,
   });
   const automatic = bestBookingPromotion({
     settings: settings?.promotionSettings,
@@ -2771,6 +2788,7 @@ async function createTargetCheckoutQuote(
   const balanceAmount = totalAmount;
   const expiresAt = new Date(requestedAt.getTime() + 15 * 60 * 1000).toISOString();
   const selectedOfferSnapshot = {
+    ...(edit ? { editBookingId: edit.bookingId, editRevision: edit.revision } : {}),
     publicOfferKey: offer.publicOfferKey,
     roomTypeId: offer.roomTypeId,
     ratePlanId: offer.ratePlanId,
@@ -2812,6 +2830,8 @@ async function createTargetCheckoutQuote(
   const requestHash = sha256Hex(
     stableJson({
       propertyId: property.propertyId,
+      editBookingId: edit?.bookingId,
+      editRevision: edit?.revision,
       checkIn,
       checkOut,
       adults,
@@ -2910,7 +2930,11 @@ async function createTargetCheckoutQuote(
       `INSERT INTO booking.promo_applications (
          property_id, quote_session_id, promo_definition_id, promo_code,
          application_status, discount_amount, currency, metadata
-       ) VALUES ($1::uuid, $2::uuid, $3::uuid, $4, 'applied', $5::numeric, $6, $7::jsonb)`,
+       ) VALUES ($1::uuid, $2::uuid, $3::uuid, $4, 'applied', $5::numeric, $6, $7::jsonb)
+     ON CONFLICT (guest_booking_id) WHERE guest_booking_id IS NOT NULL DO UPDATE SET
+       promo_definition_id=EXCLUDED.promo_definition_id,promo_code=EXCLUDED.promo_code,
+       application_status='applied',discount_amount=EXCLUDED.discount_amount,
+       currency=EXCLUDED.currency,metadata=EXCLUDED.metadata`,
       [
         property.propertyId,
         row.quoteSessionId,
@@ -3013,8 +3037,9 @@ async function loadTargetCheckoutOffer(
        AND offer.stay_date >= $2::date
        AND offer.stay_date < $3::date
        AND offer.currency = $4
-       AND offer.sellable_publicly = TRUE
-       AND offer.availability_status IN ('available', 'limited')
+       AND ((offer.sellable_publicly = TRUE AND offer.availability_status IN ('available', 'limited'))
+         OR ($14::int > 0 AND offer.stay_date >= $12::date AND offer.stay_date < $13::date
+           AND offer.availability_status = 'sold_out'))
        AND (
          offer.available_rooms + CASE
            WHEN $12::date IS NOT NULL
@@ -3132,7 +3157,7 @@ function targetCheckoutSupportedPaymentMethods(options: string[] | null | undefi
   ];
 }
 
-function assertTargetCheckoutConfigMatchesQuote(
+export function assertTargetCheckoutConfigMatchesQuote(
   config: TargetCheckoutConfigRow | null,
   quote: TargetCheckoutQuoteSnapshot,
 ): void {
@@ -3160,7 +3185,7 @@ function assertTargetCheckoutConfigMatchesQuote(
   }
 }
 
-async function loadTargetCheckoutQuoteSnapshot(
+export async function loadTargetCheckoutQuoteSnapshot(
   pool: BookingWebQueryExecutor,
   propertyId: string,
   request: BookingWebCheckoutRequest,
@@ -3207,7 +3232,7 @@ async function loadTargetCheckoutQuoteSnapshot(
              (booking.quote_sessions.selected_offer_snapshot ->> 'paymentMethod')
            AND booking.quote_sessions.selected_offer_snapshot ->> 'paymentMethod'
              IN ('card', 'pay_at_property', 'cash', 'bank_transfer', 'paypal')
-           AND EXISTS (
+           AND (booking.quote_sessions.selected_offer_snapshot ? 'editBookingId' OR EXISTS (
              SELECT 1
              FROM distribution.public_room_offer_snapshots offer
              WHERE offer.property_id = booking.quote_sessions.property_id
@@ -3228,7 +3253,7 @@ async function loadTargetCheckoutQuoteSnapshot(
              HAVING count(DISTINCT offer.stay_date) =
                booking.quote_sessions.requested_check_out
                  - booking.quote_sessions.requested_check_in
-           )
+           ))
        )
      LIMIT 1`,
     [propertyId, quoteId, now.toISOString()],
@@ -3392,7 +3417,9 @@ async function loadTargetCheckoutQuoteSnapshot(
   };
 }
 
-function serializeTargetCheckoutQuote(quote: TargetCheckoutQuoteSnapshot): Record<string, unknown> {
+export function serializeTargetCheckoutQuote(
+  quote: TargetCheckoutQuoteSnapshot,
+): Record<string, unknown> {
   const roomTotal = moneyNumber(quote.totals["roomTotal"]) ?? Number(quote.totalAmount);
   const totalAmount = Number(quote.totalAmount);
   const roomName =
@@ -3443,7 +3470,7 @@ function serializeTargetCheckoutQuote(quote: TargetCheckoutQuoteSnapshot): Recor
   };
 }
 
-async function createTargetGuestBooking(
+export async function createTargetGuestBooking(
   pool: BookingWebQueryExecutor,
   inventoryReservationPort: DirectBookingInventoryReservationPort,
   property: TargetCheckoutPropertyRow,
@@ -3453,13 +3480,16 @@ async function createTargetGuestBooking(
   guestPhone: string | null,
   billingConfig: BillingConfigReadModel | null,
   checkoutConfig: TargetCheckoutConfigRow | null,
+  existing?: TargetBookingRow & { editRevision: number },
 ): Promise<TargetBookingRow> {
   const { totalAmount, balanceAmount } = resolveTargetCheckoutAmountSnapshot(request, quote);
-  const publicReference = await allocateTargetBookingPublicReference(pool, [
-    property.propertyId,
-    quote.quoteSessionId,
-    context.fingerprint,
-  ]);
+  const publicReference =
+    existing?.publicReference ??
+    (await allocateTargetBookingPublicReference(pool, [
+      property.propertyId,
+      quote.quoteSessionId,
+      context.fingerprint,
+    ]));
   const roomTypeId = stringValue(quote.selectedOfferSnapshot["roomTypeId"]);
   const publicOfferKey = stringValue(quote.selectedOfferSnapshot["publicOfferKey"]);
   if (!roomTypeId || !publicOfferKey) {
@@ -3492,6 +3522,7 @@ async function createTargetGuestBooking(
         }
       : null;
   const metadata = {
+    ...objectValue(existing?.bookingMetadata),
     targetSource: "booking_checkout_command",
     quoteReference: quote.publicQuoteReference,
     requestFingerprint: context.fingerprint,
@@ -3511,7 +3542,7 @@ async function createTargetGuestBooking(
           ).toISOString(),
         }
       : {}),
-    ...(paymentInstructions ? { paymentInstructions } : {}),
+    paymentInstructions,
     ...(quote.paymentMethod === "bank_transfer" || quote.paymentMethod === "paypal"
       ? {
           pendingExpiresAt: new Date(
@@ -3521,6 +3552,16 @@ async function createTargetGuestBooking(
         }
       : {}),
   };
+
+  if (existing) {
+    const old = objectValue(existing.bookingMetadata);
+    Object.assign(metadata, {
+      acceptanceMode: "request",
+      hostResponseDeadlineAt: old["hostResponseDeadlineAt"] ?? old["pendingExpiresAt"],
+      pendingExpiresAt: old["pendingExpiresAt"] ?? null,
+      editRevision: existing.editRevision + 1,
+    });
+  }
 
   const result = await pool.query<TargetBookingRow>(
     `WITH active_quote AS (
@@ -3619,7 +3660,18 @@ async function createTargetGuestBooking(
          $20::timestamptz,
          $20::timestamptz
        FROM checkout
-       ON CONFLICT (public_reference) DO NOTHING
+       ON CONFLICT (public_reference) DO UPDATE SET
+         quote_session_id = EXCLUDED.quote_session_id,
+         checkout_context_id = EXCLUDED.checkout_context_id,
+         check_in = EXCLUDED.check_in, check_out = EXCLUDED.check_out,
+         adults = EXCLUDED.adults, children = EXCLUDED.children,
+         room_count = EXCLUDED.room_count, currency = EXCLUDED.currency,
+         total_amount = EXCLUDED.total_amount, balance_amount = EXCLUDED.balance_amount,
+         booking_metadata = EXCLUDED.booking_metadata, updated_at = EXCLUDED.updated_at,
+         edit_revision = booking.guest_bookings.edit_revision + 1
+       WHERE booking.guest_bookings.id = $33::uuid
+         AND booking.guest_bookings.lifecycle_status = 'pending_payment'
+         AND booking.guest_bookings.edit_revision = $34::integer
        RETURNING
          id::text AS "guestBookingId",
          property_id::text AS "propertyId",
@@ -3650,7 +3702,7 @@ async function createTargetGuestBooking(
            total_amount,
            currency,
            ownership_kind_snapshot,
-           partner_commission_rate_snapshot
+           partner_commission_rate_snapshot, edit_revision
          )
        SELECT
          booking_row."propertyId"::uuid,
@@ -3662,7 +3714,7 @@ async function createTargetGuestBooking(
          selection."totalAmount",
          selection.currency,
          selection."ownershipKind",
-         selection."partnerCommissionRate"
+         selection."partnerCommissionRate", CASE WHEN $33::uuid IS NULL THEN 0 ELSE $34::integer + 1 END
        FROM booking_row
        CROSS JOIN LATERAL jsonb_to_recordset($32::jsonb) AS selection(
          "addonDefinitionId" uuid,
@@ -3716,12 +3768,13 @@ async function createTargetGuestBooking(
          )
        SELECT
          booking_row."guestBookingId"::uuid,
-         'guest_booking.created',
+         CASE WHEN $33::uuid IS NULL THEN 'guest_booking.created' ELSE 'guest_booking.request_updated' END,
          booking_row."lifecycleStatus",
          'guest',
          true,
-         'Booking received.',
-         $28::jsonb,
+         CASE WHEN $33::uuid IS NULL THEN 'Booking received.' ELSE 'Booking request updated.' END,
+         $28::jsonb || CASE WHEN $33::uuid IS NULL THEN '{}'::jsonb
+           ELSE jsonb_build_object('previousRevision',$34::integer,'revision',$34::integer+1) END,
          $20::timestamptz
        FROM booking_row
        ON CONFLICT DO NOTHING
@@ -3765,6 +3818,9 @@ async function createTargetGuestBooking(
        ON CONFLICT (guest_booking_id) DO UPDATE
          SET lifecycle_status = EXCLUDED.lifecycle_status,
              payment_status = EXCLUDED.payment_status,
+             check_in = EXCLUDED.check_in, check_out = EXCLUDED.check_out,
+             guest_counts = EXCLUDED.guest_counts, room_summary = EXCLUDED.room_summary,
+             amount_summary = EXCLUDED.amount_summary,
              projected_at = EXCLUDED.projected_at
      )
      SELECT * FROM booking_row`,
@@ -3810,6 +3866,8 @@ async function createTargetGuestBooking(
           : {},
       ),
       JSON.stringify(quote.addonPurchases),
+      existing?.guestBookingId ?? null,
+      existing?.editRevision ?? null,
     ],
   );
   const booking = result.rows[0];
@@ -3819,7 +3877,7 @@ async function createTargetGuestBooking(
   return booking;
 }
 
-async function createTargetCardPayment(
+export async function createTargetCardPayment(
   client: BookingWebQueryExecutor,
   config: PgTargetBookingWebCheckoutAdapterConfig,
   booking: TargetBookingRow,
@@ -3927,6 +3985,8 @@ async function createTargetCardPayment(
   await client.query(
     `UPDATE booking.guest_bookings
         SET booking_metadata = booking_metadata || $3::jsonb,
+            active_card_payment_id = (SELECT id FROM finance.payments WHERE guest_booking_id=$2::uuid
+              AND provider_payment_intent_id=($3::jsonb->>'providerPaymentIntentId') LIMIT 1),
             updated_at = $4::timestamptz
       WHERE property_id = $1::uuid AND id = $2::uuid`,
     [
@@ -4018,7 +4078,7 @@ async function hydrateTargetCardCheckoutReplay(
   return { ...body, clientSecret: intent.clientSecret };
 }
 
-async function loadTargetCardPayment(
+export async function loadTargetCardPayment(
   client: BookingWebQueryExecutor,
   booking: TargetBookingRow,
 ): Promise<TargetCardPaymentRow> {
@@ -4035,6 +4095,8 @@ async function loadTargetCardPayment(
         AND payment.guest_booking_id = $2::uuid
         AND payment.payment_method = 'card'
         AND payment.provider_payment_intent_id IS NOT NULL
+        AND payment.payment_metadata->>'supersededByEdit' IS DISTINCT FROM 'true'
+        AND payment.id = COALESCE((SELECT active_card_payment_id FROM booking.guest_bookings WHERE id=$2::uuid),payment.id)
       ORDER BY payment.created_at DESC
       LIMIT 1
       FOR UPDATE`,
@@ -4064,7 +4126,7 @@ function assertStripePaymentReady(
   }
 }
 
-async function resolveTargetGuestPhone(
+export async function resolveTargetGuestPhone(
   pool: BookingWebQueryExecutor,
   propertyId: string,
   request: BookingWebCheckoutRequest,
@@ -4212,7 +4274,7 @@ async function withGuestLifecycleMutation(
   });
 }
 
-async function loadTargetBooking(
+export async function loadTargetBooking(
   pool: BookingWebQueryExecutor,
   propertyId: string,
   referenceOrId: string,
@@ -4247,7 +4309,15 @@ async function loadTargetBooking(
        cancellation.occurred_at AS "cancelledAt",
        card_payment.card_brand AS "cardBrand",
        card_payment.card_last4 AS "cardLast4",
-       b.created_at AS "createdAt"
+       b.created_at AS "createdAt",
+       (b.lifecycle_status='pending_payment' AND b.payment_status IN ('unpaid','authorized')
+        AND b.booking_metadata->>'acceptedPaymentDeadlineAt' IS NULL
+        AND NOT EXISTS(SELECT 1 FROM booking.booking_status_events e WHERE e.guest_booking_id=b.id
+          AND e.event_type IN ('guest_booking.accepted','booking.accepted','booking_accepted'))
+        AND NOT EXISTS(SELECT 1 FROM finance.folios f WHERE f.guest_booking_id=b.id)
+        AND EXISTS(SELECT 1 FROM pms.pending_booking_edit_support support
+          WHERE support.guest_booking_id=b.id AND support.property_id=b.property_id))
+        AS "canEditRequest"
      FROM booking.guest_bookings b
      JOIN hotel_catalog.properties property
        ON property.id = b.property_id
@@ -4293,6 +4363,8 @@ async function loadTargetBooking(
        WHERE payment.property_id = b.property_id
          AND payment.guest_booking_id = b.id
          AND payment.payment_method = 'card'
+         AND payment.payment_metadata->>'supersededByEdit' IS DISTINCT FROM 'true'
+         AND (b.active_card_payment_id IS NULL OR b.active_card_payment_id=payment.id)
        ORDER BY payment.created_at DESC
        LIMIT 1
      ) card_payment ON TRUE
@@ -4318,7 +4390,7 @@ async function loadTargetBooking(
   return booking;
 }
 
-function serializeTargetBooking(booking: TargetBookingRow): Record<string, unknown> {
+export function serializeTargetBooking(booking: TargetBookingRow): Record<string, unknown> {
   const metadata = objectValue(booking.bookingMetadata);
   const selectedOffer = objectValue(metadata["selectedOffer"]);
   const paymentInstructions = objectValue(metadata["paymentInstructions"]);
@@ -4326,6 +4398,7 @@ function serializeTargetBooking(booking: TargetBookingRow): Record<string, unkno
   const roomCount = Math.max(Number(booking.roomCount), 1);
   const totalAmount = Number(decimalString(booking.totalAmount));
   return {
+    canEditRequest: booking.canEditRequest ?? false,
     id: booking.guestBookingId,
     guestBookingId: booking.guestBookingId,
     bookingReference: booking.publicReference,
@@ -4380,6 +4453,7 @@ function publicBookingLifecycleStatus(status: string, operationalStatus?: string
 
 function serializeTargetBookingStatus(booking: TargetBookingRow): Record<string, unknown> {
   return {
+    canEditRequest: booking.canEditRequest ?? false,
     bookingReference: booking.publicReference,
     status: publicBookingLifecycleStatus(booking.lifecycleStatus, booking.operationalStatus),
     paymentStatus: booking.paymentStatus,
@@ -4575,7 +4649,7 @@ async function lockTargetBookingChangeRequests(
   );
 }
 
-async function targetInventoryAvailabilityCredit(
+export async function targetInventoryAvailabilityCredit(
   inventoryReservationPort: DirectBookingInventoryReservationPort,
   pool: BookingWebQueryExecutor,
   booking: TargetBookingRow,
@@ -4708,7 +4782,7 @@ function serializeTargetDateChangePreview(
   return publicPreview;
 }
 
-async function loadTargetHotelBooking(
+export async function loadTargetHotelBooking(
   pool: BookingWebQueryExecutor,
   propertyId: string,
   bookingId: string,
@@ -4742,6 +4816,8 @@ async function loadTargetHotelBooking(
        WHERE payment.property_id = booking.property_id
          AND payment.guest_booking_id = booking.id
          AND payment.payment_method = 'card'
+         AND payment.payment_metadata->>'supersededByEdit' IS DISTINCT FROM 'true'
+         AND (booking.active_card_payment_id IS NULL OR booking.active_card_payment_id=payment.id)
        ORDER BY payment.created_at DESC
        LIMIT 1
      ) card_payment ON TRUE
@@ -5137,11 +5213,20 @@ async function resolveTargetCheckoutPromo(
     bookingTotal: number;
     currency: string;
     occurredAt: Date;
+    editingBookingId?: string;
   },
 ): Promise<TargetPromoSnapshot | null> {
   if (!input.code) return null;
   const promo = await loadTargetPromoDefinition(pool, property.propertyId, input.code);
   if (!promo) throw createHttpError(409, "Invalid promo code.");
+  if (input.editingBookingId) {
+    const applied = await pool.query(
+      `SELECT 1 FROM booking.promo_applications WHERE guest_booking_id=$1::uuid
+      AND promo_definition_id=$2::uuid AND application_status='applied'`,
+      [input.editingBookingId, promo.promoDefinitionId],
+    );
+    if (applied.rows.length) promo.currentUses = Math.max(0, promo.currentUses - 1);
+  }
   const validationMessage = targetPromoValidationMessage(promo, {
     propertyDate: targetPropertyDateOnly(property.timezone, input.occurredAt),
     checkIn: input.checkIn,
@@ -5178,7 +5263,7 @@ function promoDateString(value: Date | string | null): string | null {
   return value instanceof Date ? value.toISOString().slice(0, 10) : value.slice(0, 10);
 }
 
-async function redeemTargetPromo(
+export async function redeemTargetPromo(
   pool: BookingWebQueryExecutor,
   property: TargetCheckoutPropertyRow,
   booking: TargetBookingRow,
@@ -5232,7 +5317,7 @@ async function redeemTargetPromo(
   );
 }
 
-async function reverseTargetPromoRedemption(
+export async function reverseTargetPromoRedemption(
   pool: BookingWebQueryExecutor,
   propertyId: string,
   guestBookingId: string,
@@ -5258,7 +5343,7 @@ async function reverseTargetPromoRedemption(
   );
 }
 
-async function enqueuePmsReservationHandoff(
+export async function enqueuePmsReservationHandoff(
   pool: BookingWebQueryExecutor,
   propertyId: string,
   booking: TargetBookingRow,
@@ -5320,6 +5405,8 @@ async function enqueuePmsReservationHandoff(
       sha256Hex(handoffKey),
       JSON.stringify({
         operation,
+        bookingEditRevision: Number(objectValue(booking.bookingMetadata)["editRevision"] ?? 0),
+        bookedOffer: objectValue(booking.bookingMetadata)["selectedOffer"],
         contractVersion: "pms-reservation.v1",
         commandId: `cmd_pms_${operation}_${sha256Hex(handoffKey).slice(0, 24)}`,
         idempotencyKey: handoffKey,
@@ -5523,7 +5610,7 @@ async function completeTargetBookingChangeDecision(
   }
 }
 
-async function reserveTargetCheckoutCommand(
+export async function reserveTargetCheckoutCommand(
   pool: BookingWebQueryExecutor,
   propertyId: string,
   context: BookingWebCheckoutCommandContext,
@@ -6053,13 +6140,13 @@ function freshnessReasonCode(
   return undefined;
 }
 
-function objectValue(value: unknown): Record<string, unknown> {
+export function objectValue(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value)
     ? (value as Record<string, unknown>)
     : {};
 }
 
-function stringValue(value: unknown): string | null {
+export function stringValue(value: unknown): string | null {
   return typeof value === "string" && value.trim() ? value.trim() : null;
 }
 
@@ -6890,7 +6977,7 @@ function checkoutCommandContext(
   };
 }
 
-function stableJson(value: unknown): string {
+export function stableJson(value: unknown): string {
   if (value === null || typeof value !== "object") {
     return JSON.stringify(value);
   }
@@ -6904,11 +6991,11 @@ function stableJson(value: unknown): string {
     .join(",")}}`;
 }
 
-function sha256Hex(value: string): string {
+export function sha256Hex(value: string): string {
   return createHash("sha256").update(value).digest("hex");
 }
 
-function createHttpError(statusCode: number, message: string): HttpError {
+export function createHttpError(statusCode: number, message: string): HttpError {
   const error = new Error(message) as HttpError;
   error.statusCode = statusCode;
   return error;
