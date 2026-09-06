@@ -1228,6 +1228,7 @@ describe.skipIf(!url)("mixed room inventory transactions", () => {
     const single = {
       ...details.input,
       roomSelection: undefined,
+      promoCode: "EDIT50",
       rateType: "",
       revision: 0,
       roomTypeId: rooms[1],
@@ -1235,21 +1236,59 @@ describe.skipIf(!url)("mixed room inventory transactions", () => {
       children: 0,
       numberOfRooms: 1,
     };
+    await pool.query(
+      "INSERT INTO booking.promo_definitions(property_id,code,discount_type,discount_value) VALUES($1,'EDIT50','fixed',50)",
+      [propertyId],
+    );
     const singleQuote = await edit("quote", single);
     const singleAttempt = await edit("prepare", {
       ...single,
       quoteId: singleQuote.quoteId,
       expectedTotalAmount: singleQuote.totalAmount,
     });
+    await pool.query(
+      "UPDATE distribution.public_room_offer_snapshots SET base_price_amount=101 WHERE property_id=$1 AND room_type_id=$2",
+      [propertyId, rooms[1]],
+    );
+    await expect(
+      edit("save", { revision: 0, attemptId: singleAttempt.attemptId }),
+    ).rejects.toMatchObject({ statusCode: 409 });
+    expect((await edit("details", {})).revision).toBe(0);
+    expect(await inventory()).toEqual([0, 0, 1, 1]);
+    await pool.query(
+      "UPDATE distribution.public_room_offer_snapshots SET base_price_amount=100 WHERE property_id=$1 AND room_type_id=$2",
+      [propertyId, rooms[1]],
+    );
+    await pool.query(
+      `INSERT INTO pms.rate_rules(property_id,room_type_id,rule_type,starts_on,ends_on,closed_to_arrival)
+         VALUES($1,$2,'arrival_departure_restriction',$3,$3,true)`,
+      [propertyId, rooms[1], single.checkIn],
+    );
+    await expect(
+      edit("save", { revision: 0, attemptId: singleAttempt.attemptId }),
+    ).rejects.toMatchObject({ statusCode: 409 });
+    expect(await inventory()).toEqual([0, 0, 1, 1]);
+    await pool.query("DELETE FROM pms.rate_rules WHERE property_id=$1", [propertyId]);
+    await pool.query(
+      "UPDATE booking.promo_definitions SET discount_value=5 WHERE property_id=$1 AND code='EDIT50'",
+      [propertyId],
+    );
+    await expect(edit("save", { revision: 0, attemptId: singleAttempt.attemptId })).rejects.toThrow(
+      "Promo discount changed",
+    );
+    expect((await edit("details", {})).revision).toBe(0);
+    expect(await inventory()).toEqual([0, 0, 1, 1]);
+    await pool.query(
+      "UPDATE booking.promo_definitions SET discount_value=50 WHERE property_id=$1 AND code='EDIT50'",
+      [propertyId],
+    );
     const first = await edit("save", { revision: 0, attemptId: singleAttempt.attemptId });
     expect(first.booking.bookingReference).toBe(original.booking.publicReference);
     expect(await inventory()).toEqual([2, 2, 1, 1]);
     const nextDetails = await edit("details", {});
     const mixed = { ...nextDetails.input, ...request, revision: 1 };
     config.mixedRoomSelectionsEnabled = false;
-    await expect(edit("quote", mixed)).rejects.toThrow(
-      "Mixed room booking edits are not available",
-    );
+    await expect(edit("quote", mixed)).rejects.toThrow("Mixed room booking edits are not available");
     config.mixedRoomSelectionsEnabled = true;
     const mixedQuote = await edit("quote", mixed);
     const mixedAttempt = await edit("prepare", {
@@ -1282,6 +1321,7 @@ describe.skipIf(!url)("mixed room inventory transactions", () => {
     );
     expect(second.booking.bookingReference).toBe(original.booking.publicReference);
     expect(second.booking.roomSelection).toEqual(selection);
+    expect((await pool.query("SELECT current_uses FROM booking.promo_definitions WHERE property_id=$1 AND code='EDIT50'", [propertyId])).rows).toEqual([{current_uses: 1}]);
     expect(second.booking.hostResponseDeadline).toBe(first.booking.hostResponseDeadline);
     expect(await inventory()).toEqual([0, 0, 1, 1]);
     const final = await loadTargetBooking(
