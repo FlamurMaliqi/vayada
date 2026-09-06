@@ -306,8 +306,7 @@ async function quoteFromTargetOfferSnapshots(
   },
 ): Promise<PublicBookabilityQuoteProjection> {
   const generatedAt = config.requestedAt.toISOString();
-  const result = await pool.query<TargetRoomOfferSnapshotQuoteRow>(
-    `SELECT
+  const offerQuery = `SELECT
        (SELECT last_minute_discount FROM booking.booking_settings WHERE property_id = offer.property_id) AS "promotionSettings",
        jsonb_agg(jsonb_build_object('stayDate', offer.stay_date, 'grossRoomAmount', offer.base_price_amount - offer.discounts_amount) ORDER BY offer.stay_date) AS "nightlyRoomAmounts",
        offer.public_offer_key AS "publicOfferKey",
@@ -348,21 +347,44 @@ async function quoteFromTargetOfferSnapshots(
      HAVING COUNT(DISTINCT offer.stay_date) = $8::int
         AND MIN(offer.available_rooms) >= $7::int
      ORDER BY SUM(offer.base_price_amount), offer.public_offer_key
-     LIMIT 20`,
-    [
-      config.hotel.slug,
-      config.request.checkIn,
-      config.request.checkOut,
-      config.request.currency,
-      config.request.adults,
-      config.request.children,
-      config.request.rooms,
-      config.request.nights,
-      config.requestedAt.toISOString(),
-    ],
-  );
+     LIMIT $10::int`;
+  const offerParams: Array<string | number | null> = [
+    config.hotel.slug,
+    config.request.checkIn,
+    config.request.checkOut,
+    config.request.currency,
+    config.request.adults,
+    config.request.children,
+    config.request.rooms,
+    config.request.nights,
+    config.requestedAt.toISOString(),
+    20,
+  ];
+  const result = await pool.query<TargetRoomOfferSnapshotQuoteRow>(offerQuery, offerParams);
 
   const stayRestrictions = applyStayRestrictions(result.rows, config.request.nights);
+  // Reuse the same date, freshness, inventory and rate constraints; relax only
+  // occupancy to distinguish an unsupported party from other empty searches.
+  if (result.rows.length === 0 && (config.request.adults > 1 || config.request.children > 0)) {
+    const occupancyProbe = [...offerParams];
+    occupancyProbe[4] = 1;
+    occupancyProbe[5] = 0;
+    // Check every candidate before concluding that no smaller party can stay.
+    occupancyProbe[9] = null;
+    const alternatives = await pool.query<TargetRoomOfferSnapshotQuoteRow>(
+      offerQuery,
+      occupancyProbe,
+    );
+    if (
+      applyStayRestrictions(alternatives.rows, config.request.nights).eligibleRows.some((row) =>
+        paymentOptionsArray(row.paymentOptions).some((option) =>
+          publicHotelPaymentOptions(config.hotel).includes(option),
+        ),
+      )
+    ) {
+      stayRestrictions.unavailableReasons.push({ code: "occupancy_unavailable" });
+    }
+  }
   const offers = stayRestrictions.eligibleRows.map((row) => {
     const offer = snapshotOfferInput(row);
     const promotion = bestBookingPromotion({
@@ -1110,6 +1132,7 @@ function reasonCode(value: string | null): PublicBookabilityReasonCode | null {
     value === "max_stay_exceeded" ||
     value === "same_day_cutoff_passed" ||
     value === "unsupported_occupancy" ||
+    value === "occupancy_unavailable" ||
     value === "unpublished" ||
     value === "policy_missing" ||
     value === "stale_data" ||

@@ -182,7 +182,14 @@ export function reconcileProductionCatalog(
       content.policies,
       target.policies,
       by("propertyId"),
-      ["checkInTime", "checkOutTime", "cancellationSummary", "paymentPolicySummary"],
+      [
+        "checkInTime",
+        "checkOutTime",
+        "checkInUntil",
+        "checkOutFrom",
+        "cancellationSummary",
+        "paymentPolicySummary",
+      ],
       "hotel_catalog.policy",
     ),
     media: reconcile("property_media", presentation.media, target.media, by("id"), [
@@ -289,6 +296,14 @@ function reconcileRows<T extends { updatedAt: string }>(
     else if (targetTime > sourceTime) preserve("target_newer");
     else if (targetTime === sourceTime) {
       if (sameOwnedFields(sourceRecord, existing, fields)) preserve("identical");
+      else if (
+        entity === "property_policy_summaries" &&
+        migratedProperties.has(String(sourceRecord.propertyId)) &&
+        existing.checkInUntil == null &&
+        existing.checkOutFrom == null &&
+        sameOwnedFields(sourceRecord, existing, ["cancellationSummary", "paymentPolicySummary"])
+      )
+        writes.push(row);
       else
         addBlocker(
           blockers,
@@ -326,7 +341,10 @@ function normalize(field: string, value: unknown): unknown {
   if (value == null) return null;
   if (field === "verifiedAt") return canonicalTimestamp(value, field);
   if (["starRating", "latitude", "longitude", "sortOrder"].includes(field)) return Number(value);
-  if (["checkInTime", "checkOutTime"].includes(field) && typeof value === "string")
+  if (
+    ["checkInTime", "checkOutTime", "checkInUntil", "checkOutFrom"].includes(field) &&
+    typeof value === "string"
+  )
     return value.slice(0, 5);
   return value;
 }

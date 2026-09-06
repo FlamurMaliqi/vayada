@@ -47,6 +47,7 @@ function snapshotOffer(
 function targetRepository(
   rows: QueryResultRow[],
   policy: QueryResultRow = { timezone: "Etc/UTC", enabled: true, cutoffLocalTime: null },
+  occupancyAlternatives?: QueryResultRow[],
 ) {
   const queries: Array<{ text: string; values?: readonly unknown[] }> = [];
   const pool: PublicHotelQuoteReadPool = {
@@ -54,7 +55,11 @@ function targetRepository(
       queries.push({ text, values });
       if (text.includes("same_day_booking_policies")) return { rows: [policy] as T[] };
       if (text.includes("public_quote_read_models")) return { rows: [] };
-      return { rows: rows as T[] };
+      return {
+        rows: (occupancyAlternatives && values?.[4] === 1 && values?.[5] === 0
+          ? occupancyAlternatives
+          : rows) as T[],
+      };
     },
     async end() {},
   };
@@ -360,5 +365,64 @@ describe("cached target public hotel quote payment readiness", () => {
         offers: [{ amenities: ["Wi-Fi", "Air conditioning", "Balcony"] }],
       },
     });
+  });
+});
+
+describe("guest-count availability diagnosis", () => {
+  it.each([
+    {
+      label: "available lower occupancy",
+      alternatives: [snapshotOffer("double", {})],
+      expected: "occupancy_unavailable",
+    },
+    { label: "sold out or incomplete dates", alternatives: [], expected: "sold_out" },
+    {
+      label: "eligible offer after twenty restricted offers",
+      alternatives: [
+        ...Array.from({ length: 20 }, () => snapshotOffer("restricted", { minStayNights: 3 })),
+        snapshotOffer("eligible", {}),
+      ],
+      expected: "occupancy_unavailable",
+    },
+    {
+      label: "no payable lower occupancy offer",
+      alternatives: [{ ...snapshotOffer("double", {}), paymentOptions: [] }],
+      expected: "sold_out",
+    },
+    {
+      label: "minimum stay only",
+      alternatives: [snapshotOffer("double", { minStayNights: 3 })],
+      expected: "sold_out",
+    },
+    {
+      label: "maximum stay only",
+      alternatives: [snapshotOffer("double", { maxStayNights: 1 })],
+      expected: "sold_out",
+    },
+  ])("distinguishes $label", async ({ alternatives, expected }) => {
+    const { repository, queries } = targetRepository([], undefined, alternatives);
+    const quote = await repository.findQuoteBySlug(profile.hotel.slug, {
+      check_in: "2026-09-12",
+      check_out: "2026-09-14",
+      adults: "3",
+      children: "1",
+      rooms: "1",
+    });
+    expect(
+      serializePublicHotelQuoteProjection(quote!).unavailableReasons.map((reason) => reason.code),
+    ).toEqual([expected]);
+    const searches = queries.filter((query) =>
+      query.text.includes("FROM distribution.public_room_offer_snapshots"),
+    );
+    expect(searches).toHaveLength(2);
+    expect(searches[0]!.text).toBe(searches[1]!.text);
+    expect(searches[1]!.values).toEqual(
+      searches[0]!.values!.map((value, index) =>
+        index === 4 ? 1 : index === 5 ? 0 : index === 9 ? null : value,
+      ),
+    );
+    expect(searches[1]!.text).toContain("COUNT(DISTINCT offer.stay_date) = $8::int");
+    expect(searches[1]!.text).toContain("offer.freshness_status = 'fresh'");
+    expect(quote?.quote).toBeUndefined();
   });
 });

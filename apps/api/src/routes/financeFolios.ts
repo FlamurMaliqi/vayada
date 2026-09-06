@@ -1,5 +1,9 @@
 import { UnauthorizedError, type RequestContext } from "@vayada/backend-auth";
-import { AuthorizationError } from "@vayada/backend-authorization";
+import {
+  AuthorizationError,
+  requirePropertyAccess,
+  type PropertyAccessRepository,
+} from "@vayada/backend-authorization";
 import {
   PMS_FINANCIALS_CONTRACT_VERSION,
   parseFinanceFolioQuery,
@@ -31,6 +35,7 @@ import { enforceRoutePolicy } from "./policy.js";
 type Params = { propertyId: string; folioId?: string };
 type Scope = { context: RequestContext; propertyId: string };
 export type FinanceFolioRoutesOptions = {
+  propertyAccessRepository?: PropertyAccessRepository;
   repository: Pick<FinanceFolioReadRepository, "list" | "detail">;
   commands?: {
     create(command: CreateFinanceFolioCommand): Promise<FinanceFolioCommandResult>;
@@ -48,8 +53,8 @@ export async function registerFinanceFolioRoutes(
   options: FinanceFolioRoutesOptions,
 ): Promise<void> {
   const scopes = new WeakMap<FastifyRequest, Scope>();
-  const read = authorization(scopes, "pms.finance.read");
-  const write = authorization(scopes, "pms.finance.manage");
+  const read = authorization(scopes, "pms.finance.read", options.propertyAccessRepository);
+  const write = authorization(scopes, "pms.finance.manage", options.propertyAccessRepository);
 
   app.get(ROOT, { onRequest: read }, async (request, reply) =>
     safe(reply, async () => {
@@ -126,6 +131,7 @@ export async function registerFinanceFolioRoutes(
 function authorization(
   scopes: WeakMap<FastifyRequest, Scope>,
   permission: "pms.finance.read" | "pms.finance.manage",
+  propertyAccessRepository: PropertyAccessRepository | undefined,
 ) {
   return async (request: FastifyRequest, reply: FastifyReply) => {
     try {
@@ -144,6 +150,12 @@ function authorization(
           entitlement: { product: "pms", key, resource },
           resource: { ...resource, allowedRelationships: ["owner", "finance_manager"] },
         });
+      if (!propertyAccessRepository) throw new AuthorizationError();
+      await requirePropertyAccess(context, propertyAccessRepository, {
+        propertyId,
+        targetResource: resource,
+        allowedRelationships: ["owner", "finance_manager"],
+      });
       reply.header("Cache-Control", "private, no-store").header("Vary", "Origin, Authorization");
       scopes.set(request, { context, propertyId });
     } catch (cause) {

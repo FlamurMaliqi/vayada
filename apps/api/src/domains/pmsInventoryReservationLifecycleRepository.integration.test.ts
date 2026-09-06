@@ -1,3 +1,7 @@
+import { createBookingHostActions } from "./bookingHostActions.js";
+import { targetBookingHostActionGuards } from "./bookingHostActionGuards.js";
+import { withPmsHostDateCredit } from "./pmsHostDateAmendment.js";
+import { captureDirectNightlyRevenueEvidence } from "./stripeBookingSettlement.js";
 import { createHash, randomUUID } from "node:crypto";
 
 import {
@@ -68,6 +72,220 @@ describe.skipIf(!TEST_DATABASE_URL)("PostgreSQL PMS inventory reservation lifecy
     await Promise.all(closeables.map((repository) => repository.close()));
     await admin.end();
   });
+
+  it.each([false, true])(
+    "amends and cancels a handed-off direct PMS stay (linked=%s) without retaining historical capacity",
+    async (linked) => {
+      const f = await createFixture(admin, closeables, { capacity: 1, startingLimit: 1, linked });
+      if (linked) {
+        await admin.query(
+          `INSERT INTO pms.inventory_days (property_id,room_type_id,stay_date,total_count,available_count,
+           calendar_revision,inventory_revision,generated_sellable_limit_count,effective_sellable_limit_count,
+           generated_source_revision,channel_source_revision,manual_source_revision,block_source_revision,booking_source_revision)
+           SELECT $1,room_type_id,stay_date,1,1,1,1,1,1,1,0,0,0,0 FROM unnest($2::uuid[]) room_type_id
+           CROSS JOIN generate_series(DATE '2026-09-12',DATE '2026-09-15',INTERVAL '1 day') stay_date`,
+          [f.propertyId, [f.roomTypeId, f.linkedRoomTypeId]],
+        );
+      } else await materialize(f, "2026-09-12", "2026-09-15");
+      const publicOfferKey = `${f.roomTypeId}:flexible`;
+      await admin.query(
+        `INSERT INTO hotel_catalog.property_public_profile_read_model (property_id,public_id,display_name,canonical_slug,default_locale,supported_locales,profile_status) VALUES ($1,$2,'Host Test',$2,'en',ARRAY['en'],'complete')`,
+        [f.propertyId, f.propertyId],
+      );
+      await admin.query(
+        `INSERT INTO distribution.public_hotel_bookability_profiles (property_id,public_id,canonical_slug,canonical_url,booking_base_url,timezone,default_currency,supported_currencies,profile_status,freshness_status,public_setup_completeness) VALUES ($1,$2,$2,'https://example.test','https://example.test','Europe/Berlin','EUR',ARRAY['EUR'],'public','fresh','{"status":"ready"}')`,
+        [f.propertyId, f.propertyId],
+      );
+      await admin.query(
+        `INSERT INTO distribution.public_room_offer_snapshots (property_id,room_type_id,stay_date,public_offer_key,available_rooms,base_price_amount,currency,freshness_status,payment_options) SELECT $1,$2,stay_date,$3,1,100,'EUR','fresh',ARRAY['pay_at_property'] FROM pms.inventory_days WHERE property_id=$1 AND room_type_id=$2`,
+        [f.propertyId, f.roomTypeId, publicOfferKey],
+      );
+      const port = createTargetPmsInventoryReservationPort();
+      const pool = new pg.Pool({ connectionString: TEST_DATABASE_URL });
+      let failAfterAmendment = true;
+      const actions = createBookingHostActions({
+        pool,
+        inventory: withPmsHostDateCredit(port),
+        guards: {
+          ...targetBookingHostActionGuards,
+          async completeDateEdit(client, input) {
+            await targetBookingHostActionGuards.completeDateEdit(client, input);
+            if (failAfterAmendment) throw new Error("Simulated post-amendment failure");
+          },
+        },
+        now: () => ACCEPTED_AT,
+      });
+      closeables.push(actions);
+      const bookingId = randomUUID();
+      const roomId = randomUUID();
+      await admin.query(
+        `INSERT INTO pms.rooms (id,property_id,room_type_id,room_number) VALUES ($1,$2,$3,'101')`,
+        [roomId, f.propertyId, f.roomTypeId],
+      );
+      await admin.query("BEGIN");
+      const receipt = await port.reserve({
+        transaction: admin,
+        propertyId: f.propertyId,
+        quoteSessionId: randomUUID(),
+        roomTypeId: f.roomTypeId,
+        publicOfferKey,
+        checkIn: "2026-09-12",
+        checkOut: "2026-09-14",
+        roomCount: 1,
+        currency: "EUR",
+        occurredAt: ACCEPTED_AT,
+      });
+      if (!receipt || !("receiptId" in receipt)) throw new Error("Expected opaque receipt");
+      const metadata = {
+        inventoryReservation: receipt,
+        paymentMethod: "pay_at_property",
+        policySnapshot: {
+          type: "free_until_days_before_arrival",
+          freeCancellationDeadlineDays: 7,
+          afterDeadlinePenalty: "full_booking_amount",
+          noShowPenalty: "full_booking_amount",
+        },
+        selectedOffer: {
+          roomTypeId: f.roomTypeId,
+          publicOfferKey,
+          rateType: "flexible",
+          nightlyRoomAmounts: [
+            { stayDate: "2026-09-12", grossRoomAmount: "100.00" },
+            { stayDate: "2026-09-13", grossRoomAmount: "100.00" },
+          ],
+        },
+      };
+      await admin.query(
+        `INSERT INTO booking.guest_bookings (id,property_id,public_reference,lifecycle_status,check_in,check_out,currency,total_amount,balance_amount,booking_metadata) VALUES ($1,$2,$3,'confirmed','2026-09-12','2026-09-14','EUR',200,200,$4::jsonb)`,
+        [bookingId, f.propertyId, bookingId, JSON.stringify(metadata)],
+      );
+      await admin.query(
+        `INSERT INTO booking.booking_guests (guest_booking_id,guest_role,first_name,last_name,email) VALUES ($1,'booker','Test','Guest','test@example.test')`,
+        [bookingId],
+      );
+      await captureDirectNightlyRevenueEvidence(
+        admin,
+        {
+          guestBookingId: bookingId,
+          propertyId: f.propertyId,
+          bookingMetadata: metadata,
+          checkIn: "2026-09-12",
+          checkOut: "2026-09-14",
+        },
+        { fingerprint: bookingId, required: true },
+      );
+      await admin.query(
+        `INSERT INTO pms.operational_booking_assignments (property_id,guest_booking_id,room_type_id,room_id,position,assignment_status,source,stay_evidence_kind,check_in,check_out,adults,children,assignment_payload) VALUES ($1,$2,$3,$5,1,'pending','direct_booking','exact','2026-09-12','2026-09-14',1,0,jsonb_build_object('inventoryReservation',$4::jsonb))`,
+        [f.propertyId, bookingId, f.roomTypeId, JSON.stringify(receipt), roomId],
+      );
+      await admin.query("COMMIT");
+      expect(
+        (
+          await admin.query(
+            `SELECT lifecycle_state FROM pms.inventory_reservation_statuses WHERE receipt_id=$1`,
+            [receipt.receiptId],
+          )
+        ).rows[0].lifecycle_state,
+      ).toBe("handed_off");
+      const scope = { propertyId: f.propertyId, bookingId, actorUserId: f.actorUserId };
+      const preview = await actions.preview(scope, {
+        action: "edit_dates",
+        reason: "Guest request",
+        checkIn: "2026-09-13",
+        checkOut: "2026-09-15",
+      });
+      expect(preview.impact.cancellationPolicy).toMatchObject({
+        previousDeadline: "2026-09-05",
+        newDeadline: "2026-09-06",
+      });
+      await expect(actions.apply(scope, preview.previewId, "host-edit")).rejects.toThrow(
+        "Simulated post-amendment failure",
+      );
+      expect(
+        (
+          await admin.query(
+            `SELECT check_in::text,room_id::text FROM pms.operational_booking_assignments WHERE guest_booking_id=$1`,
+            [bookingId],
+          )
+        ).rows[0],
+      ).toEqual({ check_in: "2026-09-12", room_id: roomId });
+      expect(
+        (
+          await admin.query(
+            `SELECT count(*)::int AS count FROM platform.outbox_events WHERE property_id=$1 AND payload->>'triggerRefId'=$2`,
+            [f.propertyId, preview.previewId],
+          )
+        ).rows[0].count,
+      ).toBe(0);
+      failAfterAmendment = false;
+      await actions.apply(scope, preview.previewId, "host-edit");
+      const effects = await admin.query(
+        `SELECT destination,payload->'dateRange' AS range FROM platform.outbox_events WHERE property_id=$1 AND payload->>'triggerRefId'=$2`,
+        [f.propertyId, preview.previewId],
+      );
+      for (const destination of [
+        "pms.channel-manager",
+        "distribution.public-bookability",
+        "pms.calendar-projection",
+      ]) {
+        expect(effects.rows).toContainEqual({
+          destination,
+          range: { from: "2026-09-12", to: "2026-09-13" },
+        });
+      }
+      if (linked)
+        expect((await linkedState(admin, f.propertyId, f.linkedRoomTypeId!)).available).toEqual([
+          1, 0, 0, 1,
+        ]);
+
+      const days = await admin.query(
+        `SELECT stay_date::text,assigned_count FROM pms.inventory_days WHERE property_id=$1 AND room_type_id=$2 ORDER BY stay_date`,
+        [f.propertyId, f.roomTypeId],
+      );
+      expect(days.rows.map((row) => row.assigned_count)).toEqual([0, 1, 1, 0]);
+      expect(
+        (
+          await admin.query(
+            `SELECT count(*)::int AS count FROM pms.active_inventory_reservation_receipts WHERE property_id=$1`,
+            [f.propertyId],
+          )
+        ).rows[0].count,
+      ).toBe(1);
+      expect(
+        (
+          await admin.query(
+            `SELECT check_in::text,check_out::text,assignment_status FROM pms.operational_booking_assignments WHERE guest_booking_id=$1`,
+            [bookingId],
+          )
+        ).rows[0],
+      ).toMatchObject({
+        check_in: "2026-09-13",
+        check_out: "2026-09-15",
+        assignment_status: "pending",
+      });
+      const cancellation = await actions.preview(scope, {
+        action: "cancel",
+        reason: "Host unavailable",
+      });
+      await actions.apply(scope, cancellation.previewId, "host-cancel");
+      expect(
+        (
+          await admin.query(
+            `SELECT assigned_count FROM pms.inventory_days WHERE property_id=$1 AND room_type_id=$2 ORDER BY stay_date`,
+            [f.propertyId, f.roomTypeId],
+          )
+        ).rows.map((row) => row.assigned_count),
+      ).toEqual([0, 0, 0, 0]);
+      expect(
+        (
+          await admin.query(
+            `SELECT assignment_status FROM pms.operational_booking_assignments WHERE guest_booking_id=$1`,
+            [bookingId],
+          )
+        ).rows[0].assignment_status,
+      ).toBe("canceled");
+    },
+  );
 
   it("reserves every day atomically and exact reserve/release retries return current state", async () => {
     const fixture = await createFixture(admin, closeables, { capacity: 2, startingLimit: 2 });
@@ -825,7 +1043,7 @@ describe.skipIf(!TEST_DATABASE_URL)("PostgreSQL PMS inventory reservation lifecy
          inventory_revision,generated_sellable_limit_count,effective_sellable_limit_count,
          generated_source_revision,channel_source_revision,manual_source_revision,
          block_source_revision,booking_source_revision
-       ) SELECT $1,room_type_id,stay_date,2,2,1,1,2,2,1,0,0,0,0
+       ) SELECT $1,room_type_id,stay_date,3,3,1,1,3,3,1,0,0,0,0
          FROM unnest($2::uuid[]) room_type_id
          CROSS JOIN unnest(ARRAY[DATE '2026-09-12',DATE '2026-09-13']) stay_date`,
       [fixture.propertyId, [fixture.roomTypeId, linkedRoomTypeId]],
@@ -833,7 +1051,7 @@ describe.skipIf(!TEST_DATABASE_URL)("PostgreSQL PMS inventory reservation lifecy
     await admin.query(
       `INSERT INTO distribution.public_room_offer_snapshots (
          property_id,room_type_id,stay_date,public_offer_key,available_rooms,currency,freshness_status
-       ) SELECT $1,$2,stay_date,$3,2,'EUR','fresh'
+       ) SELECT $1,$2,stay_date,$3,3,'EUR','fresh'
          FROM unnest(ARRAY[DATE '2026-09-12',DATE '2026-09-13']) stay_date`,
       [fixture.propertyId, fixture.roomTypeId, updatedOfferKey],
     );
@@ -953,18 +1171,20 @@ describe.skipIf(!TEST_DATABASE_URL)("PostgreSQL PMS inventory reservation lifecy
     await reconcilePmsLinkedInventory(admin, fixture.propertyId, RELEASED_AT.toISOString());
     await admin.query("COMMIT");
     await expect(linkedState(admin, fixture.propertyId, linkedRoomTypeId)).resolves.toEqual({
-      available: [3, 3, 2, 2],
+      available: [3, 3, 3, 3],
       activeBlocks: 0,
       lifecycleState: "handed_off",
     });
-    // prettier-ignore
-    await admin.query("UPDATE pms.inventory_days SET calendar_revision=NULL,inventory_revision=NULL,generated_sellable_limit_count=NULL,effective_sellable_limit_count=NULL,generated_source_revision=NULL,channel_source_revision=NULL,manual_source_revision=NULL,block_source_revision=NULL,booking_source_revision=NULL WHERE property_id=$1 AND room_type_id=$2 AND stay_date=DATE '2026-09-11'", [fixture.propertyId, fixture.roomTypeId]);
-    await admin.query("BEGIN");
-    // prettier-ignore
-    await expect(port.reserve({ transaction: admin, propertyId: fixture.propertyId, quoteSessionId: randomUUID(), roomTypeId: fixture.roomTypeId, publicOfferKey, checkIn: "2026-09-10", checkOut: "2026-09-12", roomCount: 1, currency: "EUR", occurredAt: ACCEPTED_AT })).resolves.toBeNull();
-    await admin.query("COMMIT");
-    // prettier-ignore
-    await expect(linkedState(admin, fixture.propertyId, fixture.roomTypeId)).resolves.toMatchObject({ available: [3, 3] });
+    await expect(
+      admin.query(
+        `UPDATE pms.inventory_days SET calendar_revision=NULL,inventory_revision=NULL,
+         generated_sellable_limit_count=NULL,effective_sellable_limit_count=NULL,
+         generated_source_revision=NULL,channel_source_revision=NULL,manual_source_revision=NULL,
+         block_source_revision=NULL,booking_source_revision=NULL
+         WHERE property_id=$1 AND room_type_id=$2 AND stay_date=DATE '2026-09-11'`,
+        [fixture.propertyId, fixture.roomTypeId],
+      ),
+    ).rejects.toThrow("canonical inventory envelope cannot be removed");
   });
 
   it("rejects a stale full-stay watermark without changing any day", async () => {

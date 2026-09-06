@@ -2,45 +2,48 @@ import { createRef } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
 
+import { LanguageProvider } from "@/lib/i18n";
 import MediaTab, { type PropertyGalleryImage } from "./MediaTab";
 
 function renderMediaTab(galleryImages: PropertyGalleryImage[]) {
   return renderToStaticMarkup(
-    <MediaTab
-      heroImage=""
-      setHeroImage={vi.fn()}
-      heroHeading=""
-      setHeroHeading={vi.fn()}
-      heroSubtext=""
-      setHeroSubtext={vi.fn()}
-      fileInputRef={createRef<HTMLInputElement>()}
-      handleImageUpload={vi.fn()}
-      removeHeroImage={vi.fn()}
-      headerLogo=""
-      headerLogoUrl=""
-      logoInputRef={createRef<HTMLInputElement>()}
-      handleLogoUpload={vi.fn()}
-      addHeaderLogoUrl={vi.fn()}
-      setHeaderLogoUrl={vi.fn()}
-      removeHeaderLogo={vi.fn()}
-      uploadingLogo={false}
-      showContactButton
-      setShowContactButton={vi.fn()}
-      showReferAGuestButton={false}
-      setShowReferAGuestButton={vi.fn()}
-      referAGuestModuleEnabled={false}
-      showLanguageSelector
-      setShowLanguageSelector={vi.fn()}
-      showCurrencySelector
-      setShowCurrencySelector={vi.fn()}
-      resetContent={vi.fn()}
-      galleryImages={galleryImages}
-      galleryAtCapacity={galleryImages.length >= 10}
-      galleryBusy={false}
-      addGalleryImages={vi.fn()}
-      removeGalleryImage={vi.fn()}
-      reorderGalleryImage={vi.fn()}
-    />,
+    <LanguageProvider>
+      <MediaTab
+        heroImage=""
+        setHeroImage={vi.fn()}
+        heroHeading=""
+        setHeroHeading={vi.fn()}
+        heroSubtext=""
+        setHeroSubtext={vi.fn()}
+        fileInputRef={createRef<HTMLInputElement>()}
+        handleImageUpload={vi.fn()}
+        removeHeroImage={vi.fn()}
+        headerLogo=""
+        headerLogoUrl=""
+        logoInputRef={createRef<HTMLInputElement>()}
+        handleLogoUpload={vi.fn()}
+        addHeaderLogoUrl={vi.fn()}
+        setHeaderLogoUrl={vi.fn()}
+        removeHeaderLogo={vi.fn()}
+        uploadingLogo={false}
+        showContactButton
+        setShowContactButton={vi.fn()}
+        showReferAGuestButton={false}
+        setShowReferAGuestButton={vi.fn()}
+        referAGuestModuleEnabled={false}
+        showLanguageSelector
+        setShowLanguageSelector={vi.fn()}
+        showCurrencySelector
+        setShowCurrencySelector={vi.fn()}
+        resetContent={vi.fn()}
+        galleryImages={galleryImages}
+        galleryAtCapacity={galleryImages.length >= 10}
+        galleryBusy={false}
+        addGalleryImages={vi.fn()}
+        removeGalleryImage={vi.fn()}
+        reorderGalleryImage={vi.fn()}
+      />
+    </LanguageProvider>,
   );
 }
 

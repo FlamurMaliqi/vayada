@@ -19,6 +19,17 @@ describe("parsePublicBookabilityProfileProjection", () => {
   });
 
   it.each([
+    { checkInFrom: "15:00", checkInUntil: "14:00" },
+    { checkInFrom: "15:00", checkInUntil: "15:00" },
+    { checkOutFrom: "12:00", checkOutUntil: "11:00" },
+    { checkOutFrom: "11:00", checkOutUntil: "11:00" },
+  ])("rejects unordered windows %j", (policies) => {
+    const profile = JSON.parse(JSON.stringify(PUBLIC_BOOKABILITY_FIXTURES[0]!.profile));
+    profile.hotel.policies = policies;
+    expect(parsePublicBookabilityProfileProjection(profile)).toBeNull();
+  });
+
+  it.each([
     ["unknown root field", (profile: any) => (profile.privateValue = "secret")],
     ["wrong source", (profile: any) => (profile.dataSources[0] = "private")],
     ["object locale", (profile: any) => (profile.hotel.supportedLocales[0] = { value: "en" })],

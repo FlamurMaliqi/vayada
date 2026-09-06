@@ -5,7 +5,7 @@ import type {
   PmsInboxDeliveryJob,
   PmsInboxDeliveryStore,
 } from "../domains/pmsInboxDelivery.js";
-import { runPmsInboxDeliveryJobs } from "./pmsInboxDeliveryWorker.js";
+import { runPmsInboxDeliveryJobs, startPmsInboxDeliveryWorker } from "./pmsInboxDeliveryWorker.js";
 
 const JOB: PmsInboxDeliveryJob = {
   id: "job-1",
@@ -18,6 +18,114 @@ const JOB: PmsInboxDeliveryJob = {
 };
 
 describe("PMS Inbox delivery worker", () => {
+  it("does not relay, claim or call either provider when disabled", async () => {
+    vi.useFakeTimers();
+    const store = readyStore();
+    const relay = vi.fn(async () => undefined);
+    const send = vi.fn();
+    const worker = startPmsInboxDeliveryWorker({
+      enabled: false,
+      store,
+      relay,
+      providers: { channex: { send }, resend: { send } },
+      warn: vi.fn(),
+    });
+    try {
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(relay).not.toHaveBeenCalled();
+      expect(store.claim).not.toHaveBeenCalled();
+      expect(send).not.toHaveBeenCalled();
+    } finally {
+      await worker.close();
+      vi.useRealTimers();
+    }
+  });
+
+  it.each(["channex", "resend"] as const)(
+    "drains in-flight %s completion without a next claim",
+    async (adapter) => {
+      vi.useFakeTimers();
+      const store = readyStore();
+      const ready = await store.prepare(JOB, { channex: true, resend: true });
+      if (ready.state !== "ready") throw new Error("expected ready fixture");
+      vi.mocked(store.prepare).mockResolvedValue({ ...ready, adapter });
+      let finishSend!: () => void;
+      let finishCompletion!: () => void;
+      const sending = new Promise<void>((resolve) => {
+        finishSend = resolve;
+      });
+      const completing = new Promise<void>((resolve) => {
+        finishCompletion = resolve;
+      });
+      const send = vi.fn(async () => {
+        await sending;
+        return { ok: true as const, providerReference: "accepted-1" };
+      });
+      vi.mocked(store.complete).mockImplementation(async () => {
+        await completing;
+        return true;
+      });
+      const relay = vi.fn(async () => undefined);
+      const worker = startPmsInboxDeliveryWorker({
+        enabled: true,
+        store,
+        relay,
+        providers: { [adapter]: { send } },
+        warn: vi.fn(),
+      });
+      try {
+        await vi.advanceTimersByTimeAsync(10_000);
+        expect(send).toHaveBeenCalledOnce();
+        expect(relay).toHaveBeenCalledOnce();
+        let drained = false;
+        const closing = worker.close().then(() => {
+          drained = true;
+        });
+        finishSend();
+        await vi.advanceTimersByTimeAsync(10_000);
+        expect(drained).toBe(false);
+        expect(store.complete).toHaveBeenCalledWith(JOB, {
+          outcome: "accepted",
+          attemptId: "attempt-1",
+          providerReference: "accepted-1",
+        });
+        finishCompletion();
+        await closing;
+        await vi.advanceTimersByTimeAsync(10_000);
+        expect(store.claim).toHaveBeenCalledOnce();
+        expect(relay).toHaveBeenCalledOnce();
+      } finally {
+        finishSend();
+        finishCompletion();
+        await worker.close();
+        vi.useRealTimers();
+      }
+    },
+  );
+
+  it("does not claim after close begins during relay", async () => {
+    const store = readyStore();
+    let finishRelay!: () => void;
+    const relay = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          finishRelay = resolve;
+        }),
+    );
+    const worker = startPmsInboxDeliveryWorker({
+      enabled: true,
+      store,
+      relay,
+      providers: {},
+      warn: vi.fn(),
+    });
+    await vi.waitFor(() => expect(relay).toHaveBeenCalledOnce());
+    const closing = worker.close();
+    finishRelay();
+    await closing;
+    expect(store.claim).not.toHaveBeenCalled();
+  });
+
   it("sends a prepared route once and records the provider reference", async () => {
     const store = readyStore();
     const send = vi.fn(async () => ({ ok: true as const, providerReference: "provider-msg-1" }));

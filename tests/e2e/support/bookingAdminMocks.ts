@@ -514,6 +514,10 @@ export async function mockBookingAdminShellRoutes(
       },
     }),
   );
+  await page.route(
+    `**/api/finance/properties/${BOOKING_ADMIN_PROPERTY_ID}/bank-transfer-destination`,
+    (route) => route.fulfill({ json: { destination: null } }),
+  );
   await page.route(`**${BOOKING_ADMIN_FINANCE_PAYMENT_SETTINGS_PATH}`, (route) =>
     route.fulfill({
       json: {
@@ -671,7 +675,13 @@ export async function mockBookingAdminBookingFlow(
   await mockBookingAdminAuthenticatedSession(page);
   await mockBookingAdminShellRoutes(page);
   await page.route(`**${BOOKING_ADMIN_ADDON_ITEMS_PATH}**`, (route) =>
-    route.fulfill({ json: options.addonItems ?? defaultAddonItems }),
+    route.fulfill({
+      json: {
+        propertyCurrency: "EUR",
+        propertyPlan: { plan: "fixed", limits: { maxAddons: 9 } },
+        ...(options.addonItems ?? defaultAddonItems),
+      },
+    }),
   );
   await page.route(`**${BOOKING_ADMIN_PROMO_CODES_PATH}**`, (route) =>
     route.fulfill({ json: options.promoCodes ?? defaultPromoCodes }),

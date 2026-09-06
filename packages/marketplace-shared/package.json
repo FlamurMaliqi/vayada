@@ -13,9 +13,17 @@
     "./api/discovery": "./src/api/discovery.ts",
     "./api/platformMedia": "./src/api/platformMedia.ts",
     "./api/privacy": "./src/api/privacy.ts",
-    "./api/trips": "./src/api/trips.ts"
+    "./api/trips": "./src/api/trips.ts",
+    "./consent/CookieBanner": "./src/consent/CookieBanner.tsx",
+    "./consent/CookieSettingsModal": "./src/consent/CookieSettingsModal.tsx",
+    "./consent/preferences": "./src/consent/preferences.ts"
   },
   "dependencies": {
     "@vayada/domain-marketplace": "0.0.0"
+  },
+  "peerDependencies": {
+    "react": "^18.2.0",
+    "next": "16.2.6",
+    "@heroicons/react": "^2.0.0"
   }
 }

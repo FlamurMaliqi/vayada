@@ -2591,7 +2591,10 @@ describe("shared hotel setup status route", () => {
     const factsSql = query.mock.calls.find(([text]) =>
       text.includes("hasEffectivePaymentMethod"),
     )?.[0];
-    expect(factsSql).toContain("payment.deposit_policy ->> 'bankTransferInstructions'");
+    expect(factsSql).toContain("FROM finance.bank_transfer_destinations destination");
+    expect(factsSql).toContain(
+      "destination.property_id=payment.property_id AND destination.enabled",
+    );
     expect(factsSql).toContain("payment.deposit_policy ->> 'paypalEmail'");
     expect(facts.direct_booking_publication).toMatchObject({
       readiness: "actionable",
