@@ -16,10 +16,9 @@ card alone cannot make a mixed selection bookable.
 
 ## Selection and search
 
-Product decision pending: this draft proposes keeping each room line's own
-cancellation terms. The alternative is to offer only combinations with matching
-terms. That choice must be resolved before implementing quote/policy aggregation
-or exposing mixed selections; existing checkout represents one booking policy.
+Product decision accepted: keep each room line's own cancellation terms (Flamur,
+2026-09-06). Quote, cancellation, and refund aggregation must preserve these
+terms; existing checkout's single-policy shape remains supported for old bookings.
 
 A selection consists of room lines under one property, stay, currency, guest
 party, booking reference, payment, and acceptance decision. Each line identifies
