@@ -4263,12 +4263,12 @@ describe.skipIf(!TEST_DATABASE_URL)("target schema migrations (integration)", ()
         `INSERT INTO platform.external_webhook_events
            (
              provider, webhook_key_hash, event_type, delivery_status,
-             payload_hash, raw_payload
+             payload_hash, raw_payload, payload_retention_until
            )
          VALUES (
            'stripe', 'sha256:webhook-delivery-key',
            'payment.updated', 'received',
-           'sha256:stripe-payload', '{}'::jsonb
+           'sha256:stripe-payload', '{}'::jsonb, CURRENT_TIMESTAMP + INTERVAL '30 days'
          )`,
       );
       await expect(
@@ -4276,12 +4276,12 @@ describe.skipIf(!TEST_DATABASE_URL)("target schema migrations (integration)", ()
           `INSERT INTO platform.external_webhook_events
              (
                provider, webhook_key_hash, event_type, delivery_status,
-               payload_hash, raw_payload
+               payload_hash, raw_payload, payload_retention_until
              )
            VALUES (
              'stripe', 'sha256:webhook-delivery-key',
              'payment.updated', 'received',
-             'sha256:stripe-payload-duplicate', '{}'::jsonb
+             'sha256:stripe-payload-duplicate', '{}'::jsonb, CURRENT_TIMESTAMP + INTERVAL '30 days'
            )`,
         ),
       ).rejects.toMatchObject({ code: "23505" });
@@ -4305,8 +4305,8 @@ describe.skipIf(!TEST_DATABASE_URL)("target schema migrations (integration)", ()
       await expect(
         verifyClient.query(
           `INSERT INTO platform.external_webhook_events
-             (provider, event_type, delivery_status, payload_hash, raw_payload)
-           VALUES ('stripe', 'payment.updated', 'received', 'sha256:no-key', '{}'::jsonb)`,
+             (provider, event_type, delivery_status, payload_hash, raw_payload, payload_retention_until)
+           VALUES ('stripe', 'payment.updated', 'received', 'sha256:no-key', '{}'::jsonb, CURRENT_TIMESTAMP + INTERVAL '30 days')`,
         ),
       ).rejects.toMatchObject({ code: "23514" });
       await expect(
@@ -4314,12 +4314,12 @@ describe.skipIf(!TEST_DATABASE_URL)("target schema migrations (integration)", ()
           `INSERT INTO platform.external_webhook_events
              (
                provider, provider_event_id, event_type, delivery_status,
-               tenant_scope, organization_id, payload_hash, raw_payload
+               tenant_scope, organization_id, payload_hash, raw_payload, payload_retention_until
              )
            VALUES (
              'stripe', 'stripe-invalid-scope-platform-test',
              'payment.updated', 'received', 'external', $1,
-             'sha256:invalid-scope', '{}'::jsonb
+             'sha256:invalid-scope', '{}'::jsonb, CURRENT_TIMESTAMP + INTERVAL '30 days'
            )`,
           [hotelOrganizationId],
         ),
