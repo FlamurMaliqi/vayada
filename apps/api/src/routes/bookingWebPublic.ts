@@ -137,6 +137,8 @@ type BookingWebAttributionClickRequest = {
   metadata?: Record<string, unknown>;
 };
 type BookingWebTelemetryEventRequest = {
+  analyticsConsent?: boolean;
+  consentVersion?: number;
   hotelSlug?: string;
   hotel_slug?: string;
   eventType?: string;
@@ -885,6 +887,9 @@ export async function registerBookingWebPublicRoutes(
   );
 
   app.post<{ Body: BookingWebTelemetryEventRequest }>("/events", async (request, reply) => {
+    if (request.body?.analyticsConsent !== true || request.body?.consentVersion !== 1) {
+      return reply.header("Cache-Control", "no-store").status(204).send();
+    }
     const hotelSlug = firstString(request.body?.hotelSlug, request.body?.hotel_slug);
     const eventType = firstString(request.body?.eventType, request.body?.event_type);
     if (!hotelSlug || !eventType) {
