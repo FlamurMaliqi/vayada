@@ -1,3 +1,4 @@
+import { useTranslation } from "@/lib/i18n";
 import { FormEvent } from "react";
 import { MagnifyingGlassIcon, UserGroupIcon } from "@heroicons/react/24/outline";
 import type {
@@ -9,11 +10,11 @@ import type {
 } from "@/services/affiliates";
 
 const STATUS_OPTIONS: Array<{ value: "" | AffiliateLifecycleStatus; label: string }> = [
-  { value: "", label: "All applications" },
-  { value: "pending", label: "Pending review" },
-  { value: "approved", label: "Approved" },
-  { value: "suspended", label: "Suspended" },
-  { value: "rejected", label: "Rejected" },
+  { value: "", label: "admin.allApplications" },
+  { value: "pending", label: "admin.pendingReview" },
+  { value: "approved", label: "admin.approved" },
+  { value: "suspended", label: "admin.suspended" },
+  { value: "rejected", label: "admin.rejected" },
 ];
 
 const STATUS_STYLES: Record<AffiliateLifecycleStatus, string> = {
@@ -54,6 +55,7 @@ interface AffiliateWorkspaceProps {
 }
 
 export function AffiliateWorkspace(props: AffiliateWorkspaceProps) {
+  const { t, locale } = useTranslation();
   const selected = props.applications?.affiliates.some(
     (item) => item.affiliateId === props.selectedId,
   );
@@ -65,17 +67,17 @@ export function AffiliateWorkspace(props: AffiliateWorkspaceProps) {
           className="grid gap-2 border-b border-gray-200 p-3 sm:grid-cols-[1fr_170px_auto]"
         >
           <label className="relative">
-            <span className="sr-only">Search affiliates</span>
+            <span className="sr-only">{t("admin.searchAffiliates")}</span>
             <MagnifyingGlassIcon className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-400" />
             <input
               value={props.searchDraft}
               onChange={(event) => props.onSearchDraftChange(event.target.value)}
-              placeholder="Name, email, or referral code"
+              placeholder={t("admin.nameEmailOrReferralCode")}
               className="h-9 w-full rounded-md border border-gray-200 pl-9 pr-3 text-[13px] focus:border-gray-300 focus:outline-none focus:ring-2 focus:ring-gray-100"
             />
           </label>
           <select
-            aria-label="Affiliate status"
+            aria-label={t("admin.affiliateStatus")}
             value={props.status}
             onChange={(event) =>
               props.onStatusChange(event.target.value as "" | AffiliateLifecycleStatus)
@@ -84,22 +86,26 @@ export function AffiliateWorkspace(props: AffiliateWorkspaceProps) {
           >
             {STATUS_OPTIONS.map((option) => (
               <option key={option.value} value={option.value}>
-                {option.label}
+                {t(option.label)}
               </option>
             ))}
           </select>
           <button className="h-9 rounded-md bg-primary-600 px-4 text-[13px] font-medium text-white hover:bg-primary-700">
-            Search
+            {t("admin.search")}
           </button>
         </form>
         <p className="border-b border-gray-100 px-3 py-2 text-xs text-gray-500">
           {props.applications
-            ? `${props.applications.total} application${props.applications.total === 1 ? "" : "s"}`
-            : "Applications"}
+            ? t("admin.applicationsCount", {
+                count: props.applications.total.toLocaleString(locale),
+              })
+            : t("affiliates.tabs.applications")}
         </p>
         <div className="max-h-[560px] divide-y divide-gray-100 overflow-y-auto">
           {props.loading && !props.applications && (
-            <p className="p-6 text-center text-sm text-gray-500">Loading applications…</p>
+            <p className="p-6 text-center text-sm text-gray-500">
+              {t("admin.loadingApplications")}
+            </p>
           )}
           {!props.loading && props.applications?.affiliates.length === 0 && <EmptyState />}
           {props.applications?.affiliates.map((affiliate) => (
@@ -120,7 +126,8 @@ export function AffiliateWorkspace(props: AffiliateWorkspaceProps) {
                   props.offset + props.applications.affiliates.length,
                   props.applications.total,
                 )}{" "}
-                of {props.applications.total}
+                {t("admin.of")}
+                {props.applications.total}
               </span>
               <div className="flex gap-2">
                 <button
@@ -129,7 +136,7 @@ export function AffiliateWorkspace(props: AffiliateWorkspaceProps) {
                   disabled={props.offset === 0 || props.loading}
                   className="rounded border border-gray-200 px-2 py-1 disabled:opacity-40"
                 >
-                  Previous
+                  {t("admin.previous")}
                 </button>
                 <button
                   type="button"
@@ -140,7 +147,7 @@ export function AffiliateWorkspace(props: AffiliateWorkspaceProps) {
                   }
                   className="rounded border border-gray-200 px-2 py-1 disabled:opacity-40"
                 >
-                  Next
+                  {t("admin.next")}
                 </button>
               </div>
             </div>
@@ -149,7 +156,7 @@ export function AffiliateWorkspace(props: AffiliateWorkspaceProps) {
 
       <aside
         className="rounded-lg border border-gray-200 bg-white p-4"
-        aria-label="Affiliate detail"
+        aria-label={t("admin.affiliateDetail")}
       >
         {!selected && <SelectPrompt />}
         {selected && props.detailError && (
@@ -158,7 +165,7 @@ export function AffiliateWorkspace(props: AffiliateWorkspaceProps) {
           </p>
         )}
         {selected && !props.detail && !props.detailError && (
-          <p className="py-16 text-center text-sm text-gray-500">Loading applicant…</p>
+          <p className="py-16 text-center text-sm text-gray-500">{t("admin.loadingApplicant")}</p>
         )}
         {props.detail && (
           <AffiliateDossier
@@ -185,6 +192,7 @@ function ApplicationRow({
   selected: boolean;
   onSelect: () => void;
 }) {
+  const { t, locale } = useTranslation();
   return (
     <button
       type="button"
@@ -203,8 +211,10 @@ function ApplicationRow({
         <StatusBadge status={affiliate.lifecycleStatus} />
       </span>
       <span className="mt-2 block text-[11px] text-gray-400">
-        {affiliate.affiliateType === "creator" ? "Creator" : "Guest"} ·{" "}
-        {formatDate(affiliate.appliedAt)}
+        {affiliate.affiliateType === "creator"
+          ? t("affiliates.typeFilter.creator")
+          : t("affiliates.typeFilter.guest")}{" "}
+        · {formatDate(affiliate.appliedAt, locale)}
       </span>
     </button>
   );
@@ -228,6 +238,7 @@ function AffiliateDossier({
   | "onSaveOverride"
   | "commissionError"
 > & { detail: AffiliateDetail }) {
+  const { t, locale } = useTranslation();
   const { affiliate, commission } = detail;
   const actions = lifecycleActions(affiliate.lifecycleStatus);
   return (
@@ -237,24 +248,34 @@ function AffiliateDossier({
           <div>
             <p className="text-lg font-bold text-gray-900">{affiliateName(affiliate)}</p>
             <p className="mt-1 text-xs text-gray-500">
-              {affiliate.contactEmail ?? "No contact email"}
+              {affiliate.contactEmail ?? t("admin.noContactEmail")}
             </p>
           </div>
           <StatusBadge status={affiliate.lifecycleStatus} />
         </div>
         <dl className="mt-4 grid grid-cols-2 gap-3 text-xs">
-          <Detail label="Referral code" value={affiliate.referralCode} />
+          <Detail label={t("admin.referralCode")} value={affiliate.referralCode} />
           <Detail
-            label="Applicant type"
-            value={affiliate.affiliateType === "creator" ? "Creator" : "Guest"}
+            label={t("admin.applicantType")}
+            value={
+              affiliate.affiliateType === "creator"
+                ? t("affiliates.typeFilter.creator")
+                : t("affiliates.typeFilter.guest")
+            }
           />
-          <Detail label="Applied" value={formatDate(affiliate.appliedAt)} />
-          <Detail label="Social profile" value={affiliate.socialMedia ?? "Not provided"} />
+          <Detail
+            label={t("affiliates.applications.applied")}
+            value={formatDate(affiliate.appliedAt, locale)}
+          />
+          <Detail
+            label={t("admin.socialProfile")}
+            value={affiliate.socialMedia ?? t("admin.notProvided")}
+          />
         </dl>
       </div>
       <div>
         <h3 className="text-xs font-semibold uppercase tracking-wide text-gray-500">
-          Application access
+          {t("admin.applicationAccess")}
         </h3>
         <div className="mt-2 flex flex-wrap gap-2">
           {actions.length ? (
@@ -266,29 +287,30 @@ function AffiliateDossier({
                 disabled={Boolean(busy)}
                 className={`h-8 rounded-md px-3 text-xs font-semibold disabled:opacity-50 ${actionStyle(action)}`}
               >
-                {actionLabel(action)}
+                {t(`affiliates.action.${action}`)}
               </button>
             ))
           ) : (
             <p className="text-xs text-gray-500">
-              No lifecycle action is available for this status.
+              {t("admin.noLifecycleActionIsAvailableForThisStatus")}
             </p>
           )}
         </div>
       </div>
       {commission ? (
         <div className="rounded-lg border border-gray-200 bg-gray-50 p-3">
-          <h3 className="text-sm font-semibold text-gray-900">Commission override</h3>
+          <h3 className="text-sm font-semibold text-gray-900">{t("admin.commissionOverride")}</h3>
           <p className="mt-1 text-xs text-gray-500">
-            Effective rate:{" "}
-            <strong className="text-gray-800">{commission.effectivePercentageRate}%</strong> ·
-            Default {commission.defaultPercentageRate}%
+            {t("admin.effectiveRate")}{" "}
+            <strong className="text-gray-800">{commission.effectivePercentageRate}%</strong>{" "}
+            {t("admin.default")}
+            {commission.defaultPercentageRate}%
           </p>
           <div className="mt-3 flex flex-wrap items-end gap-2">
             <label className="text-xs font-medium text-gray-600">
-              Override %
+              {t("admin.override")}
               <input
-                aria-label="Affiliate commission override"
+                aria-label={t("admin.affiliateCommissionOverride")}
                 value={overrideDraft}
                 onChange={(event) => onOverrideChange(event.target.value)}
                 placeholder={commission.defaultPercentageRate}
@@ -302,7 +324,7 @@ function AffiliateDossier({
               disabled={busy === "commission"}
               className="h-9 rounded-md bg-gray-900 px-3 text-xs font-medium text-white disabled:opacity-50"
             >
-              Save override
+              {t("admin.saveOverride")}
             </button>
             <button
               type="button"
@@ -310,18 +332,18 @@ function AffiliateDossier({
               disabled={busy === "commission" || commission.overridePercentageRate === null}
               className="h-9 rounded-md border border-gray-200 bg-white px-3 text-xs font-medium text-gray-700 disabled:opacity-50"
             >
-              Use default
+              {t("admin.useDefault")}
             </button>
           </div>
           <p className="mt-3 text-[11px] text-gray-400">
-            Lifecycle and commission changes are recorded in the property audit trail.
+            {t("admin.lifecycleAndCommissionChangesAreRecordedInThePropertyAudit")}
           </p>
         </div>
       ) : (
         <div className="rounded-lg border border-gray-200 bg-gray-50 p-3">
-          <h3 className="text-sm font-semibold text-gray-900">Commission override</h3>
+          <h3 className="text-sm font-semibold text-gray-900">{t("admin.commissionOverride")}</h3>
           <p className="mt-1 text-xs text-gray-500">
-            {commissionError ?? "Loading Finance commission…"}
+            {commissionError ?? t("admin.loadingFinanceCommission")}
           </p>
         </div>
       )}
@@ -339,32 +361,35 @@ function Detail({ label, value }: { label: string; value: string }) {
 }
 
 function StatusBadge({ status }: { status: AffiliateLifecycleStatus }) {
+  const { t } = useTranslation();
   return (
     <span
       className={`shrink-0 rounded-full border px-2 py-0.5 text-[10px] font-semibold capitalize ${STATUS_STYLES[status]}`}
     >
-      {status}
+      {t(`affiliates.status.${status}`)}
     </span>
   );
 }
 
 function EmptyState() {
+  const { t } = useTranslation();
   return (
     <div className="p-8 text-center">
       <UserGroupIcon className="mx-auto h-7 w-7 text-gray-300" />
-      <p className="mt-2 text-sm font-medium text-gray-700">No matching applications</p>
-      <p className="mt-1 text-xs text-gray-500">Try another status or clear the search.</p>
+      <p className="mt-2 text-sm font-medium text-gray-700">{t("admin.noMatchingApplications")}</p>
+      <p className="mt-1 text-xs text-gray-500">{t("admin.tryAnotherStatusOrClearTheSearch")}</p>
     </div>
   );
 }
 
 function SelectPrompt() {
+  const { t } = useTranslation();
   return (
     <div className="flex min-h-64 flex-col items-center justify-center text-center">
       <UserGroupIcon className="h-8 w-8 text-gray-300" />
-      <p className="mt-3 text-sm font-medium text-gray-700">Select an application</p>
+      <p className="mt-3 text-sm font-medium text-gray-700">{t("admin.selectAnApplication")}</p>
       <p className="mt-1 max-w-xs text-xs text-gray-500">
-        Applicant details and available actions appear here.
+        {t("admin.applicantDetailsAndAvailableActionsAppearHere")}
       </p>
     </div>
   );
@@ -374,8 +399,8 @@ export function affiliateName(affiliate: Affiliate) {
   return affiliate.displayName ?? affiliate.contactEmail ?? affiliate.referralCode;
 }
 
-function formatDate(value: string) {
-  return new Intl.DateTimeFormat(undefined, { dateStyle: "medium" }).format(new Date(value));
+function formatDate(value: string, locale: string) {
+  return new Intl.DateTimeFormat(locale, { dateStyle: "medium" }).format(new Date(value));
 }
 
 function lifecycleActions(status: AffiliateLifecycleStatus): AffiliateLifecycleAction[] {
@@ -383,16 +408,6 @@ function lifecycleActions(status: AffiliateLifecycleStatus): AffiliateLifecycleA
   if (status === "approved") return ["suspend"];
   if (status === "suspended") return ["restore"];
   return [];
-}
-
-function actionLabel(action: AffiliateLifecycleAction) {
-  return action === "restore"
-    ? "Restore access"
-    : action === "suspend"
-      ? "Suspend access"
-      : action === "approve"
-        ? "Approve"
-        : "Reject";
 }
 
 function actionStyle(action: AffiliateLifecycleAction) {

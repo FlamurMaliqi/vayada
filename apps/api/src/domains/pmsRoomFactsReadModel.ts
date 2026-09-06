@@ -118,6 +118,7 @@ export function createPgPmsRoomFactsReadModel(config: {
       const result = await pool.query<PmsRoomFactsRow>(
         `${ROOM_FACTS_SELECT}
          WHERE room_type.property_id = $1::uuid
+           AND room_type.active
          ORDER BY room_type.created_at ASC, room_type.id ASC`,
         [normalizedPropertyId],
       );

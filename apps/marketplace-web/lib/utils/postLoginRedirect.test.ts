@@ -46,6 +46,22 @@ describe("getMarketplacePostLoginRedirect", () => {
     expect(checkProfileStatus).not.toHaveBeenCalled();
   });
 
+  it("preserves PMS recovery despite incomplete Marketplace setup and a stale selection", async () => {
+    const target =
+      "/setup?entryProduct=pms&returnProduct=pms&recovery=pms-calendar&propertyId=11111111-1111-4111-8111-111111111111&step=calendar";
+    const storage = memoryStorage({
+      [STORAGE_KEYS.USER_TYPE]: "hotel",
+      selectedSharedPropertyId: "stale-property",
+    });
+    vi.mocked(resolveMarketplaceSetupGuard).mockResolvedValue({
+      action: "redirect_to_setup",
+      redirectPath: "/setup?entryProduct=marketplace",
+    } as never);
+    await expect(getMarketplacePostLoginRedirect(target, storage)).resolves.toBe(target);
+    expect(resolveMarketplaceSetupGuard).not.toHaveBeenCalled();
+    expect(storage.getItem("selectedSharedPropertyId")).toBe("stale-property");
+  });
+
   it("uses the creator profile guard and persists completion state", async () => {
     vi.mocked(checkProfileStatus).mockResolvedValue({
       profile_complete: false,

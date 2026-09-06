@@ -12,4 +12,5 @@ featureHubToggleChecks(
     await mockBookingAdminShellRoutes(page);
   },
   true,
+  "Could not update module activation.",
 );

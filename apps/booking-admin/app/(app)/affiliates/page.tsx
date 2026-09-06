@@ -1,4 +1,5 @@
 "use client";
+import { useTranslation } from "@/lib/i18n";
 
 import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
 import {
@@ -16,6 +17,7 @@ import {
 } from "@/services/affiliates";
 
 export default function AffiliatesPage() {
+  const { t } = useTranslation();
   const [applications, setApplications] = useState<AffiliateListResponse | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [detail, setDetail] = useState<AffiliateDetail | null>(null);
@@ -126,7 +128,7 @@ export default function AffiliatesPage() {
   const handleLifecycle = async (action: AffiliateLifecycleAction) => {
     if (
       !detail ||
-      ((action === "reject" || action === "suspend") && !window.confirm(confirmCopy(action)))
+      ((action === "reject" || action === "suspend") && !window.confirm(confirmCopy(action, t)))
     )
       return;
     const affiliateId = detail.affiliate.affiliateId;
@@ -139,7 +141,7 @@ export default function AffiliatesPage() {
           ? { ...current, affiliate: result.affiliate }
           : current,
       );
-      setNotice(`${affiliateName(result.affiliate)} ${pastTense(action)}.`);
+      setNotice(t(`affiliates.notice.${action}`, { name: affiliateName(result.affiliate) }));
       await loadApplicationsRef.current();
     } catch (nextError) {
       setError(errorMessage(nextError));
@@ -149,13 +151,13 @@ export default function AffiliatesPage() {
   };
 
   const saveDefault = async () => {
-    if (!validRate(defaultDraft)) return setError("Enter a percentage from 0 to 100.");
+    if (!validRate(defaultDraft)) return setError("admin.enterAPercentageFrom0To100");
     setBusy("default");
     setError(null);
     try {
       const result = await affiliatesService.updateDefaultCommission(defaultDraft.trim());
       setDefaultDraft(result.commission.defaultPercentageRate);
-      setNotice("Default affiliate commission saved.");
+      setNotice(t("admin.defaultAffiliateCommissionSaved"));
     } catch (nextError) {
       setError(errorMessage(nextError));
     } finally {
@@ -165,7 +167,7 @@ export default function AffiliatesPage() {
 
   const saveOverride = async (inherit = false) => {
     if (!detail?.commission) return;
-    if (!inherit && !validRate(overrideDraft)) return setError("Enter a percentage from 0 to 100.");
+    if (!inherit && !validRate(overrideDraft)) return setError("admin.enterAPercentageFrom0To100");
     const affiliateId = detail.affiliate.affiliateId;
     setBusy("commission");
     setError(null);
@@ -182,7 +184,9 @@ export default function AffiliatesPage() {
       if (selectedIdRef.current === affiliateId) {
         setOverrideDraft(result.commission.overridePercentageRate ?? "");
       }
-      setNotice(inherit ? "Affiliate now uses the property default." : "Affiliate override saved.");
+      setNotice(
+        inherit ? t("admin.affiliateNowUsesThePropertyDefault") : t("admin.affiliateOverrideSaved"),
+      );
     } catch (nextError) {
       setError(errorMessage(nextError));
     } finally {
@@ -195,13 +199,13 @@ export default function AffiliatesPage() {
       <header className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
         <div>
           <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-primary-600">
-            Direct growth
+            {t("admin.directGrowth")}
           </p>
           <h1 className="mt-1 text-xl font-bold text-gray-900 md:text-2xl">
-            Affiliate applications
+            {t("admin.affiliateApplications")}
           </h1>
           <p className="mt-1 text-[13px] text-gray-500">
-            Review access and set referral commission rates for this property.
+            {t("admin.reviewAccessAndSetReferralCommissionRatesForThisProperty")}
           </p>
         </div>
         <button
@@ -210,7 +214,8 @@ export default function AffiliatesPage() {
           disabled={loading}
           className="inline-flex h-9 items-center justify-center gap-2 rounded-md border border-gray-200 bg-white px-3 text-[13px] font-medium text-gray-700 shadow-sm hover:bg-gray-50 disabled:opacity-50"
         >
-          <ArrowPathIcon className={`h-4 w-4 ${loading ? "animate-spin" : ""}`} /> Refresh
+          <ArrowPathIcon className={`h-4 w-4 ${loading ? "animate-spin" : ""}`} />{" "}
+          {t("settings.booking.refresh")}
         </button>
       </header>
 
@@ -224,27 +229,27 @@ export default function AffiliatesPage() {
           ) : (
             <CheckCircleIcon className="mt-0.5 h-4 w-4 shrink-0" />
           )}
-          <span>{error ?? notice}</span>
+          <span>{error ? t(error) : notice}</span>
         </div>
       )}
 
       <section
         className="rounded-lg border border-gray-200 bg-white p-3 md:p-4"
-        aria-label="Default commission"
+        aria-label={t("admin.defaultCommission")}
       >
         <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
           <div>
-            <h2 className="text-sm font-semibold text-gray-900">Property default</h2>
+            <h2 className="text-sm font-semibold text-gray-900">{t("admin.propertyDefault")}</h2>
             <p className="mt-1 text-xs text-gray-500">
-              New and inherited affiliate rates use this percentage.
+              {t("admin.newAndInheritedAffiliateRatesUseThisPercentage")}
             </p>
           </div>
           {defaultAvailable ? (
             <div className="flex items-end gap-2">
               <label className="text-xs font-medium text-gray-600">
-                Commission %
+                {t("admin.commission")}
                 <input
-                  aria-label="Default commission percentage"
+                  aria-label={t("admin.defaultCommissionPercentage")}
                   value={defaultDraft}
                   onChange={(event) => setDefaultDraft(event.target.value)}
                   inputMode="decimal"
@@ -257,11 +262,13 @@ export default function AffiliatesPage() {
                 disabled={busy === "default"}
                 className="h-9 rounded-md bg-gray-900 px-4 text-[13px] font-medium text-white hover:bg-gray-800 disabled:opacity-50"
               >
-                Save default
+                {t("admin.saveDefault")}
               </button>
             </div>
           ) : (
-            <p className="text-xs text-gray-500">Finance access is required to change this rate.</p>
+            <p className="text-xs text-gray-500">
+              {t("admin.financeAccessIsRequiredToChangeThisRate")}
+            </p>
           )}
         </div>
       </section>
@@ -275,8 +282,8 @@ export default function AffiliatesPage() {
         overrideDraft={overrideDraft}
         loading={loading}
         busy={busy}
-        detailError={detailError}
-        commissionError={commissionError}
+        detailError={detailError ? t(detailError) : null}
+        commissionError={commissionError ? t(commissionError) : null}
         offset={offset}
         onSearchDraftChange={setSearchDraft}
         onSearch={handleSearch}
@@ -294,19 +301,10 @@ export default function AffiliatesPage() {
     </div>
   );
 }
-function confirmCopy(action: AffiliateLifecycleAction) {
+function confirmCopy(action: AffiliateLifecycleAction, t: ReturnType<typeof useTranslation>["t"]) {
   return action === "reject"
-    ? "Reject this affiliate application?"
-    : "Suspend this affiliate's access?";
-}
-function pastTense(action: AffiliateLifecycleAction) {
-  return action === "approve"
-    ? "approved"
-    : action === "reject"
-      ? "rejected"
-      : action === "suspend"
-        ? "suspended"
-        : "restored";
+    ? t("admin.rejectThisAffiliateApplication")
+    : t("admin.suspendThisAffiliateSAccess");
 }
 function validRate(value: string) {
   const normalized = value.trim();
@@ -315,11 +313,10 @@ function validRate(value: string) {
 function errorMessage(error: unknown) {
   if (typeof error === "object" && error && "data" in error) {
     const code = (error as { data?: { code?: string } }).data?.code;
-    if (code === "missing_permission")
-      return "Your role cannot manage affiliates for this property.";
+    if (code === "missing_permission") return "admin.yourRoleCannotManageAffiliatesForThisProperty";
     if (code === "missing_entitlement" || code === "inactive_entitlement")
-      return "Affiliate management requires active Booking or Finance access.";
-    if (code === "missing_resource_access") return "You do not have access to this property.";
+      return "admin.affiliateManagementRequiresActiveBookingOrFinanceAccess";
+    if (code === "missing_resource_access") return "admin.youDoNotHaveAccessToThisProperty";
   }
-  return error instanceof Error ? error.message : "Affiliate management is unavailable.";
+  return "admin.affiliateManagementIsUnavailable";
 }

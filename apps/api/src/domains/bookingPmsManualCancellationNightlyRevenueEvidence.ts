@@ -1,3 +1,5 @@
+import { enqueueBookingTransitionNotifications } from "../jobs/bookingEmails.js";
+
 import { createHash } from "node:crypto";
 
 import { getTimezone } from "countries-and-timezones";
@@ -47,6 +49,7 @@ export async function cancelPmsManualBooking(
     idempotencyKey: string;
     commandId: string;
     reason?: string;
+    guestMessage?: string;
     accountingDate: string | null;
     retainedCharges: readonly RetainedCharge[];
     audit: { actor: { kind: string; userId?: string }; requestId: string; correlationId?: string };
@@ -159,6 +162,20 @@ export async function cancelPmsManualBooking(
       idempotencyKey: `pms-cancel:${command.idempotencyKey}:retained:v1`,
       lines: retained,
     });
+  await enqueueBookingTransitionNotifications(transaction, {
+    propertyId: command.propertyId,
+    guestBookingId: command.guestBookingId,
+    occurredAt: acceptedAt,
+    correlationId: command.audit.correlationId ?? command.audit.requestId,
+    actor: { type: "user", userId: command.audit.actor.userId },
+    guestMessage: command.guestMessage,
+    transition: {
+      eventType: "guest_booking.canceled",
+      fromStatus: "confirmed",
+      toStatus: "canceled",
+      reason: "property_cancellation",
+    },
+  });
   const hash = createHash("sha256").update(command.idempotencyKey).digest("hex");
   const event = await transaction.query<{ id: string }>(
     `INSERT INTO platform.domain_events
