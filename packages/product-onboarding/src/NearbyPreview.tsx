@@ -293,7 +293,7 @@ export default function NearbyPreview({
   return (
     <section
       aria-label={guest ? "Our surroundings" : "Guest preview"}
-      className="space-y-6 text-left"
+      className="space-y-8 rounded-[2rem] bg-white p-5 text-left shadow-[0_30px_90px_-50px_rgba(15,23,42,0.45)] sm:p-8"
     >
       <div>
         <h2 className="text-2xl font-semibold tracking-tight text-gray-950">Around us</h2>
@@ -341,7 +341,7 @@ export default function NearbyPreview({
                   {places.map((place: NearbyPublicPlace) => (
                     <li
                       key={place.source === "google" ? place.placeId : place.id}
-                      className={`scroll-mt-28 rounded-2xl border bg-white p-4 ${selected === id(place) ? "border-gray-900 ring-1 ring-gray-900" : "border-gray-200"}`}
+                      className={`scroll-mt-28 rounded-2xl border bg-white p-4 sm:p-5 ${selected === id(place) ? "border-gray-900 ring-1 ring-gray-900" : "border-gray-100"}`}
                     >
                       <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
                         <button
