@@ -1,6 +1,8 @@
 import {
   PMS_INVENTORY_RESERVATION_MARKER_VERSION,
   parsePmsInventoryReservationReceipt,
+  parsePmsInventoryReservationBundle,
+  type PmsInventoryReservationBundle,
   type PmsInventoryReservationReceipt,
   type PmsInventoryReservationMarker,
 } from "@vayada/domain-pms";
@@ -14,10 +16,22 @@ export type InventoryReservationTransaction = {
 };
 
 export type InventoryReservationReceipt =
+  | PmsInventoryReservationBundle
   | PmsInventoryReservationReceipt
   | PmsInventoryReservationMarker;
 
 export type DirectBookingInventoryReservationPort = {
+  /** Caller owns the transaction and must roll it back on any failure. */
+  reserveBundle?(input: {
+    transaction: InventoryReservationTransaction;
+    propertyId: string;
+    quoteSessionId: string;
+    lines: readonly { roomTypeId: string; publicOfferKey: string; roomCount: number }[];
+    checkIn: string;
+    checkOut: string;
+    currency: string;
+    occurredAt: Date;
+  }): Promise<PmsInventoryReservationBundle>;
   reserve(input: {
     transaction: InventoryReservationTransaction;
     propertyId: string;
@@ -54,6 +68,8 @@ export function inventoryReservationReceiptFromBookingMetadata(
   expectedPropertyId: string,
 ): InventoryReservationReceipt | null {
   const marker = objectValue(objectValue(bookingMetadata)["inventoryReservation"]);
+  const bundle = parsePmsInventoryReservationBundle(marker);
+  if (bundle) return bundle;
   const receipt = parsePmsInventoryReservationReceipt(marker);
   if (receipt) return receipt;
   if (

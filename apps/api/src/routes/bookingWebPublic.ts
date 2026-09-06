@@ -4707,6 +4707,8 @@ export async function targetInventoryAvailabilityCredit(
     propertyId,
   );
   if (!reservation) return undefined;
+  // Bundle credits are enabled only by the selection-aware pending-edit path.
+  if ("receipts" in reservation) return undefined;
   const bookingCheckIn = dateOnly(booking.checkIn);
   const bookingCheckOut = dateOnly(booking.checkOut);
   if ("receiptId" in reservation) {

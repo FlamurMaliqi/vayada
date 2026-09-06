@@ -3,6 +3,8 @@ import { createHash } from "node:crypto";
 import {
   PMS_INVENTORY_RESERVATION_MARKER_VERSION,
   PMS_INVENTORY_RESERVATION_LIFECYCLE_CONTRACT_VERSION,
+  PMS_INVENTORY_RESERVATION_BUNDLE_VERSION,
+  parsePmsInventoryReservationBundle,
   type PmsInventoryReservationReceipt,
   type PmsInventoryReservationMarker,
 } from "@vayada/domain-pms";
@@ -20,7 +22,86 @@ type ReservationResultRow = {
 };
 
 export function createTargetPmsInventoryReservationPort(): DirectBookingInventoryReservationPort {
-  return {
+  const port: DirectBookingInventoryReservationPort = {
+    async reserveBundle(input) {
+      const types = input.lines.map((line) => line.roomTypeId.toLowerCase());
+      if (
+        !types.length ||
+        types.length > 99 ||
+        new Set(types).size !== types.length ||
+        input.lines.some((line) => !Number.isSafeInteger(line.roomCount) || line.roomCount < 1) ||
+        input.lines.reduce((sum, line) => sum + line.roomCount, 0) > 99
+      ) {
+        throw Object.assign(new Error("Invalid room selection."), { statusCode: 400 });
+      }
+      await lockPmsInventoryMutationScope(input.transaction, input.propertyId);
+      const lines = [...input.lines]
+        .map((line) => ({
+          roomTypeId: line.roomTypeId.toLowerCase(),
+          publicOfferKey: line.publicOfferKey,
+          roomCount: line.roomCount,
+        }))
+        .sort((a, b) => a.roomTypeId.localeCompare(b.roomTypeId));
+      const keyHash = createHash("sha256")
+        .update(`${input.propertyId}:${input.quoteSessionId}`)
+        .digest("hex");
+      const fingerprint = createHash("sha256")
+        .update(
+          JSON.stringify({
+            lines,
+            checkIn: input.checkIn,
+            checkOut: input.checkOut,
+            currency: input.currency,
+          }),
+        )
+        .digest("hex");
+      const previous = await input.transaction.query<{ fingerprint: string }>(
+        `SELECT request_fingerprint_hash AS fingerprint FROM platform.idempotency_keys
+         WHERE operation_scope='pms' AND operation='pms.direct_booking_inventory.reserve_bundle'
+           AND property_id=$1::uuid AND key_hash=$2`,
+        [input.propertyId, keyHash],
+      );
+      const existing = await input.transaction.query<{ receiptId: string }>(
+        `SELECT receipt_id::text AS "receiptId" FROM pms.inventory_reservation_receipts
+         WHERE property_id=$1::uuid AND quote_session_id=$2 ORDER BY room_type_id`,
+        [input.propertyId, input.quoteSessionId],
+      );
+      if (previous.rows.length || existing.rows.length) {
+        if (previous.rows[0]?.fingerprint !== fingerprint || existing.rows.length !== lines.length)
+          throw Object.assign(
+            new Error("This quote already reserved a different room selection."),
+            { statusCode: 409 },
+          );
+        return {
+          contractVersion: PMS_INVENTORY_RESERVATION_BUNDLE_VERSION,
+          owner: "pms",
+          receipts: existing.rows.map(({ receiptId }) => ({
+            contractVersion: PMS_INVENTORY_RESERVATION_LIFECYCLE_CONTRACT_VERSION,
+            owner: "pms",
+            receiptId,
+          })),
+        };
+      }
+      const receipts: PmsInventoryReservationReceipt[] = [];
+      for (const line of lines) {
+        const receipt = await port.reserve({ ...input, ...line });
+        if (!receipt || !isOpaqueReceipt(receipt))
+          throw Object.assign(
+            new Error("The room combination is no longer available. Please refresh."),
+            { statusCode: 409 },
+          );
+        receipts.push(receipt);
+      }
+      await input.transaction.query(
+        `INSERT INTO platform.idempotency_keys
+        (operation_scope,operation,key_hash,request_fingerprint_hash,status,tenant_scope,property_id,
+         response_status_code,response_body_hash,first_seen_at,last_seen_at,completed_at,expires_at)
+        VALUES ('pms','pms.direct_booking_inventory.reserve_bundle',$2,$3,'completed','property',$1::uuid,
+          200,$3,$4,$4,$4,'infinity')`,
+        [input.propertyId, keyHash, fingerprint, input.occurredAt],
+      );
+      return { contractVersion: PMS_INVENTORY_RESERVATION_BUNDLE_VERSION, owner: "pms", receipts };
+    },
     async reserve(input) {
       await lockPmsInventoryMutationScope(input.transaction, input.propertyId);
       const result = await input.transaction.query<ReservationResultRow>(
@@ -174,6 +255,29 @@ export function createTargetPmsInventoryReservationPort(): DirectBookingInventor
     async release(input) {
       const reservation = input.reservation;
       await lockPmsInventoryMutationScope(input.transaction, input.propertyId);
+      if (reservation.contractVersion === PMS_INVENTORY_RESERVATION_BUNDLE_VERSION) {
+        const bundle = parsePmsInventoryReservationBundle(reservation);
+        if (!bundle) throw new Error("Invalid inventory reservation bundle");
+        const ids = bundle.receipts.map((receipt) => receipt.receiptId).sort();
+        const scope = await input.transaction.query<{ valid: boolean }>(
+          `SELECT count(*)=$3::int AND count(DISTINCT quote_session_id)=1
+             AND count(*)=(SELECT count(*) FROM pms.inventory_reservation_receipts all_receipts
+               WHERE all_receipts.property_id=$1::uuid AND all_receipts.quote_session_id=(
+                 SELECT quote_session_id FROM pms.inventory_reservation_receipts
+                 WHERE property_id=$1::uuid AND receipt_id=($2::uuid[])[1]))
+             AND count(DISTINCT check_in)=1 AND count(DISTINCT check_out)=1
+             AND count(DISTINCT room_type_id)=$3::int AS valid
+           FROM pms.inventory_reservation_receipts WHERE property_id=$1::uuid
+             AND receipt_id=ANY($2::uuid[])`,
+          [input.propertyId, ids, ids.length],
+        );
+        if (!scope.rows[0]?.valid) throw new Error("Inventory reservation bundle scope mismatch");
+        for (const receipt of [...bundle.receipts].sort((a, b) =>
+          a.receiptId.localeCompare(b.receiptId),
+        ))
+          await port.release({ ...input, reservation: receipt });
+        return;
+      }
       const receiptId = isOpaqueReceipt(reservation) ? reservation.receiptId : null;
       const scope = receiptId
         ? await loadReservedReceiptScope(input.transaction, input.propertyId, receiptId)
@@ -342,6 +446,7 @@ export function createTargetPmsInventoryReservationPort(): DirectBookingInventor
       return result.rows[0] ?? null;
     },
   };
+  return port;
 }
 
 type Transaction = Parameters<DirectBookingInventoryReservationPort["reserve"]>[0]["transaction"];
