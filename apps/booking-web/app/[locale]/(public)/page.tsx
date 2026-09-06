@@ -101,7 +101,13 @@ function HomePageContent() {
   const t = useTranslations("home");
   const tc = useTranslations("common");
   const { hotel } = useHotel();
-  const { rooms, loading: roomsLoading, roomsLoading: roomsRefetching, refetchRooms } = useRooms();
+  const {
+    rooms,
+    loading: roomsLoading,
+    roomsLoading: roomsRefetching,
+    searchMessage,
+    refetchRooms,
+  } = useRooms();
   const { addons } = useAddons();
   const { formatPrice, convertAndRound, selectedCurrency } = useCurrency();
   const { slug } = useSlug();
@@ -150,7 +156,7 @@ function HomePageContent() {
   // Fetch rooms with default dates on initial load so prices reflect seasonal rates
   const [initialFetchDone, setInitialFetchDone] = useState(false);
   useEffect(() => {
-    if (!roomsLoading && rooms.length > 0 && !initialFetchDone) {
+    if (!roomsLoading && !initialFetchDone) {
       setInitialFetchDone(true);
       refetchRooms(checkIn, checkOut, adults, effectiveChildren);
     }
@@ -718,6 +724,24 @@ function HomePageContent() {
           sortOption={sortOption}
           onSortChange={setSortOption}
         />
+
+        {!roomsLoading &&
+          !roomsRefetching &&
+          initialFetchDone &&
+          checkIn === committedCheckIn &&
+          checkOut === committedCheckOut &&
+          adults === committedAdults &&
+          effectiveChildren === effectiveCommittedChildren &&
+          (searchMessage || (filteredRooms.length === 0 ? "noMatchingRooms" : null)) && (
+            <div
+              role="status"
+              className="mb-6 rounded-xl border border-gray-200 bg-gray-50 p-6 text-gray-700"
+            >
+              {t(searchMessage || "noMatchingRooms", {
+                count: committedAdults + effectiveCommittedChildren,
+              })}
+            </div>
+          )}
 
         {/* Room Cards */}
         {mapViewEnabled && !roomsLoading && (

@@ -222,7 +222,7 @@ async function provisioningPlan(
          LEAST(2, GREATEST(1, COALESCE((room.occupancy_limits ->> 'maxAdults')::integer, 2))) AS "defaultOccupancy",
          room_mapping.external_room_type_id AS "externalRoomTypeId"
        FROM pms.rate_plans plan
-       JOIN pms.room_types room ON room.id = plan.room_type_id
+       JOIN pms.room_types room ON room.id = plan.room_type_id AND room.active
        CROSS JOIN (VALUES ('direct', 'Standard'), ('booking_com', 'BDC Standard'),
          ('airbnb', 'Airbnb Standard')) AS channel(key, label)
        LEFT JOIN pms.channel_connections connection

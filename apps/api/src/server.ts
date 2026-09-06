@@ -1,4 +1,9 @@
+import { withPmsHostDateCredit } from "./domains/pmsHostDateAmendment.js";
+import { createFinanceHostBookingPayments } from "./domains/financeHostBookingPayments.js";
+import { createBookingHostActions } from "./domains/bookingHostActions.js";
+import { targetBookingHostActionGuards } from "./domains/bookingHostActionGuards.js";
 import { createPmsConfirmationEmails } from "./domains/pmsConfirmationEmails.js";
+import { createBankTransferBookingOperations } from "./domains/financeBankTransferBooking.js";
 import { createPgPlatformMarketplaceAccountsRepository } from "./domains/platformMarketplaceAccountsRepository.js";
 import {
   createPgIdentityRepository,
@@ -36,6 +41,8 @@ import { createPgHotelCatalogCurrentOwnerEvidencePorts } from "./domains/hotelCa
 import { createPgHotelCatalogStep1Repository } from "./domains/hotelCatalogStep1Repository.js";
 import { createPgMarketplaceHotelCollaborationPreferencesRepository } from "./domains/marketplaceHotelCollaborationPreferencesRepository.js";
 import { createPgFinanceOtaCommissionRuleRepository } from "./domains/financeOtaCommissionRuleRepository.js";
+import { createBankTransferCodec } from "./domains/financeBankTransferCodec.js";
+import { createBankTransferRepository } from "./domains/financeBankTransferRepository.js";
 import { createPgFinanceExpenseCategoryRepository } from "./domains/financeExpenseCategoryRepository.js";
 import { createPgFinanceManualExpenseRepository } from "./domains/financeManualExpenseRepository.js";
 import { createPgFinanceRecurringExpenseRuleRepository } from "./domains/financeRecurringExpenseRuleRepository.js";
@@ -148,7 +155,8 @@ import { startPmsInboxFollowUpReleaseWorker } from "./jobs/pmsInboxFollowUpRelea
 import { createPgPmsInboxDeliveryStore } from "./jobs/pmsInboxDeliveryPg.js";
 import { createPgPmsInboxDeliveryReceiptPort } from "./jobs/pmsInboxDeliveryReceipts.js";
 import { relayPmsInboxDeliveryOutbox } from "./jobs/pmsInboxDeliveryOutbox.js";
-import { runPmsInboxDeliveryJobs } from "./jobs/pmsInboxDeliveryWorker.js";
+import { startPmsInboxDeliveryWorker } from "./jobs/pmsInboxDeliveryWorker.js";
+import { registerShutdownSignals } from "./platform/shutdown.js";
 import {
   createPgBookingLifecycleStore,
   runBookingLifecycleSchedulerJobs,
@@ -355,7 +363,27 @@ const stripeBookingPaymentProvider = config.stripeSubscriptions.secretKey
   ? createStripeBookingPaymentProvider({ secretKey: config.stripeSubscriptions.secretKey })
   : undefined;
 
+const bankTransferKms =
+  config.financeSource === "target" && config.financeBankTransferKms
+    ? createAwsFinanceFolioKms({ region: config.financeBankTransferKms.region })
+    : undefined;
+const bankTransferCodec =
+  bankTransferKms && config.financeBankTransferKms
+    ? createBankTransferCodec({
+        ...config.financeBankTransferKms,
+        kms: { ...bankTransferKms.write, ...bankTransferKms.decrypt },
+      })
+    : undefined;
+const bankTransferRepository =
+  config.financeSource === "target"
+    ? createBankTransferRepository(targetDatabaseUrl, bankTransferCodec)
+    : undefined;
+const bankTransferBookings = bankTransferCodec
+  ? createBankTransferBookingOperations(targetDatabaseUrl, bankTransferCodec)
+  : undefined;
+
 const bookingWebCheckoutAdapter = createTargetBookingWebCheckoutAdapter({
+  bankTransfers: bankTransferBookings,
   connectionString: targetDatabaseUrl,
   inventoryReservationPort: createTargetPmsInventoryReservationPort(),
   billingConfigReadPortFactory: (executor) =>
@@ -1215,12 +1243,23 @@ const app = buildApp({
   bookingPromoCodesRepository,
   bookingDashboardMetricsReadPort,
   bookingPropertyAccessRepository,
+  bookingHostActions: pmsOperationsRepository
+    ? createBookingHostActions({
+        pool: new pg.Pool({ connectionString: targetDatabaseUrl }),
+        inventory: withPmsHostDateCredit(createTargetPmsInventoryReservationPort()),
+        guards: {
+          ...targetBookingHostActionGuards,
+          payment: createFinanceHostBookingPayments(stripeBookingPaymentProvider),
+        },
+      })
+    : undefined,
   pmsConfirmationEmails:
     pmsOperationsRepository && config.bookingEmailDelivery
       ? createPmsConfirmationEmails(targetDatabaseUrl)
       : undefined,
   pmsOperationsRepository,
   ...(pmsInboxRuntime?.routes ?? {}),
+  pmsInboxSendingEnabled: config.pmsInboxSendingEnabled,
   pmsChannexManagement: pmsChannexManagementRepository
     ? {
         repository: pmsChannexManagementRepository,
@@ -1311,6 +1350,7 @@ const app = buildApp({
   pmsInventoryPublicOfferProjector: routePmsInventoryPublicOfferProjector,
   bookingGuestPiiPort,
   financeRepository,
+  financeBankTransfer: bankTransferRepository ? { repository: bankTransferRepository } : undefined,
   financeSubscriptionService,
   financeOtaCommissionSettingsRepository,
   financeExpenses: financeExpenseRuntime
@@ -1414,7 +1454,10 @@ const app = buildApp({
     affiliateScope: marketplaceAffiliateAdminRepository,
   },
   marketplaceCreatorSelfServiceRepository,
-  marketplaceCreatorPlatformConnections: creatorPlatformConnectionRuntime,
+  marketplaceCreatorPlatformConnections: {
+    ...creatorPlatformConnectionRuntime,
+    credentialCleanupEnabled: config.backgroundWorkersEnabled,
+  },
   marketplaceCreatorProfileMediaRepository: platformMediaRuntime?.profileMediaRepository,
   sharedHotelSetupStatusRepository,
   hotelSetupTrackCommandRepository,
@@ -1482,7 +1525,7 @@ const app = buildApp({
 });
 
 const creatorPlatformSyncConfig = config.creatorPlatformConnections?.sync;
-const creatorPlatformSyncWorker = creatorPlatformSyncConfig?.enabled
+const creatorPlatformSyncWorker = config.backgroundWorkersEnabled && creatorPlatformSyncConfig?.enabled
   ? startCreatorPlatformSyncWorker({
       store: createPgCreatorPlatformSyncStore({ connectionString: targetDatabaseUrl }),
       repository: createPgMarketplaceCreatorPlatformConnectionRepository({
@@ -1501,7 +1544,7 @@ const creatorPlatformSyncWorker = creatorPlatformSyncConfig?.enabled
     })
   : undefined;
 
-const staffRemovalWorker = staffInvitationRuntime
+const staffRemovalWorker = config.backgroundWorkersEnabled && staffInvitationRuntime
   ? startStaffRemovalWorker({
       repository: staffInvitationRuntime.removalJobRepository,
       coordinator: staffInvitationRuntime.removal,
@@ -1509,7 +1552,7 @@ const staffRemovalWorker = staffInvitationRuntime
     })
   : undefined;
 
-const pmsInboxAssignmentReconciliationWorker = pmsInboxRuntime
+const pmsInboxAssignmentReconciliationWorker = config.backgroundWorkersEnabled && pmsInboxRuntime
   ? startPmsInboxAssignmentReconciliationWorker({
       connectionString: targetDatabaseUrl,
       workerId: `pms-inbox-assignment-reconciliation:${process.pid}`,
@@ -1517,7 +1560,7 @@ const pmsInboxAssignmentReconciliationWorker = pmsInboxRuntime
     })
   : undefined;
 
-const pmsInboxFollowUpReleaseWorker = pmsInboxRuntime
+const pmsInboxFollowUpReleaseWorker = config.backgroundWorkersEnabled && pmsInboxRuntime
   ? startPmsInboxFollowUpReleaseWorker({
       connectionString: targetDatabaseUrl,
       workerId: `pms-inbox-follow-up-release:${process.pid}`,
@@ -1526,12 +1569,16 @@ const pmsInboxFollowUpReleaseWorker = pmsInboxRuntime
   : undefined;
 
 const stopPostgresTelemetry = postgresRuntime.startTelemetry(app.log);
+app.addHook("onReady", async () => {
+  await bankTransferRepository?.assertConfigured();
+});
+
 app.addHook("onClose", async () => {
   stopPostgresTelemetry();
   await postgresRuntime.close();
 });
 
-const bookingPublicationWorker = bookingPublicationRuntime
+const bookingPublicationWorker = config.backgroundWorkersEnabled && bookingPublicationRuntime
   ? startBookingPublicationWorker({
       projector: bookingPublicationRuntime.projector,
       workerId: `booking-publication:${process.pid}`,
@@ -1557,6 +1604,9 @@ app.addHook("onClose", async () => {
     financeOtaCommissionSettingsRepository?.close(),
     financeExpenseRuntime?.close(),
     financeFolioRuntime?.close(),
+    bankTransferRepository?.close(),
+    bankTransferBookings?.close(),
+    bankTransferKms?.close(),
     bookingDesignMediaAdapter?.close?.(),
     pmsRoomPublicationRuntime?.commandRepository.close(),
     pmsRoomPublicationRuntime?.readModel.close(),
@@ -1576,6 +1626,7 @@ app.addHook("onClose", async () => {
 
 let activeChannexReviewBatch: Promise<void> | undefined;
 const runChannexReviews = () => {
+  if (!config.backgroundWorkersEnabled) return;
   if (activeChannexReviewBatch) return;
   activeChannexReviewBatch = runChannexReviewJobs(targetDatabaseUrl)
     .then(({ failed }) => {
@@ -1597,6 +1648,7 @@ const channexBookingWorkerEnabled =
   config.channexManagement.bookingMutationOwner === "target" &&
   Boolean(config.channexManagement.apiBaseUrl && config.channexManagement.apiKey);
 const runChannexBookings = () => {
+  if (!config.backgroundWorkersEnabled) return;
   if (activeChannexBookingBatch || !channexBookingWorkerEnabled) return;
   activeChannexBookingBatch = runChannexBookingJobs(targetDatabaseUrl, {
     apiBaseUrl: config.channexManagement.apiBaseUrl!,
@@ -1626,6 +1678,7 @@ const channexMessageWorkerEnabled =
   config.channexManagement.capabilityModes.messaging === "mutating" &&
   Boolean(config.channexManagement.apiBaseUrl && config.channexManagement.apiKey);
 const runChannexMessages = () => {
+  if (!config.backgroundWorkersEnabled) return;
   if (activeChannexMessageBatch || !channexMessageWorkerEnabled) return;
   activeChannexMessageBatch = runChannexMessageJobs(targetDatabaseUrl, {
     apiBaseUrl: config.channexManagement.apiBaseUrl!,
@@ -1681,6 +1734,7 @@ app.addHook("onClose", async () => {
 
 let activeChannexManagementRun: Promise<void> | undefined;
 const runChannexManagement = () => {
+  if (!config.backgroundWorkersEnabled) return;
   if (!channexManagementWorkerStore || !channexManagementProvider || activeChannexManagementRun) {
     return;
   }
@@ -1716,6 +1770,7 @@ app.addHook("onClose", async () => {
 
 let activeCalendarAutoOpenRun: Promise<void> | undefined;
 const runCalendarAutoOpen = () => {
+  if (!config.backgroundWorkersEnabled) return;
   if (!pmsCalendarAutoOpenWorkerStore || activeCalendarAutoOpenRun) return;
   activeCalendarAutoOpenRun = runPmsCalendarAutoOpenWorkerOnce({
     store: pmsCalendarAutoOpenWorkerStore,
@@ -1750,6 +1805,7 @@ const financeSubscriptionWebhooksEnabled = Boolean(
 );
 const financeSubscriptionJobsEnabled = config.financeSource === "target";
 const runFinanceSubscriptionJobs = () => {
+  if (!config.backgroundWorkersEnabled) return;
   if (activeFinanceSubscriptionBatch || !financeSubscriptionJobsEnabled) return;
   const batches = [
     runFinanceSubscriptionNotificationJobs(targetDatabaseUrl, (notification) => {
@@ -1808,6 +1864,7 @@ const stripeAccountCompensationEnabled = Boolean(
   config.financeSource === "target" && stripeConnectProvider,
 );
 const runStripeAccountCompensation = () => {
+  if (!config.backgroundWorkersEnabled) return;
   if (!stripeConnectProvider || activeStripeAccountCompensation) return;
   activeStripeAccountCompensation = runFinanceStripeAccountCompensationJobs(
     targetDatabaseUrl,
@@ -1839,6 +1896,7 @@ app.addHook("onClose", async () => {
 
 let activeFinanceExpenseGeneration: Promise<void> | undefined;
 const runFinanceExpenseGeneration = () => {
+  if (!config.backgroundWorkersEnabled) return;
   if (!financeExpenseGenerationPool || activeFinanceExpenseGeneration) return;
   activeFinanceExpenseGeneration = runFinanceExpenseGenerationCycle(financeExpenseGenerationPool)
     .then((result) => {
@@ -1869,6 +1927,7 @@ let pmsPublicOfferRetryTimer: NodeJS.Timeout | undefined;
 
 if (pmsInventoryPublicOfferProjector) {
   const runRetryBatch = () => {
+    if (!config.backgroundWorkersEnabled) return;
     if (activeRetryBatch) return;
     activeRetryBatch = pmsInventoryPublicOfferProjector
       .runRetryBatch()
@@ -1922,6 +1981,7 @@ if (platformMediaRuntime) {
   let activeCleanup: Promise<void> | undefined;
   let activePropertyMediaPublication: Promise<void> | undefined;
   const runCleanup = () => {
+    if (!config.backgroundWorkersEnabled) return;
     if (activeCleanup) return;
     activeCleanup = runPlatformMediaCleanupJobs(platformMediaRuntime.cleanupStore)
       .then((result) => {
@@ -1944,6 +2004,7 @@ if (platformMediaRuntime) {
   if (config.platformMediaCleanupEnabled) runCleanup();
 
   const runPropertyMediaPublication = () => {
+    if (!config.backgroundWorkersEnabled) return;
     if (activePropertyMediaPublication) return;
     activePropertyMediaPublication = platformMediaRuntime.propertyMediaCommands
       .runPublicationBatch()
@@ -1988,6 +2049,7 @@ const bookingLifecycleStore = createPgBookingLifecycleStore({
 });
 let activeBookingLifecycleRun: Promise<void> | undefined;
 const runBookingLifecycle = () => {
+  if (!config.backgroundWorkersEnabled) return;
   if (activeBookingLifecycleRun) return;
   activeBookingLifecycleRun = runBookingLifecycleSchedulerJobs(bookingLifecycleStore)
     .then((result) => {
@@ -2007,40 +2069,32 @@ const bookingLifecycleTimer = setInterval(runBookingLifecycle, 60_000);
 bookingLifecycleTimer.unref();
 runBookingLifecycle();
 
-let activePmsInboxDelivery: Promise<void> | undefined;
-const runPmsInboxDelivery = () => {
-  if (!pmsInboxDeliveryStore || !pmsInboxDeliveryPool || activePmsInboxDelivery) return;
-  activePmsInboxDelivery = relayPmsInboxDeliveryOutbox(targetDatabaseUrl, {
-    pool: pmsInboxDeliveryPool,
-  })
-    .then(() =>
-      runPmsInboxDeliveryJobs(pmsInboxDeliveryStore, {
-        ...(pmsInboxChannexDelivery ? { channex: pmsInboxChannexDelivery } : {}),
-        ...(pmsInboxEmailDelivery ? { resend: pmsInboxEmailDelivery } : {}),
-      }),
-    )
-    .then((result) => {
-      if (result.failed || result.deadLettered)
-        app.log.warn({ result }, "PMS Inbox delivery completed with failures");
-    })
-    .catch((error: unknown) => app.log.warn({ err: error }, "PMS Inbox delivery failed"))
-    .finally(() => {
-      activePmsInboxDelivery = undefined;
-    });
-};
-const pmsInboxDeliveryTimer = pmsInboxDeliveryStore
-  ? setInterval(runPmsInboxDelivery, 2_000)
-  : undefined;
-pmsInboxDeliveryTimer?.unref();
-if (pmsInboxDeliveryStore) runPmsInboxDelivery();
+const pmsInboxDeliveryWorker =
+  config.backgroundWorkersEnabled && pmsInboxDeliveryStore && pmsInboxDeliveryPool
+    ? startPmsInboxDeliveryWorker({
+        enabled: config.pmsInboxSendingEnabled,
+        store: pmsInboxDeliveryStore,
+        providers: {
+          ...(pmsInboxChannexDelivery ? { channex: pmsInboxChannexDelivery } : {}),
+          ...(pmsInboxEmailDelivery ? { resend: pmsInboxEmailDelivery } : {}),
+        },
+        relay: () => relayPmsInboxDeliveryOutbox(targetDatabaseUrl, { pool: pmsInboxDeliveryPool }),
+        warn: (details, message) => app.log.warn(details, message),
+      })
+    : undefined;
 
 const bookingEmailDelivery = config.bookingEmailDelivery
   ? createResendBookingEmailDelivery(config.bookingEmailDelivery)
   : undefined;
 let activeBookingEmailDelivery: Promise<void> | undefined;
 const runBookingEmailDelivery = () => {
+  if (!config.backgroundWorkersEnabled) return;
   if (!bookingEmailDelivery || activeBookingEmailDelivery) return;
-  activeBookingEmailDelivery = runBookingEmailDeliveryJobs(targetDatabaseUrl, bookingEmailDelivery)
+  activeBookingEmailDelivery = runBookingEmailDeliveryJobs(
+    targetDatabaseUrl,
+    bookingEmailDelivery,
+    { bankTransfers: bankTransferBookings },
+  )
     .then((result) => {
       if (result.failed > 0) {
         app.log.warn({ failed: result.failed }, "Booking email delivery completed with failures");
@@ -2056,14 +2110,15 @@ const bookingEmailDeliveryTimer = bookingEmailDelivery
   : undefined;
 bookingEmailDeliveryTimer?.unref();
 if (bookingEmailDelivery) runBookingEmailDelivery();
+app.addHook("preClose", async () => {
+  await pmsInboxDeliveryWorker?.close();
+});
 app.addHook("onClose", async () => {
   clearInterval(bookingLifecycleTimer);
   if (bookingEmailDeliveryTimer) clearInterval(bookingEmailDeliveryTimer);
   await activeBookingLifecycleRun;
   await activeBookingEmailDelivery;
   await bookingLifecycleStore.close();
-  if (pmsInboxDeliveryTimer) clearInterval(pmsInboxDeliveryTimer);
-  await activePmsInboxDelivery;
   await pmsInboxDeliveryStore?.close();
   await pmsInboxDeliveryPool?.end();
 });
@@ -2072,7 +2127,7 @@ const propertySetupDraftRetentionWorker = startPropertySetupDraftRetentionWorker
   store: createPgPropertySetupDraftRetentionStore({
     connectionString: targetDatabaseUrl,
   }),
-  enabled: config.propertySetupDraftRetentionEnabled,
+  enabled: config.backgroundWorkersEnabled && config.propertySetupDraftRetentionEnabled,
   intervalMs: config.propertySetupDraftRetentionIntervalMs,
   batchSize: config.propertySetupDraftRetentionBatchSize,
   logger: app.log,
@@ -2085,6 +2140,7 @@ app.addHook("onClose", async () => {
 if (authSessionHandoffRepository) {
   let activeHandoffCleanup: Promise<void> | undefined;
   const runHandoffCleanup = () => {
+    if (!config.backgroundWorkersEnabled) return;
     if (activeHandoffCleanup) return;
     const now = new Date();
     activeHandoffCleanup = authSessionHandoffRepository
@@ -2107,6 +2163,8 @@ if (authSessionHandoffRepository) {
     await activeHandoffCleanup;
   });
 }
+
+registerShutdownSignals(app);
 
 try {
   await app.listen({ host: config.host, port: config.port });

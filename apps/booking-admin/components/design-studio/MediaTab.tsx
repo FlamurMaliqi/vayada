@@ -1,4 +1,5 @@
 "use client";
+import { useTranslation } from "@/lib/i18n";
 
 import { type RefObject, useRef, useState } from "react";
 import {
@@ -96,6 +97,7 @@ export default function MediaTab({
   reorderGalleryImage,
   publicationSetup = null,
 }: MediaTabProps) {
+  const { t } = useTranslation();
   const subtextMaxLength = publicationSetup ? 500 : 1000;
   const displayedSubtext = publicationSetup?.publicDescription ?? heroSubtext;
   const galleryInputRef = useRef<HTMLInputElement>(null);
@@ -114,10 +116,11 @@ export default function MediaTab({
     <>
       {publicationSetup && (
         <div className="rounded-lg border border-primary-200 bg-primary-50 p-4">
-          <h2 className="text-[13px] font-semibold text-gray-900">Public booking profile</h2>
+          <h2 className="text-[13px] font-semibold text-gray-900">
+            {t("admin.publicBookingProfile")}
+          </h2>
           <p className="mt-1 text-[12px] leading-5 text-gray-600">
-            Add the description, approved hero image, and locality guests need before your booking
-            page can go live.
+            {t("admin.addTheDescriptionApprovedHeroImageAndLocalityGuestsNeed")}
           </p>
           <label className="mt-3 flex items-start gap-2 text-[12px] leading-5 text-gray-700">
             <input
@@ -126,11 +129,11 @@ export default function MediaTab({
               onChange={(event) => publicationSetup.onLocalityPublicChange(event.target.checked)}
               className="mt-0.5 h-4 w-4 rounded border-gray-300 text-primary-600 focus:ring-primary-500"
             />
-            Show the hotel&apos;s city and country on the public booking page
+            {t("admin.showTheHotelSCityAndCountryOnThePublic")}
           </label>
           {!publicationSetup.hasCanonicalPublicMedia && (
             <p className="mt-2 text-[12px] font-medium leading-5 text-amber-800">
-              Upload a hero image here so Vayada can approve it for the public booking profile.
+              {t("admin.uploadAHeroImageHereSoVayadaCanApproveIt")}
             </p>
           )}
         </div>
@@ -139,15 +142,18 @@ export default function MediaTab({
       {/* Hero Image */}
       <div className="bg-white rounded-lg border border-gray-200 p-4">
         <h2 className="text-[13px] font-semibold text-gray-900">
-          Hero Image <span className="text-red-500">*</span>
+          {t("designStudio.media.heroImageTitle")}
+          <span className="text-red-500">*</span>
         </h2>
-        <p className="text-[12px] text-gray-500 mt-0.5 mb-2.5">1920x1080 recommended</p>
+        <p className="text-[12px] text-gray-500 mt-0.5 mb-2.5">
+          {t("designStudio.media.heroImageRecommended")}
+        </p>
 
         {heroImage ? (
           <div className="relative rounded-lg overflow-hidden bg-gray-200">
             <img
               src={heroImage}
-              alt="Hero"
+              alt={t("admin.hero")}
               className="w-full h-36 object-cover"
               onError={(e) => {
                 e.currentTarget.style.display = "none";
@@ -166,7 +172,7 @@ export default function MediaTab({
             className="w-full h-36 border-2 border-dashed border-gray-300 rounded-lg flex flex-col items-center justify-center gap-1.5 text-gray-400 hover:border-gray-400 hover:text-gray-500 transition-colors"
           >
             <PhotoIcon className="w-6 h-6" />
-            <span className="text-[12px]">Click to upload</span>
+            <span className="text-[12px]">{t("designStudio.media.clickToUpload")}</span>
           </button>
         )}
 
@@ -183,7 +189,7 @@ export default function MediaTab({
             onClick={() => fileInputRef.current?.click()}
             className="mt-2 w-full py-1.5 text-[12px] text-gray-600 border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors"
           >
-            Replace Image
+            {t("bookingFlow.addons.modal.replaceImage")}
           </button>
         )}
       </div>
@@ -216,10 +222,11 @@ export default function MediaTab({
       >
         <div className="flex items-start justify-between gap-3">
           <div>
-            <h2 className="text-[13px] font-semibold text-gray-900">Property Gallery</h2>
+            <h2 className="text-[13px] font-semibold text-gray-900">
+              {t("admin.propertyGallery")}
+            </h2>
             <p className="mt-0.5 text-[12px] leading-5 text-gray-500">
-              Showcase your property with up to 10 photos. Guests can view these from the gallery
-              icon on your hero image.
+              {t("admin.showcaseYourPropertyWithUpTo10PhotosGuestsCan")}
             </p>
           </div>
           <span className="shrink-0 text-[11px] font-medium tabular-nums text-gray-400">
@@ -251,14 +258,14 @@ export default function MediaTab({
               <img src={image.url} alt="" className="h-full w-full object-cover" />
               {index === 0 && (
                 <span className="absolute bottom-1.5 left-1.5 rounded bg-gray-950/80 px-1.5 py-0.5 text-[9px] font-bold tracking-wide text-white">
-                  COVER
+                  {t("admin.cover")}
                 </span>
               )}
               <button
                 type="button"
                 onClick={() => removeGalleryImage(index)}
                 disabled={galleryBusy}
-                aria-label={`Remove property photo ${index + 1}`}
+                aria-label={t("admin.removePropertyPhotoNumber", { number: index + 1 })}
                 className="absolute right-1.5 top-1.5 flex h-6 w-6 items-center justify-center rounded-full bg-gray-950/75 text-white transition hover:bg-red-600 disabled:opacity-50"
               >
                 <XMarkIcon className="h-3.5 w-3.5" />
@@ -268,7 +275,7 @@ export default function MediaTab({
                   type="button"
                   onClick={() => reorderGalleryImage(index, index - 1)}
                   disabled={galleryBusy || index === 0}
-                  aria-label={`Move property photo ${index + 1} earlier`}
+                  aria-label={t("admin.movePropertyPhotoNumberEarlier", { number: index + 1 })}
                   className="flex h-7 w-7 items-center justify-center text-white transition hover:bg-white/15 focus:outline-none focus:ring-2 focus:ring-inset focus:ring-white disabled:cursor-not-allowed disabled:opacity-40"
                 >
                   <ChevronLeftIcon className="h-4 w-4" />
@@ -277,7 +284,7 @@ export default function MediaTab({
                   type="button"
                   onClick={() => reorderGalleryImage(index, index + 1)}
                   disabled={galleryBusy || index === galleryImages.length - 1}
-                  aria-label={`Move property photo ${index + 1} later`}
+                  aria-label={t("admin.movePropertyPhotoNumberLater", { number: index + 1 })}
                   className="flex h-7 w-7 items-center justify-center text-white transition hover:bg-white/15 focus:outline-none focus:ring-2 focus:ring-inset focus:ring-white disabled:cursor-not-allowed disabled:opacity-40"
                 >
                   <ChevronRightIcon className="h-4 w-4" />
@@ -293,7 +300,7 @@ export default function MediaTab({
               className="flex aspect-[4/3] flex-col items-center justify-center gap-1 rounded-lg border-2 border-dashed border-gray-300 text-gray-400 transition hover:border-primary-400 hover:text-primary-600 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2"
             >
               <PlusIcon className="h-5 w-5" />
-              <span className="text-[11px] font-medium">Add</span>
+              <span className="text-[11px] font-medium">{t("admin.add")}</span>
             </button>
           )}
         </div>
@@ -306,7 +313,7 @@ export default function MediaTab({
             className="mt-3 flex h-20 w-full items-center justify-center gap-2 rounded-lg border-2 border-dashed border-gray-300 text-[12px] text-gray-500 transition hover:border-primary-400 hover:text-primary-600 disabled:cursor-not-allowed disabled:opacity-50"
           >
             <PhotoIcon className="h-5 w-5" />
-            Click or drag photos here
+            {t("admin.clickOrDragPhotosHere")}
           </button>
         )}
 
@@ -322,25 +329,25 @@ export default function MediaTab({
           }}
         />
         <p className="mt-2 text-[11px] leading-4 text-gray-400">
-          Landscape photos work best. Recommended: 1920×1080.
+          {t("admin.landscapePhotosWorkBestRecommended19201080")}
         </p>
         {galleryBusy && (
           <p className="mt-1 text-[11px] font-medium text-primary-600" role="status">
-            Saving gallery…
+            {t("admin.savingGallery")}
           </p>
         )}
       </div>
 
       {/* Header */}
       <div className="bg-white rounded-lg border border-gray-200 p-4">
-        <h2 className="text-[13px] font-semibold text-gray-900">Header</h2>
-        <h3 className="mt-3 text-[12px] font-medium text-gray-800">Header logo</h3>
+        <h2 className="text-[13px] font-semibold text-gray-900">{t("admin.header")}</h2>
+        <h3 className="mt-3 text-[12px] font-medium text-gray-800">{t("admin.headerLogo")}</h3>
 
         {headerLogo ? (
           <button
             type="button"
             data-testid="header-logo-dropzone"
-            aria-label="Manage header logo"
+            aria-label={t("admin.manageHeaderLogo")}
             onClick={() => setLogoActionsOpen((open) => !open)}
             onDragOver={(event) => event.preventDefault()}
             onDrop={(event) => {
@@ -353,7 +360,7 @@ export default function MediaTab({
           >
             <img
               src={headerLogo}
-              alt="Header logo preview"
+              alt={t("admin.headerLogoPreview")}
               className="max-h-10 max-w-full object-contain"
             />
           </button>
@@ -373,7 +380,7 @@ export default function MediaTab({
             className="w-full h-24 border-2 border-dashed border-gray-300 rounded-lg flex flex-col items-center justify-center gap-1.5 text-gray-400 hover:border-gray-400 hover:text-gray-500 transition-colors"
           >
             <PhotoIcon className="w-6 h-6" />
-            <span className="text-[12px]">Click or drag to upload</span>
+            <span className="text-[12px]">{t("bookingFlow.addons.modal.clickOrDrag")}</span>
           </button>
         )}
 
@@ -391,7 +398,7 @@ export default function MediaTab({
         <div className="mt-2 flex gap-2">
           <input
             type="url"
-            aria-label="Header logo URL"
+            aria-label={t("admin.headerLogoURL")}
             value={headerLogoUrl}
             onChange={(event) => setHeaderLogoUrl(event.target.value)}
             onKeyDown={(event) => {
@@ -407,7 +414,7 @@ export default function MediaTab({
             disabled={uploadingLogo || !headerLogoUrl.trim()}
             className="rounded-lg bg-primary-600 px-3 py-1.5 text-[12px] font-medium text-white hover:bg-primary-700 disabled:opacity-50"
           >
-            Add
+            {t("admin.add")}
           </button>
         </div>
 
@@ -419,7 +426,7 @@ export default function MediaTab({
               disabled={uploadingLogo}
               className="py-1.5 text-[12px] text-gray-600 border border-gray-300 rounded-lg hover:bg-gray-50 disabled:opacity-50 transition-colors"
             >
-              Replace logo
+              {t("admin.replaceLogo")}
             </button>
             <button
               type="button"
@@ -427,78 +434,85 @@ export default function MediaTab({
               disabled={uploadingLogo}
               className="py-1.5 text-[12px] text-red-600 border border-red-200 rounded-lg hover:bg-red-50 disabled:opacity-50 transition-colors"
             >
-              Remove logo
+              {t("admin.removeLogo")}
             </button>
           </div>
         )}
 
         <p className="mt-2 text-[11px] leading-4 text-gray-400">
-          PNG, SVG, or JPEG up to 500KB. 80px tall, max 300px wide, transparent background
-          recommended. Make sure it&apos;s visible on your header background color.
+          {t("admin.pngSVGOrJPEGUpTo500KB80pxTallMax")}
         </p>
 
         <div className="mt-3 divide-y divide-gray-100 border-t border-gray-100">
           <ToggleSwitch
             enabled={showContactButton}
             onChange={() => setShowContactButton(!showContactButton)}
-            label="Contact button"
+            label={t("admin.contactButton")}
           />
           <div
             title={
               referAGuestModuleEnabled
                 ? undefined
                 : referAGuestModuleEnabled === false
-                  ? "Enable Refer a Guest in Feature Hub first."
-                  : "Feature Hub status is unavailable."
+                  ? t("admin.enableReferAGuestInFeatureHubFirst")
+                  : t("admin.featureHubStatusIsUnavailable")
             }
           >
             <ToggleSwitch
               enabled={Boolean(referAGuestModuleEnabled && showReferAGuestButton)}
               onChange={() => setShowReferAGuestButton(!showReferAGuestButton)}
-              label="Refer a Guest button"
-              description="Tied to Feature Hub activation."
+              label={t("admin.referAGuestButton")}
+              description={t("admin.tiedToFeatureHubActivation")}
               disabled={!referAGuestModuleEnabled}
             />
           </div>
           <ToggleSwitch
             enabled={showLanguageSelector}
             onChange={() => setShowLanguageSelector(!showLanguageSelector)}
-            label="Language selector"
-            description="Hidden automatically when only one language is configured."
+            label={t("admin.languageSelector")}
+            description={t("admin.hiddenAutomaticallyWhenOnlyOneLanguageIsConfigured")}
           />
           <ToggleSwitch
             enabled={showCurrencySelector}
             onChange={() => setShowCurrencySelector(!showCurrencySelector)}
-            label="Currency selector"
-            description="Hidden automatically when only one currency is configured."
+            label={t("admin.currencySelector")}
+            description={t("admin.hiddenAutomaticallyWhenOnlyOneCurrencyIsConfigured")}
           />
         </div>
       </div>
 
       {/* Text Overrides */}
       <div className="bg-white rounded-lg border border-gray-200 p-4">
-        <h2 className="text-[13px] font-semibold text-gray-900">Hero Text</h2>
-        <p className="text-[12px] text-gray-500 mt-0.5 mb-2.5">Customize heading and subtext</p>
+        <h2 className="text-[13px] font-semibold text-gray-900">
+          {t("designStudio.media.heroTextTitle")}
+        </h2>
+        <p className="text-[12px] text-gray-500 mt-0.5 mb-2.5">
+          {t("designStudio.media.heroTextSubtitle")}
+        </p>
 
         <div className="space-y-2.5">
           <div>
-            <label className="block text-[12px] font-medium text-gray-700 mb-0.5">Heading</label>
+            <label className="block text-[12px] font-medium text-gray-700 mb-0.5">
+              {t("designStudio.media.headingLabel")}
+            </label>
             <input
               type="text"
-              aria-label="Hero heading"
+              aria-label={t("admin.heroHeading")}
               value={heroHeading}
               onChange={(e) => setHeroHeading(e.target.value)}
               maxLength={160}
               className="w-full px-2.5 py-1.5 border border-gray-300 rounded-lg text-[13px] focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent"
-              placeholder="Enter hero heading"
+              placeholder={t("designStudio.media.headingPlaceholder")}
             />
           </div>
           <div>
             <label className="block text-[12px] font-medium text-gray-700 mb-0.5">
-              {publicationSetup ? "Public description" : "Subtext"}
+              {publicationSetup
+                ? t("admin.publicDescription")
+                : t("designStudio.media.subtextLabel")}
             </label>
             <textarea
-              aria-label={publicationSetup ? "Public description" : "Hero subtext"}
+              aria-label={publicationSetup ? t("admin.publicDescription") : t("admin.heroSubtext")}
               value={displayedSubtext}
               onChange={(event) =>
                 publicationSetup
@@ -508,10 +522,10 @@ export default function MediaTab({
               maxLength={subtextMaxLength}
               rows={3}
               className="w-full px-2.5 py-1.5 border border-gray-300 rounded-lg text-[13px] focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent resize-none"
-              placeholder="Enter hero subtext"
+              placeholder={t("designStudio.media.subtextPlaceholder")}
             />
             <p className="text-[11px] text-gray-400 mt-0.5">
-              {displayedSubtext.length}/{subtextMaxLength} characters
+              {displayedSubtext.length}/{subtextMaxLength} {t("designStudio.media.characterCount")}
             </p>
           </div>
           <button
@@ -519,7 +533,7 @@ export default function MediaTab({
             className="w-full py-1.5 text-[12px] text-gray-500 border border-gray-200 rounded-lg hover:bg-gray-50 transition-colors flex items-center justify-center gap-1"
           >
             <ArrowPathIcon className="w-3 h-3" />
-            Reset to Default
+            {t("designStudio.media.resetToDefault")}
           </button>
         </div>
       </div>

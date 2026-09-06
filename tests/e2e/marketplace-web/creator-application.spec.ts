@@ -37,7 +37,7 @@ test("creator selects one compensation option when applying", async ({ page }) =
             currency: null,
             discountPercentage: null,
             commissionPercentage: null,
-            minFollowers: null,
+            minFollowers: 20_000,
             termsSummary: null,
           },
           {
@@ -51,7 +51,7 @@ test("creator selects one compensation option when applying", async ({ page }) =
             currency: "EUR",
             discountPercentage: null,
             commissionPercentage: null,
-            minFollowers: null,
+            minFollowers: 500_000,
             termsSummary: null,
           },
         ],
@@ -166,11 +166,20 @@ test("creator selects one compensation option when applying", async ({ page }) =
 
   await page.goto("/marketplace");
   await expect(page.getByText("Board", { exact: true })).toHaveCount(0);
+  await expect(page.getByText("Free Stay: Minimum 20k followers", { exact: true })).toBeVisible();
+  await expect(page.getByText("Paid: Minimum 500k followers", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Details", exact: true }).click();
+  const detailDialog = page.getByRole("dialog");
+  await expect(detailDialog.getByText("Minimum 20k followers", { exact: true })).toBeVisible();
+  await expect(detailDialog.getByText("Minimum 500k followers", { exact: true })).toBeVisible();
+  await page.keyboard.press("Escape");
   await page.getByRole("button", { name: "Apply", exact: true }).click();
   await expect(page.getByRole("heading", { name: "Apply for Collaboration" })).toBeVisible();
 
   const compensationRadios = page.getByRole("radio");
   await expect(compensationRadios).toHaveCount(2);
+  await expect(page.getByRole("radio", { name: /Free Stay.*Minimum 20k followers/ })).toBeEnabled();
+  await expect(page.getByRole("radio", { name: /Paid.*Minimum 500k followers/ })).toBeEnabled();
   const [freeStayRow, paidRow] = await Promise.all([
     compensationRadios.nth(0).locator("..").boundingBox(),
     compensationRadios.nth(1).locator("..").boundingBox(),
@@ -324,132 +333,144 @@ test("creator selects one compensation option when applying", async ({ page }) =
   await expect(page.getByRole("button", { name: "Apply", exact: true })).toBeFocused();
 });
 
-test("creator can navigate the hotel detail gallery", async ({ page }) => {
-  await primeCreatorSession(page);
-  await mockCreatorProfile(page);
-  await routeJson(page, /\/api\/marketplace\/offers(?:\?|$)/, {
-    items: [
-      {
-        offerId: "offer-gallery-e2e",
-        offerPublicId: "offer-gallery-public-e2e",
-        offerTitle: "Gallery hotel",
-        offerSummary: "A two-image creator stay.",
-        hotelName: "Gallery hotel",
-        hotelSlug: "gallery-hotel",
-        hotelAccommodationType: "hotel",
-        hotelLocation: { displayText: "Berlin, Germany", countryCode: "DE" },
-        hotelCoverImageUrl: "/missing-gallery-image.jpg",
-        hotelImageUrls: ["/missing-gallery-image.jpg", "/creator-category-lifestyle.jpg"],
-        deliverables: [],
-        compensationOptions: [
-          {
-            compensationOptionId: "gallery-free-stay",
-            compensationType: "free_stay",
-            availabilityMonths: ["September"],
-            platforms: ["instagram"],
-            freeStayMinNights: 2,
-            freeStayMaxNights: 2,
-            paidMaxAmount: null,
-            currency: null,
-            discountPercentage: null,
-            commissionPercentage: null,
-            minFollowers: null,
-            termsSummary: null,
-          },
-        ],
-        creatorRequirements: null,
-        createdAt: "2026-07-01T10:00:00.000Z",
-        projectedAt: "2026-07-01T10:00:00.000Z",
-      },
-    ],
-    pagination: { limit: 200, offset: 0, total: 1 },
+for (const minimum of [null, 0, 1_500_000]) {
+  test(`creator can navigate the hotel detail gallery with minimum ${minimum}`, async ({
+    page,
+  }) => {
+    await primeCreatorSession(page);
+    await mockCreatorProfile(page);
+    await routeJson(page, /\/api\/marketplace\/offers(?:\?|$)/, {
+      items: [
+        {
+          offerId: "offer-gallery-e2e",
+          offerPublicId: "offer-gallery-public-e2e",
+          offerTitle: "Gallery hotel",
+          offerSummary: "A two-image creator stay.",
+          hotelName: "Gallery hotel",
+          hotelSlug: "gallery-hotel",
+          hotelAccommodationType: "hotel",
+          hotelLocation: { displayText: "Berlin, Germany", countryCode: "DE" },
+          hotelCoverImageUrl: "/missing-gallery-image.jpg",
+          hotelImageUrls: ["/missing-gallery-image.jpg", "/creator-category-lifestyle.jpg"],
+          deliverables: [],
+          compensationOptions: [
+            {
+              compensationOptionId: "gallery-free-stay",
+              compensationType: "free_stay",
+              availabilityMonths: ["September"],
+              platforms: ["instagram"],
+              freeStayMinNights: 2,
+              freeStayMaxNights: 2,
+              paidMaxAmount: null,
+              currency: null,
+              discountPercentage: null,
+              commissionPercentage: null,
+              minFollowers: minimum,
+              termsSummary: null,
+            },
+          ],
+          creatorRequirements: null,
+          createdAt: "2026-07-01T10:00:00.000Z",
+          projectedAt: "2026-07-01T10:00:00.000Z",
+        },
+      ],
+      pagination: { limit: 200, offset: 0, total: 1 },
+    });
+
+    await page.goto("/marketplace");
+    await expect(page.getByText(/Minimum .* followers/)).toHaveCount(minimum ? 1 : 0);
+    await expect(page.getByAltText("Gallery hotel - Image 1")).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "Next image" })).toBeVisible();
+    await page.getByRole("button", { name: "Next image" }).click();
+    await expect(page.getByAltText("Gallery hotel - Image 2")).toBeVisible();
+    await expect(page.getByRole("button", { name: "Go to image 2" })).toHaveAttribute(
+      "aria-current",
+      "true",
+    );
+
+    const detailsButton = page.getByRole("button", { name: "Details", exact: true });
+    await detailsButton.click();
+
+    const dialog = page.getByRole("dialog", { name: "Gallery hotel" });
+    await expect(dialog).toBeVisible();
+    await expect(dialog.getByText(/Minimum .* followers/)).toHaveCount(minimum ? 1 : 0);
+    if (minimum) await expect(dialog.getByText("Minimum 1.5m followers")).toBeVisible();
+    await expect(dialog.getByText("Board Type", { exact: true })).toHaveCount(0);
+    await expect(dialog.getByText("Meal plan included", { exact: true })).toHaveCount(0);
+    const closeButton = dialog.getByRole("button", { name: "Close hotel details" });
+    await expect(closeButton).toBeFocused();
+    await expect(dialog.getByAltText("Gallery hotel - Image 1")).toHaveCount(0);
+    await expect(dialog.getByRole("button", { name: "Next detail image" })).toBeVisible();
+
+    const firstFocusable = dialog.getByRole("button", { name: "Previous detail image" });
+    const lastFocusable = dialog.getByRole("button", { name: "Apply for Collaboration" });
+    await lastFocusable.focus();
+    await page.keyboard.press("Tab");
+    await expect(firstFocusable).toBeFocused();
+    await page.keyboard.press("Shift+Tab");
+    await expect(lastFocusable).toBeFocused();
+
+    await dialog.getByRole("button", { name: "Next detail image" }).click();
+    await expect(dialog.getByAltText("Gallery hotel - Image 2")).toBeVisible();
+    await expect(dialog.getByRole("button", { name: "Show detail image 2" })).toHaveAttribute(
+      "aria-current",
+      "true",
+    );
+
+    await dialog.getByRole("button", { name: "Show detail image 1" }).click();
+    await expect(dialog.getByRole("button", { name: "Show detail image 1" })).toHaveAttribute(
+      "aria-current",
+      "true",
+    );
+    await expect(dialog.getByRole("button", { name: "Next detail image" })).toBeVisible();
+
+    const detailDialogElement = page.locator(
+      '[role="dialog"][aria-labelledby="hotel-detail-title"]',
+    );
+    const applyFromDetails = dialog.getByRole("button", { name: "Apply for Collaboration" });
+    await applyFromDetails.click();
+
+    const applicationDialog = page.getByRole("dialog", { name: "Apply for Collaboration" });
+    await expect(applicationDialog).toBeVisible();
+    await expect(detailDialogElement).toHaveAttribute("inert", "");
+    await expect(applicationDialog.getByText("Your compensation")).toBeVisible();
+    await expect(applicationDialog.getByText(/Minimum .* followers/)).toHaveCount(minimum ? 1 : 0);
+    if (minimum) await expect(applicationDialog.getByText("Minimum 1.5m followers")).toBeVisible();
+    const closeApplication = applicationDialog.getByRole("button", { name: "Close application" });
+    const cancelApplication = applicationDialog.getByRole("button", { name: "Cancel" });
+    const fitInput = applicationDialog.getByPlaceholder(
+      /Share your content style, audience demographics/,
+    );
+    await expect(closeApplication).toBeFocused();
+    await cancelApplication.focus();
+    await page.keyboard.press("Tab");
+    await expect(closeApplication).toBeFocused();
+    await page.keyboard.press("Shift+Tab");
+    await expect(cancelApplication).toBeFocused();
+    await fitInput.fill("This should be cleared when the modal closes.");
+    await page.keyboard.press("Escape");
+    await expect(applicationDialog).toHaveCount(0);
+    await expect(detailDialogElement).not.toHaveAttribute("inert");
+    await expect(applyFromDetails).toBeFocused();
+
+    await applyFromDetails.click();
+    const reopenedApplicationDialog = page.getByRole("dialog", {
+      name: "Apply for Collaboration",
+    });
+    await expect(reopenedApplicationDialog).toBeVisible();
+    await expect(
+      reopenedApplicationDialog.getByPlaceholder(/Share your content style, audience demographics/),
+    ).toHaveValue("");
+    await reopenedApplicationDialog.locator("..").click({ position: { x: 2, y: 2 } });
+    await expect(reopenedApplicationDialog).toHaveCount(0);
+    await expect(detailDialogElement).not.toHaveAttribute("inert");
+    await expect(applyFromDetails).toBeFocused();
+
+    await page.keyboard.press("Escape");
+    await expect(dialog).toHaveCount(0);
+    await expect(detailsButton).toBeFocused();
   });
-
-  await page.goto("/marketplace");
-  await expect(page.getByAltText("Gallery hotel - Image 1")).toHaveCount(0);
-  await expect(page.getByRole("button", { name: "Next image" })).toBeVisible();
-  await page.getByRole("button", { name: "Next image" }).click();
-  await expect(page.getByAltText("Gallery hotel - Image 2")).toBeVisible();
-  await expect(page.getByRole("button", { name: "Go to image 2" })).toHaveAttribute(
-    "aria-current",
-    "true",
-  );
-
-  const detailsButton = page.getByRole("button", { name: "Details", exact: true });
-  await detailsButton.click();
-
-  const dialog = page.getByRole("dialog", { name: "Gallery hotel" });
-  await expect(dialog).toBeVisible();
-  await expect(dialog.getByText("Board Type", { exact: true })).toHaveCount(0);
-  await expect(dialog.getByText("Meal plan included", { exact: true })).toHaveCount(0);
-  const closeButton = dialog.getByRole("button", { name: "Close hotel details" });
-  await expect(closeButton).toBeFocused();
-  await expect(dialog.getByAltText("Gallery hotel - Image 1")).toHaveCount(0);
-  await expect(dialog.getByRole("button", { name: "Next detail image" })).toBeVisible();
-
-  const firstFocusable = dialog.getByRole("button", { name: "Previous detail image" });
-  const lastFocusable = dialog.getByRole("button", { name: "Apply for Collaboration" });
-  await lastFocusable.focus();
-  await page.keyboard.press("Tab");
-  await expect(firstFocusable).toBeFocused();
-  await page.keyboard.press("Shift+Tab");
-  await expect(lastFocusable).toBeFocused();
-
-  await dialog.getByRole("button", { name: "Next detail image" }).click();
-  await expect(dialog.getByAltText("Gallery hotel - Image 2")).toBeVisible();
-  await expect(dialog.getByRole("button", { name: "Show detail image 2" })).toHaveAttribute(
-    "aria-current",
-    "true",
-  );
-
-  await dialog.getByRole("button", { name: "Show detail image 1" }).click();
-  await expect(dialog.getByRole("button", { name: "Show detail image 1" })).toHaveAttribute(
-    "aria-current",
-    "true",
-  );
-  await expect(dialog.getByRole("button", { name: "Next detail image" })).toBeVisible();
-
-  const detailDialogElement = page.locator('[role="dialog"][aria-labelledby="hotel-detail-title"]');
-  const applyFromDetails = dialog.getByRole("button", { name: "Apply for Collaboration" });
-  await applyFromDetails.click();
-
-  const applicationDialog = page.getByRole("dialog", { name: "Apply for Collaboration" });
-  await expect(applicationDialog).toBeVisible();
-  await expect(detailDialogElement).toHaveAttribute("inert", "");
-  const closeApplication = applicationDialog.getByRole("button", { name: "Close application" });
-  const cancelApplication = applicationDialog.getByRole("button", { name: "Cancel" });
-  const fitInput = applicationDialog.getByPlaceholder(
-    /Share your content style, audience demographics/,
-  );
-  await expect(closeApplication).toBeFocused();
-  await cancelApplication.focus();
-  await page.keyboard.press("Tab");
-  await expect(closeApplication).toBeFocused();
-  await page.keyboard.press("Shift+Tab");
-  await expect(cancelApplication).toBeFocused();
-  await fitInput.fill("This should be cleared when the modal closes.");
-  await page.keyboard.press("Escape");
-  await expect(applicationDialog).toHaveCount(0);
-  await expect(detailDialogElement).not.toHaveAttribute("inert");
-  await expect(applyFromDetails).toBeFocused();
-
-  await applyFromDetails.click();
-  const reopenedApplicationDialog = page.getByRole("dialog", {
-    name: "Apply for Collaboration",
-  });
-  await expect(reopenedApplicationDialog).toBeVisible();
-  await expect(
-    reopenedApplicationDialog.getByPlaceholder(/Share your content style, audience demographics/),
-  ).toHaveValue("");
-  await reopenedApplicationDialog.locator("..").click({ position: { x: 2, y: 2 } });
-  await expect(reopenedApplicationDialog).toHaveCount(0);
-  await expect(detailDialogElement).not.toHaveAttribute("inert");
-  await expect(applyFromDetails).toBeFocused();
-
-  await page.keyboard.press("Escape");
-  await expect(dialog).toHaveCount(0);
-  await expect(detailsButton).toBeFocused();
-});
+}
 
 async function primeCreatorSession(page: Page) {
   await page.addInitScript(() => {

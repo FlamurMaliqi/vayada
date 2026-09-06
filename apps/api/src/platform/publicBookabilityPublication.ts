@@ -515,8 +515,8 @@ export const PROJECT_PUBLIC_BOOKABILITY_PROFILE = `
         CASE
           WHEN COALESCE(input.payments_enabled, FALSE)
             AND 'bank_transfer' = ANY(COALESCE(input.accepted_methods, ARRAY[]::text[]))
-            AND NULLIF(BTRIM(input.finance_deposit_policy ->> 'bankTransferInstructions'), '')
-              IS NOT NULL
+            AND EXISTS (SELECT 1 FROM finance.bank_transfer_destinations destination
+              WHERE destination.property_id=input.property_id AND destination.enabled)
             THEN 'bank_transfer'
         END,
         CASE

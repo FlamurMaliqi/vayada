@@ -1,4 +1,15 @@
 {
+  "analyticsConsent": {
+    "settings": "Pilihan privasi",
+    "title": "Analitik opsional",
+    "description": "Kami menggunakan analitik opsional untuk memahami kunjungan dan langkah pemesanan. Pemesanan tetap berfungsi tanpa analitik. Pilihan Anda hanya berlaku untuk situs pemesanan hotel ini.",
+    "enabled": "Analitik aktif.",
+    "disabled": "Analitik nonaktif.",
+    "saveError": "Pilihan Anda tidak dapat disimpan. Analitik tetap nonaktif.",
+    "reject": "Tolak analitik",
+    "accept": "Izinkan analitik",
+    "close": "Pertahankan pilihan saat ini"
+  },
   "common": {
     "checkAvailability": "Cek Ketersediaan",
     "bookNow": "Pesan Sekarang",
@@ -50,6 +61,12 @@
     "payment": "Pembayaran"
   },
   "home": {
+    "guestCountUnsupported": "Pencarian online tidak mendukung grup Anda sebanyak {count} tamu. Coba kurangi jumlah tamu atau hubungi kami.",
+    "guestCountUnavailable": "Tidak ada akomodasi kami yang tersedia yang dapat menampung grup Anda sebanyak {count} tamu. Coba kurangi jumlah tamu atau pilih tanggal lain.",
+    "noAvailability": "Tidak ada akomodasi tersedia untuk pencarian ini. Coba tanggal atau opsi pencarian lain.",
+    "availabilityError": "Kami tidak dapat memeriksa ketersediaan. Silakan coba lagi.",
+    "noMatchingRooms": "Tidak ada akomodasi yang sesuai dengan filter Anda. Coba hapus filter.",
+
     "yourStay": "Masa Menginap Anda",
     "addPromo": "Tambah promo",
     "promoTitle": "Punya kode promo?",

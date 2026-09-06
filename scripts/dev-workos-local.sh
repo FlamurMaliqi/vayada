@@ -171,7 +171,6 @@ BOOKING_ADMIN_ORIGIN="$(get_portless_origin admin.booking)"
 BOOKING_ORIGIN="$(get_portless_origin booking)"
 PMS_ORIGIN="$(get_portless_origin pms)"
 MARKETPLACE_ORIGIN="$(get_portless_origin marketplace)"
-AFFILIATE_ORIGIN="$(get_portless_origin affiliate)"
 LANDING_ORIGIN="$(get_portless_origin landing)"
 MARKETPLACE_API_ORIGIN="$(get_portless_origin api.marketplace)"
 BOOKING_API_ORIGIN="$(get_portless_origin api.booking)"
@@ -195,25 +194,22 @@ export HOTEL_SETUP_MARKETPLACE_ORIGIN="${HOTEL_SETUP_MARKETPLACE_ORIGIN:-${MARKE
 export HOTEL_SETUP_BOOKING_ADMIN_ORIGIN="${HOTEL_SETUP_BOOKING_ADMIN_ORIGIN:-${BOOKING_ADMIN_ORIGIN}}"
 export HOTEL_SETUP_PMS_ORIGIN="${HOTEL_SETUP_PMS_ORIGIN:-${PMS_ORIGIN}}"
 export AUTH_LOGOUT_URL="${AUTH_LOGOUT_URL:-${ADMIN_ORIGIN}/login}"
-export AUTH_ALLOWED_ORIGINS="${API_ORIGIN},${ADMIN_ORIGIN},${BOOKING_ADMIN_ORIGIN},${BOOKING_ORIGIN},${PMS_ORIGIN},${MARKETPLACE_ORIGIN},${AFFILIATE_ORIGIN},${LANDING_ORIGIN}"
+export AUTH_ALLOWED_ORIGINS="${API_ORIGIN},${ADMIN_ORIGIN},${BOOKING_ADMIN_ORIGIN},${BOOKING_ORIGIN},${PMS_ORIGIN},${MARKETPLACE_ORIGIN},${LANDING_ORIGIN}"
 export AUTH_COOKIE_SECURE=true
 export AUTH_COMPATIBILITY_CALLBACK_ORIGIN="$API_ORIGIN"
 export AUTH_PLATFORM_ADMIN_ORIGIN="$ADMIN_ORIGIN"
 export AUTH_MARKETPLACE_WEB_ORIGIN="$MARKETPLACE_ORIGIN"
 export AUTH_BOOKING_ADMIN_ORIGIN="$BOOKING_ADMIN_ORIGIN"
 export AUTH_PMS_WEB_ORIGIN="$PMS_ORIGIN"
-export AUTH_AFFILIATE_DASHBOARD_ORIGIN="$AFFILIATE_ORIGIN"
-# All five browser surfaces ship first-party gateways in VAY-1197–1201.
+# Remaining browser surfaces use first-party gateways.
 # An explicit empty override still restores the direct API-host compatibility transport.
-export AUTH_FIRST_PARTY_SURFACES="${AUTH_FIRST_PARTY_SURFACES-marketplace-web,booking-admin,pms-web,affiliate-dashboard,platform-admin}"
+export AUTH_FIRST_PARTY_SURFACES="${AUTH_FIRST_PARTY_SURFACES-marketplace-web,booking-admin,pms-web,platform-admin}"
 export AUTH_BOOKING_ADMIN_LOGOUT_URL="${AUTH_BOOKING_ADMIN_LOGOUT_URL:-${BOOKING_ADMIN_ORIGIN}/login}"
 export AUTH_PMS_WEB_LOGOUT_URL="${AUTH_PMS_WEB_LOGOUT_URL:-${PMS_ORIGIN}/login}"
-export AUTH_AFFILIATE_DASHBOARD_LOGOUT_URL="${AUTH_AFFILIATE_DASHBOARD_LOGOUT_URL:-${AFFILIATE_ORIGIN}/login}"
 export AUTH_MARKETPLACE_WEB_LOGOUT_URL="${AUTH_MARKETPLACE_WEB_LOGOUT_URL:-${MARKETPLACE_ORIGIN}/login}"
 export AUTH_LEGACY_MARKETPLACE_JWT_SECRET="${AUTH_LEGACY_MARKETPLACE_JWT_SECRET:-your-secret-key-change-in-production}"
 export AUTH_LEGACY_BOOKING_JWT_SECRET="${AUTH_LEGACY_BOOKING_JWT_SECRET:-local-legacy-booking-secret}"
 export AUTH_LEGACY_PMS_JWT_SECRET="${AUTH_LEGACY_PMS_JWT_SECRET:-local-legacy-pms-secret}"
-export AUTH_LEGACY_AFFILIATE_PMS_JWT_SECRET="${AUTH_LEGACY_AFFILIATE_PMS_JWT_SECRET:-local-legacy-affiliate-secret}"
 export PLATFORM_MEDIA_BUCKET="vayada-media-local"
 export PLATFORM_MEDIA_CDN_BASE_URL="$MEDIA_CDN_ORIGIN"
 export PLATFORM_MEDIA_CDN_ORIGIN_HOST="127.0.0.1"
@@ -229,8 +225,7 @@ for origin in \
   "$ADMIN_ORIGIN" \
   "$BOOKING_ADMIN_ORIGIN" \
   "$PMS_ORIGIN" \
-  "$MARKETPLACE_ORIGIN" \
-  "$AFFILIATE_ORIGIN"; do
+  "$MARKETPLACE_ORIGIN"; do
   ensure_workos_redirect "$(workos_local_callback_url "WorkOS callback" "$origin")"
 done
 for origin in \
@@ -240,7 +235,6 @@ for origin in \
   "$BOOKING_ORIGIN" \
   "$PMS_ORIGIN" \
   "$MARKETPLACE_ORIGIN" \
-  "$AFFILIATE_ORIGIN" \
   "$LANDING_ORIGIN"; do
   ensure_workos_cors "$origin"
 done
@@ -336,10 +330,6 @@ start_app apps/pms-web 3004 "${COMMON_FRONTEND_ENV[@]}" \
   "AUTH_GATEWAY_UPSTREAM_ORIGIN=${AUTH_GATEWAY_UPSTREAM_ORIGIN}" \
   "NEXT_PUBLIC_PMS_API_URL=${PMS_API_ORIGIN}" \
   "NEXT_PUBLIC_PMS_OPERATIONS_API_URL=${API_ORIGIN}"
-start_app apps/affiliate-dashboard 3005 "${COMMON_FRONTEND_ENV[@]}" \
-  "AUTH_PUBLIC_ORIGIN=${AFFILIATE_ORIGIN}" \
-  "AUTH_GATEWAY_UPSTREAM_ORIGIN=${AUTH_GATEWAY_UPSTREAM_ORIGIN}" \
-  "NEXT_PUBLIC_API_URL=${API_ORIGIN}"
 start_app apps/landing 3006 "${COMMON_FRONTEND_ENV[@]}" "NEXT_PUBLIC_API_URL=${MARKETPLACE_API_ORIGIN}"
 
 wait

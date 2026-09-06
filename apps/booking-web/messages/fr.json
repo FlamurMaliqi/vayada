@@ -1,4 +1,15 @@
 {
+  "analyticsConsent": {
+    "settings": "Choix de confidentialité",
+    "title": "Statistiques facultatives",
+    "description": "Nous utilisons des statistiques facultatives pour comprendre les visites et les étapes de réservation. Vous pouvez réserver sans les activer. Votre choix concerne uniquement le site de réservation de cet hôtel.",
+    "enabled": "Statistiques activées.",
+    "disabled": "Statistiques désactivées.",
+    "saveError": "Impossible d’enregistrer votre choix. Les statistiques restent désactivées.",
+    "reject": "Refuser les statistiques",
+    "accept": "Autoriser les statistiques",
+    "close": "Conserver le choix actuel"
+  },
   "common": {
     "checkAvailability": "Vérifier la disponibilité",
     "bookNow": "Réserver maintenant",
@@ -50,6 +61,12 @@
     "payment": "Paiement"
   },
   "home": {
+    "guestCountUnsupported": "La recherche en ligne ne prend pas en charge votre groupe de {count} personnes. Essayez avec moins de personnes ou contactez-nous.",
+    "guestCountUnavailable": "Aucun de nos hébergements disponibles ne peut accueillir votre groupe de {count} personnes. Essayez avec moins de personnes ou à d’autres dates.",
+    "noAvailability": "Aucun hébergement disponible pour cette recherche. Essayez d’autres dates ou options.",
+    "availabilityError": "Nous n’avons pas pu vérifier la disponibilité. Veuillez réessayer.",
+    "noMatchingRooms": "Aucun hébergement ne correspond à vos filtres. Essayez de retirer un filtre.",
+
     "yourStay": "Votre séjour",
     "addPromo": "Ajouter un code promo",
     "promoTitle": "Vous avez un code promo ?",

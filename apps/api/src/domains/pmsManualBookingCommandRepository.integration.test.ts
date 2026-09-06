@@ -1021,6 +1021,7 @@ describe.skipIf(!TEST_DATABASE_URL)("target manual-booking PostgreSQL transactio
       commandId: "cancel-command",
       idempotencyKey: "cancel-key",
       reason: "property cancellation",
+      guestMessage: "Sorry for the inconvenience.\n\nPlease call <help@example.test>.",
       accountingDate: "2026-08-21",
       retainedCharges: [
         {
@@ -1046,7 +1047,9 @@ describe.skipIf(!TEST_DATABASE_URL)("target manual-booking PostgreSQL transactio
     ).resolves.toMatchObject({ ok: false, code: "invalid_body" });
     await expect(operations.cancelManualBooking!(cancellation)).resolves.toMatchObject({
       ok: true,
-      commandMeta: { sideEffects: ["calendar_refresh", "ari_changed", "audit_event"] },
+      commandMeta: {
+        sideEffects: ["calendar_refresh", "ari_changed", "guest_notification", "audit_event"],
+      },
     });
     expect(optimizationCalls).toEqual([{ reason: "cancel", roomTypeIds: [roomTypeId] }]);
     await expect(operations.cancelManualBooking!(cancellation)).resolves.toMatchObject({
@@ -1056,6 +1059,19 @@ describe.skipIf(!TEST_DATABASE_URL)("target manual-booking PostgreSQL transactio
     await expect(
       operations.cancelManualBooking!({ ...cancellation, reason: "changed" }),
     ).resolves.toMatchObject({ ok: false, code: "idempotency_conflict" });
+
+    await expect(
+      operations.cancelManualBooking!({ ...cancellation, guestMessage: "Changed" }),
+    ).resolves.toMatchObject({ ok: false, code: "idempotency_conflict" });
+    const emails = await admin.query(
+      `SELECT payload FROM platform.jobs
+      WHERE resource_id=$1 AND job_type='email.booking-canceled'`,
+      [created.guestBookingId],
+    );
+    expect(emails.rows).toHaveLength(1);
+    expect(emails.rows[0].payload.text).toContain(cancellation.guestMessage);
+    expect(emails.rows[0].payload.text).not.toContain(cancellation.reason);
+    expect(emails.rows[0].payload.html).toBeUndefined();
 
     const stored = await admin.query(
       `SELECT booking.lifecycle_status AS status,assignment.assignment_status AS assignment,

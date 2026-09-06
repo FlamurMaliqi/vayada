@@ -1,3 +1,4 @@
+import type { AddonPhoto } from "@vayada/product-onboarding/AddonEditor";
 import { ApiErrorResponse, apiClient, isNextApiTarget, omitHotelContext } from "../api/client";
 import { getSelectedBookingHotelId, listScopedBookingHotelIds } from "../api/bookingHotelScope";
 import {
@@ -341,6 +342,9 @@ export interface AddonItem {
   category: string;
   image: string;
   imageMediaObjectId?: string | null;
+  photos?: AddonPhoto[];
+  maxQuantity?: number;
+  leadTime?: string;
   duration?: string;
   perPerson?: boolean;
   perNight?: boolean;

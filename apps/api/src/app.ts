@@ -1,3 +1,5 @@
+import { registerBookingHostActionRoutes } from "./routes/bookingHostActions.js";
+import type { BookingHostActions } from "./domains/bookingHostActions.js";
 import { registerPmsConfirmationEmailRoutes } from "./routes/pmsConfirmationEmails.js";
 import type { PmsConfirmationEmails } from "./domains/pmsConfirmationEmails.js";
 import {
@@ -165,6 +167,7 @@ import {
 import { registerFinanceSubscriptionRoutes } from "./routes/financeSubscriptions.js";
 import { registerFinanceExpenseRoutes } from "./routes/financeExpenses.js";
 import { registerFinanceFolioRoutes } from "./routes/financeFolios.js";
+import { registerFinanceBankTransferRoutes } from "./routes/financeBankTransfer.js";
 import {
   registerAffiliateDashboardRoutes,
   type AffiliateDashboardReadRepository,
@@ -276,6 +279,7 @@ type BuildAppOptions = Pick<FastifyServerOptions, "logger" | "trustProxy"> & {
   bookingGuestPolicy?: BookingGuestPolicyRoutesOptions;
   bookingChangeRequestRepository?: BookingHotelChangeRequestRepository;
   pmsConfirmationEmails?: PmsConfirmationEmails;
+  bookingHostActions?: BookingHostActions;
   pmsOperationsRepository?: PmsOperationsReadRepository;
   pmsInboxAssistancePort?: PmsInboxAssistancePort;
   pmsInboxReadPort?: PmsInboxReadPort;
@@ -283,6 +287,7 @@ type BuildAppOptions = Pick<FastifyServerOptions, "logger" | "trustProxy"> & {
   pmsInboxProviderActionPort?: PmsInboxProviderActionPort;
   pmsInboxQuickReplyPort?: PmsInboxQuickReplyPort;
   pmsInboxReplyPort?: PmsInboxReplyPort;
+  pmsInboxSendingEnabled?: boolean;
   pmsInboxStartDirectEmailPort?: PmsInboxStartDirectEmailPort;
   pmsInboxTriagePort?: PmsInboxTriagePort;
   pmsInboxStaffCommandPort?: PmsInboxStaffCommandPort;
@@ -385,6 +390,7 @@ type BuildAppOptions = Pick<FastifyServerOptions, "logger" | "trustProxy"> & {
   financeOtaCommissionSettingsRepository?: Parameters<typeof registerOtaSettings>[1]["repository"];
   financeExpenses?: Parameters<typeof registerFinanceExpenseRoutes>[1];
   financeFolios?: Parameters<typeof registerFinanceFolioRoutes>[1];
+  financeBankTransfer?: Parameters<typeof registerFinanceBankTransferRoutes>[1];
   pmsFinanceCompatibilityRepository?: PmsFinanceCompatibilityRoutesOptions["repository"];
   financeXenditBankValidator?: FinanceXenditBankValidator;
   financePublicHotelProfileRepository?: PublicHotelProfileRepository;
@@ -697,6 +703,14 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     repository: options.affiliateDashboardRepository,
     financeRepository: options.financeRepository,
   });
+  if (options.bookingHostActions && options.auth) {
+    app.register(registerBookingHostActionRoutes, {
+      prefix: "/api/pms",
+      actions: options.bookingHostActions,
+      propertyAccessRepository: options.auth.propertyAccessRepository,
+      allowedOrigins: options.pmsOperationsAllowedOrigins,
+    });
+  }
   if (options.pmsConfirmationEmails && options.auth) {
     app.register(registerPmsConfirmationEmailRoutes, {
       prefix: "/api/pms",
@@ -730,6 +744,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       inboxProviderActionPort: options.pmsInboxProviderActionPort,
       inboxQuickReplyPort: options.pmsInboxQuickReplyPort,
       inboxReplyPort: options.pmsInboxReplyPort,
+      inboxSendingEnabled: options.pmsInboxSendingEnabled,
       inboxStartDirectEmailPort: options.pmsInboxStartDirectEmailPort,
       inboxTriagePort: options.pmsInboxTriagePort,
       inboxStaffCommandPort: options.pmsInboxStaffCommandPort,
@@ -836,6 +851,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     app.register(registerFinanceRoutes, {
       prefix: "/api",
       repository: options.financeRepository,
+      propertyAccessRepository: options.auth?.propertyAccessRepository,
       publicBookabilityPublisher: options.publicBookabilityPublisher,
       xenditBankValidator: options.financeXenditBankValidator,
       publicHotelPropertyResolver: options.financePublicHotelPropertyResolver,
@@ -848,25 +864,46 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     app.register(registerPmsFinanceCompatibilityRoutes, {
       prefix: "/api",
       repository: options.pmsFinanceCompatibilityRepository,
+      propertyAccessRepository: options.auth?.propertyAccessRepository,
     });
   }
   if (options.financeSubscriptionService) {
     app.register(registerFinanceSubscriptionRoutes, {
       prefix: "/api",
       service: options.financeSubscriptionService,
+      propertyAccessRepository: options.auth?.propertyAccessRepository,
     });
   }
   if (options.financeOtaCommissionSettingsRepository) {
     app.register(registerOtaSettings, {
       prefix: "/api",
       repository: options.financeOtaCommissionSettingsRepository,
+      propertyAccessRepository: options.auth?.propertyAccessRepository,
     });
   }
   if (options.financeExpenses) {
-    app.register(registerFinanceExpenseRoutes, { prefix: "/api", ...options.financeExpenses });
+    app.register(registerFinanceExpenseRoutes, {
+      prefix: "/api",
+      ...options.financeExpenses,
+      propertyAccessRepository:
+        options.auth?.propertyAccessRepository ?? options.financeExpenses.propertyAccessRepository,
+    });
   }
   if (options.financeFolios) {
-    app.register(registerFinanceFolioRoutes, { prefix: "/api", ...options.financeFolios });
+    app.register(registerFinanceFolioRoutes, {
+      prefix: "/api",
+      ...options.financeFolios,
+      propertyAccessRepository:
+        options.auth?.propertyAccessRepository ?? options.financeFolios.propertyAccessRepository,
+    });
+  }
+  if (options.financeBankTransfer) {
+    app.register(registerFinanceBankTransferRoutes, {
+      prefix: "/api",
+      publicBookabilityPublisher: options.publicBookabilityPublisher,
+      ...options.financeBankTransfer,
+      propertyAccessRepository: options.auth?.propertyAccessRepository,
+    });
   }
   if (options.platformContactIntake) {
     app.register(registerPlatformContactIntakeRoutes, {
