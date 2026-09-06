@@ -3,7 +3,7 @@
 import { useState, useEffect, useRef } from "react";
 import { useLocale, useTranslations } from "next-intl";
 import { paymentMethodLabelKey, type PaymentMethodLabelKey } from "@vayada/locale-constants";
-import { Link } from "@/i18n/navigation";
+import { Link, useRouter } from "@/i18n/navigation";
 import BookingNavigation from "@/components/layout/BookingNavigation";
 import BookingFooter from "@/components/layout/BookingFooter";
 import Image from "next/image";
@@ -101,6 +101,8 @@ export default function BookingConfirmationPageClient({
   emailParam?: string;
   tokenParam?: string;
 }) {
+  const router = useRouter();
+  const [editing, setEditing] = useState(false);
   const t = useTranslations("confirmation");
   const locale = useLocale();
   const tc = useTranslations("common");
@@ -331,11 +333,15 @@ export default function BookingConfirmationPageClient({
     const poll = async () => {
       try {
         const result = await bookingService.getStatus(slug, reference, booking.guestEmail);
-        if (result.status !== status) {
+        if (result.status !== status || result.canEditRequest !== booking.canEditRequest) {
           setStatus(result.status);
           // Update stored booking
           if (booking) {
-            const updated = { ...booking, status: result.status as Booking["status"] };
+            const updated = {
+              ...booking,
+              status: result.status as Booking["status"],
+              canEditRequest: result.canEditRequest,
+            };
             setBooking(updated);
             saveLastBooking(updated);
           }
@@ -800,10 +806,40 @@ export default function BookingConfirmationPageClient({
               </div>
             )}
 
-          {/* Withdraw button for pending bookings */}
+          {/* Pending request actions use server-owned eligibility. */}
           {isPending && (
             <div className="mt-8">
               {withdrawError && <p className="text-sm text-red-600 mb-3">{withdrawError}</p>}
+              {booking?.canEditRequest &&
+                (!booking.hostResponseDeadline ||
+                  Date.parse(booking.hostResponseDeadline) > Date.now()) && (
+                  <button
+                    type="button"
+                    disabled={editing || withdrawing}
+                    className="mr-3 px-6 py-3 border border-gray-300 font-semibold rounded-full hover:bg-gray-50 disabled:opacity-50"
+                    onClick={async () => {
+                      setEditing(true);
+                      setWithdrawError("");
+                      try {
+                        const token =
+                          tokenParam ||
+                          (await bookingService.lookup(slug, reference, booking.guestEmail))
+                            .confirmationToken;
+                        router.push(
+                          `/booking/${encodeURIComponent(reference)}/edit-request?token=${encodeURIComponent(token)}`,
+                        );
+                      } catch (error) {
+                        setWithdrawError(
+                          error instanceof Error ? error.message : "Unable to edit request.",
+                        );
+                      } finally {
+                        setEditing(false);
+                      }
+                    }}
+                  >
+                    {editing ? "Opening…" : "Edit Request"}
+                  </button>
+                )}
               <button
                 onClick={handleWithdraw}
                 disabled={withdrawing}

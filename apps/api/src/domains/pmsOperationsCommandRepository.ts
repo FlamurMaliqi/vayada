@@ -6756,6 +6756,8 @@ async function loadBookingPaymentLifecycle(
        WHERE card.property_id = booking.property_id
          AND card.guest_booking_id = booking.id
          AND card.payment_method = 'card'
+         AND (booking.active_card_payment_id IS NULL OR booking.active_card_payment_id=card.id)
+         AND card.payment_metadata->>'supersededByEdit' IS DISTINCT FROM 'true'
          AND card.provider_payment_intent_id IS NOT NULL
        ORDER BY card.created_at DESC, card.id DESC
        LIMIT 1
