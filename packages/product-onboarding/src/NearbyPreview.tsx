@@ -59,6 +59,9 @@ export function GoogleNearbyPlace({
     void importGoogleMapsLibrary(apiKey, "places")
       .then(() => {
         if (disposed || !target) return;
+        // Google defers offscreen cards until they approach the viewport.
+        // Bound SDK loading, but let the mounted widget report its own failure.
+        clearTimeout(timer);
         element = document.createElement("gmp-place-details-compact") as PlaceElement;
         element.setAttribute("orientation", "horizontal");
         element.style.width = "100%";
