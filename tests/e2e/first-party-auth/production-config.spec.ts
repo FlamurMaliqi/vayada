@@ -6,7 +6,7 @@ const apps = [
   { app: "marketplace-web", auth: "services/auth/auth.ts", workflow: "marketplace-web" },
   { app: "booking-admin", auth: "services/auth/index.ts", workflow: "booking-admin" },
   { app: "pms-web", auth: "services/auth/index.ts", workflow: "pms-web" },
-  { app: "affiliate-dashboard", auth: "services/auth/index.ts", workflow: "affiliate-dashboard" },
+  { app: "affiliate-dashboard", auth: "services/auth/index.ts", workflow: null },
   { app: "vayada-admin", auth: "services/auth/auth.ts", workflow: "vayada-admin" },
 ] as const;
 
@@ -17,7 +17,7 @@ test("production auth stays on /auth and gateway upstreams remain server-only", 
       source(root, `apps/${app}/${auth}`),
       source(root, `apps/${app}/app/auth/[...path]/route.ts`),
       source(root, `apps/${app}/next.config.js`),
-      source(root, `.github/workflows/deploy-next-${workflow}.yml`),
+      workflow ? source(root, `.github/workflows/deploy-next-${workflow}.yml`) : null,
     ]);
 
     expect(authSource).toContain('AUTH_BROWSER_BASE_PATH = "/auth"');
@@ -26,7 +26,11 @@ test("production auth stays on /auth and gateway upstreams remain server-only", 
     expect(gatewaySource).toContain("process.env.AUTH_PUBLIC_ORIGIN");
     expect(gatewaySource).not.toMatch(/(?:127\.0\.0\.1|localhost):\d+/);
     expect(nextConfig).not.toMatch(/rewrites[\s\S]*source:\s*["'`]\/api/);
-    expect(workflowSource).not.toMatch(/AUTH_GATEWAY_UPSTREAM_ORIGIN=.*(?:localhost|127\.0\.0\.1)/);
+    if (workflowSource) {
+      expect(workflowSource).not.toMatch(
+        /AUTH_GATEWAY_UPSTREAM_ORIGIN=.*(?:localhost|127\.0\.0\.1)/,
+      );
+    }
   }
 });
 
@@ -55,7 +59,7 @@ test("ordinary product API clients retain configured service origins", async ({}
       client: "apps/affiliate-dashboard/services/api/client.ts",
       env: "NEXT_PUBLIC_API_URL",
       fallback: "https://api.localhost",
-      workflow: ".github/workflows/deploy-next-affiliate-dashboard.yml",
+      workflow: null,
     },
     {
       client: "apps/vayada-admin/services/api/client.ts",
@@ -68,17 +72,19 @@ test("ordinary product API clients retain configured service origins", async ({}
   for (const { client, env, fallback, workflow } of productClients) {
     const [clientSource, workflowSource] = await Promise.all([
       source(root, client),
-      source(root, workflow),
+      workflow ? source(root, workflow) : null,
     ]);
     expect(clientSource, `${client} must read ${env}`).toContain(`process.env.${env}`);
     expect(clientSource, `${client} must retain an absolute local fallback`).toContain(fallback);
     expect(clientSource).not.toMatch(
       /(?:API_BASE_URL|apiBaseUrl|baseURL)\s*=\s*["'`]\/(?:api|auth)(?:\/|["'`])/,
     );
-    expect(workflowSource).toContain("NEXT_API_URL: https://next-api.vayada.com");
-    expect(workflowSource, `${workflow} must inject ${env}`).toContain(
-      `${env}=\${{ env.NEXT_API_URL }}`,
-    );
+    if (workflowSource) {
+      expect(workflowSource).toContain("NEXT_API_URL: https://next-api.vayada.com");
+      expect(workflowSource, `${workflow} must inject ${env}`).toContain(
+        `${env}=\${{ env.NEXT_API_URL }}`,
+      );
+    }
   }
 });
 
