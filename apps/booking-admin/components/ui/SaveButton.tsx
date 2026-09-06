@@ -1,3 +1,4 @@
+import { useTranslation } from "@/lib/i18n";
 import { ReactNode } from "react";
 
 interface SaveButtonProps {
@@ -8,13 +9,8 @@ interface SaveButtonProps {
   icon?: ReactNode;
 }
 
-export function SaveButton({
-  onClick,
-  saving,
-  disabled,
-  children = "Save Changes",
-  icon,
-}: SaveButtonProps) {
+export function SaveButton({ onClick, saving, disabled, children, icon }: SaveButtonProps) {
+  const { t } = useTranslation();
   return (
     <button
       onClick={onClick}
@@ -40,7 +36,7 @@ export function SaveButton({
           />
         </svg>
       )}
-      {children}
+      {children ?? t("common.save")}
     </button>
   );
 }

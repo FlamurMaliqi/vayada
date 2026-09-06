@@ -103,7 +103,7 @@ test.describe("booking-admin Feature Hub", () => {
       "Design Studio",
       "Booking Flow",
       "Affiliates",
-      "Promo Codes",
+      "Promos",
       "Settings",
       "Feature Hub",
     ]);

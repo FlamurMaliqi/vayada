@@ -61,9 +61,9 @@ export default function ChoosePropertyPage() {
           return;
         }
         setHotels(list);
-      } catch (e) {
+      } catch {
         if (!cancelled) {
-          setError(e instanceof Error ? e.message : t("auth.chooseProperty.loadError"));
+          setError(t("auth.chooseProperty.loadError"));
         }
       }
     }
@@ -85,8 +85,8 @@ export default function ChoosePropertyPage() {
       }
       localStorage.setItem("selectedHotelId", hotel.id);
       router.replace("/dashboard");
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : t("auth.chooseProperty.loadError"));
+    } catch {
+      setError(t("auth.chooseProperty.loadError"));
     }
   };
 
@@ -197,7 +197,7 @@ export default function ChoosePropertyPage() {
               <line x1="12" y1="5" x2="12" y2="19" />
               <line x1="5" y1="12" x2="19" y2="12" />
             </svg>
-            Add hotel
+            {t("admin.addHotel")}
           </button>
         </div>
       </div>

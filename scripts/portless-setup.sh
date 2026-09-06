@@ -22,7 +22,6 @@
 #     booking.localhost                  booking-web            (port 3002)
 #     admin.booking.localhost            booking-admin          (port 3003)
 #     pms.localhost                      pms-web                (port 3004)
-#     affiliate.localhost                affiliate-dashboard    (port 3005)
 #     landing.localhost                  landing                (port 3006)
 #
 #   Backends (FastAPI, registered here as static aliases):

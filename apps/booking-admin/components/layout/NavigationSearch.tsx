@@ -77,14 +77,14 @@ export default function NavigationSearch({ hotelId }: { hotelId?: string }) {
         <input
           ref={input}
           role="combobox"
-          aria-label="Search pages and settings"
+          aria-label={t("admin.searchPagesAndSettings")}
           aria-expanded={open}
           aria-controls="navigation-search-results"
           aria-autocomplete="list"
           aria-activedescendant={
             open && results[active] ? `navigation-search-${active}` : undefined
           }
-          placeholder="Search pages and settings"
+          placeholder={t("admin.searchPagesAndSettings")}
           value={query}
           className="min-w-0 w-full bg-transparent text-[13px] outline-none placeholder:text-gray-400"
           onFocus={() => setOpen(true)}
@@ -118,20 +118,24 @@ export default function NavigationSearch({ hotelId }: { hotelId?: string }) {
         <div className="absolute left-2 right-2 top-full z-[100] mt-1 max-h-80 overflow-auto rounded-xl border border-gray-200 bg-white shadow-2xl sm:left-auto sm:right-auto sm:w-96">
           {access === null && (
             <p role="status" className="p-4 text-sm text-gray-500">
-              Loading search…
+              {t("admin.loadingSearch")}
             </p>
           )}
           {access !== null && results.length === 0 && (
             <p role="status" className="p-4 text-sm text-gray-500">
-              No results found
+              {t("common.noResultsFound")}
             </p>
           )}
-          <div id="navigation-search-results" role="listbox" aria-label="Pages and settings">
+          <div
+            id="navigation-search-results"
+            role="listbox"
+            aria-label={t("admin.pagesAndSettings")}
+          >
             {results.map(([label, href, category, , key], index) => (
               <div key={href}>
                 {(index === 0 || results[index - 1][2] !== category) && (
                   <div className="px-4 pt-3 pb-1 text-[11px] font-semibold uppercase tracking-wide text-gray-400">
-                    {category}
+                    {t(`navigation.category.${category}`)}
                   </div>
                 )}
                 <a

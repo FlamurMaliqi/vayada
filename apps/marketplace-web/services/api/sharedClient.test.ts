@@ -5,10 +5,16 @@ import {
   apiClient,
   setApiBearerTokenProvider,
   setVayadaApiBearerTokenProvider,
+  setVayadaApiSessionRecoveryHandlers,
   vayadaApiClient,
 } from "@vayada/marketplace-shared/api/client";
 import { uploadPlatformMedia } from "@vayada/marketplace-shared/api/platformMedia";
-import { getConsentStatus } from "@vayada/marketplace-shared/api/privacy";
+import {
+  getConsentStatus,
+  getConsentHistory,
+  downloadExport,
+  getCookieConsent,
+} from "@vayada/marketplace-shared/api/privacy";
 
 describe("marketplace shared API token routing", () => {
   beforeEach(() => {
@@ -20,6 +26,7 @@ describe("marketplace shared API token routing", () => {
   });
 
   afterEach(() => {
+    setVayadaApiSessionRecoveryHandlers(null);
     setApiBearerTokenProvider(null);
     setVayadaApiBearerTokenProvider(null);
     vi.unstubAllGlobals();
@@ -39,7 +46,9 @@ describe("marketplace shared API token routing", () => {
   it("does not clear or redirect the browser when a Vayada route returns 401", async () => {
     localStorage.setItem("access_token", "legacy-compatibility-token");
     localStorage.setItem("token_expires_at", String(Date.now() + 60_000));
-    const fetchMock = vi.fn(async () => jsonResponse({ detail: "Unauthorized" }, 401));
+    const fetchMock = vi.fn<typeof fetch>(async () =>
+      jsonResponse({ detail: "Unauthorized" }, 401),
+    );
     vi.stubGlobal("fetch", fetchMock);
 
     await expect(vayadaApiClient.get("/api/marketplace/collaborations")).rejects.toBeInstanceOf(
@@ -171,6 +180,81 @@ describe("marketplace shared API token routing", () => {
 
     await expect(getConsentStatus()).resolves.toEqual({ consent: null });
     expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("recovers a cold privacy session once for concurrent status/history requests", async () => {
+    let token: string | null = null;
+    setVayadaApiBearerTokenProvider(() => token);
+    const refresh = vi.fn(async () => {
+      await Promise.resolve();
+      token = "restored";
+    });
+    setVayadaApiSessionRecoveryHandlers({ refresh, signOut: vi.fn() });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_url, init) =>
+        new Headers(init?.headers).get("authorization") === "Bearer restored"
+          ? jsonResponse({ history: [], total: 0 })
+          : jsonResponse({ detail: "Unauthorized" }, 401),
+      ),
+    );
+    await Promise.all([getConsentStatus(), getConsentHistory()]);
+    expect(refresh).toHaveBeenCalledTimes(1);
+  });
+
+  it("bounds rejected-session retry and keeps anonymous cookie reads out of recovery", async () => {
+    let token = "expired";
+    setVayadaApiBearerTokenProvider(() => token);
+    const refresh = vi.fn(async () => {
+      token = "refreshed";
+    });
+    const signOut = vi.fn(async () => {});
+    setVayadaApiSessionRecoveryHandlers({ refresh, signOut });
+    const fetchMock = vi.fn<typeof fetch>(async () =>
+      jsonResponse({ detail: "Unauthorized" }, 401),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    await expect(getConsentStatus()).rejects.toMatchObject({ status: 401 });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(refresh).toHaveBeenCalledTimes(1);
+    expect(signOut).toHaveBeenCalledTimes(1);
+    await expect(getCookieConsent("qa-visitor")).rejects.toMatchObject({ status: 401 });
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(refresh).toHaveBeenCalledTimes(1);
+    expect(new Headers(fetchMock.mock.calls[2]?.[1]?.headers).has("authorization")).toBe(false);
+  });
+
+  it("preserves binary export downloads after authenticated recovery", async () => {
+    let token: string | null = null;
+    setVayadaApiBearerTokenProvider(() => token);
+    setVayadaApiSessionRecoveryHandlers({
+      refresh: async () => {
+        token = "restored";
+      },
+      signOut: vi.fn(),
+    });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_url, init) =>
+        new Headers(init?.headers).get("authorization") === "Bearer restored"
+          ? new Response(new Uint8Array([0, 255, 17]), {
+              headers: { "content-type": "application/zip" },
+            })
+          : jsonResponse({ detail: "Unauthorized" }, 401),
+      ),
+    );
+    const blob = await downloadExport("synthetic-download-token");
+    expect(new Uint8Array(await blob.arrayBuffer())).toEqual(new Uint8Array([0, 255, 17]));
+  });
+
+  it("preserves empty and text privacy errors as typed failures", async () => {
+    for (const body of ["", "temporarily unavailable"]) {
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async () => new Response(body, { status: 503 })),
+      );
+      await expect(getConsentStatus()).rejects.toMatchObject({ status: 503 });
+    }
   });
 
   it("preserves typed Vayada error messages", async () => {

@@ -544,6 +544,7 @@ describe("marketplace collaboration read routes", () => {
     { failDeliverables: true, expected: "deliverable storage unavailable" },
     { past: true, expected: "cannot be in the past" },
     { timezone: null, expected: "timezone is configured" },
+    { timezone: "Invalid/Zone", expected: "timezone is configured" },
   ])("rolls back rejected or failed application edits: %j", async (options) => {
     const pool = createCreatorApplicationPool(options);
     const repository = createPgMarketplaceCollaborationReadRepository({
@@ -1770,6 +1771,145 @@ describe("marketplace collaboration read routes", () => {
 
 const TEST_DATABASE_URL = process.env.TEST_DATABASE_URL;
 
+describe.skipIf(!TEST_DATABASE_URL)("canonical collaboration timezone", () => {
+  it("reads and edits with canonical timezone when the public profile is absent", async () => {
+    const client = new pg.Client({ connectionString: TEST_DATABASE_URL });
+    const repository = createPgMarketplaceCollaborationReadRepository({
+      connectionString: TEST_DATABASE_URL!,
+    });
+    const userId = randomUUID();
+    const creatorOrganizationId = randomUUID();
+    const hotelOrganizationId = randomUUID();
+    const creatorProfileId = randomUUID();
+    const propertyId = randomUUID();
+    const offerId = randomUUID();
+    const collaborationId = randomUUID();
+    const sourceCollaborationId = `timezone-${collaborationId}`;
+    const optionId = randomUUID();
+    const context = creatorRequestContext();
+    context.actor.internalUserId = userId;
+    context.selectedOrganization.organizationId = creatorOrganizationId;
+    context.linkedResources = [
+      {
+        product: "marketplace",
+        resourceType: "creator_profile",
+        resourceId: creatorProfileId,
+        relationship: "owner",
+        status: "active",
+      },
+    ];
+    await client.connect();
+    try {
+      await client.query(`INSERT INTO identity.users (id, email) VALUES ($1, $2)`, [
+        userId,
+        context.actor.email,
+      ]);
+      await client.query(
+        `INSERT INTO identity.organizations (id, kind, name, slug)
+         VALUES ($1, 'creator_workspace', 'Chat Creator', $2),
+                ($3, 'hotel_group', 'Chat Hotel', $4)`,
+        [
+          creatorOrganizationId,
+          `chat-creator-${creatorOrganizationId}`,
+          hotelOrganizationId,
+          `chat-hotel-${hotelOrganizationId}`,
+        ],
+      );
+      await client.query(
+        `INSERT INTO hotel_catalog.properties (id, public_id, display_name)
+         VALUES ($1, $2, 'Chat Test Hotel')`,
+        [propertyId, `chat-property-${propertyId}`],
+      );
+      await client.query(
+        `INSERT INTO marketplace.creator_profiles
+           (id, organization_id, owner_user_id, display_name)
+         VALUES ($1, $2, $3, 'Chat Test Creator')`,
+        [creatorProfileId, creatorOrganizationId, userId],
+      );
+      await client.query(
+        `INSERT INTO marketplace.marketplace_hotel_profiles (property_id, organization_id)
+         VALUES ($1, $2)`,
+        [propertyId, hotelOrganizationId],
+      );
+      await client.query(
+        `INSERT INTO marketplace.marketplace_offers (id, property_id, organization_id, title)
+         VALUES ($1, $2, $3, 'Chat Test Offer')`,
+        [offerId, propertyId, hotelOrganizationId],
+      );
+      await client.query(
+        `INSERT INTO marketplace.collaborations
+           (id, creator_profile_id, creator_organization_id, property_id,
+            hotel_organization_id, offer_id, source_collaboration_id,
+            initiator_type, lifecycle_status, compensation_type, paid_amount, currency, creator_consent)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, 'creator', 'pending', 'paid', 450, 'EUR', TRUE)`,
+        [
+          collaborationId,
+          creatorProfileId,
+          creatorOrganizationId,
+          propertyId,
+          hotelOrganizationId,
+          offerId,
+          sourceCollaborationId,
+        ],
+      );
+
+      await client.query(
+        `INSERT INTO hotel_catalog.property_locations (property_id, timezone) VALUES ($1, 'Pacific/Kiritimati')`,
+        [propertyId],
+      );
+      await client.query(
+        `INSERT INTO marketplace.offer_compensation_options (id, offer_id, property_id, organization_id, compensation_type, availability_months, paid_max_amount, currency) VALUES ($1, $2, $3, $4, 'paid', ARRAY['December'], 450, 'EUR')`,
+        [optionId, offerId, propertyId, hotelOrganizationId],
+      );
+      const read = () =>
+        repository.getCollaboration({
+          context,
+          collaborationId: sourceCollaborationId,
+          side: "creator",
+        });
+      const before = await read();
+      expect(before?.propertyTimezone).toBe("Pacific/Kiritimati");
+      const result = await repository.executeLifecycleWrite!({
+        context,
+        side: "creator",
+        action: "edit_application",
+        collaborationId: sourceCollaborationId,
+        idempotencyKey: `timezone-edit-${collaborationId}`,
+        payload: {
+          expectedUpdatedAt: before!.updatedAt,
+          compensationOptionId: optionId,
+          whyGreatFit: "Canonical timezone works",
+          consent: true,
+          terms: { travelDateFrom: "2099-12-10", travelDateTo: "2099-12-12" },
+          deliverables: [{ platform: "instagram", type: "reel", quantity: 1 }],
+        },
+      });
+      expect(result?.collaboration.propertyTimezone).toBe("Pacific/Kiritimati");
+      expect((await read())?.applicationMessage).toBe("Canonical timezone works");
+      await client.query(
+        `UPDATE hotel_catalog.property_locations SET timezone = NULL WHERE property_id = $1`,
+        [propertyId],
+      );
+      expect((await read())?.propertyTimezone).toBeNull();
+    } finally {
+      await client.query(`DELETE FROM marketplace.collaborations WHERE id = $1`, [collaborationId]);
+      await client.query(`DELETE FROM marketplace.creator_profiles WHERE id = $1`, [
+        creatorProfileId,
+      ]);
+      await client.query(`DELETE FROM hotel_catalog.properties WHERE id = $1`, [propertyId]);
+      await client.query(`DELETE FROM platform.idempotency_keys WHERE organization_id = $1`, [
+        creatorOrganizationId,
+      ]);
+      await client.query(`DELETE FROM identity.organizations WHERE id = ANY($1::uuid[])`, [
+        [creatorOrganizationId, hotelOrganizationId],
+      ]);
+      await client.query(`DELETE FROM identity.users WHERE id = $1`, [userId]);
+      await repository.close?.();
+      await client.end();
+    }
+  });
+});
+
 describe.skipIf(!TEST_DATABASE_URL)("marketplace chat attachment persistence", () => {
   it("atomically claims an orphan once and rejects claimed, expired, and wrong-owner media", async () => {
     const client = new pg.Client({ connectionString: TEST_DATABASE_URL });
@@ -2583,7 +2723,7 @@ function createCreatorApplicationPool(
           updatedAt: "2026-09-05T01:00:00.000Z",
         },
       ];
-    } else if (text.includes("FROM hotel_catalog.property_public_profile_read_model")) {
+    } else if (text.includes("FROM hotel_catalog.property_locations")) {
       rows = [{ timezone: options.timezone === undefined ? "Europe/Vienna" : options.timezone }];
     } else if (text.includes("FROM marketplace.creator_profiles")) {
       const crossTenantCreatorLink =
