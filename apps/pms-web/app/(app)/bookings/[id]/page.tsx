@@ -1247,6 +1247,7 @@ export default function BookingDetailPage({ params }: { params: Promise<{ id: st
   const noteEditPending = useRef(false);
   const [cancelOpen, setCancelOpen] = useState(false);
   const [cancelReason, setCancelReason] = useState("");
+  const [guestMessage, setGuestMessage] = useState("");
   const [cancelling, setCancelling] = useState(false);
   const [allRooms, setAllRooms] = useState<Room[]>([]);
   const [moveTarget, setMoveTarget] = useState<{
@@ -1663,17 +1664,20 @@ export default function BookingDetailPage({ params }: { params: Promise<{ id: st
       return;
     }
     const reason = cancelReason.trim();
-    if (!reason) return;
+    if (!reason || cancelling) return;
     setCancelling(true);
     setError("");
     try {
-      const updated = await bookingsService.cancelWithReason(id, reason);
-      setBooking(updated);
-      // Refresh notes — the cancel records a reason note server-side.
-      const r = await bookingsService.listNotes(id);
-      setNotes(r.notes);
+      await bookingsService.cancelWithReason(id, reason, guestMessage.trim() || undefined);
+      setBooking({ ...booking, status: "cancelled" });
       setCancelOpen(false);
       setCancelReason("");
+      setGuestMessage("");
+      try {
+        setBooking(await bookingsService.get(id));
+      } catch {
+        setError(t("bookings.detail.canceledRefreshFailed"));
+      }
     } catch (err) {
       setError(errMessage(err, t("bookings.detail.failedToCancel")));
     } finally {
@@ -1712,6 +1716,7 @@ export default function BookingDetailPage({ params }: { params: Promise<{ id: st
 
   const isPending = booking.status === "pending";
   const canCancelBooking = booking.status === "confirmed";
+  const canCancelManualBooking = canCancelBooking && booking.channel === "manual";
   const canCheckIn = booking.status === "confirmed";
   // VAY-404: treat 'declined' (host rejected) the same as cancelled/expired
   // for read-only/disabled UI affordances — the booking is terminal.
@@ -2991,14 +2996,23 @@ export default function BookingDetailPage({ params }: { params: Promise<{ id: st
             <button
               onClick={() => {
                 setCancelReason("");
+                setGuestMessage("");
                 setCancelOpen(true);
               }}
-              disabled={!LEGACY_BOOKING_WRITES_AVAILABLE || updating}
-              title={t("bookings.detail.cancellationUnavailableTitle")}
-              className="inline-flex cursor-not-allowed items-center gap-1.5 rounded-lg border border-gray-200 bg-gray-50 px-4 py-2 text-sm font-medium text-gray-400"
+              disabled={!canCancelManualBooking || updating}
+              title={
+                !canCancelManualBooking
+                  ? t("bookings.detail.cancellationUnavailableTitle")
+                  : undefined
+              }
+              className="inline-flex items-center gap-1.5 rounded-lg border border-gray-200 px-4 py-2 text-sm font-medium text-red-600 disabled:cursor-not-allowed disabled:text-gray-400"
             >
               <XCircleIcon className="w-4 h-4" />
-              {t("bookings.detail.cancellationUnavailable")}
+              {t(
+                canCancelManualBooking
+                  ? "bookings.detail.cancelBooking"
+                  : "bookings.detail.cancellationUnavailable",
+              )}
             </button>
           </div>
         )}
@@ -3151,8 +3165,12 @@ export default function BookingDetailPage({ params }: { params: Promise<{ id: st
         </Modal>
       )}
 
-      {LEGACY_BOOKING_WRITES_AVAILABLE && cancelOpen && canCancelBooking && (
-        <Modal onClose={() => setCancelOpen(false)}>
+      {cancelOpen && canCancelManualBooking && (
+        <Modal
+          onClose={() => {
+            if (!cancelling) setCancelOpen(false);
+          }}
+        >
           <h3 className="text-lg font-semibold text-gray-900 mb-2">
             {t("bookings.detail.cancelThisBookingTitle")}
           </h3>
@@ -3162,15 +3180,34 @@ export default function BookingDetailPage({ params }: { params: Promise<{ id: st
               roomLabel: t(roomRows.length === 1 ? "common.room" : "common.rooms"),
             })}
           </p>
+          <label htmlFor="cancellation-reason" className="block text-sm font-medium mb-1">
+            {t("bookings.detail.internalCancellationReason")}
+          </label>
           <textarea
+            id="cancellation-reason"
+            maxLength={1000}
+            disabled={cancelling}
             value={cancelReason}
             onChange={(e) => setCancelReason(e.target.value)}
             placeholder={t("bookings.detail.cancellationReasonPlaceholder")}
             rows={3}
             className="w-full border border-gray-300 rounded-lg px-3 py-2 text-base text-gray-900 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-red-500 focus:border-transparent mb-4 resize-none"
           />
+          <label htmlFor="guest-cancellation-message" className="block text-sm font-medium mb-1">
+            {t("bookings.detail.guestCancellationMessage")}
+          </label>
+          <textarea
+            id="guest-cancellation-message"
+            value={guestMessage}
+            onChange={(event) => setGuestMessage(event.target.value)}
+            rows={5}
+            maxLength={5000}
+            disabled={cancelling}
+            className="w-full border border-gray-300 rounded-lg px-3 py-2 mb-4 text-base"
+          />
           <div className="flex justify-end gap-3">
             <button
+              disabled={cancelling}
               onClick={() => setCancelOpen(false)}
               className="px-4 py-2 text-sm font-medium text-gray-700 bg-gray-100 hover:bg-gray-200 rounded-lg"
             >

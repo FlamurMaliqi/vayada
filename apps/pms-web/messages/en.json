@@ -1,4 +1,7 @@
 {
+  "bookings.detail.canceledRefreshFailed": "Booking canceled. Reload the page to refresh reservation details.",
+  "bookings.detail.internalCancellationReason": "Cancellation reason (internal only)",
+  "bookings.detail.guestCancellationMessage": "Message to guest (optional)",
   "layout.header.signOut": "Sign Out",
   "layout.header.noProperties": "No properties",
   "layout.header.user": "User",

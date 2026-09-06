@@ -1,4 +1,7 @@
 {
+  "bookings.detail.canceledRefreshFailed": "Buchung storniert. Lade die Seite neu, um die Buchungsdetails zu aktualisieren.",
+  "bookings.detail.internalCancellationReason": "Stornierungsgrund (nur intern)",
+  "bookings.detail.guestCancellationMessage": "Nachricht an den Gast (optional)",
   "layout.header.signOut": "Abmelden",
   "layout.header.noProperties": "Keine Unterkünfte",
   "layout.header.user": "Benutzer",
