@@ -11,13 +11,8 @@ import {
 } from "react";
 import { consentService } from "@/services/api/consent";
 
-// Cookie consent categories
-export interface CookieConsent {
-  necessary: boolean; // Always true, cannot be disabled
-  functional: boolean;
-  analytics: boolean;
-  marketing: boolean;
-}
+import { CookieConsent, readConsent } from "@vayada/marketplace-shared/consent/preferences";
+export type { CookieConsent } from "@vayada/marketplace-shared/consent/preferences";
 
 // Context value type
 interface CookieConsentContextType {
@@ -37,24 +32,6 @@ interface CookieConsentContextType {
 const VISITOR_ID_KEY = "vayada_visitor_id";
 const CONSENT_KEY = "vayada_cookie_consent";
 const RETRY_MS = 15_000;
-
-function readConsent(value: unknown): CookieConsent | null {
-  if (!value || typeof value !== "object") return null;
-  const data = value as Partial<CookieConsent>;
-  if (
-    data.necessary !== true ||
-    typeof data.functional !== "boolean" ||
-    typeof data.analytics !== "boolean" ||
-    typeof data.marketing !== "boolean"
-  )
-    return null;
-  return {
-    necessary: true,
-    functional: data.functional,
-    analytics: data.analytics,
-    marketing: data.marketing,
-  };
-}
 
 function storedConsent(consent: CookieConsent, pending: boolean): string {
   // One write keeps the choice and its acknowledgement status together.
