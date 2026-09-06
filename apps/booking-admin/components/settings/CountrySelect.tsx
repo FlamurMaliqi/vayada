@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { useTranslation } from "@/lib/i18n";
 import { STRIPE_COUNTRIES } from "@/lib/constants/stripeCountries";
 
 type Translate = (key: string, params?: Record<string, string | number>) => string;
@@ -12,6 +13,12 @@ interface CountrySelectProps {
 }
 
 export function CountrySelect({ value, onChange, t }: CountrySelectProps) {
+  const { locale } = useTranslation();
+  const names = new Intl.DisplayNames([locale], { type: "region" });
+  const countries = STRIPE_COUNTRIES.map((country) => ({
+    ...country,
+    n: names.of(country.c) ?? country.n,
+  }));
   const [open, setOpen] = useState(false);
   const [search, setSearch] = useState("");
   const ref = useRef<HTMLDivElement>(null);
@@ -24,12 +31,12 @@ export function CountrySelect({ value, onChange, t }: CountrySelectProps) {
     return () => document.removeEventListener("mousedown", handleClick);
   }, []);
 
-  const filtered = STRIPE_COUNTRIES.filter(
+  const filtered = countries.filter(
     (c) =>
       c.n.toLowerCase().includes(search.toLowerCase()) ||
       c.c.toLowerCase().includes(search.toLowerCase()),
   );
-  const selected = STRIPE_COUNTRIES.find((c) => c.c === value);
+  const selected = countries.find((c) => c.c === value);
 
   return (
     <div ref={ref} className="relative">
@@ -50,12 +57,7 @@ export function CountrySelect({ value, onChange, t }: CountrySelectProps) {
           stroke="currentColor"
           viewBox="0 0 24 24"
         >
-          <path
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            strokeWidth={2}
-            d="M19 9l-7 7-7-7"
-          />
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
         </svg>
       </button>
       {open && (
@@ -84,9 +86,7 @@ export function CountrySelect({ value, onChange, t }: CountrySelectProps) {
                     setOpen(false);
                   }}
                   className={`px-3 py-1.5 text-[13px] cursor-pointer hover:bg-primary-50 flex items-center gap-2 ${
-                    c.c === value
-                      ? "bg-primary-50 font-medium text-primary-700"
-                      : "text-gray-700"
+                    c.c === value ? "bg-primary-50 font-medium text-primary-700" : "text-gray-700"
                   }`}
                 >
                   <span>{c.f}</span>

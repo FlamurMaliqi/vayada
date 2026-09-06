@@ -14,6 +14,7 @@ import {
   isAuthOrganizationSelectionResponse,
   setAuthKitSession,
 } from "./sessionStore";
+import { getConsentStatus } from "@vayada/marketplace-shared/api/privacy";
 import { sharedHotelSetupApi } from "../api/sharedHotelSetupClient";
 import { targetApiClient } from "../api/targetClient";
 import { apiClient } from "../api/client";
@@ -29,6 +30,46 @@ afterEach(() => {
 });
 
 describe("marketplace AuthKit session recovery", () => {
+  it("bounds stalled logout after rejected privacy recovery and clears auth", async () => {
+    const storage = new Map<string, string>();
+    vi.stubGlobal("localStorage", {
+      getItem: (key: string) => storage.get(key) ?? null,
+      setItem: (key: string, value: string) => storage.set(key, value),
+      removeItem: (key: string) => storage.delete(key),
+    });
+    vi.stubGlobal("window", {
+      location: { origin: "https://marketplace.localhost", href: "/settings/privacy" },
+    });
+    const realTimeout = AbortSignal.timeout.bind(AbortSignal);
+    const timeout = vi.spyOn(AbortSignal, "timeout").mockImplementation(() => realTimeout(20));
+    setAuthKitSession({
+      accessToken: "expired",
+      csrfToken: "qa-csrf",
+      organizationKind: "creator_workspace",
+      user: { id: "qa", email: "qa@example.test", status: "active" },
+    });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+        if (String(url).endsWith("/auth/logout"))
+          return new Promise<Response>((_resolve, reject) => {
+            const signal = init?.signal;
+            if (!signal) throw new Error("Logout must have a timeout");
+            if (signal.aborted) reject(signal.reason);
+            else signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+          });
+        return jsonResponse({ detail: "Unauthorized" }, 401);
+      }),
+    );
+    try {
+      await expect(getConsentStatus()).rejects.toMatchObject({ status: 401 });
+      expect(getAuthKitAccessToken()).toBeNull();
+      expect(window.location.href).toBe("/login");
+    } finally {
+      timeout.mockRestore();
+    }
+  });
+
   it("uses the AuthKit token for shared hotel setup requests", async () => {
     setAuthKitSession({
       accessToken: "hotel-workos-access-token",

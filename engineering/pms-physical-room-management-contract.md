@@ -23,6 +23,12 @@ inventory overrides. Calendar and public availability refreshes are durable and
 must not reopen closed inventory or copy provider state. Duplication and room-type
 retirement reuse the existing `roomTypeLifecycle.ts` contract and commands.
 
+Room-type retirement deactivates legacy rate plans but retains canonical
+`pms-pricing.v1` records unchanged as historical pricing sources. Their schema
+requires an active canonical record; the retired owning room type excludes them
+from operational availability and channel provisioning. Retirement does not
+rewrite pricing revisions, cancellation terms, or historical references.
+
 ## Inventory transition
 
 For a current canonical calendar, append a calendar revision with the existing

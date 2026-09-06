@@ -398,6 +398,8 @@ function serializeHotelProfile(
     policies: {
       checkInFrom: hotel.policies.checkInFrom ?? null,
       checkOutUntil: hotel.policies.checkOutUntil ?? null,
+      ...(hotel.policies.checkInUntil ? { checkInUntil: hotel.policies.checkInUntil } : {}),
+      ...(hotel.policies.checkOutFrom ? { checkOutFrom: hotel.policies.checkOutFrom } : {}),
       cancellationSummary: hotel.policies.cancellationSummary ?? null,
       termsUrl: hotel.policies.termsUrl ?? null,
     },
@@ -671,6 +673,12 @@ function toTargetPublicHotelProfileProjection(
       policies: {
         checkInFrom: stringValue(policies["checkInFrom"]),
         checkOutUntil: stringValue(policies["checkOutUntil"]),
+        ...(stringValue(policies["checkInUntil"])
+          ? { checkInUntil: stringValue(policies["checkInUntil"]) }
+          : {}),
+        ...(stringValue(policies["checkOutFrom"])
+          ? { checkOutFrom: stringValue(policies["checkOutFrom"]) }
+          : {}),
         cancellationSummary: stringValue(policies["cancellationSummary"]),
         termsUrl: stringValue(policies["termsUrl"]),
       },

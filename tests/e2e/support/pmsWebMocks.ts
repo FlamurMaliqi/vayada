@@ -397,6 +397,30 @@ export async function mockPmsWebTargetRoutes(page: Page): Promise<void> {
     },
   );
 
+  await page.route(
+    `**/api/booking/properties/${PMS_WEB_PROPERTY_ID}/booking-guest-policy`,
+    (route) =>
+      route.fulfill({
+        json: {
+          contractVersion: "booking-guest-policy.v1",
+          organizationId: PMS_WEB_PROPERTY_ID,
+          propertyId: PMS_WEB_PROPERTY_ID,
+          supportedLanguages: ["en", "de", "fr", "es", "id", "nl"],
+          current: null,
+          composition: null,
+          draft: {
+            defaultGuestLanguage: null,
+            childrenEnabled: null,
+            adultAgeThreshold: null,
+            phoneRequired: true,
+            arrivalTimeEnabled: false,
+            specialRequestsEnabled: true,
+            checkInTime: null,
+            checkOutTime: null,
+          },
+        },
+      }),
+  );
   await page.route("**/api/pms/properties", (route) => route.fulfill({ json: [propertySummary] }));
   await page.route(`**/api/pms/properties/${PMS_WEB_PROPERTY_ID}/module-activations*`, (route) =>
     route.fulfill({

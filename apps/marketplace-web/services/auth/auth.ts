@@ -302,13 +302,14 @@ export const authService = {
   /**
    * Logout user
    */
-  logout: async (): Promise<void> => {
+  logout: async (signal?: AbortSignal): Promise<void> => {
     const csrfToken = getAuthCsrfToken();
     let logoutUrl = "/login";
 
     if (csrfToken) {
       try {
         const response = await authFetch<{ logoutUrl: string }>("/logout", {
+          signal,
           method: "POST",
           headers: { "x-vayada-csrf": csrfToken },
           body: JSON.stringify({

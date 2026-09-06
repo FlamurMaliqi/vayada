@@ -2,6 +2,7 @@ import { UnauthorizedError } from "@vayada/backend-auth";
 import { AuthorizationError, type PropertyAccessRepository } from "@vayada/backend-authorization";
 import {
   BOOKING_GUEST_POLICY_AUTHORIZATION,
+  bookingArrivalTimeErrors,
   parseBookingGuestPolicyChoices,
   parseBookingGuestPolicyCommandResult,
   parseBookingGuestPolicyComposition,
@@ -66,7 +67,7 @@ export async function registerBookingGuestPolicyRoutes(
       const scope = requireAuthorizedScope(authorized, request);
       if (!exactDataRecord(request.body, ["choices"])) return invalidRequest(reply);
       const choices = parseBookingGuestPolicyChoices(request.body.choices);
-      if (!choices) return invalidRequest(reply);
+      if (!choices) return invalidRequest(reply, request.body.choices);
       let value: unknown;
       try {
         value = await options.application.previewGuestPolicy({
@@ -98,7 +99,8 @@ export async function registerBookingGuestPolicyRoutes(
       const scope = requireAuthorizedScope(authorized, request);
       const idempotencyKey = readIdempotencyKey(request);
       const body = parseUpsertBookingGuestPolicyRequest(request.body);
-      if (!idempotencyKey || !body) return invalidRequest(reply);
+      if (!idempotencyKey || !body)
+        return invalidRequest(reply, (request.body as { choices?: unknown } | null)?.choices);
       const command: UpsertBookingGuestPolicyCommand = {
         ...applicationScope(scope),
         idempotencyKey,
@@ -262,8 +264,15 @@ function exactDataRecord(
   );
 }
 
-function invalidRequest(reply: FastifyReply) {
-  return reply.status(400).send({ code: "invalid_request" });
+function invalidRequest(reply: FastifyReply, choices?: unknown) {
+  const details =
+    typeof choices === "object" && choices !== null && !Array.isArray(choices)
+      ? bookingArrivalTimeErrors(choices as Record<string, unknown>)
+      : [];
+  return reply.status(400).send({
+    code: "invalid_request",
+    ...(details.length ? { details, message: details.join(" ") } : {}),
+  });
 }
 
 function portViolation(reply: FastifyReply) {

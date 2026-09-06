@@ -173,7 +173,7 @@ export default function Header({ onMenuToggle }: { onMenuToggle?: () => void }) 
       {/* Mobile menu button */}
       <button
         onClick={onMenuToggle}
-        className="lg:hidden p-1 -ml-1 text-gray-600 hover:text-gray-900"
+        className="lg:hidden shrink-0 p-1 -ml-1 text-gray-600 hover:text-gray-900"
       >
         <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
           <path
@@ -185,13 +185,13 @@ export default function Header({ onMenuToggle }: { onMenuToggle?: () => void }) 
         </svg>
       </button>
       {/* Left: property switcher + date */}
-      <div className="flex items-center gap-4 shrink-0">
+      <div className="flex min-w-0 flex-1 items-center gap-4 sm:flex-none sm:shrink-0">
         {/* Property Selector — always shown so single-hotel users can
             still reach the "Add Property" action that lives inside it. */}
-        <div className="relative" ref={propertyRef}>
+        <div className="relative min-w-0" ref={propertyRef}>
           <button
             onClick={() => setPropertyOpen(!propertyOpen)}
-            className="flex items-center gap-1 text-[13px] text-gray-700 hover:text-gray-900 transition-colors max-w-[140px] sm:max-w-[220px]"
+            className="flex items-center gap-1 text-[13px] text-gray-700 hover:text-gray-900 transition-colors max-w-full sm:max-w-[220px]"
             title={selectedHotel?.name || undefined}
           >
             <span className="font-medium truncate">
@@ -271,7 +271,7 @@ export default function Header({ onMenuToggle }: { onMenuToggle?: () => void }) 
       {/* Center: global search trigger.
           Mobile (< sm) collapses to an icon-only button so the row fits a
           320px viewport — VAY-374. The same modal opens either way. */}
-      <div className="flex-1 flex justify-end sm:justify-center px-2 sm:px-4 min-w-0">
+      <div className="flex-none sm:flex-1 flex justify-end sm:justify-center px-2 sm:px-4 min-w-0">
         <button
           onClick={() => setSearchOpen(true)}
           aria-label={t("search.placeholder")}
@@ -290,6 +290,7 @@ export default function Header({ onMenuToggle }: { onMenuToggle?: () => void }) 
 
       <SupportButton
         product="pms"
+        placement="header"
         submit={(request) =>
           pmsOperationsClient.post("/api/support", request, { signal: AbortSignal.timeout(20000) })
         }

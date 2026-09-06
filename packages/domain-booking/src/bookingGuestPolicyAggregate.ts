@@ -7,6 +7,9 @@ import {
   BOOKING_GUEST_POLICY_NEW_DRAFT_DEFAULTS,
   BOOKING_GUEST_POLICY_SUPPORTED_LANGUAGES,
   parseBookingGuestPolicyChoices,
+  bookingArrivalBounds,
+  bookingArrivalBoundKeys,
+  bookingArrivalTimeErrors,
   parseBookingGuestPolicyHash,
   type BookingGuestPolicyBundle,
   type BookingGuestPolicyCatalogProfileEvidenceResult,
@@ -155,8 +158,10 @@ export type BookingGuestPolicySetupDraft = Readonly<{
   phoneRequired: typeof BOOKING_GUEST_POLICY_NEW_DRAFT_DEFAULTS.phoneRequired;
   arrivalTimeEnabled: typeof BOOKING_GUEST_POLICY_NEW_DRAFT_DEFAULTS.arrivalTimeEnabled;
   specialRequestsEnabled: typeof BOOKING_GUEST_POLICY_NEW_DRAFT_DEFAULTS.specialRequestsEnabled;
-  checkInTime: null;
-  checkOutTime: null;
+  checkInTime: string | null;
+  checkOutTime: string | null;
+  checkInUntil?: string;
+  checkOutFrom?: string;
 }>;
 
 export type BookingGuestPolicySetupAggregate = Readonly<{
@@ -193,6 +198,8 @@ export type BookingGuestPolicyPublicProjection = Readonly<{
     adultAgeThreshold: number | null;
     checkInTime: string;
     checkOutTime: string;
+    checkInUntil?: string;
+    checkOutFrom?: string;
     pricingCurrency: string;
     propertyTimeZone: string;
     rates: readonly Readonly<{
@@ -349,6 +356,7 @@ export function createBookingGuestPolicyPublicProjection(
       adultAgeThreshold: bundle.choices.childrenEnabled ? bundle.choices.adultAgeThreshold : null,
       checkInTime: bundle.choices.checkInTime,
       checkOutTime: bundle.choices.checkOutTime,
+      ...bookingArrivalBounds(bundle.choices),
       pricingCurrency: bundle.pricingCurrency,
       propertyTimeZone: bundle.propertyTimeZone,
       rates: bundle.rates.map(({ roomTypeId, flexible, nonRefundable, additionalGuest }) => ({
@@ -406,6 +414,7 @@ export function parseBookingGuestPolicyPublicProjection(
       "adultAgeThreshold",
       "checkInTime",
       "checkOutTime",
+      ...bookingArrivalBoundKeys(value.policy),
       "pricingCurrency",
       "propertyTimeZone",
       "rates",
@@ -416,6 +425,7 @@ export function parseBookingGuestPolicyPublicProjection(
       : value.policy.adultAgeThreshold !== null) ||
     !localTime(value.policy.checkInTime) ||
     !localTime(value.policy.checkOutTime) ||
+    bookingArrivalTimeErrors(value.policy).length > 0 ||
     typeof value.policy.pricingCurrency !== "string" ||
     !/^[A-Z]{3}$/.test(value.policy.pricingCurrency) ||
     typeof value.policy.propertyTimeZone !== "string" ||
@@ -450,6 +460,7 @@ export function parseBookingGuestPolicyPublicProjection(
       adultAgeThreshold,
       checkInTime,
       checkOutTime,
+      ...bookingArrivalBounds(policy as BookingGuestPolicyPublicProjection["policy"]),
       pricingCurrency,
       propertyTimeZone,
       rates: rates as BookingGuestPolicyPublicProjection["policy"]["rates"],
@@ -623,6 +634,7 @@ export function parseBookingGuestPolicyBundle(value: unknown): BookingGuestPolic
       adultAgeThreshold: choices.childrenEnabled ? choices.adultAgeThreshold : null,
       checkInTime: choices.checkInTime,
       checkOutTime: choices.checkOutTime,
+      ...bookingArrivalBounds(choices),
     },
     value.pricingCurrency,
     value.propertyTimeZone,
@@ -836,6 +848,7 @@ function canonicalChoices(choices: BookingGuestPolicyChoices) {
     specialRequestsEnabled: choices.specialRequestsEnabled,
     checkInTime: choices.checkInTime,
     checkOutTime: choices.checkOutTime,
+    ...bookingArrivalBounds(choices),
   };
 }
 
@@ -1017,6 +1030,7 @@ function parseNewDraft(value: unknown): BookingGuestPolicySetupDraft | null {
     "specialRequestsEnabled",
     "checkInTime",
     "checkOutTime",
+    ...bookingArrivalBoundKeys(value),
   ]) &&
     value.defaultGuestLanguage === null &&
     value.childrenEnabled === null &&
@@ -1025,9 +1039,22 @@ function parseNewDraft(value: unknown): BookingGuestPolicySetupDraft | null {
     value.arrivalTimeEnabled === BOOKING_GUEST_POLICY_NEW_DRAFT_DEFAULTS.arrivalTimeEnabled &&
     value.specialRequestsEnabled ===
       BOOKING_GUEST_POLICY_NEW_DRAFT_DEFAULTS.specialRequestsEnabled &&
-    value.checkInTime === null &&
-    value.checkOutTime === null
-    ? createBookingGuestPolicyNewDraft()
+    (value.checkInTime === null || localTime(value.checkInTime)) &&
+    (value.checkOutTime === null || localTime(value.checkOutTime)) &&
+    (!Object.hasOwn(value, "checkInUntil") ||
+      (localTime(value.checkInTime) &&
+        localTime(value.checkInUntil) &&
+        value.checkInUntil > value.checkInTime)) &&
+    (!Object.hasOwn(value, "checkOutFrom") ||
+      (localTime(value.checkOutTime) &&
+        localTime(value.checkOutFrom) &&
+        value.checkOutFrom < value.checkOutTime))
+    ? deepFreeze({
+        ...createBookingGuestPolicyNewDraft(),
+        checkInTime: value.checkInTime,
+        checkOutTime: value.checkOutTime,
+        ...bookingArrivalBounds(value),
+      })
     : null;
 }
 
