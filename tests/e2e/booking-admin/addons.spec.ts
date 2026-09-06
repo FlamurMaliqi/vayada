@@ -136,7 +136,7 @@ test.describe("booking-admin add-ons settings cutover", () => {
       }
 
       expect(request.method()).toBe("GET");
-      await route.fulfill({ json: { addonItems, propertyPlan } });
+      await route.fulfill({ json: { addonItems, propertyPlan, propertyCurrency: "EUR" } });
     });
     await page.route(`**${BOOKING_ADMIN_ADDON_SETTINGS_PATH}*`, async (route) => {
       if (route.request().method() === "PUT") {
@@ -171,7 +171,7 @@ test.describe("booking-admin add-ons settings cutover", () => {
     await page.getByLabel("Price").fill("125.50");
     await page.getByLabel("Category").selectOption("wellness");
     await page.getByLabel("Duration").fill("90 min");
-    await page.getByLabel("Per person").check();
+    await page.getByRole("radio", { name: "Per person", exact: true }).check();
     await page.getByLabel("Ownership").selectOption("partner");
     await page.getByRole("button", { name: "Create Add-on" }).click();
     expect(typedItemWrites.filter((write) => write.method === "POST")).toHaveLength(0);
@@ -184,7 +184,7 @@ test.describe("booking-admin add-ons settings cutover", () => {
     await page.getByLabel("Name").fill("Spa ritual deluxe");
     await page.getByLabel("Ownership").selectOption("property");
     await expect(page.getByLabel("Partner commission (%)")).toHaveCount(0);
-    await page.getByRole("button", { name: "Save Changes" }).click();
+    await page.getByRole("dialog").getByRole("button", { name: "Save", exact: true }).click();
     await expect(page.getByText("Spa ritual deluxe")).toBeVisible();
 
     page.once("dialog", (dialog) => dialog.accept());
@@ -192,9 +192,9 @@ test.describe("booking-admin add-ons settings cutover", () => {
     await expect(page.getByText("Spa ritual deluxe")).not.toBeVisible();
 
     await expect(page.getByRole("heading", { name: "Display Settings" })).toBeVisible();
-    await expect(page.getByRole("button", { name: /Show Add-ons Step/ })).toBeVisible();
+    await expect(page.getByRole("switch", { name: /Show Add-ons Step/ })).toBeVisible();
 
-    const groupToggle = page.getByRole("button", { name: /Group by Category/ });
+    const groupToggle = page.getByRole("switch", { name: /Group by Category/ });
     await expect(groupToggle).toBeVisible();
     await groupToggle.click();
 
@@ -240,7 +240,11 @@ test.describe("booking-admin add-ons settings cutover", () => {
           price: "125.50",
           currency: "EUR",
           category: "wellness",
-          imageUrl: null,
+          photos: [],
+          leadTime: null,
+          location: null,
+          maxGuests: null,
+          maxQuantity: 1,
           duration: "90 min",
           pricingModel: "per_guest",
           publicVisible: true,
@@ -259,7 +263,11 @@ test.describe("booking-admin add-ons settings cutover", () => {
           price: "125.50",
           currency: "EUR",
           category: "wellness",
-          imageUrl: null,
+          photos: [],
+          leadTime: null,
+          location: null,
+          maxGuests: null,
+          maxQuantity: 1,
           duration: "90 min",
           pricingModel: "per_guest",
           ownershipKind: "property",

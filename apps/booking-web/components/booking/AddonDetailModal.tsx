@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import Image from "next/image";
 import { useTranslations } from "next-intl";
 import { Addon } from "@/lib/types";
@@ -32,16 +32,21 @@ export default function AddonDetailModal({
   onNext,
 }: AddonDetailModalProps) {
   const [imgIndex, setImgIndex] = useState(0);
+  useEffect(() => {
+    setImgIndex(0);
+  }, [addon.id]);
   const { formatPrice } = useCurrency();
   const { hotel } = useHotel();
   const t = useTranslations("addons");
 
   if (!open) return null;
 
-  const images = addon.images && addon.images.length > 0 ? addon.images : [addon.image];
+  const images = Array.from(new Set([addon.image, ...(addon.images ?? [])].filter(Boolean)));
 
   return (
     <div
+      role="dialog"
+      aria-label={addon.name}
       className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50 backdrop-blur-sm"
       onClick={onClose}
     >
@@ -92,6 +97,7 @@ export default function AddonDetailModal({
               </svg>
             </button>
             <button
+              aria-label={t("closeDetails")}
               onClick={onClose}
               className="p-1.5 rounded-full bg-black/40 hover:bg-black/60 text-white transition-colors ml-1"
             >
@@ -120,6 +126,8 @@ export default function AddonDetailModal({
               {images.map((img, i) => (
                 <button
                   key={i}
+                  aria-label={t("showPhoto", { number: i + 1 })}
+                  aria-pressed={i === imgIndex}
                   onClick={() => setImgIndex(i)}
                   className={`relative w-12 h-9 rounded-lg overflow-hidden border-2 transition-colors ${i === imgIndex ? "border-white" : "border-white/40"}`}
                 >
@@ -194,6 +202,11 @@ export default function AddonDetailModal({
           <div className="mb-5">
             <h3 className="text-base font-bold text-gray-900 mb-2">{t("aboutThisExperience")}</h3>
             <p className="text-sm text-gray-600 leading-relaxed">{addon.description}</p>
+            {addon.leadTime && (
+              <p className="mt-3 text-sm text-gray-500">
+                {t("leadTime")}: {addon.leadTime}
+              </p>
+            )}
           </div>
 
           {/* Highlights */}
@@ -245,11 +258,13 @@ export default function AddonDetailModal({
         <div className="flex items-center justify-between px-5 sm:px-6 py-4 border-t border-gray-200 flex-shrink-0 bg-white">
           <div>
             <p className="text-xs text-gray-500">
-              {addon.perPerson
-                ? t("pricePerPerson")
-                : addon.perNight
-                  ? t("pricePerDay")
-                  : t("priceLabel")}
+              {addon.perPerson && addon.perNight
+                ? t("pricePerPersonNight")
+                : addon.perPerson
+                  ? t("pricePerPerson")
+                  : addon.perNight
+                    ? t("pricePerDay")
+                    : t("priceLabel")}
             </p>
             <p className="text-2xl font-bold text-gray-900">
               {formatPrice(addon.price, hotel?.currency || "EUR")}

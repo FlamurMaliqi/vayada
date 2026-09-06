@@ -56,7 +56,7 @@ setVayadaApiBearerTokenProvider(() => getAuthKitAccessToken());
 setVayadaApiSessionRecoveryHandlers({
   async refresh() {
     const { authService } = await import("./auth");
-    const response = await authService.refreshSession();
+    const response = await authService.refreshSession(undefined, AbortSignal.timeout(10_000));
     return isAuthOrganizationSelectionResponse(response)
       ? { status: "organization_selection_required" }
       : { status: "session_refreshed" };
@@ -64,7 +64,7 @@ setVayadaApiSessionRecoveryHandlers({
   onOrganizationSelectionRequired: redirectToOrganizationSelection,
   async signOut() {
     const { authService } = await import("./auth");
-    await authService.logout();
+    await authService.logout(AbortSignal.timeout(10_000));
   },
 });
 

@@ -431,6 +431,8 @@ async function selectPendingBookingExpiryCandidateLane(
          AND payment.property_id = b.property_id
          AND payment.payment_method = 'card'
          AND payment.provider_payment_intent_id IS NOT NULL
+         AND payment.payment_metadata->>'supersededByEdit' IS DISTINCT FROM 'true'
+         AND (b.active_card_payment_id IS NULL OR b.active_card_payment_id=payment.id)
        ORDER BY payment.created_at DESC
        LIMIT 1
      ) card_payment ON TRUE
@@ -536,6 +538,8 @@ async function selectExpiredDraftCandidates(
          AND payment.property_id = b.property_id
          AND payment.payment_method = 'card'
          AND payment.provider_payment_intent_id IS NOT NULL
+         AND payment.payment_metadata->>'supersededByEdit' IS DISTINCT FROM 'true'
+         AND (b.active_card_payment_id IS NULL OR b.active_card_payment_id=payment.id)
        ORDER BY payment.created_at DESC
        LIMIT 1
      ) card_payment ON TRUE

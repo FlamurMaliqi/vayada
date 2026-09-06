@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   composeBookingGuestPolicy,
+  parseBookingGuestPolicyComposition,
   createBookingPricingSourceFingerprint,
   type BookingGuestPolicyCompositionInput,
   type BookingPricingOwnerEvidenceInput,
@@ -37,6 +38,32 @@ type TestInput = Omit<
 };
 
 describe("Booking guest-policy composition", () => {
+  it("binds optional range endpoints into confirmed bundles without changing historical hashes", () => {
+    const input = compositionInput();
+    const original = composeBookingGuestPolicy(input);
+    const ranged = composeBookingGuestPolicy({
+      ...input,
+      choices: {
+        ...input.choices,
+        checkInUntil: "23:00",
+        checkOutFrom: "07:00",
+      },
+    });
+    expect(original.outcome).toBe("ready");
+    expect(ranged.outcome).toBe("ready");
+    if (original.outcome !== "ready" || ranged.outcome !== "ready") return;
+    expect(ranged.bundle.bundleHash).not.toBe(original.bundle.bundleHash);
+    expect(ranged.bundle.sourceFingerprint).toBe(original.bundle.sourceFingerprint);
+    expect(parseBookingGuestPolicyComposition(original)).toEqual(original);
+    expect(parseBookingGuestPolicyComposition(ranged)).toEqual(ranged);
+    expect(
+      parseBookingGuestPolicyComposition({
+        ...ranged,
+        bundle: { ...ranged.bundle, choices: { ...ranged.bundle.choices, checkInUntil: "22:00" } },
+      }),
+    ).toBeNull();
+  });
+
   it("composes immutable, structured disclosures bound to every owner revision", () => {
     const result = composeBookingGuestPolicy(compositionInput());
 

@@ -1,5 +1,6 @@
 "use client";
 
+import { formatCheckInTime, formatCheckOutTime } from "@/lib/arrivalTimes";
 import { useState, useEffect } from "react";
 import Image from "next/image";
 import { useSearchParams } from "next/navigation";
@@ -296,13 +297,13 @@ export default function MyBookingPageClient() {
               <div className="flex justify-between py-3">
                 <span className="text-gray-600 text-sm">{t("checkIn")}</span>
                 <span className="font-medium text-gray-900 text-sm">
-                  {booking.checkIn}, {hotel.checkInTime}
+                  {booking.checkIn}, {formatCheckInTime(hotel)}
                 </span>
               </div>
               <div className="flex justify-between py-3">
                 <span className="text-gray-600 text-sm">{t("checkOut")}</span>
                 <span className="font-medium text-gray-900 text-sm">
-                  {booking.checkOut}, {hotel.checkOutTime}
+                  {booking.checkOut}, {formatCheckOutTime(hotel)}
                 </span>
               </div>
               <div className="flex justify-between py-3">
