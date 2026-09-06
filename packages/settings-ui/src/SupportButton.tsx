@@ -7,9 +7,11 @@ export type SupportRequest = { kind: string; message: string; page: string; prod
 export function SupportButton({
   product,
   submit,
+  placement = "floating",
 }: {
   product: string;
   submit: (request: SupportRequest) => Promise<{ status: string; reference: string }>;
+  placement?: "floating" | "header";
 }) {
   const id = useId();
   const dialog = useRef<HTMLDialogElement>(null);
@@ -45,7 +47,12 @@ export function SupportButton({
     <>
       <button
         type="button"
-        className="fixed bottom-4 right-4 z-40 rounded-md border border-gray-300 bg-white px-3 py-2 text-xs font-medium text-gray-700 shadow-sm hover:bg-gray-50"
+        aria-label="Help / Report a bug"
+        className={`rounded-md border border-gray-300 bg-white text-xs font-medium text-gray-700 hover:bg-gray-50 ${
+          placement === "header"
+            ? "min-h-11 min-w-11 shrink-0 px-2"
+            : "fixed bottom-4 right-4 z-40 px-3 py-2 shadow-sm"
+        }`}
         onClick={() => {
           setPage(window.location.pathname);
           setReference("");
@@ -53,7 +60,7 @@ export function SupportButton({
           dialog.current?.showModal();
         }}
       >
-        Help / Report a bug
+        {placement === "header" ? "Help" : "Help / Report a bug"}
       </button>
       <dialog
         ref={dialog}
