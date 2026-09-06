@@ -1,6 +1,7 @@
 "use client";
 
 import { SettingsSection, SettingsCard } from "@vayada/settings-ui";
+import { ArrivalTimesSection } from "./ArrivalTimesSection";
 import { useTranslation } from "@/lib/i18n";
 
 interface BookingEngineSectionProps {
@@ -71,6 +72,7 @@ export function BookingEngineSection({
         </div>
         {loadError && <p className="mt-3 text-xs text-red-600">{loadError}</p>}
       </SettingsCard>
+      <ArrivalTimesSection />
     </SettingsSection>
   );
 }

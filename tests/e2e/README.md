@@ -11,7 +11,6 @@ npm run e2e                       # all specs
 npm run e2e:landing
 npm run e2e:booking-web
 npm run e2e:booking-public-canary
-npm run e2e:affiliate-dashboard
 npm run e2e:booking-admin
 npm run e2e:marketplace-web
 npm run e2e:pms-web
@@ -26,7 +25,6 @@ By default local tests expect the apps to already be running through portless:
 
 - `https://landing.localhost`
 - `https://hotel-alpenrose.booking.localhost`
-- `https://affiliate.localhost`
 - `https://admin.booking.localhost`
 - `https://marketplace.localhost`
 - `https://pms.localhost`
@@ -146,7 +144,6 @@ Plain-port server mode uses:
 
 - `http://127.0.0.1:3006` for landing
 - `http://hotel-alpenrose.booking.localhost:3002` for booking-web
-- `http://127.0.0.1:3005` for affiliate-dashboard
 - `http://127.0.0.1:3003` for booking-admin
 - `http://127.0.0.1:3000` for marketplace-web
 - `http://127.0.0.1:3004` for pms-web
@@ -157,7 +154,6 @@ Override URLs when needed:
 ```bash
 E2E_LANDING_BASE_URL=http://localhost:3006 npm run e2e:landing
 E2E_BOOKING_BASE_URL=http://hotel-alpenrose.localhost:3002 npm run e2e:booking-web
-E2E_AFFILIATE_BASE_URL=http://localhost:3005 npm run e2e:affiliate-dashboard
 E2E_BOOKING_ADMIN_BASE_URL=http://localhost:3003 npm run e2e:booking-admin
 E2E_MARKETPLACE_BASE_URL=http://localhost:3000 npm run e2e:marketplace-web
 E2E_PMS_BASE_URL=http://localhost:3004 npm run e2e:pms-web
@@ -192,7 +188,7 @@ All network calls are mocked via `mockBookingApis`. No seeded backend is require
 
 ## Auth App Smokes
 
-The smoke tests for `affiliate-dashboard`, `booking-admin`, `pms-web`, and
+The smoke tests for `booking-admin`, `pms-web`, and
 `vayada-admin` navigate to `/login` and verify the custom password login shell
 renders without errors. Marketplace smoke covers its custom auth routes
 separately.
@@ -223,7 +219,7 @@ npm --workspace vayada-api run test -- src/authSession.test.ts
 
 ## First-Party Auth Regressions
 
-`tests/e2e/first-party-auth` is the focused regression suite for the five
+`tests/e2e/first-party-auth` is the focused regression suite for the four
 migrated browser surfaces. It covers password login, signup and recovery where
 available, session refresh, CSRF, logout, app-local Google callback state,
 Marketplace signup-to-onboarding, cross-app handoff, stale-cookie cleanup, and
@@ -268,14 +264,13 @@ video so provider credentials and session material are not retained in test
 artifacts.
 
 WorkOS must register `<origin returned by portless get>/auth/oauth/google/callback`
-for the active worktree. For a canonical root checkout, the five exact callback
+for the active worktree. For a canonical root checkout, the four exact callback
 URIs are:
 
 ```text
 https://marketplace.localhost/auth/oauth/google/callback
 https://admin.booking.localhost/auth/oauth/google/callback
 https://pms.localhost/auth/oauth/google/callback
-https://affiliate.localhost/auth/oauth/google/callback
 https://admin.localhost/auth/oauth/google/callback
 ```
 

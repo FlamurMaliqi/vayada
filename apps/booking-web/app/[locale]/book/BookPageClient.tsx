@@ -1,5 +1,6 @@
 "use client";
 
+import { formatCheckInTime, formatCheckOutTime } from "@/lib/arrivalTimes";
 import { useState, useEffect, useRef, Suspense } from "react";
 import { useSearchParams } from "next/navigation";
 import { useLocale, useTranslations } from "next-intl";
@@ -61,7 +62,6 @@ function BookPageContent() {
   const searchParams = useSearchParams();
   const roomId = searchParams.get("room") || "";
 
-
   // Defensively coerce a same-day or invalid URL range to a valid one-night
   // window before anything downstream computes nights / pricing.
   const { checkIn, checkOut } = ensureMinOneNight(
@@ -89,6 +89,11 @@ function BookPageContent() {
     const [id, qtyStr] = entry.split(":");
     selectedAddonIds.push(id);
     if (qtyStr) addonQuantities[id] = parseInt(qtyStr);
+  }
+  const addonPackageQuantities: Record<string, number> = {};
+  for (const entry of (searchParams.get("addonPackages") || "").split(",").filter(Boolean)) {
+    const [id, quantity] = entry.split(":");
+    if (selectedAddonIds.includes(id)) addonPackageQuantities[id] = Number(quantity);
   }
   const addonDates: Record<string, string[]> = {};
   for (const entry of (searchParams.get("addonDates") || "").split(",").filter(Boolean)) {
@@ -119,6 +124,7 @@ function BookPageContent() {
     adults: adultsParam,
     selectedAddonIds,
     addonQuantities,
+    addonPackageQuantities,
     addonDates,
     promoCode: promoCodeParam,
   });
@@ -255,6 +261,7 @@ function BookPageContent() {
         referralCode,
         addonIds: selectedAddonIds,
         addonQuantities,
+        addonPackageQuantities,
         addonDates,
       });
 
@@ -363,15 +370,21 @@ function BookPageContent() {
                           )
                         : 1;
                       const days = addon.perNight
-                        ? Math.max(1, Math.min(dates?.length ?? count ?? nights, nights))
+                        ? Math.max(1, Math.min(dates?.length ?? (addon.perPerson ? nights : count ?? nights), nights))
                         : 1;
                       const items =
                         !addon.perPerson && !addon.perNight ? Math.max(1, count ?? 1) : 1;
                       const linePrice = convertAndRound(
-                        addon.price * people * days * items,
+                        addon.price *
+                          people *
+                          days *
+                          items *
+                          (addonPackageQuantities[addon.id] ?? 1),
                         addon.currency,
                       );
                       const parts: string[] = [];
+                      if ((addonPackageQuantities[addon.id] ?? 1) > 1)
+                        parts.push(`×${addonPackageQuantities[addon.id]}`);
                       if (addon.perPerson && people < adultsParam)
                         parts.push(`${people}/${adultsParam} ${tc("guests").toLowerCase()}`);
                       if (addon.perNight && days < nights)
@@ -689,9 +702,11 @@ function BookPageContent() {
                   <span className="text-gray-500">{t("checkIn")}</span>
                   <span className="font-semibold text-gray-900 text-right">
                     {formatDate(checkIn, locale)}
-                    {hotel.checkInTime && (
+                    {formatCheckInTime(hotel) && (
                       <span className="block text-xs font-normal text-gray-500">
-                        {tc("checkInFrom", { time: hotel.checkInTime })}
+                        {tc(hotel.checkInUntil ? "checkInWindow" : "checkInFrom", {
+                          time: formatCheckInTime(hotel),
+                        })}
                       </span>
                     )}
                   </span>
@@ -700,9 +715,11 @@ function BookPageContent() {
                   <span className="text-gray-500">{t("checkOut")}</span>
                   <span className="font-semibold text-gray-900 text-right">
                     {formatDate(checkOut, locale)}
-                    {hotel.checkOutTime && (
+                    {formatCheckOutTime(hotel) && (
                       <span className="block text-xs font-normal text-gray-500">
-                        {tc("checkOutBy", { time: hotel.checkOutTime })}
+                        {tc(hotel.checkOutFrom ? "checkOutWindow" : "checkOutBy", {
+                          time: formatCheckOutTime(hotel),
+                        })}
                       </span>
                     )}
                   </span>
@@ -742,14 +759,16 @@ function BookPageContent() {
                         )
                       : 1;
                     const days = addon.perNight
-                      ? Math.max(1, Math.min(dates?.length ?? count ?? nights, nights))
+                      ? Math.max(1, Math.min(dates?.length ?? (addon.perPerson ? nights : count ?? nights), nights))
                       : 1;
                     const items = !addon.perPerson && !addon.perNight ? Math.max(1, count ?? 1) : 1;
                     const linePrice = convertAndRound(
-                      addon.price * people * days * items,
+                      addon.price * people * days * items * (addonPackageQuantities[addon.id] ?? 1),
                       addon.currency,
                     );
                     const parts: string[] = [];
+                    if ((addonPackageQuantities[addon.id] ?? 1) > 1)
+                      parts.push(`×${addonPackageQuantities[addon.id]}`);
                     if (addon.perPerson && people < adultsParam)
                       parts.push(`${people}/${adultsParam}`);
                     if (addon.perNight && days < nights) parts.push(`${days}/${nights}`);

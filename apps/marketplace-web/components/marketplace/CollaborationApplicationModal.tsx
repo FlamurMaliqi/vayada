@@ -10,7 +10,7 @@ import { useRef, useState } from "react";
 import { Button, Textarea } from "@/components/ui";
 import { MONTHS_ABBR } from "@/lib/constants";
 import { XMarkIcon, CheckIcon } from "@heroicons/react/24/outline";
-import { getMonthAbbr } from "@/lib/utils";
+import { formatFollowersCompact, getMonthAbbr } from "@/lib/utils";
 import { usePlatformDeliverables } from "@/hooks/usePlatformDeliverables";
 import { PlatformDeliverablesSelector } from "./PlatformDeliverablesSelector";
 import { DateMonthPicker } from "./DateMonthPicker";
@@ -377,10 +377,16 @@ export function CollaborationApplicationModal({
           </div>
 
           {/* Compensation option */}
-          {compensationOptions.length > 1 && (
+          {compensationOptions.length > 0 && (
             <fieldset>
               <legend className="mb-3 text-base font-medium text-gray-900">
-                Choose your compensation <span className="text-red-500">*</span>
+                {compensationOptions.length > 1 ? (
+                  <>
+                    Choose your compensation <span className="text-red-500">*</span>
+                  </>
+                ) : (
+                  "Your compensation"
+                )}
               </legend>
               <div className="space-y-3">
                 {compensationOptions.map((option) => (
@@ -413,6 +419,11 @@ export function CollaborationApplicationModal({
                     <span className="mt-1 block text-sm text-gray-600">
                       {formatCompensationOption(option)}
                     </span>
+                    {option.min_followers ? (
+                      <span className="mt-1 block text-sm text-gray-600">
+                        Minimum {formatFollowersCompact(option.min_followers)} followers
+                      </span>
+                    ) : null}
                     {option.terms_summary && (
                       <span className="mt-1 block text-sm text-gray-600">
                         {option.terms_summary}
