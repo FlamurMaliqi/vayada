@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { parsePmsInventoryReservationReceipt } from "@vayada/domain-pms";
+import { inventoryReservationReceiptFromBookingMetadata } from "../platform/inventoryReservation.js";
 import type { QueryResult, QueryResultRow } from "pg";
 
 import { enqueueBookingTransitionNotifications } from "../jobs/bookingEmails.js";
@@ -298,9 +298,20 @@ export async function settleStripeBookingPayment(
 
   const handoffKey = pmsCreateHandoffKey(row.propertyId, row.guestBookingId);
   const handoffHash = sha256(handoffKey);
-  const inventoryReservation = parsePmsInventoryReservationReceipt(
-    record(row.bookingMetadata)["inventoryReservation"],
+  const parsedReservation = inventoryReservationReceiptFromBookingMetadata(
+    row.bookingMetadata,
+    row.propertyId,
   );
+  const inventoryReservation =
+    parsedReservation?.contractVersion === "pms-inventory-reservation-bundle.v1" ||
+    parsedReservation?.contractVersion === "pms-inventory-reservation-lifecycle.v1"
+      ? parsedReservation
+      : null;
+  if (
+    record(record(row.bookingMetadata)["selectedOffer"])["roomSelection"] !== undefined &&
+    inventoryReservation?.contractVersion !== "pms-inventory-reservation-bundle.v1"
+  )
+    throw new Error("Complete booking inventory evidence is unavailable.");
   await client.query(
     `INSERT INTO platform.jobs (
        job_key, queue_name, job_type, source_domain_event_id, tenant_scope,
@@ -320,6 +331,7 @@ export async function settleStripeBookingPayment(
       handoffHash,
       JSON.stringify({
         operation: "create",
+        bookedOffer: record(row.bookingMetadata)["selectedOffer"],
         contractVersion: "pms-reservation.v1",
         commandId: `cmd_pms_create_${handoffHash.slice(0, 24)}`,
         idempotencyKey: handoffKey,

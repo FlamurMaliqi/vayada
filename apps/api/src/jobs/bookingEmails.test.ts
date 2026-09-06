@@ -12,6 +12,17 @@ import {
 } from "./bookingEmails.js";
 
 describe("booking lifecycle email jobs", () => {
+  it("includes every accommodation name in confirmation email content", async () => {
+    const target = createTargetEmailStore();
+    const input = bookingEmailInput({ kind: "final_confirmation" });
+    input.booking.accommodation = "2 × Double + 1 × Twin";
+    await enqueueBookingLifecycleEmailJob(target, input);
+    const payload = JSON.parse(
+      String(target.requiredCall("INSERT INTO platform.jobs").values?.[8]),
+    );
+    expect(payload.text).toContain("Accommodation: 2 × Double + 1 × Twin");
+  });
+
   it("deduplicates retries but sends each accepted host date revision", async () => {
     const target = createTargetEmailStore();
     const enqueue = (revision: string) =>

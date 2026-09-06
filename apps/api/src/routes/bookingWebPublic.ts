@@ -1,3 +1,4 @@
+import { projectBookingRoomSelection } from "../domains/bookingRoomSelectionProjection.js";
 import { reserveTargetMixedBooking } from "./bookingWebMixedReservation.js";
 import { pendingBookingEdit } from "./pendingBookingEdits.js";
 import type { quoteTargetRoomSelection } from "./bookingWebMixedQuote.js";
@@ -3542,6 +3543,7 @@ export function serializeTargetCheckoutQuote(
     "Room";
 
   return {
+    ...projectBookingRoomSelection(quote.selectedOfferSnapshot),
     quoteId: quote.publicQuoteReference,
     expiresAt: quote.expiresAt,
     roomTypeId: stringValue(quote.selectedOfferSnapshot["roomTypeId"]),
@@ -4520,6 +4522,7 @@ export function serializeTargetBooking(booking: TargetBookingRow): Record<string
   const roomCount = Math.max(Number(booking.roomCount), 1);
   const totalAmount = Number(decimalString(booking.totalAmount));
   return {
+    ...projectBookingRoomSelection(selectedOffer),
     canEditRequest: booking.canEditRequest ?? false,
     id: booking.guestBookingId,
     guestBookingId: booking.guestBookingId,
@@ -5515,6 +5518,13 @@ export async function enqueuePmsReservationHandoff(
     booking.bookingMetadata,
     propertyId,
   );
+  if (
+    operation !== "cancel" &&
+    objectValue(objectValue(booking.bookingMetadata)["selectedOffer"])["roomSelection"] !==
+      undefined &&
+    inventoryReservation?.contractVersion !== "pms-inventory-reservation-bundle.v1"
+  )
+    throw createHttpError(409, "Complete booking inventory evidence is unavailable.");
   await pool.query(
     `INSERT INTO platform.jobs
        (
@@ -5575,7 +5585,8 @@ export async function enqueuePmsReservationHandoff(
         guestBookingId: booking.guestBookingId,
         bookingReference: booking.publicReference,
         ...(operation !== "cancel" &&
-        inventoryReservation?.contractVersion === "pms-inventory-reservation-lifecycle.v1"
+        (inventoryReservation?.contractVersion === "pms-inventory-reservation-lifecycle.v1" ||
+          inventoryReservation?.contractVersion === "pms-inventory-reservation-bundle.v1")
           ? { inventoryReservation }
           : {}),
         stay: {
@@ -6871,13 +6882,45 @@ function assertTargetInventoryReleasePaymentStateSupported(
   }
 }
 
-function resolveTargetCancellationPreview(
+export function resolveTargetCancellationPreview(
   booking: TargetBookingRow,
   propertyTimezone: string | undefined,
   occurredAt: Date,
 ): Record<string, unknown> {
   const metadata = objectValue(booking.bookingMetadata);
   const selectedOffer = objectValue(metadata["selectedOffer"]);
+  const selection = projectBookingRoomSelection(selectedOffer);
+  if (selection.roomLines) {
+    const lines = selection.roomLines.map<Record<string, unknown>>((line) => ({
+      roomTypeId: line.roomTypeId,
+      roomName: line.roomName,
+      roomCount: line.roomCount,
+      ...resolveTargetCancellationPreview(
+        {
+          ...booking,
+          roomCount: line.roomCount,
+          bookingMetadata: {
+            ...metadata,
+            selectedOffer: { rateSummary: line.rateSummary, publicOfferKey: line.publicOfferKey },
+            policySnapshot: line.policy,
+          },
+        },
+        propertyTimezone,
+        occurredAt,
+      ),
+    }));
+    return {
+      lines,
+      currency: booking.currency,
+      refundPercentage: 0,
+      daysUntilCheckIn: lines[0]!["daysUntilCheckIn"],
+      policy: metadata["policySnapshot"],
+      freeCancellationDays: Math.max(...lines.map((line) => Number(line["freeCancellationDays"]))),
+      amountPaid: 0,
+      cancellationFeeAmount: 0,
+      refundAmount: 0,
+    };
+  }
   const rateSummary = objectValue(selectedOffer["rateSummary"]);
   const policySnapshot = objectValue(metadata["policySnapshot"]);
   const rateType = canonicalTargetCheckoutRateType(

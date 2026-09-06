@@ -65,6 +65,7 @@ export type BookingLifecycleEmailInput = {
     paymentMethod?: string | null;
     addons?: string | null;
     roomCount?: number;
+    accommodation?: string | null;
     adults?: number;
     children?: number;
     specialRequests?: string | null;
@@ -290,6 +291,7 @@ type BookingNotificationSnapshot = QueryResultRow & {
   bookingMetadata: unknown;
   status: string;
   roomCount: number;
+  accommodation: string | null;
   adults: number;
   children: number;
   specialRequests: string | null;
@@ -316,6 +318,7 @@ export async function loadBookingNotificationSnapshot(
        booking.currency,
        COALESCE(booking.booking_metadata ->> 'paymentMethod', booking.expected_payment_method) AS "paymentMethod",
        booking.booking_metadata AS "bookingMetadata",
+       booking.booking_metadata #>> '{selectedOffer,roomName}' AS accommodation,
        booking.lifecycle_status AS status, booking.adults, booking.children, booking.room_count AS "roomCount",
        guest.special_requests AS "specialRequests",
        (SELECT string_agg(item.addon_name || ' × ' || item.quantity, ', ' ORDER BY item.created_at)
@@ -553,6 +556,7 @@ function confirmationDetails(booking: BookingLifecycleEmailInput["booking"]): st
       ? []
       : [`Guests: ${booking.adults} adults, ${booking.children ?? 0} children`]),
     ...(booking.roomCount == null ? [] : [`Rooms: ${booking.roomCount}`]),
+    ...(booking.accommodation ? [`Accommodation: ${booking.accommodation}`] : []),
     `Add-ons: ${booking.addons || "None"}`,
     ...(booking.specialRequests ? [`Special requests: ${booking.specialRequests}`] : []),
   ];
