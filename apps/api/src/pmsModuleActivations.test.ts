@@ -85,14 +85,7 @@ function pmsEntitlement(status: ProductEntitlement["status"] = "active"): Produc
   };
 }
 
-function createActivationRepository(): PmsModuleActivationRepository & {
-  updates: Array<{
-    context: RequestContext;
-    propertyId: string;
-    moduleId: string;
-    isActive: boolean;
-  }>;
-} {
+function createActivationRepository(): PmsModuleActivationRepository {
   const now = "2026-06-29T08:00:00.000Z";
   const activations = new Map<string, PmsModuleActivation>([
     [
@@ -126,29 +119,9 @@ function createActivationRepository(): PmsModuleActivationRepository & {
       },
     ],
   ]);
-  const updates: Array<{
-    context: RequestContext;
-    propertyId: string;
-    moduleId: string;
-    isActive: boolean;
-  }> = [];
-
   return {
-    updates,
     async list() {
       return Array.from(activations.values());
-    },
-    async update(context, propertyId, moduleId, isActive) {
-      updates.push({ context, propertyId, moduleId, isActive });
-      const activation = {
-        moduleId,
-        isActive,
-        activatedAt: isActive ? now : null,
-        deactivatedAt: isActive ? null : now,
-        updatedAt: now,
-      };
-      activations.set(moduleId, activation);
-      return activation;
     },
   };
 }
@@ -308,7 +281,7 @@ describe("PMS module activation routes", () => {
       expect(response.statusCode).toBe(410);
       expect(response.json()).toMatchObject({ code: "affiliate_module_activation_retired" });
       expect(response.headers["cache-control"]).toBe("no-store");
-      expect(repository.updates).toHaveLength(0);
+
       expect(refreshes).toHaveLength(0);
       const after = await injectJson<PmsModuleActivationsResponse>(app, {
         method: "GET",
@@ -331,7 +304,6 @@ describe("PMS module activation routes", () => {
     });
 
     expect(response.statusCode).toBe(400);
-    expect(repository.updates).toHaveLength(0);
   });
 
   it.each(["inbox", "financials", "lodgify", "stripe", "paypal", "xendit", "future-module"])(
@@ -348,7 +320,6 @@ describe("PMS module activation routes", () => {
       });
 
       expect(response.statusCode).toBe(400);
-      expect(repository.updates).toHaveLength(0);
     },
   );
 
@@ -364,7 +335,6 @@ describe("PMS module activation routes", () => {
     });
 
     expect(response.statusCode).toBe(403);
-    expect(repository.updates).toHaveLength(0);
   });
 
   it("allows configured browser preflight requests", async () => {
@@ -569,60 +539,10 @@ describe("PG PMS module activation repository", () => {
         updatedAt: "2026-06-29T08:00:00.000Z",
       },
     ]);
+    expect(queries).toHaveLength(1);
     expect(queries[0].text).toContain("FROM identity.product_entitlements");
     expect(queries[0].text).toContain("entitlement_key = ANY($3::text[])");
     expect(queries[0].text).toContain("starts_at IS NULL OR starts_at <= now()");
     expect(queries[0].values).toEqual([organizationId, propertyId, ["module:affiliates"]]);
-  });
-
-  it("upserts module entitlements without refreshing inactive retry timestamps", async () => {
-    const queries: Array<{ text: string; values?: readonly unknown[] }> = [];
-    const pool: PmsModuleActivationPool = {
-      async query<T>(text: string, values?: readonly unknown[]) {
-        queries.push({ text, values });
-        return {
-          rowCount: 1,
-          rows: [
-            {
-              entitlementKey: "module:affiliates",
-              status: "suspended",
-              startsAt: "2026-06-29T08:00:00.000Z",
-              expiresAt: "2026-06-29T09:00:00.000Z",
-              updatedAt: "2026-06-29T09:00:00.000Z",
-            },
-          ] as T[],
-        };
-      },
-    };
-    const repository = createPgPmsModuleActivationRepository({
-      connectionString: "postgresql://target-db",
-      pool,
-    });
-
-    const activation = await repository.update(context, propertyId, "affiliates", false);
-
-    expect(activation).toMatchObject({
-      moduleId: "affiliates",
-      isActive: false,
-      deactivatedAt: "2026-06-29T09:00:00.000Z",
-      updatedAt: "2026-06-29T09:00:00.000Z",
-    });
-    expect(queries[0].text).toContain("ON CONFLICT");
-    expect(queries[0].text).toContain("identity.product_entitlements.expires_at");
-    expect(queries[0].text).toContain("ELSE identity.product_entitlements.updated_at");
-    expect(queries[0].text).not.toMatch(
-      /ELSE identity\.product_entitlements\.updated_at\s+END,\s+RETURNING/,
-    );
-    expect(queries[0].values?.slice(0, 4)).toEqual([
-      organizationId,
-      "module:affiliates",
-      false,
-      propertyId,
-    ]);
-    expect(JSON.parse(queries[0].values?.[4] as string)).toMatchObject({
-      source: "feature_hub",
-      moduleId: "affiliates",
-      updatedByUserId: context.actor.internalUserId,
-    });
   });
 });

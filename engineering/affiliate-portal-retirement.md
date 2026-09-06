@@ -138,3 +138,9 @@ are removed, including its obsolete mutation integration test. The repository re
 property-scoped list/detail reads used by administration and shared Finance. Existing
 lifecycle/audit tables, records and migrations remain intact. The module activation
 repository writer and remaining administration reads are subsequent cleanup.
+
+The unused module activation repository upsert and its route-specific publication
+refresh wiring are removed. Scoped entitlement reads and the authorized HTTP 410
+boundary remain. Existing activation rows are retained; the preservation integration
+fixture seeds an existing activation directly instead of calling the retired writer.
+Shared booking publication refresh remains available to its other consumers.

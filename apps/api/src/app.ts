@@ -829,7 +829,6 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     app.register(registerPmsModuleActivationRoutes, {
       prefix: "/api/pms",
       repository: options.pmsModuleActivationRepository,
-      bookingPublicationRefresh: options.bookingPublicationRefresh,
       allowedOrigins: options.pmsOperationsAllowedOrigins,
     });
   }
