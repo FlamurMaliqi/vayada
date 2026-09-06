@@ -48,7 +48,7 @@ and [non-EEA service terms](https://cloud.google.com/maps-platform/terms/maps-se
 | --- | --- |
 | Canonical property address, pin, visibility | Existing hotel catalog contract; preserve existing data and provenance. This decision does not retroactively license provider-derived property coordinates. |
 | Google place ID | Provider reference; may persist. Never use it as a property authorization key. |
-| Google destination coordinates | Expiring lookup cache, maximum 24 hours from retrieval; delete expired values. No indefinite backup/publication snapshot copies. |
+| Google destination coordinates | Transient discovery validation only; never persist. UI Kit supplies current map destination coordinates at render time. |
 | Google name, address, photo, rating, hours, URLs, types | No durable storage or shared response cache. UI Kit renders its own display content; discovery classification is request-local. No response-body logs. |
 | Discovery metadata | Property ID, source revision, policy version, category bucket, place IDs, timestamps and status; no copied provider description or exact private origin. |
 | Hotel favorite/hidden/add choice and note | Hotel-owned structured data, independent of provider lookup lifetime. |
@@ -62,12 +62,10 @@ Do not scrape Google elements or hide required attribution with CSS.
 
 Discover during the address-confirmation/editor interaction and when a guest
 opens surroundings with an expired discovery snapshot. Do not prefetch on a
-timer or search on every page render. Reuse only IDs and permitted unexpired
-coordinates; UI Kit display requests still occur when cards mount.
+timer or search on every page render. Reuse only unexpired ID snapshots; UI Kit display requests still occur when cards mount.
 One successful discovery per property/source revision/policy version per 24h
 is enough. A lookup failure never erases hotel choices or blocks their save.
-Expired provider coordinates are not a fallback; omit those markers until
-refreshed. A previously saved place ID may still be resolved by UI Kit.
+A failed UI Kit lookup omits the corresponding marker. A previously saved place ID may still be resolved by UI Kit.
 
 ## Discovery policy `nearby-v1`
 
@@ -101,11 +99,21 @@ cost about $0.128 before free caps, tax, discounts and other SKUs. UI Kit Query
 is listed at $1 per 1,000 after its free cap; maps load separately. These are
 scenario inputs, not an account quote. [Google pricing](https://developers.google.com/maps/billing-and-pricing/pricing).
 Record refresh counts and failures without provider response bodies. Use the
-existing durable job/lease mechanism for deduplication, not a new queue package.
+persisted PostgreSQL lease for deduplication, not a new queue package.
 Bound provider calls to 5s each, no automatic request retry; after failures use
 a 15-minute retry cooldown. An explicit host refresh is limited to once per
 hour per property. Enforce project quotas and request rate limits before launch;
 a billing budget notification alone is not a spending cap.
+
+Implementation refinement: refresh is request-bound (four concurrent calls,
+each limited to 5s), protected by a persisted PostgreSQL lease. The initiating
+POST awaits completion and returns 200 for ready/empty, while an existing lease
+returns 202. This avoids detached work or a new worker deployment. Store only
+place IDs and category buckets; coordinates from discovery remain transient.
+Map destinations obtain current coordinates from UI Kit when rendered. ID
+snapshots expire for display/selection after 24h; no Google coordinate cleanup
+or backup-retention assumption is needed. Missing Google configuration returns
+unavailable before claiming a lease or making a request.
 
 ## Ownership, authorization and revisions
 
@@ -141,7 +149,7 @@ the host saves them against the new location. Hidden IDs remain suppressed.
 
 | Existing visibility | Discovery origin and guest output |
 | --- | --- |
-| `hidden`, `geoPublic=false`, or no valid coordinate pair | No public map or nearby IDs/custom places. Existing permitted locality text only. Protected editor can show its own suggestions. |
+| `hidden`, `geoPublic=false`, or no valid coordinate pair | No public map or nearby IDs/custom places. Existing permitted locality text only. Protected editor also suppresses automatic discovery. |
 | `approximate` with `geoPublic=true` | Search only around the same server-rounded public center used by bookability (2 decimals), including host preview. Show an area indicator, never the exact property pin/address. |
 | `exact` with `geoPublic=true` | Search around confirmed canonical coordinates. Publish only the existing permitted address fields and exact pin. |
 
@@ -169,7 +177,7 @@ Proposed routes under `/api/shared/properties/:propertyId/nearby`:
 
 - `GET`: authenticated editor state; no arbitrary property fallback.
 - `PUT`: atomic replacement of hotel-owned curation only.
-- `POST /refresh`: `{ expectedProfileRevision }`; returns 202 or 429 cooldown.
+- `POST /refresh`: `{ expectedProfileRevision }`; awaits completion (200 ready/empty), returns 202 for an existing lease, or 429 during cooldown.
 - `POST /search`: authenticated Add search with `{ expectedProfileRevision,
   query, category }`. Require setup-manage and publication permission; trim
   query to 3..120 characters, reject unknown categories. Use one [Text Search
@@ -182,15 +190,13 @@ Proposed routes under `/api/shared/properties/:propertyId/nearby`:
   and 5s timeout. This is a paid Text Search Pro request, separate from refresh.
 
 Search stores at most 100 returned ID references per property/profile revision
-in a bounded selection registry, with coordinates subject to the same 24h
-expiry. PUT accepts every newly introduced Google choice ID, regardless of
+in a bounded selection registry with a 24h selection expiry; coordinates remain transient. PUT accepts every newly introduced Google choice ID, regardless of
 flags, only from this registry or current discovery; only previously validated
 saved references are grandfathered. Test attempts to save a fabricated hidden ID
 and then toggle it to added/favorite. This prevents fabricated place references
 without provider calls during save. Search rejection/expiry asks the host to
 search again. Keep explicit additions when automatic discovery no longer finds
-them; resolve their coordinates on demand with Place Details (ID/location only)
-when expired, bounded to the 20-addition limit and the same cooldown/timeout.
+them; UI Kit resolves their current details and coordinates when rendered, bounded to the 20-addition limit.
 
 Public route: `GET /api/booking/public/hotels/:slug/nearby`.
 Use existing API envelopes; each success contains `schemaVersion: 1`.
@@ -246,8 +252,7 @@ retry them over someone else's edit.
 
 Read state includes profile/curation revisions, `status` (`ready`, `empty`,
 `refreshing`, `unavailable`, `location_required`, `hidden`), `retryAfter`, and
-categories. Google rows contain only ID, permitted unexpired destination
-coordinates, category and hotel-owned annotations. Custom rows contain hotel
+categories. Google rows contain only ID, category and hotel-owned annotations; server-returned Google coordinates are null. Custom rows contain hotel
 content. Public responses exclude hidden choices, drafts, internal IDs, audit,
 provider failures and raw private location. Details render using the
 [UI Kit place-ID request](https://developers.google.com/maps/documentation/javascript/places-ui-kit/place-details).
@@ -257,7 +262,7 @@ reference. Never substitute stale stored Google names.
 ```typescript
 type PublicPlace =
   | { source: "google"; placeId: string; category: Category;
-      coordinates: { latitude: number; longitude: number } | null;
+      coordinates: null; // UI Kit obtains Google destination coordinates in the browser
       favorite: boolean; note: string | null }
   | ({ source: "custom" } & Omit<CustomPlace, "hidden">);
 type PublicNearby = {
@@ -283,7 +288,7 @@ type EditorNearby = {
 
 GET editor and successful PUT return `EditorNearby`. Search returns
 `{ schemaVersion: 1, profileRevision, candidates: PublicPlace[] }`, Google-only
-with favorite false and note null. Refresh 202 returns
+with favorite false and note null. Completed refresh returns 200 with ready/empty state. Refresh 202 returns
 `{ schemaVersion: 1, status: "refreshing" }`; 429 includes Retry-After seconds.
 `PublicNearby.location=null` for hidden/missing/unauthorized geo; its places are
 empty in those modes. Public custom IDs are opaque destination UUIDs, never
