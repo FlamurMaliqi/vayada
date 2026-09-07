@@ -103,6 +103,35 @@ const reservationListFixture: BookingReservationList = {
 };
 
 test.describe("booking-admin reservations cutover", () => {
+  test("shows every mixed room quantity without multiplying the combined name", async ({
+    page,
+  }) => {
+    test.skip(!PROD, "Requires a production booking-admin build.");
+    await mockBookingAdminAuthenticatedSession(page);
+    await mockBookingAdminShellRoutes(page);
+    await page.route(`**${RESERVATIONS_CONTRACT_PATH}*`, (route) =>
+      route.fulfill({
+        json: {
+          ...reservationListFixture,
+          bookings: [
+            {
+              ...reservationListFixture.bookings[0],
+              numberOfRooms: 3,
+              roomName: "2 × Double + 1 × Twin",
+              totalAmount: 600,
+              roomLines: [
+                { roomTypeId: "double", roomName: "Double", roomCount: 2 },
+                { roomTypeId: "twin", roomName: "Twin", roomCount: 1 },
+              ],
+            },
+          ],
+        },
+      }),
+    );
+    await page.goto("/reservations");
+    await expect(page.getByText("2 × Double + 1 × Twin", { exact: true })).toBeVisible();
+    await expect(page.getByText("3× 2 × Double + 1 × Twin", { exact: true })).toHaveCount(0);
+  });
   test("loads the reservations screen from the real TypeScript contract path", async ({
     page,
   }, testInfo) => {
