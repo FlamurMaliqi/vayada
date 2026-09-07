@@ -1,5 +1,6 @@
 "use client";
 import { useEffect, useState } from "react";
+import { sameRoomSelection } from "@/lib/roomSelection";
 import {
   bookingService,
   type BookingCreateRequest,
@@ -28,7 +29,7 @@ export function useRoomSelectionQuote(slug: string, input: BookingCreateRequest 
       .quote(slug, request, key)
       .then((quote) => {
         if (
-          JSON.stringify(quote.roomSelection) !== JSON.stringify(request.roomSelection) ||
+          !sameRoomSelection(quote.roomSelection, request.roomSelection) ||
           !quote.expiresAt ||
           !(Date.parse(quote.expiresAt) > Date.now())
         )

@@ -433,7 +433,7 @@ function BookPageContent() {
               )}
 
               {/* Promo Discount */}
-              {promoError && promoCodeParam && (
+              {promoError && (promoCodeParam || room.combination) && (
                 <p role="alert" className="border-b border-red-100 py-3 text-sm text-red-600">
                   {promoError}
                 </p>
@@ -823,7 +823,7 @@ function BookPageContent() {
               </div>
 
               {/* Promo Discount */}
-              {promoError && promoCodeParam && (
+              {promoError && (promoCodeParam || room.combination) && (
                 <p role="alert" className="pt-2 text-sm text-red-600">
                   {promoError}
                 </p>

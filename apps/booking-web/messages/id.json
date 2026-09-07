@@ -423,6 +423,7 @@
     "unavailable": "Pilihan akomodasi ini tidak lagi tersedia. Silakan cari kembali.",
     "choose": "Pilih akomodasi ini",
     "selectedAccommodation": "Akomodasi yang dipilih",
-    "partyChanged": "Jumlah tamu telah berubah. Pilih akomodasi dengan alokasi untuk setiap tamu sebelum meninjau harga."
+    "partyChanged": "Jumlah tamu telah berubah. Pilih akomodasi dengan alokasi untuk setiap tamu sebelum meninjau harga.",
+    "editRequest": "Edit permintaan"
   }
 }

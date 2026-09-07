@@ -1,6 +1,8 @@
 "use client";
 
 import { formatCheckInTime, formatCheckOutTime } from "@/lib/arrivalTimes";
+import { Link } from "@/i18n/navigation";
+import RoomSelectionSummary from "@/components/booking/RoomSelectionSummary";
 import { useState, useEffect } from "react";
 import Image from "next/image";
 import { useSearchParams } from "next/navigation";
@@ -10,19 +12,19 @@ import BookingFooter from "@/components/layout/BookingFooter";
 import { bookingImageSizes } from "@/components/booking/imageSizes";
 import { useHotel, useSlug } from "@/contexts/HotelContext";
 import { useCurrency } from "@/contexts/CurrencyContext";
-import { bookingService, CancelPreview } from "@/services/api/booking";
-import { Booking } from "@/lib/types";
+import { bookingService, CancelPreview, type BookingLookupResponse } from "@/services/api/booking";
 import { readLastBooking } from "@/lib/storage/bookingDraft";
 
 export default function MyBookingPageClient() {
   const t = useTranslations("myBooking");
   const tc = useTranslations("common");
+  const tr = useTranslations("roomSelection");
   const { hotel } = useHotel();
   const { formatPrice } = useCurrency();
   const searchParams = useSearchParams();
   const [reference, setReference] = useState("");
   const [email, setEmail] = useState("");
-  const [booking, setBooking] = useState<Booking | null>(null);
+  const [booking, setBooking] = useState<BookingLookupResponse | null>(null);
   const [searching, setSearching] = useState(false);
   const [error, setError] = useState("");
   const { slug } = useSlug();
@@ -288,7 +290,7 @@ export default function MyBookingPageClient() {
               <div className="flex justify-between py-3">
                 <span className="text-gray-600 text-sm">{t("room")}</span>
                 <span className="font-medium text-gray-900 text-sm">
-                  {booking.numberOfRooms && booking.numberOfRooms > 1
+                  {!booking.roomSelection && booking.numberOfRooms && booking.numberOfRooms > 1
                     ? `${booking.numberOfRooms}× `
                     : ""}
                   {booking.roomName}
@@ -321,6 +323,28 @@ export default function MyBookingPageClient() {
               </div>
             </div>
 
+            {booking.roomLines && (
+              <div className="mt-5">
+                <RoomSelectionSummary
+                  lines={booking.roomLines}
+                  currency={booking.currency}
+                  checkIn={booking.checkIn}
+                  timezone={hotel.timezone}
+                />
+              </div>
+            )}
+            {isPending &&
+              booking.canEditRequest &&
+              booking.confirmationToken &&
+              (!booking.hostResponseDeadline ||
+                Date.parse(booking.hostResponseDeadline) > Date.now()) && (
+                <Link
+                  href={`/booking/${encodeURIComponent(booking.bookingReference)}/edit-request?token=${encodeURIComponent(booking.confirmationToken)}`}
+                  className="mt-6 inline-block rounded-full border border-gray-300 px-6 py-3 font-semibold"
+                >
+                  {tr("editRequest")}
+                </Link>
+              )}
             {/* Cancel / Withdraw Button */}
             {canCancel && (
               <button

@@ -1,5 +1,5 @@
 /** @vitest-environment jsdom */
-import { act, createElement } from "react";
+import { act, createElement, useEffect } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { RoomType } from "@/lib/types";
@@ -64,7 +64,10 @@ const input: PricingInputs = {
 let root: Root;
 let latest: ReturnType<typeof usePricing>;
 function Probe({ value }: { value: PricingInputs }) {
-  latest = usePricing(value);
+  const pricing = usePricing(value);
+  useEffect(() => {
+    latest = pricing;
+  });
   return null;
 }
 beforeEach(() => {
@@ -156,4 +159,32 @@ it("rejects a quote that omits part of the selected rooms", async () => {
   });
   expect(latest.quoteReady).toBe(false);
   expect(latest.promoError).toContain("Room selection pricing is unavailable");
+});
+
+it("accepts a replay whose JSON object keys were reordered by storage", async () => {
+  const replaySelection = {
+    lines: selection.lines.map((line) => ({
+      guests: line.guests.map((guest) => ({ children: guest.children, adults: guest.adults })),
+      publicOfferKey: line.publicOfferKey,
+      roomTypeId: line.roomTypeId,
+    })),
+    contractVersion: selection.contractVersion,
+  };
+  vi.mocked(bookingService.quote).mockResolvedValue({
+    roomSelection: replaySelection,
+    roomLines: [],
+    quoteId: "replay",
+    expiresAt: "2027-01-01T10:15:00Z",
+    totalAmount: 610.25,
+    addonTotal: 10.25,
+    promoDiscount: 0,
+    currency: "EUR",
+  } as never);
+  await act(async () => root.render(createElement(Probe, { value: input })));
+  expect(latest).toMatchObject({
+    quoteReady: true,
+    roomTotal: 600,
+    grandTotal: 610.25,
+    promoError: null,
+  });
 });

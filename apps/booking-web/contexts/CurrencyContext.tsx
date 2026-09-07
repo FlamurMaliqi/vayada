@@ -22,7 +22,7 @@ const CurrencyContext = createContext<CurrencyContextValue>({
   loading: true,
   convertPrice: (amount) => amount,
   convertBetween: (amount) => amount,
-  convertAndRound: (amount) => Math.round(amount),
+  convertAndRound: (amount) => Math.round(amount * 100) / 100,
   formatPrice: (amount) => String(amount),
 });
 
@@ -128,10 +128,7 @@ export function CurrencyProvider({ children }: { children: ReactNode }) {
     [baseCurrency, rates],
   );
 
-  // Convert an amount to the selected display currency and round to a whole unit,
-  // matching formatPrice's display rounding. Use this when computing totals that
-  // must equal per-unit × quantity in the displayed currency (avoids the "$25 × 3 = $76"
-  // rounding mismatch when converting from a different base currency).
+  // Preserve currency minor units so displayed line amounts retain quoted cents.
   const convertAndRound = useCallback(
     (amount: number, fromCurrency: string): number => {
       let canConvert = true;
@@ -140,7 +137,13 @@ export function CurrencyProvider({ children }: { children: ReactNode }) {
         if (selectedCurrency !== baseCurrency && !rates[selectedCurrency]) canConvert = false;
       }
       const converted = canConvert ? convertPrice(amount, fromCurrency) : amount;
-      return Math.round(converted);
+      const currency = canConvert ? selectedCurrency : fromCurrency;
+      const digits = new Intl.NumberFormat("en-GB", {
+        style: "currency",
+        currency,
+      }).resolvedOptions().maximumFractionDigits;
+      const factor = 10 ** (digits ?? 2);
+      return Math.round(converted * factor) / factor;
     },
     [convertPrice, selectedCurrency, baseCurrency, rates],
   );
@@ -161,7 +164,6 @@ export function CurrencyProvider({ children }: { children: ReactNode }) {
         style: "currency",
         currency: displayCurrency,
         minimumFractionDigits: 0,
-        maximumFractionDigits: 0,
       }).format(displayAmount);
     },
     [convertPrice, selectedCurrency, baseCurrency, rates],
