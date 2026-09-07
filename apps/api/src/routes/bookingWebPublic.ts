@@ -3215,8 +3215,7 @@ export function assertTargetCheckoutConfigMatchesQuote(
     (method === "card"
       ? accepted.includes("card") && config?.onlineCardReady === true
       : method === "pay_at_property"
-        ? accepted.includes("pay_at_property") &&
-          accepted.some((candidate) => candidate === "cash" || candidate === "manual_card")
+        ? accepted.includes("pay_at_property")
         : method === "bank_transfer"
           ? accepted.includes("bank_transfer") && config?.bankTransferReady === true
           : method === "paypal"

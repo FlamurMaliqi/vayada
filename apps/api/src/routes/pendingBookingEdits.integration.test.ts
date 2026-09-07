@@ -21,6 +21,33 @@ describe.skipIf(!process.env["TEST_DATABASE_URL"])(
       ).rejects.toMatchObject({ statusCode: 400 });
     });
 
+    it("rejects a pending edit when Finance disables its payment method", async () => {
+      const details = await edit("details", {});
+      const input = { ...details.input, revision: details.revision };
+      const quote = await edit("quote", input);
+      await pool.query(
+        "UPDATE finance.payment_settings SET payments_enabled=FALSE WHERE property_id=$1",
+        [propertyId],
+      );
+      try {
+        await expect(
+          edit("prepare", {
+            ...input,
+            quoteId: quote.quoteId,
+            expectedTotalAmount: quote.totalAmount,
+          }),
+        ).rejects.toMatchObject({
+          statusCode: 409,
+          message: "Selected payment method is no longer available. Please refresh.",
+        });
+      } finally {
+        await pool.query(
+          "UPDATE finance.payment_settings SET payments_enabled=TRUE WHERE property_id=$1",
+          [propertyId],
+        );
+      }
+    });
+
     it("updates the same pending request, preserves evidence, and replays one hotel email", async () => {
       const details = await edit("details", {});
       expect(details.revision).toBe(0);
