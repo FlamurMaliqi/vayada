@@ -22,6 +22,18 @@ import {
 } from "./index.js";
 
 describe("@vayada/pms-vayada-adapter", () => {
+  it.each(["roomSelection", "roomLines"])("rejects unsupported %s instead of handing off the first room", async (field) => {
+    const repository = new InMemoryVayadaPmsRepository();
+    const adapter = createVayadaPmsReservationAdapter(repository);
+    const create = createCommand();
+    const update = updateCommand();
+    const extra = { [field]: field === "roomLines" ? [] : {} };
+    await expect(adapter.createReservation({ ...create, bookedOffer: { ...create.bookedOffer, ...extra } })).resolves.toMatchObject({ outcome: "failed", error: { code: "UNSUPPORTED_CAPABILITY" } });
+    await expect(adapter.updateReservation({ ...update, changes: { ...update.changes, bookedOffer: { ...update.changes.bookedOffer, ...extra } } })).resolves.toMatchObject({ outcome: "failed", error: { code: "UNSUPPORTED_CAPABILITY" } });
+    expect(repository.createCount).toBe(0);
+    expect(repository.updateCount).toBe(0);
+  });
+
   it("creates an operational reservation through the PMS contract without leaking storage details", async () => {
     const repository = new InMemoryVayadaPmsRepository();
     const adapter = createVayadaPmsReservationAdapter(repository);
@@ -186,15 +198,20 @@ describe("@vayada/pms-vayada-adapter", () => {
     const repository = new InMemoryVayadaPmsRepository({ failCreates: true });
     const adapter = createVayadaPmsReservationAdapter(repository);
 
-    await expect(adapter.createReservation(createCommand())).resolves.toMatchObject({
+    const command = createCommand();
+    const earliestRetry = Math.max(Date.now(), Date.parse(command.audit.occurredAt)) + 300_000;
+    const result = await adapter.createReservation(command);
+    expect(result).toMatchObject({
       outcome: "failed",
-      retryAfter: "2026-09-01T10:05:00.000Z",
+      retryAfter: expect.any(String),
       error: {
         code: "RETRYABLE_INTEGRATION_FAILURE",
         retryable: true,
         userVisibleCategory: "temporary_unavailable",
       },
     });
+    expect(Date.parse(result.retryAfter!)).toBeGreaterThanOrEqual(earliestRetry);
+    expect(Date.parse(result.retryAfter!)).toBeLessThanOrEqual(Math.max(Date.now(), Date.parse(command.audit.occurredAt)) + 300_000);
   });
 
   it("reattempts retryable failures instead of replaying the previous failed result", async () => {
