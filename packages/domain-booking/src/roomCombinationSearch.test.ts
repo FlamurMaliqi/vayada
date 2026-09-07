@@ -38,6 +38,14 @@ describe("complete room combination feasibility", () => {
       rooms: 3,
     });
   });
+  it("honors requested minimum and property maximum room counts", () => {
+    const candidates = [offer("a", { availableRooms: 3 }), offer("b")];
+    const party = { adults: 4, children: 0 };
+    expect(searchRoomCombinations(candidates, party, { minRooms: 3 }).options.every((option) => bookingRoomSelectionParty(option.selection).rooms >= 3)).toBe(true);
+    expect(searchRoomCombinations(candidates, party, { minRooms: 4 }).options[0].selection.lines).toHaveLength(2);
+    expect(searchRoomCombinations(candidates, party, { maxRooms: 1 }).options).toEqual([]);
+    expect(() => searchRoomCombinations(candidates, party, { minRooms: 3, maxRooms: 2 })).toThrow(RangeError);
+  });
   it("finds three distinct types and reports genuinely insufficient stock", () => {
     const candidates = [offer("a"), offer("b"), offer("c")];
     expect(

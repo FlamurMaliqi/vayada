@@ -1,5 +1,6 @@
 import { publicRoomCombinationOffer } from "../routes/bookingPublicCombinationProjection.js";
-import { serializePublicHotelQuoteProjection } from "../routes/aiHotelQuotes.js";
+import { PUBLIC_BOOKABILITY_FIXTURES } from "@vayada/domain-distribution/fixtures";
+import { createTargetPublicHotelQuoteRepository, serializePublicHotelQuoteProjection } from "../routes/aiHotelQuotes.js";
 import { createBookingHostActions } from "./bookingHostActions.js";
 import { targetBookingHostActionGuards } from "./bookingHostActionGuards.js";
 import { withPmsHostDateCredit, preparePmsHostDateAmendment, completePmsHostDateAmendment } from "./pmsHostDateAmendment.js";
@@ -298,6 +299,41 @@ describe.skipIf(!url)("mixed room inventory transactions", () => {
       expect(await findTargetRoomCombinationOffers(client, { ...input, adults: 5, children: 1,
         today: "2027-01-01", requestedAt: input.occurredAt, paymentMethods: ["pay_at_property"] }))
         .toMatchObject({ complete: true, options: [], unavailableReasons: [{ code }] });
+    } finally { await client.query("ROLLBACK"); client.release(); }
+  });
+  it("routes complete public selections only behind the gate and binds links and expiry", async () => {
+    const client = await pool.connect();
+    try {
+      await client.query("BEGIN");
+      await client.query("UPDATE distribution.public_hotel_bookability_profiles SET expires_at='2027-01-01T10:05:00Z' WHERE property_id=$1", [propertyId]);
+      await client.query("INSERT INTO hotel_catalog.property_locations(property_id, timezone) VALUES($1,'Europe/Athens')", [propertyId]);
+      const fixture = structuredClone(PUBLIC_BOOKABILITY_FIXTURES.find((item) => item.caseId === "bookable")!.profile);
+      Object.assign(fixture.hotel, { propertyId, slug: propertyId, timezone: "Europe/Athens", bookingBaseUrl: "https://example.test" });
+      const queries: string[] = [];
+      const failures: string[] = [];
+      const repository = (enabled = false) => createTargetPublicHotelQuoteRepository({ connectionString: url!,
+        mixedRoomSelectionsEnabled: enabled, now: () => input.occurredAt,
+        profileRepository: { async findProfileBySlug() { return fixture; } },
+        pool: { async query(text, values) { queries.push(text); try { return await client.query(text, values ? [...values] : undefined); } catch (error) { failures.push(String(error)); throw error; } }, async end() {} },
+      });
+      const request = { check_in: input.checkIn, check_out: input.checkOut, adults: "5", children: "1", rooms: "1", currency: "EUR", locale: "en" };
+      expect(await repository().findQuoteBySlug(propertyId, request)).toMatchObject({ status: "unavailable", unavailableReasons: [{ code: "occupancy_unavailable" }] });
+      queries.length = 0;
+      const projection = serializePublicHotelQuoteProjection((await repository(true).findQuoteBySlug(propertyId, request))!);
+      expect(failures).toEqual([]);
+      expect(projection.unavailableReasons).toEqual([]);
+      expect(projection.status).toBe("bookable");
+      expect(projection.quote!.expiresAt).toBe("2027-01-01T10:05:00.000Z");
+      expect(projection.quote!.offers[0].roomLines).toHaveLength(2);
+      expect(projection.quote!.offers[0].totals.grandTotal).toBe(600);
+      expect(queries.some((query) => query.includes("public_quote_read_models"))).toBe(false);
+      const link = new URL(projection.deepLink!.url);
+      expect(Object.fromEntries(link.searchParams)).toMatchObject({ checkIn: input.checkIn, checkOut: input.checkOut, adults: "5", children: "1", rooms: "3", room: projection.quote!.offers[0].offerId });
+      const fourRooms = await repository(true).findQuoteBySlug(propertyId, { ...request, rooms: "4" });
+      expect(fourRooms?.status).toBe("bookable");
+      expect(fourRooms?.quote?.offers.every((offer) => offer.roomLines!.reduce((sum, line) => sum + line.roomCount, 0) >= 4)).toBe(true);
+      await client.query("UPDATE finance.payment_settings SET payments_enabled=false WHERE property_id=$1", [propertyId]);
+      expect(await repository(true).findQuoteBySlug(propertyId, request)).toMatchObject({ status: "unavailable", unavailableReasons: [{ code: "payment_disabled" }] });
     } finally { await client.query("ROLLBACK"); client.release(); }
   });
   it("uses the minimum occupancy over every night and requires every explicit bound", async () => {
