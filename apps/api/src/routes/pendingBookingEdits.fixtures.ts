@@ -30,7 +30,7 @@ export async function seedProperty(admin: pg.Pool): Promise<void> {
   await admin.query(
     `INSERT INTO finance.payment_settings
          (property_id, payments_enabled, accepted_methods, default_currency)
-       VALUES ($1::uuid, TRUE, ARRAY['pay_at_property', 'cash'], 'EUR')`,
+       VALUES ($1::uuid, TRUE, ARRAY['pay_at_property'], 'EUR')`,
     [propertyId],
   );
   await admin.query(
@@ -213,7 +213,7 @@ export async function enableCard(pool: pg.Pool) {
       )
     ).rows[0].id;
     await client.query(
-      `UPDATE finance.payment_settings SET provider_account_id=$2,accepted_methods=ARRAY['card','pay_at_property','cash'],
+      `UPDATE finance.payment_settings SET provider_account_id=$2,accepted_methods=ARRAY['card','pay_at_property'],
       payment_readiness_contract_version='finance-payment-readiness.v1',payment_methods_revision=1,source_pricing_currency_revision=1,online_card_readiness_revision=1
       WHERE property_id=$1`,
       [propertyId, account],

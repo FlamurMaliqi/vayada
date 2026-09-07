@@ -499,6 +499,13 @@ function PaymentPageContent() {
 
       if (ambiguousReplayFailure) {
         setError(t("recoveryInProgress"));
+      } else if (
+        err instanceof ApiError &&
+        [400, 409, 422].includes(err.status) &&
+        /payment method/.test(blob)
+      ) {
+        setSoldOut(false);
+        setError(t("errorPaymentUnavailable"));
       } else if (blob.includes("same-day bookings are no longer available")) {
         setSoldOut(true);
         setError(t("errorSameDaySoldOut"));

@@ -264,6 +264,7 @@
     "xenditTitle": "QRIS / E-Wallet / Banküberweisung",
     "xenditNote": "OVO, DANA, ShopeePay, GoPay oder indonesische Banküberweisung über Xendit",
     "xenditExplanation": "Sie werden zu einer sicheren Zahlungsseite weitergeleitet, auf der Sie mit QRIS, OVO, DANA, ShopeePay, GoPay oder per Banküberweisung bezahlen können. Wir prüfen Ihre Buchung, sobald die Zahlung bestätigt wurde.",
+    "errorPaymentUnavailable": "Diese Zahlungsmethode ist nicht mehr verfügbar. Bitte lade die Seite neu und wähle eine verfügbare Zahlungsmethode.",
     "errorSoldOut": "Dieses Zimmer ist leider gerade ausgebucht. Bitte wählen Sie ein anderes Zimmer oder andere Daten.",
     "errorSameDaySoldOut": "Same-Day-Buchungen sind heute nicht mehr möglich. Bitte wählen Sie morgen oder ein anderes verfügbares Datum.",
     "errorGeneric": "Bei der Erstellung Ihrer Buchung ist etwas schiefgegangen. Bitte versuchen Sie es erneut oder wählen Sie ein anderes Zimmer.",

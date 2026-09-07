@@ -264,6 +264,7 @@
     "xenditTitle": "QRIS / E-Wallet / Bank Transfer",
     "xenditNote": "OVO, DANA, ShopeePay, GoPay, or Indonesian bank transfer via Xendit",
     "xenditExplanation": "You will be redirected to a secure payment page where you can pay with QRIS, OVO, DANA, ShopeePay, GoPay, or bank transfer. We'll review your booking after payment is confirmed.",
+    "errorPaymentUnavailable": "This payment method is no longer available. Please refresh and choose an available payment method.",
     "errorSoldOut": "Unfortunately this room just sold out. Please choose another room or different dates.",
     "errorSameDaySoldOut": "Same-day bookings are no longer available for today. Please select tomorrow or another available date.",
     "errorGeneric": "Something went wrong while creating your booking. Please try again, or pick another room.",
