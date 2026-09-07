@@ -1,3 +1,4 @@
+import { quoteTargetRoomSelection } from "../routes/bookingWebMixedQuote.js";
 import { randomUUID } from "node:crypto";
 import pg from "pg";
 import { beforeAll, afterAll, describe, expect, it } from "vitest";
@@ -107,8 +108,8 @@ describe.skipIf(!url)("mixed room inventory transactions", () => {
       await client.query(
         `INSERT INTO distribution.public_room_offer_snapshots
         (property_id,room_type_id,stay_date,public_offer_key,available_rooms,base_price_amount,
-         currency,payment_options,freshness_status)
-        SELECT property_id,room_type_id,stay_date,room_type_id::text,2,100,'EUR',ARRAY['pay_at_property'],'fresh'
+         currency,payment_options,freshness_status,occupancy,rate_summary)
+        SELECT property_id,room_type_id,stay_date,room_type_id::text,2,100,'EUR',ARRAY['pay_at_property'],'fresh','{"maxAdults":2,"maxChildren":1,"maxOccupancy":2}','{"minStayNights":1}'
         FROM pms.inventory_days WHERE property_id=$1`,
         [propertyId],
       );
@@ -129,6 +130,7 @@ describe.skipIf(!url)("mixed room inventory transactions", () => {
         "pms.operating_calendar_room_bindings",
         "pms.operating_calendar_revisions",
         "pms.room_types",
+        "pms.rate_rules",
         "pms.linked_inventory_groups",
         "pms.room_blocks",
         "distribution.public_hotel_bookability_profiles",
@@ -139,6 +141,84 @@ describe.skipIf(!url)("mixed room inventory transactions", () => {
     });
     await pool.end();
   });
+  const selection = {
+    contractVersion: "booking-room-selection.v1",
+    lines: [
+      {
+        roomTypeId: rooms[0]!,
+        publicOfferKey: rooms[0]!,
+        guests: [
+          { adults: 2, children: 0 },
+          { adults: 1, children: 1 },
+        ],
+      },
+      { roomTypeId: rooms[1]!, publicOfferKey: rooms[1]!, guests: [{ adults: 2, children: 0 }] },
+    ],
+  };
+  const quote = () =>
+    quoteTargetRoomSelection(pool, {
+      ...input,
+      selection,
+      today: "2027-01-01",
+      requestedAt: input.occurredAt,
+    });
+  it("quotes six guests using actual per-room caps and exact full-stay combined prices", async () => {
+    await pool.query(
+      "UPDATE distribution.public_room_offer_snapshots SET base_price_amount=100.01 WHERE property_id=$1",
+      [propertyId],
+    );
+    try {
+      const result = await quote();
+      expect(result.party).toEqual({ adults: 5, children: 1, rooms: 3 });
+      expect(result.totals.totalAmount).toBe("600.06");
+      expect(result.lines.map((line) => line.totals.roomTotal)).toEqual(["400.04", "200.02"]);
+      expect(result.paymentOptions).toEqual(["pay_at_property"]);
+    } finally {
+      await pool.query(
+        "UPDATE distribution.public_room_offer_snapshots SET base_price_amount=100 WHERE property_id=$1",
+        [propertyId],
+      );
+    }
+  });
+  it.each([
+    [
+      "occupancy='{}'::jsonb",
+      'occupancy=\'{"maxAdults":2,"maxChildren":1,"maxOccupancy":2}\'::jsonb',
+    ],
+    ["available_rooms=0", "available_rooms=2"],
+    ["freshness_status='stale'", "freshness_status='fresh'"],
+    ["rate_summary='{\"minStayNights\":3}'::jsonb", "rate_summary='{\"minStayNights\":1}'::jsonb"],
+    ["payment_options=ARRAY['card']", "payment_options=ARRAY['pay_at_property']"],
+  ])("rejects invalid per-night evidence (%s)", async (change, restore) => {
+    await pool.query(
+      `UPDATE distribution.public_room_offer_snapshots SET ${change} WHERE property_id=$1 AND room_type_id=$2 AND stay_date='2027-02-01'`,
+      [propertyId, rooms[0]],
+    );
+    try {
+      await expect(quote()).rejects.toMatchObject({ statusCode: 409 });
+    } finally {
+      await pool.query(
+        `UPDATE distribution.public_room_offer_snapshots SET ${restore} WHERE property_id=$1 AND room_type_id=$2`,
+        [propertyId, rooms[0]],
+      );
+    }
+  });
+  it.each(["closed_to_arrival", "closed_to_departure"])(
+    "checks %s on the boundary date",
+    async (column) => {
+      const date = column === "closed_to_arrival" ? input.checkIn : input.checkOut;
+      await pool.query(
+        `INSERT INTO pms.rate_rules(property_id,room_type_id,rule_type,starts_on,ends_on,${column})
+      VALUES($1,$2,'arrival_departure_restriction',$3,$3,true)`,
+        [propertyId, rooms[0], date],
+      );
+      try {
+        await expect(quote()).rejects.toMatchObject({ statusCode: 409 });
+      } finally {
+        await pool.query("DELETE FROM pms.rate_rules WHERE property_id=$1", [propertyId]);
+      }
+    },
+  );
   it("rolls back earlier room holds when a later room fails", async () => {
     await expect(
       transaction((client) =>
@@ -199,6 +279,7 @@ describe.skipIf(!url)("mixed room inventory transactions", () => {
       "UPDATE pms.room_types SET linked_inventory_group_id=$2 WHERE property_id=$1",
       [propertyId, group],
     );
+    await expect(quote()).rejects.toMatchObject({ statusCode: 409 });
     await expect(reserve()).rejects.toMatchObject({ statusCode: 409 });
     expect(await inventory()).toEqual([2, 2, 2, 2]);
   });

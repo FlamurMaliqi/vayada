@@ -1321,7 +1321,7 @@ type TargetCardPaymentRow = QueryResultRow & {
   cardLast4?: string | null;
 };
 
-type TargetCheckoutQuoteOfferRow = QueryResultRow & {
+export type TargetCheckoutQuoteOfferRow = QueryResultRow & {
   publicOfferKey: string;
   roomTypeId: string;
   ratePlanId: string | null;
@@ -1330,6 +1330,7 @@ type TargetCheckoutQuoteOfferRow = QueryResultRow & {
   occupancy: unknown;
   publicPolicy: unknown;
   paymentOptions: string[] | null;
+  nightlyPaymentOptions?: unknown;
   availableRooms: string | number;
   nightlyRoomAmounts: unknown;
   promotionNightlyRoomAmounts?: unknown;
@@ -3016,7 +3017,7 @@ export async function createTargetCheckoutQuote(
   };
 }
 
-async function loadTargetCheckoutOffer(
+export async function loadTargetCheckoutOffer(
   pool: BookingWebQueryExecutor,
   input: {
     propertyId: string;
@@ -3030,6 +3031,9 @@ async function loadTargetCheckoutOffer(
     roomTypeId: string;
     rateType: string;
     requestedAt: Date;
+    /** Exact per-room total cap for a parsed multi-room allocation. */
+    maximumRoomGuests?: number;
+    exactPublicOfferKey?: string;
     availabilityCredit?: {
       checkIn: string;
       checkOut: string;
@@ -3047,6 +3051,7 @@ async function loadTargetCheckoutOffer(
        (array_agg(offer.occupancy ORDER BY offer.stay_date))[1] AS occupancy,
        (array_agg(offer.public_policy ORDER BY offer.stay_date))[1] AS "publicPolicy",
        (jsonb_agg(offer.payment_options ORDER BY offer.stay_date)->0) AS "paymentOptions",
+       jsonb_agg(offer.payment_options ORDER BY offer.stay_date) AS "nightlyPaymentOptions",
        MIN(
          offer.available_rooms + CASE
            WHEN $12::date IS NOT NULL
@@ -3095,11 +3100,12 @@ async function loadTargetCheckoutOffer(
          END
        ) > 0
        AND offer.freshness_status = 'fresh'
-       AND COALESCE((offer.occupancy ->> 'maxAdults')::int, $5::int) >= $5::int
-       AND COALESCE((offer.occupancy ->> 'maxChildren')::int, $6::int) >= $6::int
-       AND COALESCE((offer.occupancy ->> 'maxOccupancy')::int, $5::int + $6::int) >= ($5::int + $6::int)
+       AND COALESCE((offer.occupancy ->> 'maxAdults')::int, CASE WHEN $15::int IS NULL THEN $5::int ELSE 0 END) >= $5::int
+       AND COALESCE((offer.occupancy ->> 'maxChildren')::int, CASE WHEN $15::int IS NULL THEN $6::int ELSE 0 END) >= $6::int
+       AND COALESCE((offer.occupancy ->> 'maxOccupancy')::int, CASE WHEN $15::int IS NULL THEN $5::int + $6::int ELSE 0 END) >= COALESCE($15::int,$5::int + $6::int)
        AND (offer.expires_at IS NULL OR offer.expires_at > $10::timestamptz)
        AND (offer.room_type_id::text = $8 OR offer.public_offer_key = $8)
+       AND ($16::text IS NULL OR offer.public_offer_key=$16)
        AND (
          $9 = ''
          OR lower(offer.public_offer_key) LIKE '%' || lower($9) || '%'
@@ -3167,6 +3173,8 @@ async function loadTargetCheckoutOffer(
       input.availabilityCredit?.checkIn ?? null,
       input.availabilityCredit?.checkOut ?? null,
       input.availabilityCredit?.roomCount ?? 0,
+      input.maximumRoomGuests ?? null,
+      input.exactPublicOfferKey ?? null,
     ],
   );
   const offer = result.rows[0];
@@ -6337,14 +6345,14 @@ function moneyString(value: unknown): string | null {
   return amount === null ? null : amount.toFixed(2);
 }
 
-function moneyToCents(value: string | number): bigint {
+export function moneyToCents(value: string | number): bigint {
   const normalized = typeof value === "number" ? value.toFixed(2) : value.trim();
   const match = /^(\d+)(?:\.(\d{1,2}))?$/.exec(normalized);
   if (!match) throw createHttpError(409, "Checkout pricing evidence is invalid. Please refresh.");
   return BigInt(match[1]) * 100n + BigInt((match[2] ?? "").padEnd(2, "0"));
 }
 
-function moneyFromCents(value: bigint): string {
+export function moneyFromCents(value: bigint): string {
   if (value < 0n || value > 999_999_999_999_999n) {
     throw createHttpError(409, "Checkout pricing evidence is invalid. Please refresh.");
   }
