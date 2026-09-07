@@ -1,4 +1,7 @@
 "use client";
+import RoomSelectionSummary from "@/components/booking/RoomSelectionSummary";
+import SelectionUnavailable from "@/components/booking/SelectionUnavailable";
+import { selectionCheckoutFields } from "@/lib/roomSelection";
 
 import { formatCheckInTime, formatCheckOutTime } from "@/lib/arrivalTimes";
 import { useState, useEffect, useRef, Suspense } from "react";
@@ -55,7 +58,7 @@ function BookPageContent() {
   const t = useTranslations("book");
   const tc = useTranslations("common");
   const { hotel } = useHotel();
-  const { refetchRooms } = useRooms();
+  const { refetchRooms, loading: roomsInitialLoading, roomsLoading } = useRooms();
   const { addons } = useAddons();
   const { formatPrice, convertAndRound, selectedCurrency } = useCurrency();
   const { slug } = useSlug();
@@ -73,8 +76,9 @@ function BookPageContent() {
   useEffect(() => {
     const a = parseInt(searchParams.get("adults") || "2");
     const c = parseInt(searchParams.get("children") || "0");
-    if (checkIn && checkOut) refetchRooms(checkIn, checkOut, a, c);
-  }, []);
+    if (checkIn && checkOut)
+      refetchRooms(checkIn, checkOut, a, c, Number(searchParams.get("rooms") || "1"));
+  }, [checkIn, checkOut, searchParams, refetchRooms]);
   const adultsParam = parseInt(searchParams.get("adults") || "2");
   const childrenParam = parseInt(searchParams.get("children") || "0");
   const roomsParam = parseInt(searchParams.get("rooms") || "1");
@@ -104,6 +108,7 @@ function BookPageContent() {
 
   const {
     room,
+    selectedRoomLines,
     nights,
     quoteReady,
     nightlyRate,
@@ -244,7 +249,8 @@ function BookPageContent() {
         : "";
 
       saveGuestDetails({
-        roomTypeId: room.id,
+        ...selectionCheckoutFields(room),
+        selectionId: room.combination ? room.id : undefined,
         guestFirstName: firstName,
         guestLastName: lastName,
         guestEmail: email,
@@ -286,13 +292,13 @@ function BookPageContent() {
     }
   };
 
-  if (!room) {
+  if (!room)
     return (
-      <div className="min-h-screen bg-gray-50 flex items-center justify-center">
-        <p className="text-gray-500">No room selected. Please go back and select a room.</p>
-      </div>
+      <SelectionUnavailable
+        loading={roomsInitialLoading || roomsLoading}
+        search={searchParams.toString()}
+      />
     );
-  }
 
   return (
     <div className="min-h-screen bg-gray-50">
@@ -336,7 +342,7 @@ function BookPageContent() {
                 </div>
                 <div className="flex-1 min-w-0">
                   <p className="text-sm font-bold text-gray-900">
-                    {roomsParam > 1 ? `${roomsParam}× ` : ""}
+                    {!room.combination && roomsParam > 1 ? `${roomsParam}× ` : ""}
                     {room.name}
                   </p>
                   <p className="text-sm text-gray-500">
@@ -349,13 +355,26 @@ function BookPageContent() {
                     {formatPrice(roomTotal, selectedCurrency)}
                   </p>
                   <p className="text-xs text-gray-500">
-                    {variableNightlyRates
-                      ? roomRateBreakdown
-                      : `${formatPrice(nightlyRate * roomsParam, selectedCurrency)} × ${nights}`}
+                    {room.combination
+                      ? tc("nights", { count: nights })
+                      : variableNightlyRates
+                        ? roomRateBreakdown
+                        : `${formatPrice(nightlyRate * roomsParam, selectedCurrency)} × ${nights}`}
                   </p>
                 </div>
               </div>
 
+              {selectedRoomLines && (
+                <div className="pb-5">
+                  <RoomSelectionSummary
+                    lines={selectedRoomLines}
+                    currency={room.currency}
+                    checkIn={checkIn}
+                    timezone={hotel.timezone}
+                    beforeDiscounts
+                  />
+                </div>
+              )}
               {/* Selected Addons */}
               {selectedAddonIds.length > 0 && (
                 <div className="pb-5 border-b border-gray-100">
@@ -371,7 +390,13 @@ function BookPageContent() {
                           )
                         : 1;
                       const days = addon.perNight
-                        ? Math.max(1, Math.min(dates?.length ?? (addon.perPerson ? nights : count ?? nights), nights))
+                        ? Math.max(
+                            1,
+                            Math.min(
+                              dates?.length ?? (addon.perPerson ? nights : (count ?? nights)),
+                              nights,
+                            ),
+                          )
                         : 1;
                       const items =
                         !addon.perPerson && !addon.perNight ? Math.max(1, count ?? 1) : 1;
@@ -744,9 +769,11 @@ function BookPageContent() {
                   </span>
                 </div>
                 <p className="text-xs text-gray-500 text-right">
-                  {variableNightlyRates
-                    ? roomRateBreakdown
-                    : `${formatPrice(nightlyRate * roomsParam, selectedCurrency)} × ${nights}`}
+                  {room.combination
+                    ? tc("nights", { count: nights })
+                    : variableNightlyRates
+                      ? roomRateBreakdown
+                      : `${formatPrice(nightlyRate * roomsParam, selectedCurrency)} × ${nights}`}
                 </p>
                 {addons
                   .filter((a) => selectedAddonIds.includes(a.id))
@@ -760,7 +787,13 @@ function BookPageContent() {
                         )
                       : 1;
                     const days = addon.perNight
-                      ? Math.max(1, Math.min(dates?.length ?? (addon.perPerson ? nights : count ?? nights), nights))
+                      ? Math.max(
+                          1,
+                          Math.min(
+                            dates?.length ?? (addon.perPerson ? nights : (count ?? nights)),
+                            nights,
+                          ),
+                        )
                       : 1;
                     const items = !addon.perPerson && !addon.perNight ? Math.max(1, count ?? 1) : 1;
                     const linePrice = convertAndRound(

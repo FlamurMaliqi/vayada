@@ -1,7 +1,7 @@
 "use client";
 
 import { trackEvent } from "@/services/api/tracking";
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import Image from "next/image";
 import { useSearchParams } from "next/navigation";
 import { useTranslations } from "next-intl";
@@ -12,9 +12,12 @@ import StepIndicator from "@/components/booking/StepIndicator";
 import AddonDetailModal from "@/components/booking/AddonDetailModal";
 import { bookingImageSizes } from "@/components/booking/imageSizes";
 import { ADDON_CATEGORIES } from "@/lib/constants/addons";
-import { useHotel, useAddons, useSlug } from "@/contexts/HotelContext";
+import { useHotel, useAddons, useSlug, useRooms } from "@/contexts/HotelContext";
 import { useCurrency } from "@/contexts/CurrencyContext";
 import { calculateNights, ensureMinOneNight } from "@/lib/utils";
+import RoomSelectionSummary from "@/components/booking/RoomSelectionSummary";
+import SelectionUnavailable from "@/components/booking/SelectionUnavailable";
+import { usePricing } from "@/lib/hooks/usePricing";
 import { useBookingSteps } from "@/lib/hooks/useBookingSteps";
 
 export default function AddonsPageClient() {
@@ -22,6 +25,8 @@ export default function AddonsPageClient() {
   const searchParams = useSearchParams();
   const t = useTranslations("addons");
   const tc = useTranslations("common");
+  const tr = useTranslations("roomSelection");
+  const { refetchRooms, loading: roomsInitialLoading, roomsLoading } = useRooms();
   const { hotel } = useHotel();
   const { slug } = useSlug();
   const { addons } = useAddons();
@@ -43,6 +48,13 @@ export default function AddonsPageClient() {
   );
   const adultsParam = parseInt(searchParams.get("adults") || "2");
   const nights = calculateNights(checkIn, checkOut);
+  const childrenParam = Number(searchParams.get("children") || "0");
+  const roomId = searchParams.get("room") || "";
+  const roomsParam = Number(searchParams.get("rooms") || "1");
+  useEffect(() => {
+    if (roomId.startsWith("selection-") && checkIn && checkOut)
+      void refetchRooms(checkIn, checkOut, adultsParam, childrenParam, roomsParam);
+  }, [roomId, checkIn, checkOut, adultsParam, childrenParam, roomsParam, refetchRooms]);
 
   // Generate array of stay dates (each night of the stay)
   const stayDates = (() => {
@@ -64,6 +76,20 @@ export default function AddonsPageClient() {
     activeCategory === "all" ? addons : addons.filter((a) => a.category === activeCategory);
 
   const selectedIds = Object.keys(selections);
+  const { room, selectedRoomLines, quoteReady, promoError } = usePricing({
+    roomId,
+    checkIn,
+    checkOut,
+    adults: adultsParam,
+    children: childrenParam,
+    roomsParam,
+    rateType: searchParams.get("rateType") || "flexible",
+    selectedAddonIds: selectedIds,
+    addonQuantities: selections,
+    addonPackageQuantities: packages,
+    addonDates: selectedDates,
+    promoCode: searchParams.get("promoCode") || "",
+  });
 
   // What dimension is the count selector for? perPerson → people (max=adults),
   // per-booking-only → items (cap at 10). Per-day-only addons don't get a count
@@ -144,6 +170,14 @@ export default function AddonsPageClient() {
     setSelections((prev) => ({ ...prev, [id]: clamped }));
   };
 
+  if (roomId.startsWith("selection-") && !room)
+    return (
+      <SelectionUnavailable
+        loading={roomsInitialLoading || roomsLoading}
+        search={searchParams.toString()}
+      />
+    );
+
   return (
     <div className="min-h-screen bg-white">
       <HeroSection
@@ -163,6 +197,25 @@ export default function AddonsPageClient() {
           <StepIndicator steps={STEPS} currentStep={currentStep} />
         </div>
 
+        {room?.combination && selectedRoomLines && (
+          <section className="mb-8 rounded-2xl border border-gray-200 bg-white p-6">
+            <h2 className="mb-4 text-xl font-heading">
+              {tr("accommodation", { count: adultsParam + childrenParam })}
+            </h2>
+            <RoomSelectionSummary
+              lines={selectedRoomLines}
+              currency={room.currency}
+              checkIn={checkIn}
+              timezone={hotel.timezone}
+              beforeDiscounts
+            />
+            {promoError && (
+              <p role="alert" className="mt-3 text-sm text-red-700">
+                {promoError}
+              </p>
+            )}
+          </section>
+        )}
         {/* Category Filters */}
         <div className="flex items-center gap-2 mb-8 flex-wrap">
           {availableCategories.map((cat) => (
@@ -508,7 +561,9 @@ export default function AddonsPageClient() {
             {t("backToRooms")}
           </button>
           <button
+            disabled={Boolean(room?.combination && !quoteReady)}
             onClick={() => {
+              if (room?.combination && !quoteReady) return;
               const params = new URLSearchParams(searchParams.toString());
               const packageEntries = selectedIds
                 .filter((id) => (packages[id] ?? 1) > 1)

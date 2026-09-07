@@ -1,4 +1,5 @@
 "use client";
+import RoomSelectionSummary from "@/components/booking/RoomSelectionSummary";
 
 import { trackEvent } from "@/services/api/tracking";
 import { useRef, useState } from "react";
@@ -167,14 +168,24 @@ export default function StripeConfirmStep({
           <div className="mb-6 p-4 bg-accent rounded-xl space-y-2">
             <div className="flex justify-between text-sm">
               <span className="text-gray-500">
-                {roomsParam > 1 ? `${roomsParam}× ` : ""}
+                {!booking.roomSelection && roomsParam > 1 ? `${roomsParam}× ` : ""}
                 {roomName}
               </span>
               <span className="font-semibold text-gray-900">
                 {formatPrice(roomTotal, selectedCurrency)}
               </span>
             </div>
-            <p className="text-xs text-gray-500 text-right">{roomRateBreakdown}</p>
+            {booking.roomLines ? (
+              <RoomSelectionSummary
+                lines={booking.roomLines}
+                currency={booking.currency}
+                checkIn={checkIn}
+                timezone={hotel.timezone}
+                beforeDiscounts
+              />
+            ) : (
+              <p className="text-xs text-gray-500 text-right">{roomRateBreakdown}</p>
+            )}
             {addons
               .filter((a) => selectedAddonIds.includes(a.id))
               .map((addon) => {
@@ -184,7 +195,13 @@ export default function StripeConfirmStep({
                   ? Math.max(1, Math.min(count ?? Math.max(1, adults), Math.max(1, adults)))
                   : 1;
                 const days = addon.perNight
-                  ? Math.max(1, Math.min(dates?.length ?? (addon.perPerson ? nights : count ?? nights), nights))
+                  ? Math.max(
+                      1,
+                      Math.min(
+                        dates?.length ?? (addon.perPerson ? nights : (count ?? nights)),
+                        nights,
+                      ),
+                    )
                   : 1;
                 const items = !addon.perPerson && !addon.perNight ? Math.max(1, count ?? 1) : 1;
                 const linePrice = convertAndRound(

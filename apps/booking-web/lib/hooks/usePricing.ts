@@ -110,6 +110,7 @@ export function usePricing({
     room?.combination
       ? {
           roomSelection: room.combination.roomSelection,
+          currency: room.currency,
           roomTypeId: room.combination.roomSelection.lines[0].roomTypeId,
           guestFirstName: "",
           guestLastName: "",

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { RoomType } from "./types";
-import { resolveCheckoutRoom } from "./roomSelection";
+import { resolveCheckoutRoom, selectionCheckoutFields } from "./roomSelection";
 
 const stay = { checkIn: "2027-02-01", checkOut: "2027-02-03", adults: 4, children: 0, rooms: 2 };
 const room = {
@@ -41,4 +41,17 @@ describe("checkout selection resolution", () => {
     inconsistent.combination!.roomSelection.lines[1].guests[0].adults = 1;
     expect(resolveCheckoutRoom([inconsistent], room.id, stay, now)).toBeUndefined();
   });
+});
+
+it("replaces stale draft room fields with the entire currently resolved selection", () => {
+  const stale = { roomTypeId: "old-room", roomSelection: undefined };
+  expect({ ...stale, ...selectionCheckoutFields(room) }).toEqual({
+    roomTypeId: "a",
+    roomSelection: room.combination!.roomSelection,
+    currency: room.currency,
+  });
+  expect({
+    ...selectionCheckoutFields(room),
+    ...selectionCheckoutFields({ id: "legacy-room" } as RoomType),
+  }).toEqual({ roomTypeId: "legacy-room", roomSelection: undefined, currency: undefined });
 });

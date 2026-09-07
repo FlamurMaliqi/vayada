@@ -1,5 +1,6 @@
 "use client";
 
+import type { ReactNode } from "react";
 import { useTranslations } from "next-intl";
 
 export type PolicyKind = "terms" | "cancellation";
@@ -11,6 +12,7 @@ interface PolicyModalProps {
   cancellationPolicyText: string;
   /** Fallback body for the cancellation modal when the hotel hasn't supplied custom text. */
   cancellationFallback: string;
+  cancellationContent?: ReactNode;
 }
 
 export default function PolicyModal({
@@ -19,6 +21,7 @@ export default function PolicyModal({
   termsText,
   cancellationPolicyText,
   cancellationFallback,
+  cancellationContent,
 }: PolicyModalProps) {
   const t = useTranslations("payment");
   if (!kind) return null;
@@ -55,7 +58,7 @@ export default function PolicyModal({
         <div className="px-6 py-5 overflow-y-auto text-sm text-gray-700 whitespace-pre-wrap leading-relaxed">
           {kind === "terms"
             ? termsText || "Please contact us for the full Terms and Conditions."
-            : cancellationPolicyText || cancellationFallback}
+            : (cancellationContent ?? (cancellationPolicyText || cancellationFallback))}
         </div>
       </div>
     </div>

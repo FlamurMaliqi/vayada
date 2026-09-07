@@ -1,4 +1,4 @@
-import type { RoomType } from "@/lib/types";
+import type { RoomType, RoomSelection } from "@/lib/types";
 
 export type CheckoutStay = {
   checkIn: string;
@@ -33,4 +33,16 @@ export function resolveCheckoutRoom(
   )
     return undefined;
   return room;
+}
+
+export function selectionCheckoutFields(room: RoomType): {
+  roomTypeId: string;
+  roomSelection?: RoomSelection;
+  currency?: string;
+} {
+  return {
+    roomTypeId: room.combination?.roomSelection.lines[0].roomTypeId ?? room.id,
+    roomSelection: room.combination?.roomSelection,
+    currency: room.combination ? room.currency : undefined,
+  };
 }
