@@ -4,6 +4,7 @@ import { reserveTargetMixedBooking } from "./bookingWebMixedReservation.js";
 import { pendingBookingEdit } from "./pendingBookingEdits.js";
 import { quoteTargetRoomSelection } from "./bookingWebMixedQuote.js";
 import {
+  createTargetMixedCheckoutQuote,
   allocateMixedQuoteDiscount,
   mixedSelectionOffer,
   mixedSelectionPromotion,
@@ -1862,6 +1863,8 @@ export function createTargetBookingWebCheckoutAdapter(
           request,
           context.occurredAt,
         );
+        if (quote.selectedOfferSnapshot["roomSelection"] !== undefined && !config.mixedRoomSelectionsEnabled)
+          throw createHttpError(409, "Room selection checkout is not available.");
         if (quote.selectedOfferSnapshot["editBookingId"])
           throw createHttpError(409, "Use the request editor to save this quote.");
         const billingConfigReadPort = config.billingConfigReadPortFactory?.(client);
@@ -1973,11 +1976,13 @@ export function createTargetBookingWebCheckoutAdapter(
           );
           if (reservation.status === "replay") return reservation.body;
         }
-        const quote = await createTargetCheckoutQuote(
+        if (request["roomSelection"] !== undefined && !config.mixedRoomSelectionsEnabled)
+          throw createHttpError(400, "Room selection checkout is not available.");
+        const quote = await (request["roomSelection"] !== undefined ? createTargetMixedCheckoutQuote : createTargetCheckoutQuote)(
           executor,
           property,
           request,
-          context?.occurredAt ?? new Date(),
+          context?.occurredAt ?? config.now?.() ?? new Date(),
         );
         const body = serializeTargetCheckoutQuote(quote);
         if (context) {
