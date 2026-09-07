@@ -122,6 +122,7 @@ function BookPageContent() {
     rateType,
     roomsParam,
     adults: adultsParam,
+    children: childrenParam,
     selectedAddonIds,
     addonQuantities,
     addonPackageQuantities,
