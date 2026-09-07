@@ -254,6 +254,27 @@ describe.skipIf(!url)("mixed room inventory transactions", () => {
       }
     } finally { await client.query("ROLLBACK"); client.release(); }
   });
+  it("credits complete reserved bundles without assuming receipt order or an original quote UUID", async () => {
+    const client = await pool.connect();
+    try {
+      await client.query("BEGIN");
+      const reservation = await port.reserveBundle!({ ...input, transaction: client, quoteSessionId: `change-request:${randomUUID()}` });
+      const base = { ...input, transaction: client, reservation: { ...reservation, receipts: [...reservation.receipts].reverse() } };
+      expect(await port.bundleAvailabilityCredits!(base)).toEqual(new Map(rooms.map((id) => [id, { checkIn: input.checkIn, checkOut: input.checkOut, roomCount: 2 }])));
+      expect(await port.bundleAvailabilityCredits!({ ...base, propertyId: randomUUID() })).toBeNull();
+      expect(await port.bundleAvailabilityCredits!({ ...base, checkOut: "2027-02-04" })).toBeNull();
+      expect(await port.bundleAvailabilityCredits!({ ...base, lines: input.lines.map((line) => ({ ...line, roomCount: 1 })) })).toBeNull();
+      expect(await port.bundleAvailabilityCredits!({ ...base, lines: [input.lines[0]!], reservation: { ...reservation, receipts: [reservation.receipts[0]!] } })).toBeNull();
+      await client.query("SAVEPOINT duplicate_type");
+      // Corrupt only this transaction's synthetic receipt to exercise a shape the normal bundle writer forbids.
+      await client.query("SET LOCAL session_replication_role=replica");
+      await client.query("UPDATE pms.inventory_reservation_receipts SET room_type_id=$2::text::uuid,public_offer_key=$2::text WHERE receipt_id=$1", [reservation.receipts[1]!.receiptId, rooms[0]]);
+      expect(await port.bundleAvailabilityCredits!(base)).toBeNull();
+      await client.query("ROLLBACK TO SAVEPOINT duplicate_type");
+      await port.release({ ...input, transaction: client, reservation });
+      expect(await port.bundleAvailabilityCredits!(base)).toBeNull();
+    } finally { await client.query("ROLLBACK"); client.release(); }
+  });
   it("quotes six guests using actual per-room caps and exact full-stay combined prices", async () => {
     await pool.query(
       "UPDATE distribution.public_room_offer_snapshots SET base_price_amount=100.01 WHERE property_id=$1",

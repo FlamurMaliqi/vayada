@@ -417,6 +417,35 @@ export function createTargetPmsInventoryReservationPort(): DirectBookingInventor
       }
     },
 
+    async bundleAvailabilityCredits(input) {
+      const bundle = parsePmsInventoryReservationBundle(input.reservation);
+      if (!bundle || bundle.receipts.length !== input.lines.length ||
+          new Set(input.lines.map((line) => line.roomTypeId)).size !== input.lines.length) return null;
+      const result = await input.transaction.query<ReceiptScopeRow>(
+        `SELECT receipt.quote_session_id AS "quoteSessionId",receipt.room_type_id::text AS "roomTypeId",
+           receipt.public_offer_key AS "publicOfferKey",receipt.check_in::text AS "checkIn",
+           receipt.check_out::text AS "checkOut",receipt.room_count AS "roomCount"
+         FROM pms.inventory_reservation_receipts receipt
+         JOIN pms.inventory_reservation_statuses status USING(receipt_id)
+         WHERE receipt.receipt_id=ANY($1::uuid[]) AND receipt.property_id=$2::uuid
+           AND receipt.check_in=$3::date AND receipt.check_out=$4::date
+           AND receipt.receipt_owner='pms' AND receipt.contract_version=$5
+           AND status.lifecycle_state='reserved'
+           AND (SELECT count(*) FROM pms.inventory_reservation_receipts complete
+             WHERE complete.property_id=receipt.property_id AND complete.quote_session_id=receipt.quote_session_id)=cardinality($1::uuid[])`,
+        [bundle.receipts.map((receipt) => receipt.receiptId), input.propertyId,
+          input.checkIn, input.checkOut, PMS_INVENTORY_RESERVATION_LIFECYCLE_CONTRACT_VERSION],
+      );
+      if (result.rows.length !== input.lines.length ||
+          new Set(result.rows.map((row) => row.roomTypeId)).size !== input.lines.length ||
+          new Set(result.rows.map((row) => row.quoteSessionId)).size !== 1 ||
+          result.rows.some((row) => !input.lines.some((line) =>
+            line.roomTypeId === row.roomTypeId && line.publicOfferKey === row.publicOfferKey && line.roomCount === row.roomCount))) return null;
+      return new Map(result.rows.map((row) => [row.roomTypeId, {
+        checkIn: row.checkIn, checkOut: row.checkOut, roomCount: row.roomCount,
+      }]));
+    },
+
     async selectionAvailabilityCredits(input) {
       const result = await input.transaction.query<{
         roomTypeId: string;
