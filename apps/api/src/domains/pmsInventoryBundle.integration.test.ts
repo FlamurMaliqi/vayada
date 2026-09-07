@@ -1,3 +1,5 @@
+import { createBookingHostActions } from "./bookingHostActions.js";
+import { targetBookingHostActionGuards } from "./bookingHostActionGuards.js";
 import { withPmsHostDateCredit, preparePmsHostDateAmendment, completePmsHostDateAmendment } from "./pmsHostDateAmendment.js";
 import { createTargetPmsOperationsReadRepository } from "./pmsOperationsReadModel.js";
 import { findTargetRoomCombinationOffers } from "../routes/bookingRoomCombinationOffers.js";
@@ -347,6 +349,9 @@ describe.skipIf(!url)("mixed room inventory transactions", () => {
       const context = { operation: "change", requestId: randomUUID(), correlationId: randomUUID(),
         idempotencyKey: randomUUID(), fingerprint: randomUUID(), occurredAt: input.occurredAt, actorUserId: randomUUID() };
       await client.query("INSERT INTO identity.users(id,email,status) VALUES($1,$2,'active')", [context.actorUserId, `${context.actorUserId}@example.test`]);
+      await client.query(`UPDATE distribution.public_room_offer_snapshots SET public_policy=jsonb_build_object(
+        'type','free_until_days_before_arrival','freeCancellationDeadlineDays',CASE WHEN room_type_id=$2 THEN 3 ELSE 7 END,
+        'afterDeadlinePenalty','full_booking_amount','noShowPenalty','full_booking_amount') WHERE property_id=$1`, [propertyId, rooms[0]]);
       const quote = await createTargetMixedCheckoutQuote(client, property, request, input.occurredAt);
       const created = await createTargetGuestBooking(client, port, property, { ...request, expectedTotalAmount: quote.totalAmount }, context, quote, null, null, null);
       await client.query("UPDATE booking.guest_bookings SET lifecycle_status='confirmed' WHERE id=$1", [created.guestBookingId]);
@@ -470,6 +475,32 @@ describe.skipIf(!url)("mixed room inventory transactions", () => {
           .toEqual(Array.from({ length: 3 }, () => ({ assignment_status: "pending", check_in: input.checkIn })));
         expect((await client.query("SELECT available_count FROM pms.inventory_days WHERE property_id=$1 ORDER BY room_type_id,stay_date", [propertyId])).rows.map((row) => row.available_count))
           .toEqual([0, 0, 1, 1]);
+        await client.query("SET CONSTRAINTS ALL DEFERRED");
+        // Run the actual owner action transaction inside this fixture's outer rollback.
+        const nestedPool = { connect: async () => ({
+          query: (sql: string, values?: unknown[]) => client.query(
+            sql === "BEGIN" ? "SAVEPOINT owner_action" : sql === "COMMIT" ? "RELEASE SAVEPOINT owner_action" :
+              sql === "ROLLBACK" ? "ROLLBACK TO SAVEPOINT owner_action" : sql, values), release() {},
+        }) } as unknown as pg.Pool;
+        const actions = createBookingHostActions({ pool: nestedPool, inventory: wrapped,
+          guards: targetBookingHostActionGuards, now: () => new Date(nextAt.getTime() + 1000) });
+        const scope = { propertyId, bookingId: booking.guestBookingId, actorUserId: context.actorUserId };
+        const hostPreview = await actions.preview(scope, { action: "edit_dates", reason: "Synthetic mixed host test",
+          checkIn: "2027-02-02", checkOut: input.checkOut });
+        expect(hostPreview.impact.cancellationPolicy).toMatchObject({ type: "mixed_room", lines: [
+          { previousDeadline: "2027-01-29", newDeadline: "2027-01-30" },
+          { previousDeadline: "2027-01-25", newDeadline: "2027-01-26" },
+        ] });
+        expect(await actions.apply(scope, hostPreview.previewId, randomUUID())).toMatchObject({ lifecycleStatus: "confirmed" });
+        await client.query("SET CONSTRAINTS ALL IMMEDIATE");
+        const final = await bookingOwner.loadBooking(client, propertyId, booking.guestBookingId);
+        expect(final.totalAmount).toBe("300.00");
+        expect(serializeTargetBooking(final)["roomLines"]).toHaveLength(2);
+        const finalSnapshot = final.bookingMetadata as { policySnapshot: { lines: { totals: { totalAmount: string } }[] };
+          selectedOffer: { publicPolicy: { lines: { totals: { totalAmount: string } }[] }; roomLines: { totals: { totalAmount: string } }[] } };
+        const amounts = finalSnapshot.selectedOffer.roomLines.map((line) => line.totals.totalAmount);
+        expect(finalSnapshot.selectedOffer.publicPolicy.lines.map((line) => line.totals.totalAmount)).toEqual(amounts);
+        expect(finalSnapshot.policySnapshot.lines.map((line) => line.totals.totalAmount)).toEqual(amounts);
       }
     } finally { await client.query("ROLLBACK"); client.release(); }
   });

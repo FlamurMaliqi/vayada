@@ -5162,6 +5162,7 @@ async function applyAcceptedTargetDateChange(
   const metadata = {
     ...objectValue(input.booking.bookingMetadata),
     selectedOffer: input.selectedOffer,
+    ...(input.selectedOffer["roomSelection"] ? { policySnapshot: input.selectedOffer["publicPolicy"] } : {}),
     inventoryReservation: input.inventoryReservation,
     inventoryQuoteSessionId: `${hostEdit ? "host-edit" : "change-request"}:${input.changeRequest.id}`,
     [hostEdit ? "lastHostEditPreviewId" : "lastAcceptedChangeRequestId"]: input.changeRequest.id,
