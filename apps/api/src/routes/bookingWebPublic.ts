@@ -1,7 +1,8 @@
+import { lockPmsInventoryMutationScope } from "../domains/pmsInventoryMutationLock.js";
 import { projectBookingRoomSelection } from "../domains/bookingRoomSelectionProjection.js";
 import { reserveTargetMixedBooking } from "./bookingWebMixedReservation.js";
 import { pendingBookingEdit } from "./pendingBookingEdits.js";
-import type { quoteTargetRoomSelection } from "./bookingWebMixedQuote.js";
+import { quoteTargetRoomSelection } from "./bookingWebMixedQuote.js";
 import {
   allocateMixedQuoteDiscount,
   mixedSelectionOffer,
@@ -1655,6 +1656,7 @@ export function createTargetBookingWebCheckoutAdapter(
         }
         const property = await loadTargetPropertyById(client, propertyId);
         const requested = targetDateChangeRequestFromSnapshot(changeRequest.requestedChanges);
+        await lockPmsInventoryMutationScope(client, propertyId);
         const preview = await previewTargetDateChange(
           client,
           config.inventoryReservationPort,
@@ -1689,7 +1691,7 @@ export function createTargetBookingWebCheckoutAdapter(
         if (!roomTypeId || !publicOfferKey) {
           throw createHttpError(409, "The requested room offer is no longer available.");
         }
-        const reservation = await config.inventoryReservationPort.reserve({
+        const reservation = await reserveTargetDateSelection(config.inventoryReservationPort, selectedOffer, {
           transaction: client,
           propertyId,
           quoteSessionId: `change-request:${changeRequest.id}`,
@@ -4659,23 +4661,35 @@ async function previewTargetDateChange(
   if (!publicOfferKey || !roomTypeId) {
     return blocked("The original room offer cannot be changed online. Contact the property.");
   }
-  const availabilityCredit = await targetInventoryAvailabilityCredit(
-    inventoryReservationPort,
-    pool,
-    booking,
-    property.propertyId,
-    roomTypeId,
-    publicOfferKey,
+  const selection = parseBookingRoomSelection(selectedOffer["roomSelection"]);
+  if (selectedOffer["roomSelection"] !== undefined && !selection)
+    return blocked("The original room selection cannot be changed online.");
+  const reservation = inventoryReservationReceiptFromBookingMetadata(booking.bookingMetadata, property.propertyId);
+  const credits = selection && reservation && "receipts" in reservation
+    ? await inventoryReservationPort.bundleAvailabilityCredits?.({
+        transaction: pool, propertyId: property.propertyId, reservation,
+        checkIn: dateOnly(booking.checkIn), checkOut: dateOnly(booking.checkOut),
+        lines: selection.lines.map((line) => ({ ...line, roomCount: line.guests.length })),
+      }) : null;
+  const availabilityCredit = selection ? undefined : await targetInventoryAvailabilityCredit(
+    inventoryReservationPort, pool, booking, property.propertyId, roomTypeId, publicOfferKey,
   );
-  if (!availabilityCredit) {
+  if (selection ? !credits : !availabilityCredit)
     return blocked("This booking's inventory reservation cannot be changed online.");
-  }
   const rateType = canonicalTargetCheckoutRateType(
     stringValue(selectedOffer["rateType"]) ?? publicOfferKey,
   );
 
   try {
-    const offer = await loadTargetCheckoutOffer(pool, {
+    const promotionSettings = await loadTargetCheckoutConfig(pool, property.propertyId);
+    const mixed = selection ? await quoteTargetRoomSelection(pool, {
+      propertyId: property.propertyId, selection, checkIn, checkOut, currency: booking.currency,
+      today: targetPropertyDateOnly(property.timezone, requestedAt), requestedAt,
+      promotionSettings: promotionSettings?.promotionSettings, credits: credits!,
+    }) : null;
+    if (mixed && !mixed.paymentOptions.includes("pay_at_property"))
+      return blocked("The original payment method is no longer available for every room.");
+    const offer = mixed ? mixedSelectionOffer(mixed) : await loadTargetCheckoutOffer(pool, {
       propertyId: property.propertyId,
       checkIn,
       checkOut,
@@ -4695,8 +4709,7 @@ async function previewTargetDateChange(
     const roomTotal = moneyNumber(offer.roomTotal) ?? 0;
     const taxesAndFees = moneyNumber(offer.taxesAndFees) ?? 0;
     const discounts = moneyNumber(offer.discounts) ?? 0;
-    const promotionSettings = await loadTargetCheckoutConfig(pool, property.propertyId);
-    const promotion = bestBookingPromotion({
+    const promotion = mixed ? mixedSelectionPromotion(mixed) : bestBookingPromotion({
       settings: promotionSettings?.promotionSettings,
       roomTypeId: offer.roomTypeId,
       today: targetPropertyDateOnly(property.timezone, requestedAt),
@@ -4710,8 +4723,13 @@ async function previewTargetDateChange(
     });
     const promotionDiscount = promotion?.discountAmount ?? 0;
     const newTotal = roundMoney(roomTotal + taxesAndFees - discounts - promotionDiscount);
+    const roomLines = mixed ? allocateMixedQuoteDiscount(mixed.lines, 0, 0).lines : undefined;
     const refreshedSelectedOffer = {
       ...selectedOffer,
+      ...(mixed ? { roomSelection: mixed.selection, roomLines,
+        roomName: String(objectValue(offer.roomSummary)["name"]),
+        paymentOptions: mixed.paymentOptions,
+      } : {}),
       promotion,
       publicOfferKey: offer.publicOfferKey,
       roomTypeId: offer.roomTypeId,
@@ -4720,7 +4738,10 @@ async function previewTargetDateChange(
       roomSummary: objectValue(offer.roomSummary),
       rateSummary: objectValue(offer.rateSummary),
       occupancy: objectValue(offer.occupancy),
-      publicPolicy: objectValue(offer.publicPolicy),
+      publicPolicy: roomLines ? { type: "mixed_room", lines: roomLines.map((line) => ({
+        roomTypeId: line.roomTypeId, publicOfferKey: line.publicOfferKey, roomCount: line.guests.length,
+        policy: line.offer.publicPolicy, rateSummary: line.offer.rateSummary, totals: line.totals,
+      })) } : objectValue(offer.publicPolicy),
       nightlyRoomAmounts: targetNightlyRoomAmounts(offer.nightlyRoomAmounts, checkIn, checkOut),
       sourceFreshness: objectValue(offer.sourceFreshness),
       generatedAt: toIsoDateTime(offer.generatedAt),
@@ -4874,6 +4895,7 @@ async function insertTargetChangeRequest(
 function serializeTargetChangeRequest(row: TargetChangeRequestRow): Record<string, unknown> {
   const snapshot = objectValue(row.requestedChanges);
   return {
+    ...projectBookingRoomSelection(objectValue(snapshot["pricingSnapshot"])["selectedOffer"]),
     id: row.id,
     bookingId: row.guestBookingId,
     status: publicTargetChangeRequestStatus(row.status),
@@ -4908,7 +4930,7 @@ function serializeTargetDateChangePreview(
   preview: TargetDateChangePreview,
 ): Record<string, unknown> {
   const { pricingSnapshot: _pricingSnapshot, ...publicPreview } = preview;
-  return publicPreview;
+  return { ...publicPreview, ...projectBookingRoomSelection(_pricingSnapshot?.["selectedOffer"]) };
 }
 
 export async function loadTargetHotelBooking(
@@ -5099,12 +5121,30 @@ function assertTargetDateChangePriceUnchanged(
   const snapshot = objectValue(snapshotValue);
   const submittedTotal = moneyNumber(snapshot["newTotal"]);
   const currency = stringValue(snapshot["currency"]);
-  if (submittedTotal !== preview.newTotal || currency !== preview.currency) {
+  const submittedOffer = objectValue(objectValue(snapshot["pricingSnapshot"])["selectedOffer"]);
+  const currentOffer = objectValue(preview.pricingSnapshot?.["selectedOffer"]);
+  const selectionChanged = (submittedOffer["roomSelection"] !== undefined || currentOffer["roomSelection"] !== undefined) &&
+    stableJson(projectBookingRoomSelection(submittedOffer)) !== stableJson(projectBookingRoomSelection(currentOffer));
+  if (submittedTotal !== preview.newTotal || currency !== preview.currency || selectionChanged) {
     throw createHttpError(
       409,
       "The price for the requested dates changed. Ask the guest to submit a new request.",
     );
   }
+}
+
+async function reserveTargetDateSelection(
+  port: DirectBookingInventoryReservationPort,
+  selectedOffer: Record<string, unknown>,
+  input: Parameters<DirectBookingInventoryReservationPort["reserve"]>[0],
+) {
+  if (selectedOffer["roomSelection"] === undefined) return port.reserve(input);
+  const selection = parseBookingRoomSelection(selectedOffer["roomSelection"]);
+  if (!selection || !port.reserveBundle)
+    throw createHttpError(409, "The complete room selection is unavailable.");
+  return port.reserveBundle({ ...input,
+    lines: selection.lines.map((line) => ({ ...line, roomCount: line.guests.length })),
+  });
 }
 
 async function applyAcceptedTargetDateChange(
@@ -5123,6 +5163,7 @@ async function applyAcceptedTargetDateChange(
     ...objectValue(input.booking.bookingMetadata),
     selectedOffer: input.selectedOffer,
     inventoryReservation: input.inventoryReservation,
+    inventoryQuoteSessionId: `${hostEdit ? "host-edit" : "change-request"}:${input.changeRequest.id}`,
     [hostEdit ? "lastHostEditPreviewId" : "lastAcceptedChangeRequestId"]: input.changeRequest.id,
   };
   const result = await pool.query<TargetBookingRow>(
@@ -7226,6 +7267,8 @@ export const targetBookingHostActionPrimitives = {
   loadProperty: loadTargetPropertyById,
   previewDates: previewTargetDateChange,
   applyDates: applyAcceptedTargetDateChange,
+  reserveDates: reserveTargetDateSelection,
+  assertDatesUnchanged: assertTargetDateChangePriceUnchanged,
   reserveCommand: reserveTargetCheckoutCommand,
   recordCommand: recordTargetCheckoutCommand,
   reversePromo: reverseTargetPromoRedemption,

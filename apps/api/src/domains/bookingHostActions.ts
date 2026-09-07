@@ -275,7 +275,7 @@ export function createBookingHostActions(config: {
         });
         let updated = state.booking;
         if (state.dates) {
-          const reservation = await config.inventory.reserve({
+          const reservation = await bookingOwner.reserveDates(config.inventory, state.newOffer, {
             transaction: client,
             propertyId: scope.propertyId,
             quoteSessionId: `host-edit:${previewId}`,
