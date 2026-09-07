@@ -5,7 +5,7 @@ import {
   type BookingRoomLine,
 } from "@vayada/domain-booking";
 import {
-  pmsRoomStayRestrictionsAllow,
+  pmsRoomStayRestrictionReason,
   readPmsRoomSelectionConflicts,
 } from "../domains/pmsRoomSelectionConflicts.js";
 import {
@@ -86,14 +86,16 @@ export async function quoteTargetRoomSelection(
       requestedAt: input.requestedAt,
       availabilityCredit: input.credits?.get(line.roomTypeId),
     });
-    if (
-      !(await pmsRoomStayRestrictionsAllow(pool, {
-        ...input,
-        roomTypeId: line.roomTypeId,
-        ratePlanId: offer.ratePlanId,
-      }))
-    )
-      throw createHttpError(409, "This room's stay restrictions changed. Please refresh.");
+    const restriction = await pmsRoomStayRestrictionReason(pool, {
+      ...input,
+      roomTypeId: line.roomTypeId,
+      ratePlanId: offer.ratePlanId,
+    });
+    if (restriction)
+      throw Object.assign(
+        createHttpError(409, "This room's stay restrictions changed. Please refresh."),
+        { availabilityReason: restriction },
+      );
     const promotion = bestBookingPromotion({
       settings: input.promotionSettings,
       roomTypeId: line.roomTypeId,
@@ -135,7 +137,9 @@ export async function quoteTargetRoomSelection(
     ),
   );
   if (!paymentOptions.length)
-    throw createHttpError(409, "These rooms have no common payment method.");
+    throw Object.assign(createHttpError(409, "These rooms have no common payment method."), {
+      availabilityReason: "payment_disabled",
+    });
   const totals = Object.fromEntries(
     (["roomTotal", "taxesAndFees", "discounts", "promotionDiscount", "totalAmount"] as const).map(
       (key) => [

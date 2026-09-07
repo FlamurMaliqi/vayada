@@ -1127,6 +1127,7 @@ function normalizePublicPaymentMethod(
 function reasonCode(value: string | null): PublicBookabilityReasonCode | null {
   if (
     value === "sold_out" ||
+    value === "stay_restricted" ||
     value === "payment_disabled" ||
     value === "min_stay_not_met" ||
     value === "max_stay_exceeded" ||

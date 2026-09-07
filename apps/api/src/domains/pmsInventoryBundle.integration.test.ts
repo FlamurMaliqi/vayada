@@ -259,8 +259,46 @@ describe.skipIf(!url)("mixed room inventory transactions", () => {
     expect(publicRoomCombinationOffer(result.options[0]!, "https://example.test/en/book").offerId).toBe(serialized.offerId);
 
     expect((await search(4, 0)).options.every((option) => option.lines.length === 1)).toBe(true);
-    expect(await search(9, 0)).toMatchObject({ complete: true, eligibleOfferCount: 2, options: [] });
-    expect(await search(5, 1, 1)).toEqual({ complete: false, eligibleOfferCount: 0, options: [] });
+    expect(await search(9, 0)).toMatchObject({ complete: true, eligibleOfferCount: 2, options: [], unavailableReasons: [{ code: "occupancy_unavailable" }] });
+    expect(await search(5, 1, 1)).toMatchObject({ complete: false, eligibleOfferCount: 0, options: [], unavailableReasons: [{ code: "unavailable_data" }] });
+  });
+  it.each([
+    ["available_rooms=0, availability_status='sold_out', sellable_publicly=false", "sold_out", true],
+    ["expires_at='2026-12-31'", "stale_data", false],
+    ["rate_summary='{\"minStayNights\":3}'", "min_stay_not_met", true],
+    ["rate_summary='{\"maxStayNights\":1}'", "max_stay_exceeded", true],
+    ["rate_summary='{\"minStayNights\":\"unknown\"}'", "unavailable_data", false],
+    ["payment_options=ARRAY['card']", "payment_disabled", true],
+  ] as const)("preserves availability reasons for %s", async (update, code, complete) => {
+    const client = await pool.connect();
+    try {
+      await client.query("BEGIN");
+      await client.query(`UPDATE distribution.public_room_offer_snapshots SET ${update} WHERE property_id=$1`, [propertyId]);
+      expect(await findTargetRoomCombinationOffers(client, { ...input, adults: 5, children: 1,
+        today: "2027-01-01", requestedAt: input.occurredAt, paymentMethods: ["pay_at_property"] }))
+        .toMatchObject({ complete, options: [], unavailableReasons: [{ code }] });
+    } finally { await client.query("ROLLBACK"); client.release(); }
+  });
+  it("distinguishes incompatible methods across otherwise sufficient room types", async () => {
+    const client = await pool.connect();
+    try {
+      await client.query("BEGIN");
+      await client.query("UPDATE distribution.public_room_offer_snapshots SET payment_options=ARRAY['card'] WHERE property_id=$1 AND room_type_id=$2", [propertyId, rooms[0]]);
+      expect(await findTargetRoomCombinationOffers(client, { ...input, adults: 5, children: 1,
+        today: "2027-01-01", requestedAt: input.occurredAt, paymentMethods: ["card", "pay_at_property"] }))
+        .toMatchObject({ complete: true, options: [], unavailableReasons: [{ code: "payment_disabled" }] });
+    } finally { await client.query("ROLLBACK"); client.release(); }
+  });
+  it.each([["min_stay_nights", 3, "min_stay_not_met"], ["max_stay_nights", 1, "max_stay_exceeded"]] as const)
+    ("preserves canonical PMS %s restrictions", async (column, value, code) => {
+    const client = await pool.connect();
+    try {
+      await client.query("BEGIN");
+      await client.query(`INSERT INTO pms.rate_rules(property_id,room_type_id,rule_type,starts_on,ends_on,${column}) VALUES($1,$2,'stay_restriction',$3,$3,$4)`, [propertyId, rooms[0], input.checkIn, value]);
+      expect(await findTargetRoomCombinationOffers(client, { ...input, adults: 5, children: 1,
+        today: "2027-01-01", requestedAt: input.occurredAt, paymentMethods: ["pay_at_property"] }))
+        .toMatchObject({ complete: true, options: [], unavailableReasons: [{ code }] });
+    } finally { await client.query("ROLLBACK"); client.release(); }
   });
   it("uses the minimum occupancy over every night and requires every explicit bound", async () => {
     const client = await pool.connect();
@@ -333,7 +371,9 @@ describe.skipIf(!url)("mixed room inventory transactions", () => {
     );
     try {
       await expect(quote()).rejects.toMatchObject({ statusCode: 409 });
-      expect(await search()).toMatchObject({ complete: false, options: [] });
+      const code = change.startsWith("occupancy=") ? "unavailable_data" : change.startsWith("freshness_status=") ? "stale_data"
+        : change.startsWith("available_rooms=") ? "sold_out" : change.startsWith("rate_summary=") ? "min_stay_not_met" : "payment_disabled";
+      expect(await search()).toMatchObject({ complete: !["unavailable_data", "stale_data"].includes(code), options: [], unavailableReasons: [{ code }] });
     } finally {
       await pool.query(
         `UPDATE distribution.public_room_offer_snapshots SET ${restore} WHERE property_id=$1 AND room_type_id=$2`,
@@ -352,7 +392,7 @@ describe.skipIf(!url)("mixed room inventory transactions", () => {
       );
       try {
         await expect(quote()).rejects.toMatchObject({ statusCode: 409 });
-      expect(await search()).toMatchObject({ complete: false, options: [] });
+        expect(await search()).toMatchObject({ complete: true, options: [], unavailableReasons: [{ code: "stay_restricted" }] });
       } finally {
         await pool.query("DELETE FROM pms.rate_rules WHERE property_id=$1", [propertyId]);
       }
