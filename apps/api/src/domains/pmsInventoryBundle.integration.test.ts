@@ -1,5 +1,9 @@
 import { createTargetMixedCheckoutQuote } from "../routes/bookingWebMixedSnapshot.js";
-import { loadTargetCheckoutQuoteSnapshot } from "../routes/bookingWebPublic.js";
+import {
+  redeemTargetPromo,
+  createTargetGuestBooking,
+  loadTargetCheckoutQuoteSnapshot,
+} from "../routes/bookingWebPublic.js";
 import { quoteTargetRoomSelection } from "../routes/bookingWebMixedQuote.js";
 import { randomUUID } from "node:crypto";
 import pg from "pg";
@@ -344,6 +348,177 @@ describe.skipIf(!url)("mixed room inventory transactions", () => {
         input.occurredAt,
       ),
     ).rejects.toThrow("Room selection changed");
+  });
+  it("revalidates every line and creates one booking with all receipts atomically", async () => {
+    const property = {
+      propertyId,
+      displayName: "Mixed room test",
+      defaultLocale: "en",
+      timezone: "Europe/Athens",
+    };
+    const request = {
+      checkIn: input.checkIn,
+      checkOut: input.checkOut,
+      roomSelection: selection,
+      adults: 5,
+      children: 1,
+      numberOfRooms: 3,
+      paymentMethod: "pay_at_property",
+      email: "mixed@example.test",
+    };
+    const context = {
+      operation: "create",
+      requestId: randomUUID(),
+      correlationId: randomUUID(),
+      idempotencyKey: randomUUID(),
+      fingerprint: randomUUID(),
+      occurredAt: input.occurredAt,
+    };
+    await pool.query(
+      "UPDATE booking.booking_settings SET last_minute_discount='{}' WHERE property_id=$1",
+      [propertyId],
+    );
+    const quote = await transaction((client) =>
+      createTargetMixedCheckoutQuote(client, property, request, input.occurredAt),
+    );
+    const createRequest = { ...request, expectedTotalAmount: quote.totalAmount };
+    for (const mutation of [
+      "base_price_amount = 110",
+      'public_policy = \'{"type":"non_refundable"}\'',
+      'occupancy = \'{"maxAdults":1,"maxChildren":0,"maxGuests":1}\'',
+      "available_rooms = 0",
+    ]) {
+      await expect(
+        transaction(async (client) => {
+          await client.query(
+            `UPDATE distribution.public_room_offer_snapshots SET ${mutation} WHERE property_id=$1 AND room_type_id=$2`,
+            [propertyId, rooms[1]],
+          );
+          await createTargetGuestBooking(
+            client,
+            port,
+            property,
+            createRequest,
+            context,
+            quote,
+            null,
+            null,
+            null,
+          );
+        }),
+      ).rejects.toMatchObject({ statusCode: 409 });
+      expect(await inventory()).toEqual([2, 2, 2, 2]);
+    }
+    await expect(
+      transaction(async (client) => {
+        await client.query(
+          `UPDATE booking.booking_settings SET last_minute_discount=
+        '{"enabled":true,"tiers":[{"daysBeforeMin":0,"daysBeforeMax":null,"discountPercent":10}]}' WHERE property_id=$1`,
+          [propertyId],
+        );
+        await createTargetGuestBooking(
+          client,
+          port,
+          property,
+          createRequest,
+          context,
+          quote,
+          null,
+          null,
+          null,
+        );
+      }),
+    ).rejects.toThrow("Room selection changed");
+    await expect(
+      transaction(async (client) => {
+        await client.query(
+          "UPDATE booking.promo_definitions SET applicable_room_ids=NULL WHERE property_id=$1",
+          [propertyId],
+        );
+        const couponQuote = await createTargetMixedCheckoutQuote(
+          client,
+          property,
+          { ...request, promoCode: "MIXED50" },
+          new Date(input.occurredAt.getTime() + 3000),
+        );
+        const booking = await createTargetGuestBooking(
+          client,
+          port,
+          property,
+          { ...request, expectedTotalAmount: couponQuote.totalAmount },
+          context,
+          couponQuote,
+          null,
+          null,
+          null,
+        );
+        await client.query(
+          "UPDATE booking.promo_definitions SET discount_value=5 WHERE property_id=$1",
+          [propertyId],
+        );
+        await redeemTargetPromo(client, property, booking, couponQuote, input.occurredAt);
+      }),
+    ).rejects.toThrow("Promo discount changed");
+    expect(await inventory()).toEqual([2, 2, 2, 2]);
+    const rollback = new Error("roll back synthetic booking");
+    await expect(
+      transaction(async (client) => {
+        const booking = await createTargetGuestBooking(
+          client,
+          port,
+          property,
+          createRequest,
+          context,
+          quote,
+          null,
+          null,
+          null,
+        );
+        await client.query("SET CONSTRAINTS ALL IMMEDIATE");
+        expect(booking.roomCount).toBe(3);
+        const metadata = booking.bookingMetadata as Record<string, unknown>;
+        const bundle = metadata["inventoryReservation"] as PmsInventoryReservationBundle;
+        expect(bundle.receipts).toHaveLength(2);
+        expect(
+          (
+            await client.query(
+              "SELECT room_count FROM pms.inventory_reservation_receipts WHERE property_id=$1 ORDER BY room_type_id",
+              [propertyId],
+            )
+          ).rows.map((row) => row.room_count),
+        ).toEqual([2, 1]);
+        expect(
+          (
+            await client.query("SELECT count(*) FROM booking.guest_bookings WHERE property_id=$1", [
+              propertyId,
+            ])
+          ).rows[0].count,
+        ).toBe("1");
+        await port.release({
+          transaction: client,
+          propertyId,
+          reservation: bundle,
+          occurredAt: input.occurredAt,
+        });
+        expect(
+          (
+            await client.query(
+              "SELECT available_count FROM pms.inventory_days WHERE property_id=$1 ORDER BY room_type_id,stay_date",
+              [propertyId],
+            )
+          ).rows.map((row) => row.available_count),
+        ).toEqual([2, 2, 2, 2]);
+        throw rollback;
+      }),
+    ).rejects.toBe(rollback);
+    expect(await inventory()).toEqual([2, 2, 2, 2]);
+    expect(
+      (
+        await pool.query("SELECT status FROM booking.quote_sessions WHERE id=$1", [
+          quote.quoteSessionId,
+        ])
+      ).rows[0].status,
+    ).toBe("active");
   });
   it("rolls back earlier room holds when a later room fails", async () => {
     await expect(
