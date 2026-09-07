@@ -68,7 +68,6 @@
     "noAvailability": "No accommodation is available for this search. Try different dates or search options.",
     "availabilityError": "We couldn’t check availability. Please try again.",
     "noMatchingRooms": "No accommodations match your filters. Try removing a filter.",
-
     "yourStay": "Your Stay",
     "addPromo": "Add promo",
     "promoTitle": "Have a promo code?",
@@ -416,5 +415,16 @@
     "unableToLoad": "Unable to Load Hotel",
     "tryAgainLater": "We couldn't fetch the hotel data. Please try again later.",
     "retry": "Retry"
+  },
+  "roomSelection": {
+    "accommodation": "Accommodation for {count} guests",
+    "perRoomTerms": "Cancellation terms apply to each room.",
+    "roomNumber": "Room {number}",
+    "totalStay": "Total for {nights} nights",
+    "freeUntil": "Free cancellation until {date} ({timezone}).",
+    "afterDeadline": "No refund after the deadline or for a no-show.",
+    "termsUnavailable": "Cancellation terms are unavailable.",
+    "unavailable": "This accommodation selection is no longer available. Please search again.",
+    "choose": "Choose this accommodation"
   }
 }

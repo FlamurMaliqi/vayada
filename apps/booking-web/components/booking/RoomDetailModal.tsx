@@ -5,6 +5,7 @@ import Image from "next/image";
 import { useTranslations } from "next-intl";
 import { RoomType } from "@/lib/types";
 import { useCurrency } from "@/contexts/CurrencyContext";
+import RoomCombinationCard from "./RoomCombinationCard";
 import {
   getFlexibleNightlyRates,
   getFreeCancellationDays,
@@ -387,6 +388,9 @@ export default function RoomDetailModal({
           </button>
         </div>
 
+        {room.combination ? <div className="overflow-y-auto p-4"><RoomCombinationCard room={room} nights={nights} timezone={hotelTimezone}
+          titleId={`room-detail-title-${room.id}`} disabled={selectRateDisabled} pending={selectRatePending}
+          onSelect={() => onSelectRate("flexible")} /></div> : <>
         {/* VAY-444: on mobile the entire content scrolls as one flow; on desktop keep two-column layout */}
         <div className="flex flex-col md:flex-row overflow-y-auto md:overflow-hidden flex-1 min-h-0 overscroll-contain">
           {/* Left — Images */}
@@ -785,6 +789,7 @@ export default function RoomDetailModal({
             </p>
           )}
         </div>
+        </>}
       </div>
     </div>
   );

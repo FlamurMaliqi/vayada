@@ -68,7 +68,6 @@
     "noAvailability": "No hay alojamiento disponible para esta búsqueda. Pruebe otras fechas u opciones.",
     "availabilityError": "No pudimos comprobar la disponibilidad. Inténtelo de nuevo.",
     "noMatchingRooms": "Ningún alojamiento coincide con sus filtros. Pruebe a quitar un filtro.",
-
     "yourStay": "Tu Estancia",
     "addPromo": "Añadir promo",
     "promoTitle": "¿Tienes un código promocional?",
@@ -412,5 +411,16 @@
     "unableToLoad": "No se pudo cargar el hotel",
     "tryAgainLater": "No pudimos obtener los datos del hotel. Por favor, inténtalo de nuevo más tarde.",
     "retry": "Reintentar"
+  },
+  "roomSelection": {
+    "accommodation": "Alojamiento para {count} huéspedes",
+    "perRoomTerms": "Las condiciones de cancelación se aplican a cada habitación.",
+    "roomNumber": "Habitación {number}",
+    "totalStay": "Total por {nights} noches",
+    "freeUntil": "Cancelación gratuita hasta el {date} ({timezone}).",
+    "afterDeadline": "Sin reembolso después del plazo o en caso de no presentarse.",
+    "termsUnavailable": "Las condiciones de cancelación no están disponibles.",
+    "unavailable": "Esta selección ya no está disponible. Busca de nuevo.",
+    "choose": "Elegir este alojamiento"
   }
 }
