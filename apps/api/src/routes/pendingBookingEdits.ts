@@ -1,3 +1,4 @@
+import { createTargetMixedCheckoutQuote } from "./bookingWebMixedSnapshot.js";
 import { authorize, editable, requireRevision, guestInput } from "./pendingBookingEditAccess.js";
 import {
   preparePendingEditAttempt,
@@ -51,6 +52,10 @@ export async function pendingBookingEdit(
   request: BookingWebCheckoutRequest,
   context: BookingWebCheckoutCommandContext,
 ): Promise<unknown> {
+  const assertSelectionEnabled = (input: Record<string, unknown>) => {
+    if (!config.mixedRoomSelectionsEnabled && input["roomSelection"] !== undefined)
+      throw createHttpError(409, "Mixed room booking edits are not available yet.");
+  };
   const result = await withTargetCheckoutTransaction(pool, async (client) => {
     let now = config.now?.() ?? new Date();
     const { property, booking: canonical } = await authorize(
@@ -69,6 +74,8 @@ export async function pendingBookingEdit(
     const booking = await editable(client, canonical, now);
     await lockPendingPmsHandoff(client, property.propertyId, booking.guestBookingId);
     const selected = objectValue(objectValue(booking.bookingMetadata)["selectedOffer"]);
+    assertSelectionEnabled(selected);
+    assertSelectionEnabled(request);
     if (action === "details") {
       const guest = (
         await client.query(
@@ -82,6 +89,7 @@ export async function pendingBookingEdit(
         revision: booking.editRevision,
         input: await guestInput(client, booking, {
           roomTypeId: selected["roomTypeId"],
+          ...(selected["roomSelection"] ? { roomSelection: selected["roomSelection"] } : {}),
           checkIn: booking.checkIn,
           checkOut: booking.checkOut,
           adults: booking.adults,
@@ -113,8 +121,14 @@ export async function pendingBookingEdit(
         throw createHttpError(400, "Special requests must be 2000 characters or fewer.");
     }
     if (action === "quote") {
+      const credits = await config.inventoryReservationPort.selectionAvailabilityCredits?.({
+        transaction: client,
+        propertyId: property.propertyId,
+        guestBookingId: booking.guestBookingId,
+      });
       const credit =
-        input["roomTypeId"] === selected["roomTypeId"]
+        credits?.get(String(input["roomTypeId"])) ??
+        (input["roomTypeId"] === selected["roomTypeId"]
           ? await targetInventoryAvailabilityCredit(
               config.inventoryReservationPort,
               client,
@@ -123,12 +137,16 @@ export async function pendingBookingEdit(
               String(selected["roomTypeId"]),
               String(selected["publicOfferKey"]),
             )
-          : undefined;
-      const quote = await createTargetCheckoutQuote(client, property, input, now, {
+          : undefined);
+      const edit = {
         bookingId: booking.guestBookingId,
         revision: booking.editRevision,
         availabilityCredit: credit,
-      });
+      };
+      const quote =
+        input["roomSelection"] !== undefined
+          ? await createTargetMixedCheckoutQuote(client, property, input, now, edit, credits)
+          : await createTargetCheckoutQuote(client, property, input, now, edit);
       return serializeTargetCheckoutQuote(quote);
     }
     if (action === "prepare")
@@ -145,6 +163,7 @@ export async function pendingBookingEdit(
       throw createHttpError(409, "The edit expired. Review the request and try again.");
     requireRevision(booking, attempt.expected_revision);
     const savedInput = attempt.request_snapshot;
+    assertSelectionEnabled(savedInput);
     const quote = await loadTargetCheckoutQuoteSnapshot(
       client,
       property.propertyId,
