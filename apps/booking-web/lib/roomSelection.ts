@@ -46,3 +46,19 @@ export function selectionCheckoutFields(room: RoomType): {
     currency: room.combination ? room.currency : undefined,
   };
 }
+
+/** Compare all rate keys and allocations, never just the first room type. */
+export function sameRoomSelection(left?: RoomSelection, right?: RoomSelection): boolean {
+  return Boolean(left && right && JSON.stringify(left) === JSON.stringify(right));
+}
+export function roomSelectionPartyMatches(
+  selection: RoomSelection,
+  adults: number,
+  children: number,
+): boolean {
+  const guests = selection.lines.flatMap((line) => line.guests);
+  return (
+    guests.reduce((sum, guest) => sum + guest.adults, 0) === adults &&
+    guests.reduce((sum, guest) => sum + guest.children, 0) === children
+  );
+}
