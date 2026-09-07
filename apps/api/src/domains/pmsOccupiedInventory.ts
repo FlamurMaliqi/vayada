@@ -60,9 +60,13 @@ export async function reconcilePmsOccupiedInventory(
                  OR adopted.room_type_id=receipt.room_type_id)
                AND COALESCE(adopted.check_in,booking.check_in)=receipt.check_in AND COALESCE(adopted.check_out,booking.check_out)=receipt.check_out
              WHERE booking.property_id=receipt.property_id
-               AND (booking.booking_metadata#>>'{inventoryReservation,receiptId}'=
-                 receipt.receipt_id::text OR booking.quote_session_id::text=receipt.quote_session_id
-                 OR booking.booking_metadata#>>'{inventoryReservation,quoteSessionId}'=receipt.quote_session_id)
+               AND (CASE WHEN booking.booking_metadata#>>'{inventoryReservation,contractVersion}'='pms-inventory-reservation-bundle.v1'
+                 THEN booking.booking_metadata#>'{inventoryReservation,receipts}' @>
+                   jsonb_build_array(jsonb_build_object('receiptId',receipt.receipt_id::text))
+                   AND adopted.assignment_payload#>>'{inventoryReservation,receiptId}'=receipt.receipt_id::text
+                 ELSE booking.booking_metadata#>>'{inventoryReservation,receiptId}'=receipt.receipt_id::text
+                   OR booking.quote_session_id::text=receipt.quote_session_id
+                   OR booking.booking_metadata#>>'{inventoryReservation,quoteSessionId}'=receipt.quote_session_id END)
            ),0)))::int
            FROM pms.active_inventory_reservation_receipts receipt
            JOIN pms.inventory_reservation_statuses reservation_status

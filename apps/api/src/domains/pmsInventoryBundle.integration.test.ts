@@ -1,3 +1,4 @@
+import { withPmsHostDateCredit, preparePmsHostDateAmendment, completePmsHostDateAmendment } from "./pmsHostDateAmendment.js";
 import { createTargetPmsOperationsReadRepository } from "./pmsOperationsReadModel.js";
 import { findTargetRoomCombinationOffers } from "../routes/bookingRoomCombinationOffers.js";
 import { pendingBookingEdit } from "../routes/pendingBookingEdits.js";
@@ -419,7 +420,57 @@ describe.skipIf(!url)("mixed room inventory transactions", () => {
       await assign();
       expect((await client.query("SELECT lifecycle_state FROM pms.inventory_reservation_statuses WHERE receipt_id=ANY($1::uuid[])", [(receipt as PmsInventoryReservationBundle).receipts.map((item) => item.receiptId)])).rows.map((row) => row.lifecycle_state))
         .toEqual(["handed_off", "handed_off"]);
-
+      if (source === "host") {
+        await client.query("SET CONSTRAINTS ALL DEFERRED");
+        const wrapped = withPmsHostDateCredit(port);
+        const held = receipt as PmsInventoryReservationBundle;
+        const creditRequest = { transaction: client, propertyId, reservation: held,
+          lines: selection.lines.map((line) => ({ ...line, roomCount: line.guests.length })),
+          checkIn: updated.checkIn, checkOut: updated.checkOut };
+        expect((await wrapped.bundleAvailabilityCredits!(creditRequest))?.size).toBe(2);
+        expect(await wrapped.bundleAvailabilityCredits!({ ...creditRequest,
+          reservation: { ...held, receipts: held.receipts.slice(0, 1) } })).toBeNull();
+        const nextAt = new Date(input.occurredAt.getTime() + 1000);
+        const nextPreview = await bookingOwner.previewDates(client, wrapped, property, updated,
+          { checkIn: input.checkIn, checkOut: input.checkOut }, nextAt);
+        expect(nextPreview).toMatchObject({ blocked: false, newTotal: 600 });
+        const nextId = randomUUID();
+        await client.query(`INSERT INTO booking.host_action_previews
+          (id,property_id,guest_booking_id,actor_user_id,booking_revision,action,request,impact,created_at,expires_at)
+          VALUES($1,$2,$3,$4,'test','edit_dates',$5::jsonb,'{}',$6,$6::timestamptz+interval '10 minutes')`,
+          [nextId, propertyId, booking.guestBookingId, context.actorUserId,
+            JSON.stringify({ checkIn: input.checkIn, checkOut: input.checkOut }), nextAt]);
+        const nextOffer = nextPreview.pricingSnapshot!["selectedOffer"] as Record<string, unknown>;
+        await client.query("SAVEPOINT failed_amendment");
+        await preparePmsHostDateAmendment(client, { propertyId, bookingId: booking.guestBookingId,
+          previewId: nextId, receipt: held, occurredAt: nextAt });
+        await wrapped.release({ transaction: client, propertyId, reservation: held, occurredAt: nextAt });
+        await client.query("UPDATE distribution.public_room_offer_snapshots SET available_rooms=0 WHERE property_id=$1 AND room_type_id=$2", [propertyId, rooms[1]]);
+        await expect(bookingOwner.reserveDates(wrapped, nextOffer, { transaction: client, propertyId,
+          quoteSessionId: `host-edit:${nextId}`, roomTypeId: rooms[0]!, publicOfferKey: rooms[0]!,
+          checkIn: input.checkIn, checkOut: input.checkOut, roomCount: 3, currency: "EUR", occurredAt: nextAt })).rejects.toMatchObject({ statusCode: 409 });
+        await client.query("ROLLBACK TO SAVEPOINT failed_amendment");
+        expect((await client.query("SELECT assignment_status,check_in::text FROM pms.operational_booking_assignments WHERE guest_booking_id=$1 ORDER BY position", [booking.guestBookingId])).rows)
+          .toEqual(Array.from({ length: 3 }, () => ({ assignment_status: "pending", check_in: updated.checkIn })));
+        const amendment = await preparePmsHostDateAmendment(client, { propertyId,
+          bookingId: booking.guestBookingId, previewId: nextId, receipt: held, occurredAt: nextAt });
+        expect(amendment).toHaveLength(2);
+        await wrapped.release({ transaction: client, propertyId, reservation: held, occurredAt: nextAt });
+        const nextReceipt = await bookingOwner.reserveDates(wrapped, nextOffer, { transaction: client, propertyId,
+          quoteSessionId: `host-edit:${nextId}`, roomTypeId: rooms[0]!, publicOfferKey: rooms[0]!,
+          checkIn: input.checkIn, checkOut: input.checkOut, roomCount: 3, currency: "EUR", occurredAt: nextAt });
+        await bookingOwner.applyDates(client, { booking: updated, changeRequest: { id: nextId, hostEdit: true },
+          preview: nextPreview, selectedOffer: nextOffer, inventoryReservation: { ...nextReceipt! }, context: { ...context, occurredAt: nextAt } });
+        await completePmsHostDateAmendment(client, { propertyId, bookingId: booking.guestBookingId,
+          previewId: nextId, previous: amendment, receipt: nextReceipt!, checkIn: input.checkIn,
+          checkOut: input.checkOut, occurredAt: nextAt });
+        await client.query("SET CONSTRAINTS ALL IMMEDIATE");
+        expect((await client.query("SELECT count(*) FROM pms.inventory_reservation_successors WHERE property_id=$1", [propertyId])).rows[0].count).toBe("2");
+        expect((await client.query("SELECT assignment_status,check_in::text FROM pms.operational_booking_assignments WHERE guest_booking_id=$1 ORDER BY position", [booking.guestBookingId])).rows)
+          .toEqual(Array.from({ length: 3 }, () => ({ assignment_status: "pending", check_in: input.checkIn })));
+        expect((await client.query("SELECT available_count FROM pms.inventory_days WHERE property_id=$1 ORDER BY room_type_id,stay_date", [propertyId])).rows.map((row) => row.available_count))
+          .toEqual([0, 0, 1, 1]);
+      }
     } finally { await client.query("ROLLBACK"); client.release(); }
   });
   it("persists the full selection, prices add-ons once, and rejects quote selection tampering", async () => {
