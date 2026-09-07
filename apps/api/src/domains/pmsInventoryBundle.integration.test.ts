@@ -1,6 +1,10 @@
 import { createTargetMixedCheckoutQuote } from "../routes/bookingWebMixedSnapshot.js";
 import {
   redeemTargetPromo,
+  enqueuePmsReservationHandoff,
+  serializeTargetBooking,
+  serializeTargetCheckoutQuote,
+  resolveTargetCancellationPreview,
   createTargetGuestBooking,
   loadTargetCheckoutQuoteSnapshot,
 } from "../routes/bookingWebPublic.js";
@@ -479,6 +483,59 @@ describe.skipIf(!url)("mixed room inventory transactions", () => {
         const metadata = booking.bookingMetadata as Record<string, unknown>;
         const bundle = metadata["inventoryReservation"] as PmsInventoryReservationBundle;
         expect(bundle.receipts).toHaveLength(2);
+        const projected = serializeTargetBooking(booking);
+        expect(projected["roomSelection"]).toEqual(selection);
+        expect(projected["roomLines"]).toHaveLength(2);
+        expect(serializeTargetCheckoutQuote(quote)["roomLines"]).toEqual(projected["roomLines"]);
+        expect(JSON.stringify(projected["roomLines"])).not.toContain("sourceFreshness");
+        await enqueuePmsReservationHandoff(client, propertyId, booking, context, "create");
+        const job = (
+          await client.query(
+            "SELECT payload FROM platform.jobs WHERE property_id=$1 AND resource_id=$2",
+            [propertyId, booking.guestBookingId],
+          )
+        ).rows[0].payload;
+        expect(job.inventoryReservation).toEqual(bundle);
+        expect(job.bookedOffer.roomSelection).toEqual(selection);
+        const cancellationBooking = structuredClone(booking);
+        const cancellationOffer = (
+          cancellationBooking.bookingMetadata as {
+            selectedOffer: {
+              roomLines: Array<{ offer: { publicPolicy: unknown; rateSummary: unknown } }>;
+            };
+          }
+        ).selectedOffer;
+        cancellationOffer.roomLines.forEach((line, index) => {
+          line.offer.publicPolicy = {
+            type: "free_until_days_before_arrival",
+            freeCancellationDeadlineDays: index ? 7 : 3,
+            afterDeadlinePenalty: "full_booking_amount",
+            noShowPenalty: "full_booking_amount",
+          };
+        });
+        expect(
+          resolveTargetCancellationPreview(
+            cancellationBooking,
+            property.timezone,
+            input.occurredAt,
+          ),
+        ).toMatchObject({
+          freeCancellationDays: 7,
+          refundAmount: 0,
+          lines: [
+            expect.objectContaining({ freeCancellationDays: 3 }),
+            expect.objectContaining({ freeCancellationDays: 7 }),
+          ],
+        });
+        cancellationOffer.roomLines[1]!.offer.rateSummary = { refundable: false };
+        expect(() =>
+          resolveTargetCancellationPreview(
+            cancellationBooking,
+            property.timezone,
+            input.occurredAt,
+          ),
+        ).toThrow("non-refundable");
+
         expect(
           (
             await client.query(

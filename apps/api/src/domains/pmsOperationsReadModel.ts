@@ -1,3 +1,4 @@
+import { projectBookingRoomSelection } from "./bookingRoomSelectionProjection.js";
 import type { PropertyPlanReadModel } from "@vayada/domain-finance";
 import pg from "pg";
 
@@ -184,6 +185,7 @@ export type PmsOperationalReservation = {
   privateNoteCount: number;
   additionalGuestCount: number;
   bookedOffer?: { roomTypeId: string; roomName: string };
+  roomLines?: ReturnType<typeof projectBookingRoomSelection>["roomLines"];
   roomCount?: number;
   pricing?: { totalAmount: PmsMoney; balanceAmount: PmsMoney };
   payment?: {
@@ -871,6 +873,7 @@ type TargetPmsOperationalReservationRow = {
   privateNoteCount: string | number;
   additionalGuestCount: string | number;
   bookedRoomTypeId: string;
+  selectedRoomOffer?: unknown;
   bookedRoomName: string;
   roomCount: string | number;
   totalAmount: string | number;
@@ -935,6 +938,7 @@ function pmsOperationalReservationSelectSql(canReadGuestContact: boolean): strin
     NULLIF(booking.booking_metadata #>> '{selectedOffer,roomName}', ''),
     ''
   ) AS "bookedRoomName",
+  COALESCE(quote.selected_offer_snapshot,booking.booking_metadata->'selectedOffer') AS "selectedRoomOffer",
   booking.room_count AS "roomCount",
   booking.total_amount AS "totalAmount",
   booking.balance_amount AS "balanceAmount",
@@ -1391,6 +1395,7 @@ function toPmsOperationalReservation(
     ...(bookedRoomTypeId && bookedRoomName
       ? { bookedOffer: { roomTypeId: bookedRoomTypeId, roomName: bookedRoomName } }
       : {}),
+    ...projectBookingRoomSelection(row.selectedRoomOffer),
     roomCount: Math.max(toInteger(row.roomCount), 1),
     pricing: {
       totalAmount: {
