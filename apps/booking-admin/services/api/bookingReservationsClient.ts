@@ -23,6 +23,7 @@ export interface BookingReservation {
   bookingReference: string;
   roomTypeId: string;
   roomName: string;
+  roomLines?: Array<{ roomTypeId: string; roomName: string; roomCount: number }>;
   roomMaxOccupancy: number;
   totalRoomCapacity: number;
   guestFirstName: string;

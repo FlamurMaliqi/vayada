@@ -286,8 +286,9 @@ export default function ReservationsPage() {
 function ReservationRow({ booking }: { booking: BookingReservation }) {
   const { t, locale } = useTranslation();
   const guestName = `${booking.guestFirstName} ${booking.guestLastName}`.trim();
-  const roomSummary =
-    booking.numberOfRooms === 1
+  const roomSummary = booking.roomLines?.length
+    ? booking.roomLines.map((line) => `${line.roomCount} × ${line.roomName}`).join(" + ")
+    : booking.numberOfRooms === 1
       ? booking.roomName
       : `${booking.numberOfRooms} x ${booking.roomName}`;
 

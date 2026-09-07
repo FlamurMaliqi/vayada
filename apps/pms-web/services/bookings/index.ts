@@ -316,6 +316,13 @@ type PmsOperationalReservation = {
   checkin: { completedAt: string | null; pendingFlags: string[] };
   checkout: { completedAt: string | null; pendingFlags: string[] };
   bookedOffer?: { roomTypeId: string; roomName: string };
+  roomLines?: Array<{
+    roomTypeId: string;
+    roomName: string;
+    roomCount: number;
+    guests: Array<{ adults: number; children: number }>;
+    rateSummary: Record<string, unknown>;
+  }>;
   roomCount?: number;
   pricing?: { totalAmount: PmsOperationsMoney; balanceAmount: PmsOperationsMoney };
   payment?: {
@@ -1085,7 +1092,9 @@ function toBooking(
     id: reservation.guestBookingId,
     bookingReference: reservation.bookingReference,
     roomTypeId,
-    roomName: roomType?.name || reservation.bookedOffer?.roomName || "",
+    roomName: reservation.roomLines?.length
+      ? reservation.roomLines.map((line) => `${line.roomCount} × ${line.roomName}`).join(" + ")
+      : roomType?.name || reservation.bookedOffer?.roomName || "",
     roomMaxOccupancy: maxOccupancy(roomType),
     totalRoomCapacity,
     guestFirstName,
@@ -1124,27 +1133,44 @@ function toBooking(
       position: Math.max(assignment.position - 1, 0),
       roomTypeId: assignment.roomTypeId,
     })),
-    stays: reservation.assignments.map((assignment) => {
-      const assignmentRoomType = roomTypesById.get(assignment.roomTypeId);
-      const ratePlan = assignmentRoomType?.ratePlans?.find(
-        (plan) => plan.ratePlanId === assignment.ratePlanId,
-      );
-      return {
-        position: Math.max(assignment.position - 1, 0),
-        roomName: assignmentRoomType?.name ?? "",
-        ratePlanName: ratePlan?.name ?? null,
-        roomNumber: assignment.roomNumber,
-        checkIn: assignment.stay?.checkIn ?? null,
-        checkOut: assignment.stay?.checkOut ?? null,
-        adults: assignment.stay?.adults ?? null,
-        children: assignment.stay?.children ?? null,
-        nightly: (assignment.nightly ?? []).map((night) => ({
-          appliedAmount: night.applied ? moneyAmount(night.applied) : null,
-          currency: night.applied?.currency ?? null,
-          evidenceQuality: night.evidenceQuality,
-        })),
-      };
-    }),
+    stays:
+      !reservation.assignments.length && reservation.roomLines?.length
+        ? reservation.roomLines
+            .flatMap((line) =>
+              line.guests.map((guest) => ({
+                roomName: line.roomName,
+                ratePlanName:
+                  typeof line.rateSummary["name"] === "string" ? line.rateSummary["name"] : null,
+                roomNumber: null,
+                checkIn: reservation.stay.checkIn,
+                checkOut: reservation.stay.checkOut,
+                adults: guest.adults,
+                children: guest.children,
+                nightly: [],
+              })),
+            )
+            .map((stay, position) => ({ ...stay, position }))
+        : reservation.assignments.map((assignment) => {
+            const assignmentRoomType = roomTypesById.get(assignment.roomTypeId);
+            const ratePlan = assignmentRoomType?.ratePlans?.find(
+              (plan) => plan.ratePlanId === assignment.ratePlanId,
+            );
+            return {
+              position: Math.max(assignment.position - 1, 0),
+              roomName: assignmentRoomType?.name ?? "",
+              ratePlanName: ratePlan?.name ?? null,
+              roomNumber: assignment.roomNumber,
+              checkIn: assignment.stay?.checkIn ?? null,
+              checkOut: assignment.stay?.checkOut ?? null,
+              adults: assignment.stay?.adults ?? null,
+              children: assignment.stay?.children ?? null,
+              nightly: (assignment.nightly ?? []).map((night) => ({
+                appliedAmount: night.applied ? moneyAmount(night.applied) : null,
+                currency: night.applied?.currency ?? null,
+                evidenceQuality: night.evidenceQuality,
+              })),
+            };
+          }),
     channel:
       reservation.source === "manual"
         ? "manual"
@@ -1290,7 +1316,15 @@ export type HostBookingActionPreview = {
     payment: "no_payment_received" | "authorization_void";
     cancellationPolicy: {
       type: "non_refundable" | "flexible" | "mixed_room";
-      lines?: { roomTypeId: string; roomName: string; roomCount: number; type: "non_refundable" | "flexible"; previousDeadline: string | null; newDeadline: string | null; timezone: string }[];
+      lines?: {
+        roomTypeId: string;
+        roomName: string;
+        roomCount: number;
+        type: "non_refundable" | "flexible";
+        previousDeadline: string | null;
+        newDeadline: string | null;
+        timezone: string;
+      }[];
       previousDeadline: string | null;
       newDeadline: string | null;
       timezone: string;
