@@ -1219,6 +1219,11 @@ function buildFallbackBookingUrl(
 
 function serializeOffer(offer: PublicBookabilityOffer): PublicBookabilityOffer {
   return {
+    ...(offer.roomSelection ? {
+      roomSelection: offer.roomSelection,
+      roomLines: offer.roomLines,
+      expiresAt: offer.expiresAt,
+    } : {}),
     offerId: offer.offerId,
     roomTypeId: offer.roomTypeId,
     ratePlanId: offer.ratePlanId ?? null,

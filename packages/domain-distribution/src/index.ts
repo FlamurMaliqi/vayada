@@ -285,7 +285,28 @@ export type PublicBookabilityMoneyTotals = {
   grandTotal: number;
 };
 
+/** Public projection of Booking's versioned selection; contains no inventory receipt data. */
+export type PublicBookabilityRoomSelection = {
+  contractVersion: "booking-room-selection.v1";
+  lines: readonly {
+    roomTypeId: string;
+    publicOfferKey: string;
+    guests: readonly { adults: number; children: number }[];
+  }[];
+};
+export type PublicBookabilityRoomLine = PublicBookabilityRoomSelection["lines"][number] & {
+  roomName: string;
+  roomCount: number;
+  ratePlanId: string | null;
+  rateSummary: Record<string, unknown>;
+  policy: Record<string, unknown>;
+  totals: Record<string, string>;
+};
+
 export type PublicBookabilityOffer = {
+  roomSelection?: PublicBookabilityRoomSelection;
+  roomLines?: PublicBookabilityRoomLine[];
+  expiresAt?: string;
   offerId: string;
   roomTypeId: string;
   ratePlanId?: string | null;
