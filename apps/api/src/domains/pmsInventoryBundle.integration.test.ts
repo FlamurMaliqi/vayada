@@ -483,6 +483,42 @@ describe.skipIf(!url)("mixed room inventory transactions", () => {
         const metadata = booking.bookingMetadata as Record<string, unknown>;
         const bundle = metadata["inventoryReservation"] as PmsInventoryReservationBundle;
         expect(bundle.receipts).toHaveLength(2);
+        const credits = await port.selectionAvailabilityCredits!({
+          transaction: client,
+          propertyId,
+          guestBookingId: booking.guestBookingId,
+        });
+        expect([...credits.values()].map((value) => value.roomCount).sort()).toEqual([1, 2]);
+        expect(
+          await port.selectionAvailabilityCredits!({
+            transaction: client,
+            propertyId: randomUUID(),
+            guestBookingId: booking.guestBookingId,
+          }),
+        ).toEqual(new Map());
+        const replacement = await createTargetMixedCheckoutQuote(
+          client,
+          property,
+          request,
+          new Date(input.occurredAt.getTime() + 6000),
+          { bookingId: booking.guestBookingId, revision: 0 },
+          credits,
+        );
+        expect(replacement.totalAmount).toBe(quote.totalAmount);
+        await client.query("SAVEPOINT incomplete_bundle");
+        await client.query(
+          `UPDATE booking.guest_bookings SET booking_metadata=jsonb_set(booking_metadata,
+          '{inventoryReservation,receipts}',(booking_metadata#>'{inventoryReservation,receipts}')-0) WHERE id=$1`,
+          [booking.guestBookingId],
+        );
+        expect(
+          await port.selectionAvailabilityCredits!({
+            transaction: client,
+            propertyId,
+            guestBookingId: booking.guestBookingId,
+          }),
+        ).toEqual(new Map());
+        await client.query("ROLLBACK TO SAVEPOINT incomplete_bundle");
         const projected = serializeTargetBooking(booking);
         expect(projected["roomSelection"]).toEqual(selection);
         expect(projected["roomLines"]).toHaveLength(2);
@@ -557,6 +593,13 @@ describe.skipIf(!url)("mixed room inventory transactions", () => {
           reservation: bundle,
           occurredAt: input.occurredAt,
         });
+        expect(
+          await port.selectionAvailabilityCredits!({
+            transaction: client,
+            propertyId,
+            guestBookingId: booking.guestBookingId,
+          }),
+        ).toEqual(new Map());
         expect(
           (
             await client.query(

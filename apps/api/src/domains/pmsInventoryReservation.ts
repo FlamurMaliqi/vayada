@@ -417,6 +417,19 @@ export function createTargetPmsInventoryReservationPort(): DirectBookingInventor
       }
     },
 
+    async selectionAvailabilityCredits(input) {
+      const result = await input.transaction.query<{
+        roomTypeId: string;
+        checkIn: string;
+        checkOut: string;
+        roomCount: number;
+      }>(
+        `SELECT room_type_id::text AS "roomTypeId",check_in::text AS "checkIn",check_out::text AS "checkOut",room_count AS "roomCount"
+         FROM pms.pending_booking_edit_receipts WHERE property_id=$1::uuid AND guest_booking_id=$2::uuid`,
+        [input.propertyId, input.guestBookingId],
+      );
+      return new Map(result.rows.map(({ roomTypeId, ...credit }) => [roomTypeId, credit]));
+    },
     async availabilityCredit(input) {
       const result = await input.transaction.query<{
         checkIn: string;
