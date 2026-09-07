@@ -7,6 +7,7 @@ const promoPath = `/api/booking-web/hotels/${SEEDED_BOOKING_SLUG}/promo/validate
 
 test.describe("booking-web promo validation", () => {
   test("shows the selected rate's automatic discount on its room card", async ({ page }) => {
+    await page.clock.setFixedTime(new Date("2026-09-01T10:00:00Z"));
     await mockBookingApis(page, {
       automaticPromotion: { name: "Early bird", discountPercent: 20 },
     });

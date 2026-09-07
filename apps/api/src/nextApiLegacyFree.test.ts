@@ -27,6 +27,12 @@ const nextApiLegacyFreeEnv: NodeJS.ProcessEnv = {
   PUBLIC_HOTEL_PROFILE_SOURCE: "active_publication",
   PMS_OPERATIONS_SOURCE: "target",
   FINANCE_SOURCE: "target",
+  FINANCE_FOLIO_RECIPIENT_KMS_CURRENT_KEY_ARN:
+    "arn:aws:kms:eu-west-1:123456789012:key/11111111-2222-3333-4444-555555555555",
+  FINANCE_FOLIO_RECIPIENT_KMS_ALLOWED_KEY_ARNS:
+    "arn:aws:kms:eu-west-1:123456789012:key/11111111-2222-3333-4444-555555555555",
+  FINANCE_FOLIO_RECIPIENT_KMS_FINGERPRINT_KEY_ARN:
+    "arn:aws:kms:eu-west-1:123456789012:key/66666666-7777-8888-9999-000000000000",
 };
 
 const publicBookabilityFixture = PUBLIC_BOOKABILITY_FIXTURES.find(
@@ -35,6 +41,15 @@ const publicBookabilityFixture = PUBLIC_BOOKABILITY_FIXTURES.find(
 
 const publicHotelProfilePool: PublicHotelProfileReadPool = {
   async query<T extends QueryResultRow>(text: string, values?: readonly unknown[]) {
+    if (text.includes('AS "domainVerified"')) {
+      expect(text).toContain("hotel_catalog.property_domains");
+      expect(text).toContain("identity.product_entitlements");
+      return {
+        rows: [
+          { domainVerified: true, referralEnabled: false, latitude: null, longitude: null },
+        ] as unknown as T[],
+      };
+    }
     expect(text).toContain("distribution.active_public_booking_revision");
     expect(text).toContain("distribution.public_booking_content_revisions");
     expect(text).not.toContain("distribution.public_hotel_bookability_profiles");
@@ -147,7 +162,7 @@ describe("next-api legacy-free runtime check", () => {
 
     for (const url of routes) {
       const response = await injectJson(app, { method: "GET", url });
-      expect(response.statusCode, url).toBe(200);
+      expect(response.statusCode, `${url}: ${JSON.stringify(response.body)}`).toBe(200);
     }
   });
 

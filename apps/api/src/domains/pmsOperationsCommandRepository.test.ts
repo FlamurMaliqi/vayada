@@ -638,6 +638,8 @@ describe("target PMS operations command repository", () => {
         ]);
       }
       if (text.includes("WITH booking_update AS")) return ok([{ id: guestBookingId }], 1);
+      if (text.includes('SELECT room_count AS "roomCount"')) return ok([{ roomCount: 1 }]);
+      if (text.includes("FROM booking.nightly_revenue_evidence") && text.includes("GROUP BY room_type_id,line_position")) return ok();
       if (text.includes("WITH booking_scope AS")) return ok();
       if (text.includes("INSERT INTO platform.product_audit_events")) return ok([], 1);
       if (text.includes("UPDATE platform.idempotency_keys")) return ok([], 1);
@@ -816,6 +818,8 @@ describe("target PMS operations command repository", () => {
         ]);
       }
       if (text.includes("WITH booking_update AS")) return ok([{ id: guestBookingId }], 1);
+      if (text.includes('SELECT room_count AS "roomCount"')) return ok([{ roomCount: 1 }]);
+      if (text.includes("FROM booking.nightly_revenue_evidence") && text.includes("GROUP BY room_type_id,line_position")) return ok();
       if (text.includes("WITH booking_scope AS")) return ok();
       if (text.includes('AS "hostEmail"')) {
         return ok([
@@ -1156,7 +1160,9 @@ describe("target PMS operations command repository", () => {
           ]);
         }
         if (text.includes("WITH booking_update AS")) return ok([{ id: guestBookingId }], 1);
-        if (text.includes("WITH booking_scope AS")) return ok();
+        if (text.includes('SELECT room_count AS "roomCount"')) return ok([{ roomCount: 1 }]);
+      if (text.includes("FROM booking.nightly_revenue_evidence") && text.includes("GROUP BY room_type_id,line_position")) return ok();
+      if (text.includes("WITH booking_scope AS")) return ok();
         if (text.includes('AS "hostEmail"')) {
           return ok([
             {
