@@ -1892,6 +1892,9 @@ describe("Booking Web public bootstrap parity", () => {
           if (text.includes("INSERT INTO platform.domain_events")) {
             return { rows: [{ eventId: "4c6a35e2-1436-455a-bf05-96d2f4559421" }] };
           }
+          if (text.includes("INSERT INTO booking.promo_applications") && text.includes("RETURNING id")) {
+            return { rows: [{ id: "promo-application" }] };
+          }
           if (text.includes('RETURNING id::text AS "jobId"')) {
             return {
               rows: [{ jobId: "5c6a35e2-1436-455a-bf05-96d2f4559421", replay: false }],

@@ -31,6 +31,7 @@ import {
   reserveTargetCheckoutCommand,
   redeemTargetPromo,
   reverseTargetPromoRedemption,
+  revalidateTargetSingleEditQuote,
   resolveTargetGuestPhone,
   serializeTargetBooking,
   serializeTargetCheckoutQuote,
@@ -197,6 +198,7 @@ export async function pendingBookingEdit(
     const billing = await config
       .billingConfigReadPortFactory?.(client)
       .getBillingConfig(property.propertyId);
+    await revalidateTargetSingleEditQuote(client, property, quote, now);
     const updated = await createTargetGuestBooking(
       client,
       config.inventoryReservationPort,
